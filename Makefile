@@ -4,10 +4,10 @@ VERSION := v1.3.0-rc0
 SERVICE_NAME := redis-operator
 
 # Docker image name for this project
-IMAGE_NAME := spotahome/$(SERVICE_NAME)
+IMAGE_NAME := saremox/$(SERVICE_NAME)
 
 # Repository url for this project
-REPOSITORY := quay.io/$(IMAGE_NAME)
+REPOSITORY := ghcr.io/$(IMAGE_NAME)
 
 # Shell to use for running scripts
 SHELL := $(shell which bash)
@@ -102,6 +102,9 @@ image: deps-development
 image-release:
 	docker buildx build \
 	--platform linux/amd64,linux/arm64,linux/arm/v7 \
+	--label "org.opencontainers.image.source=https://github.com/saremox/redis-operator" \
+ 	--label "org.opencontainers.image.description=Redis Failover Operator" \
+ 	--label "org.opencontainers.image.licenses=Apache-2.0" \
 	--push \
 	--build-arg VERSION=$(TAG) \
 	-t $(REPOSITORY):latest \
