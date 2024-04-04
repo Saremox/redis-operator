@@ -13916,6 +13916,15 @@ spec:
                     type: array
                 type: object
             type: object
+          status:
+            properties:
+              lastChanged:
+                type: string
+              message:
+                type: string
+              state:
+                type: string
+            type: object
         required:
         - spec
         type: object

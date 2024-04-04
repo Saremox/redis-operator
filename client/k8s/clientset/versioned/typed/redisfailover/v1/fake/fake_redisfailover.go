@@ -85,6 +85,18 @@ func (c *FakeRedisFailovers) Update(ctx context.Context, redisFailover *v1.Redis
 	return obj.(*v1.RedisFailover), err
 }
 
+// UpdateStatus was generated because the type contains a Status member.
+// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
+func (c *FakeRedisFailovers) UpdateStatus(ctx context.Context, redisFailover *v1.RedisFailover, opts metav1.UpdateOptions) (*v1.RedisFailover, error) {
+	obj, err := c.Fake.
+		Invokes(testing.NewUpdateSubresourceAction(redisfailoversResource, "status", c.ns, redisFailover), &v1.RedisFailover{})
+
+	if obj == nil {
+		return nil, err
+	}
+	return obj.(*v1.RedisFailover), err
+}
+
 // Delete takes name of the redisFailover and deletes it. Returns an error if one occurs.
 func (c *FakeRedisFailovers) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {
 	_, err := c.Fake.
