@@ -5,8 +5,8 @@ package v1
 import (
 	"net/http"
 
-	v1 "github.com/spotahome/redis-operator/api/redisfailover/v1"
-	"github.com/spotahome/redis-operator/client/k8s/clientset/versioned/scheme"
+	v1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/client/k8s/clientset/versioned/scheme"
 	rest "k8s.io/client-go/rest"
 )
 

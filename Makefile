@@ -39,7 +39,7 @@ ifneq ($(shell git status --porcelain),)
 endif
 
 
-PROJECT_PACKAGE := github.com/spotahome/redis-operator
+PROJECT_PACKAGE := github.com/saremox/redis-operator
 CODEGEN_IMAGE := ghcr.io/slok/kube-code-generator:v1.27.0
 PORT := 9710
 
@@ -56,7 +56,7 @@ DEV_DIR := docker/development
 APP_DIR := docker/app
 
 # workdir
-WORKDIR := /go/src/github.com/spotahome/redis-operator
+WORKDIR := /go/src/github.com/saremox/redis-operator
 
 # The default action of this Makefile is to build the development docker image
 .PHONY: default

@@ -3,13 +3,13 @@ package redisfailover
 import (
 	"context"
 	"errors"
-	"github.com/spotahome/redis-operator/service/k8s"
+	"github.com/saremox/redis-operator/service/k8s"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"strconv"
 	"time"
 
-	redisfailoverv1 "github.com/spotahome/redis-operator/api/redisfailover/v1"
-	"github.com/spotahome/redis-operator/metrics"
+	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/metrics"
 )
 
 // UpdateRedisesPods if the running version of pods are equal to the statefulset one

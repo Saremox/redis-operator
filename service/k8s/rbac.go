@@ -8,8 +8,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
-	"github.com/spotahome/redis-operator/log"
-	"github.com/spotahome/redis-operator/metrics"
+	"github.com/saremox/redis-operator/log"
+	"github.com/saremox/redis-operator/metrics"
 )
 
 // RBAC is the service that knows how to interact with k8s to manage RBAC related resources.

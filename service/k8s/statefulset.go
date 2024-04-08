@@ -8,7 +8,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/labels"
 
-	"github.com/spotahome/redis-operator/operator/redisfailover/util"
+	"github.com/saremox/redis-operator/operator/redisfailover/util"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -16,8 +16,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
-	"github.com/spotahome/redis-operator/log"
-	"github.com/spotahome/redis-operator/metrics"
+	"github.com/saremox/redis-operator/log"
+	"github.com/saremox/redis-operator/metrics"
 )
 
 // StatefulSet the StatefulSet service that knows how to interact with k8s to manage them

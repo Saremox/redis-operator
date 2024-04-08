@@ -5,7 +5,7 @@ package fake
 import (
 	"context"
 
-	v1 "github.com/spotahome/redis-operator/api/redisfailover/v1"
+	v1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	labels "k8s.io/apimachinery/pkg/labels"
 	types "k8s.io/apimachinery/pkg/types"

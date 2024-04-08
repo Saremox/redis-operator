@@ -12,12 +12,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	redisfailoverv1 "github.com/spotahome/redis-operator/api/redisfailover/v1"
-	"github.com/spotahome/redis-operator/log"
-	"github.com/spotahome/redis-operator/metrics"
-	mK8SService "github.com/spotahome/redis-operator/mocks/service/k8s"
-	mRedisService "github.com/spotahome/redis-operator/mocks/service/redis"
-	rfservice "github.com/spotahome/redis-operator/operator/redisfailover/service"
+	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/log"
+	"github.com/saremox/redis-operator/metrics"
+	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
+	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
+	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
 func generateRF() *redisfailoverv1.RedisFailover {
