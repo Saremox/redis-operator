@@ -21,6 +21,7 @@ type CMDFlags struct {
 	K8sQueriesPerSecond      int
 	K8sQueriesBurstable      int
 	Concurrency              int
+	SyncInterval             int
 	LogLevel                 string
 }
 
@@ -38,6 +39,7 @@ func (c *CMDFlags) Init() {
 	// default is 3 for conccurency because kooper also defines 3 as default
 	// reference: https://github.com/spotahome/kooper/blob/master/controller/controller.go#L89
 	flag.IntVar(&c.Concurrency, "concurrency", 3, "Number of conccurent workers meant to process events")
+	flag.IntVar(&c.SyncInterval, "sync-interval", 30, "Number of seconds between checks")
 	flag.StringVar(&c.LogLevel, "log-level", "info", "set log level")
 	// Parse flags
 	flag.Parse()
@@ -53,6 +55,7 @@ func (c *CMDFlags) ToRedisOperatorConfig() redisfailover.Config {
 		ListenAddress:            c.ListenAddr,
 		MetricsPath:              c.MetricsPath,
 		Concurrency:              c.Concurrency,
+		SyncInterval:             c.SyncInterval,
 		SupportedNamespacesRegex: c.SupportedNamespacesRegex,
 	}
 }

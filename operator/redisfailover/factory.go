@@ -23,7 +23,6 @@ import (
 )
 
 const (
-	resync       = 30 * time.Second
 	operatorName = "redis-operator"
 	lockKey      = "redis-failover-lease"
 )
@@ -55,7 +54,7 @@ func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, lo
 		MetricsRecorder:   kooperMetricsRecorder,
 		Logger:            kooperLogger,
 		Name:              "redisfailover",
-		ResyncInterval:    resync,
+		ResyncInterval:    time.Duration(cfg.SyncInterval) * time.Second,
 		ConcurrentWorkers: cfg.Concurrency,
 	})
 }

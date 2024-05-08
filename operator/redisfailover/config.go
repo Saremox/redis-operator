@@ -5,5 +5,6 @@ type Config struct {
 	ListenAddress            string
 	MetricsPath              string
 	Concurrency              int
+	SyncInterval             int
 	SupportedNamespacesRegex string
 }
