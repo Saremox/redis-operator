@@ -204,3 +204,4 @@ generate-crd:
 	-e CRD_OUT_PATH=/go/src/$(PROJECT_PACKAGE)/manifests \
 	$(CODEGEN_IMAGE) update-crd.sh
 	cp -f manifests/databases.spotahome.com_redisfailovers.yaml manifests/kustomize/base
+	cp -f manifests/databases.metaways.de_valkeyfailovers.yaml manifests/kustomize/base
