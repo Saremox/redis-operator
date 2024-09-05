@@ -4,7 +4,7 @@ go 1.22
 
 require (
 	github.com/go-redis/redis/v8 v8.11.5
-	github.com/prometheus/client_golang v1.20.1
+	github.com/prometheus/client_golang v1.20.3
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spotahome/kooper/v2 v2.6.0
 	github.com/stretchr/testify v1.9.0
