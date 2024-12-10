@@ -3,6 +3,11 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: (devel)
+    {{if gt (len .Values.crds.annotations) 0 }}
+      {{- with .Values.crds.annotations }}
+        {{- toYaml . | nindent 4 }}
+      {{- end }}
+    {{- end }}
   creationTimestamp: null
   name: redisfailovers.databases.spotahome.com
 spec:
