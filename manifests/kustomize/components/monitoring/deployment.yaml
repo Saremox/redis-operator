@@ -7,6 +7,7 @@ spec:
     spec:
       containers:
         - name: redis-operator
+          image: ghcr.io/saremox/redis-operator:v1.4.0
           ports:
             - name: metrics
               containerPort: 9710

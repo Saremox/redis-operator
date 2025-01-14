@@ -1,7 +1,9 @@
 # redis-operator
 
-[![Build Status](https://github.com/saremox/redis-operator/actions/workflows/ci.yaml/badge.svg?branch=master)](https://github.com/saremox/redis-operator)
-[![Go Report Card](https://goreportcard.com/badge/github.com/saremox/redis-operator)](https://goreportcard.com/report/github.com/saremox/redis-operator)
+This is a fork of the `spotahome/redis-operator` repository.
+
+[![Build Status](https://github.com/Saremox/redis-operator/actions/workflows/ci.yaml/badge.svg?branch=master)](https://github.com/Saremox/redis-operator)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Saremox/redis-operator)](https://goreportcard.com/report/github.com/Saremox/redis-operator)
 
 Redis Operator creates/configures/manages redis-failovers atop Kubernetes.
 
@@ -23,7 +25,7 @@ It can be done with plain old [deployment](example/operator), using [Kustomize](
 From the root folder of the project, execute the following:
 
 ```
-helm repo add redis-operator https://spotahome.github.io/redis-operator
+helm repo add redis-operator https://Saremox.github.io/redis-operator
 helm repo update
 helm install redis-operator redis-operator/redis-operator
 ```
@@ -33,8 +35,8 @@ helm install redis-operator redis-operator/redis-operator
 Helm chart only manage the creation of CRD in the first install. In order to update the CRD you will need to apply directly.
 
 ```
-REDIS_OPERATOR_VERSION=v1.3.0
-kubectl replace -f https://raw.githubusercontent.com/spotahome/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
+REDIS_OPERATOR_VERSION=v1.4.0
+kubectl replace -f https://raw.githubusercontent.com/Saremox/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
 ```
 
 ```
@@ -45,9 +47,9 @@ helm upgrade redis-operator redis-operator/redis-operator
 To create the operator, you can directly create it with kubectl:
 
 ```
-REDIS_OPERATOR_VERSION=v1.3.0
-kubectl create -f https://raw.githubusercontent.com/spotahome/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
-kubectl apply -f https://raw.githubusercontent.com/spotahome/redis-operator/${REDIS_OPERATOR_VERSION}/example/operator/all-redis-operator-resources.yaml
+REDIS_OPERATOR_VERSION=v1.4.0
+kubectl create -f https://raw.githubusercontent.com/Saremox/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
+kubectl apply -f https://raw.githubusercontent.com/Saremox/redis-operator/${REDIS_OPERATOR_VERSION}/example/operator/all-redis-operator-resources.yaml
 ```
 
 This will create a deployment named `redisoperator`.
@@ -60,7 +62,7 @@ but it also comes with a few presets (in the form of overlays) supporting the mo
 To install the operator with default settings and every necessary resource (including RBAC, service account, default resource limits, etc), install the `default` overlay:
 
 ```shell
-kustomize build github.com/saremox/redis-operator/manifests/kustomize/overlays/default
+kustomize build github.com/Saremox/redis-operator/manifests/kustomize/overlays/default
 ```
 
 If you would like to customize RBAC or the service account used, you can install the `minimal` overlay.
@@ -70,7 +72,7 @@ Finally, you can install the `full` overlay if you want everything this operator
 It's always a good practice to pin the version of the operator in your configuration to make sure you are not surprised by changes on the latest development branch:
 
 ```shell
-kustomize build github.com/saremox/redis-operator/manifests/kustomize/overlays/default?ref=v1.2.4
+kustomize build github.com/Saremox/redis-operator/manifests/kustomize/overlays/default?ref=v1.2.4
 ```
 
 You can easily create your own config by creating a `kustomization.yaml` file
@@ -86,7 +88,7 @@ commonLabels:
     foo: bar
 
 resources:
-  - github.com/saremox/redis-operator/manifests/kustomize/overlays/full
+  - github.com/Saremox/redis-operator/manifests/kustomize/overlays/full
 ```
 
 Take a look at the manifests inside [manifests/kustomize](manifests/kustomize) for more details.
@@ -99,7 +101,7 @@ In order to deploy a new redis-failover a [specification](example/redisfailover/
 
 ```
 REDIS_OPERATOR_VERSION=v1.2.4
-kubectl create -f https://raw.githubusercontent.com/spotahome/redis-operator/${REDIS_OPERATOR_VERSION}/example/redisfailover/basic.yaml
+kubectl create -f https://raw.githubusercontent.com/Saremox/redis-operator/${REDIS_OPERATOR_VERSION}/example/redisfailover/basic.yaml
 ```
 
 This redis-failover will be managed by the operator, resulting in the following elements created inside Kubernetes:
@@ -351,6 +353,6 @@ kubectl delete redisfailover <NAME>
 [![Redis Operator Image](https://quay.io/repository/spotahome/redis-operator/status "Redis Operator Image")](https://quay.io/repository/spotahome/redis-operator)
 ## Documentation
 
-For the code documentation, you can lookup on the [GoDoc](https://godoc.org/github.com/saremox/redis-operator).
+For the code documentation, you can lookup on the [GoDoc](https://godoc.org/github.com/Saremox/redis-operator).
 
 Also, you can check more deeply information on the [docs folder](docs).
