@@ -27,7 +27,7 @@ const (
 	lockKey      = "redis-failover-lease"
 )
 
-// New will create an operator that is responsible of managing all the required stuff
+// New will create an operator that is responsible for managing all the required stuff
 // to create redis failovers.
 func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, lockNamespace string, redisClient redis.Client, kooperMetricsRecorder metrics.Recorder, logger log.Logger) (controller.Controller, error) {
 	// Create internal services.
@@ -102,5 +102,5 @@ type kooperlogger struct {
 }
 
 func (k kooperlogger) WithKV(kv kooperlog.KV) kooperlog.Logger {
-	return kooperlogger{Logger: k.Logger.WithFields(kv)}
+	return kooperlogger{Logger: k.WithFields(kv)}
 }

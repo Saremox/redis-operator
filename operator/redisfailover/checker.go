@@ -22,11 +22,13 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 	masterIP := ""
 	if !rf.Bootstrapping() {
 		masterIP, _ = r.rfChecker.GetMasterIP(rf)
+		r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("masterIP", masterIP).Debug("got master IP")
 	}
 	// No perform updates when nodes are syncing, still not connected, etc.
 	for _, rip := range redises {
 		if rip != masterIP {
 			ready, err := r.rfChecker.CheckRedisSlavesReady(rip, rf)
+			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("ready", ready).Debug("got secondary state")
 			if err != nil {
 				return err
 			}
@@ -40,6 +42,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 	if err != nil {
 		return err
 	}
+	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("ssUR", ssUR).Debug("got StatefulSet update revision")
 
 	redisesPods, err := r.rfChecker.GetRedisesSlavesPods(rf)
 	if err != nil {
@@ -58,6 +61,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			if err != nil {
 				return err
 			}
+			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("revision", revision).WithField("pod", pod).Debug("deleted secondary pod")
 			return nil
 		}
 	}
@@ -78,6 +82,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			if err != nil {
 				return err
 			}
+			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("revision", masterRevision).WithField("pod", master).Debug("deleted primary pod")
 			return nil
 		}
 	}

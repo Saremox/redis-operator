@@ -12,7 +12,7 @@ Redis Operator creates/configures/manages redis-failovers atop Kubernetes.
 Kubernetes version: 1.21 or higher
 Redis version: 6 or higher
 
-Redis operator is being tested against kubernetes 1.25 1.26 1.27 and redis 6
+Redis operator is being tested against kubernetes 1.29 1.30 1.31 1.32 and redis 6,7 ; Valkey 8
 All dependencies have been vendored, so there's no need to any additional download.
 
 ## Operator deployment on Kubernetes
@@ -76,7 +76,7 @@ kustomize build github.com/Saremox/redis-operator/manifests/kustomize/overlays/d
 ```
 
 You can easily create your own config by creating a `kustomization.yaml` file
-(for example to apply custom resource limits, to add custom labels or to customize the namespace):
+(for example, to apply custom resource limits, to add custom labels or to customize the namespace):
 
 ```yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
