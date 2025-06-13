@@ -12,7 +12,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// UpdateRedisesPods if the running version of pods are equal to the statefulset one
+// UpdateRedisesPods if the running version of pods is equal to the statefulset one
 func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailover) error {
 	redises, err := r.rfChecker.GetRedisesIPs(rf)
 	if err != nil {
@@ -24,7 +24,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 		masterIP, _ = r.rfChecker.GetMasterIP(rf)
 		r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("masterIP", masterIP).Debug("got master IP")
 	}
-	// No perform updates when nodes are syncing, still not connected, etc.
+	// No performed updates when nodes are syncing, still not connected, etc.
 	for _, rip := range redises {
 		if rip != masterIP {
 			ready, err := r.rfChecker.CheckRedisSlavesReady(rip, rf)
@@ -49,7 +49,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 		return err
 	}
 
-	// Update stale pods with slave role
+	// Update stale pods with a slave role
 	for _, pod := range redisesPods {
 		revision, err := r.rfChecker.GetRedisRevisionHash(pod, rf)
 		if err != nil {
@@ -183,10 +183,10 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("No master avaiable but max pod up time is : %f", maxUptime.Round(time.Second).Seconds())
 		//Check If Sentinel has quorum to take a failover decision
-		noqrm_cnt, err := r.rfChecker.CheckSentinelQuorum(rf)
+		noqrmCnt, err := r.rfChecker.CheckSentinelQuorum(rf)
 		if err != nil {
 			// Sentinels are not in a situation to choose a master we pick one
-			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Quorum not available for sentinel to choose master,estimated unhealthy sentinels :%d , Operator to step-in", noqrm_cnt)
+			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Quorum not available for sentinel to choose master,estimated unhealthy sentinels :%d , Operator to step-in", noqrmCnt)
 			err2 := r.rfHealer.SetOldestAsMaster(rf)
 			setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err2)
 			if err2 != nil {
@@ -441,14 +441,14 @@ func getRedisPort(p int32) string {
 }
 
 func setRedisCheckerMetrics(metricsClient metrics.Recorder, mode /* redis or sentinel? */ string, rfNamespace string, rfName string, property string, IP string, err error) {
-	if mode == "sentinel" {
+	switch mode {
+	case "sentinel":
 		if err != nil {
 			metricsClient.RecordSentinelCheck(rfNamespace, rfName, property, IP, metrics.STATUS_UNHEALTHY)
 		} else {
 			metricsClient.RecordSentinelCheck(rfNamespace, rfName, property, IP, metrics.STATUS_HEALTHY)
 		}
-
-	} else if mode == "redis" {
+	case "redis":
 		if err != nil {
 			metricsClient.RecordRedisCheck(rfNamespace, rfName, property, IP, metrics.STATUS_UNHEALTHY)
 		} else {

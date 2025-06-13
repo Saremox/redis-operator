@@ -60,7 +60,7 @@ func TestConfigMapServiceGetCreateOrUpdate(t *testing.T) {
 			errorOnGet:         kubeerrors.NewNotFound(schema.GroupResource{}, ""),
 			errorOnCreation:    nil,
 			expActions: []kubetesting.Action{
-				newConfigMapGetAction(testns, testConfigMap.ObjectMeta.Name),
+				newConfigMapGetAction(testns, testConfigMap.Name),
 				newConfigMapCreateAction(testns, testConfigMap),
 			},
 			expErr: false,
@@ -72,7 +72,7 @@ func TestConfigMapServiceGetCreateOrUpdate(t *testing.T) {
 			errorOnGet:         kubeerrors.NewNotFound(schema.GroupResource{}, ""),
 			errorOnCreation:    errors.New("wanted error"),
 			expActions: []kubetesting.Action{
-				newConfigMapGetAction(testns, testConfigMap.ObjectMeta.Name),
+				newConfigMapGetAction(testns, testConfigMap.Name),
 				newConfigMapCreateAction(testns, testConfigMap),
 			},
 			expErr: true,
@@ -84,7 +84,7 @@ func TestConfigMapServiceGetCreateOrUpdate(t *testing.T) {
 			errorOnGet:         nil,
 			errorOnCreation:    nil,
 			expActions: []kubetesting.Action{
-				newConfigMapGetAction(testns, testConfigMap.ObjectMeta.Name),
+				newConfigMapGetAction(testns, testConfigMap.Name),
 				newConfigMapUpdateAction(testns, testConfigMap),
 			},
 			expErr: false,
@@ -93,7 +93,7 @@ func TestConfigMapServiceGetCreateOrUpdate(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert := assert.New(t)
+			assertTest := assert.New(t)
 
 			// Mock.
 			mcli := &kubernetes.Clientset{}
@@ -108,11 +108,11 @@ func TestConfigMapServiceGetCreateOrUpdate(t *testing.T) {
 			err := service.CreateOrUpdateConfigMap(testns, test.configMap)
 
 			if test.expErr {
-				assert.Error(err)
+				assertTest.Error(err)
 			} else {
-				assert.NoError(err)
+				assertTest.NoError(err)
 				// Check calls to kubernetes.
-				assert.Equal(test.expActions, mcli.Actions())
+				assertTest.Equal(test.expActions, mcli.Actions())
 			}
 		})
 	}

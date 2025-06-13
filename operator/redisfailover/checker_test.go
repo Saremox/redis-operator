@@ -274,7 +274,7 @@ func TestCheckAndHeal(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert := assert.New(t)
+			assertTest := assert.New(t)
 
 			allowSentinels := true
 			bootstrappingTests := test.bootstrapping
@@ -420,11 +420,11 @@ func TestCheckAndHeal(t *testing.T) {
 			err := handler.CheckAndHeal(rf)
 
 			if expErr {
-				assert.Error(err)
-				assert.Equal(v1.NotHealthyState, rf.Status.State)
+				assertTest.Error(err)
+				assertTest.Equal(v1.NotHealthyState, rf.Status.State)
 			} else {
-				assert.NoError(err)
-				assert.Equal(v1.HealthyState, rf.Status.State)
+				assertTest.NoError(err)
+				assertTest.Equal(v1.HealthyState, rf.Status.State)
 			}
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
@@ -874,7 +874,7 @@ func TestUpdate(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert := assert.New(t)
+			assertTest := assert.New(t)
 
 			rf := generateRF(false, test.bootstrapping)
 
@@ -913,9 +913,9 @@ func TestUpdate(t *testing.T) {
 				mrfc.On("GetRedisesSlavesPods", rf).Once().Return(replicas, nil)
 
 				for _, pod := range test.pods {
-					mrfc.On("GetRedisRevisionHash", pod.pod.ObjectMeta.Name, rf).Once().Return(pod.pod.ObjectMeta.Labels[appsv1.ControllerRevisionHashLabelKey], nil)
-					if pod.pod.ObjectMeta.Labels[appsv1.ControllerRevisionHashLabelKey] != test.ssVersion {
-						mrfh.On("DeletePod", pod.pod.ObjectMeta.Name, rf).Once().Return(nil)
+					mrfc.On("GetRedisRevisionHash", pod.pod.Name, rf).Once().Return(pod.pod.Labels[appsv1.ControllerRevisionHashLabelKey], nil)
+					if pod.pod.Labels[appsv1.ControllerRevisionHashLabelKey] != test.ssVersion {
+						mrfh.On("DeletePod", pod.pod.Name, rf).Once().Return(nil)
 						if pod.master == false {
 							next = false
 							break
@@ -938,9 +938,9 @@ func TestUpdate(t *testing.T) {
 			err := handler.UpdateRedisesPods(rf)
 
 			if test.errExpected {
-				assert.Error(err)
+				assertTest.Error(err)
 			} else {
-				assert.NoError(err)
+				assertTest.NoError(err)
 			}
 
 			mrfc.AssertExpectations(t)

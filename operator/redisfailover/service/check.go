@@ -395,7 +395,7 @@ func (r *RedisFailoverChecker) GetRedisesSlavesPods(rf *redisfailoverv1.RedisFai
 				return []string{}, err
 			}
 			if !master {
-				redises = append(redises, rp.ObjectMeta.Name)
+				redises = append(redises, rp.Name)
 			}
 		}
 	}
@@ -422,7 +422,7 @@ func (r *RedisFailoverChecker) GetRedisesMasterPod(rFailover *redisfailoverv1.Re
 				return "", err
 			}
 			if master {
-				return rp.ObjectMeta.Name, nil
+				return rp.Name, nil
 			}
 		}
 	}
@@ -455,11 +455,11 @@ func (r *RedisFailoverChecker) GetRedisRevisionHash(podName string, rFailover *r
 		return "", errors.New("pod not found")
 	}
 
-	if pod.ObjectMeta.Labels == nil {
+	if pod.Labels == nil {
 		return "", errors.New("labels not found")
 	}
 
-	val := pod.ObjectMeta.Labels[appsv1.ControllerRevisionHashLabelKey]
+	val := pod.Labels[appsv1.ControllerRevisionHashLabelKey]
 
 	return val, nil
 }

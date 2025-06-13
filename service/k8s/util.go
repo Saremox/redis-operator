@@ -17,7 +17,7 @@ func GetRedisPassword(s Services, rf *redisfailoverv1.RedisFailover) (string, er
 		return "", nil
 	}
 
-	secret, err := s.GetSecret(rf.ObjectMeta.Namespace, rf.Spec.Auth.SecretPath)
+	secret, err := s.GetSecret(rf.Namespace, rf.Spec.Auth.SecretPath)
 	if err != nil {
 		return "", err
 	}

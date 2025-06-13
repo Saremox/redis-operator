@@ -19,7 +19,7 @@ import (
 func TestSecretServiceGet(t *testing.T) {
 
 	t.Run("Test getting a secret", func(t *testing.T) {
-		assert := assert.New(t)
+		assertTest := assert.New(t)
 
 		secret := corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -37,24 +37,24 @@ func TestSecretServiceGet(t *testing.T) {
 		})
 		mcli.AddReactor("get", "secrets", func(action kubetesting.Action) (bool, runtime.Object, error) {
 			a := (action).(kubetesting.GetActionImpl)
-			if a.Namespace == secret.ObjectMeta.Namespace && a.Name == secret.ObjectMeta.Name {
+			if a.Namespace == secret.Namespace && a.Name == secret.Name {
 				return true, &secret, nil
 			}
 			return true, nil, errors.NewNotFound(action.GetResource().GroupResource(), a.Name)
 		})
 
-		_, err := mcli.CoreV1().Secrets(secret.ObjectMeta.Namespace).Create(context.TODO(), &secret, metav1.CreateOptions{})
-		assert.NoError(err)
+		_, err := mcli.CoreV1().Secrets(secret.Namespace).Create(context.TODO(), &secret, metav1.CreateOptions{})
+		assertTest.NoError(err)
 
 		// test getting the secret
 		service := NewSecretService(mcli, log.Dummy, metrics.Dummy)
-		ss, err := service.GetSecret(secret.ObjectMeta.Namespace, secret.ObjectMeta.Name)
-		assert.NotNil(ss)
-		assert.NoError(err)
+		ss, err := service.GetSecret(secret.Namespace, secret.Name)
+		assertTest.NotNil(ss)
+		assertTest.NoError(err)
 
 		// test getting a nonexistent secret
-		_, err = service.GetSecret(secret.ObjectMeta.Namespace, secret.ObjectMeta.Name+"nonexistent")
-		assert.Error(err)
-		assert.True(errors.IsNotFound(err))
+		_, err = service.GetSecret(secret.Namespace, secret.Name+"nonexistent")
+		assertTest.Error(err)
+		assertTest.True(errors.IsNotFound(err))
 	})
 }

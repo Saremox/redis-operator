@@ -58,7 +58,7 @@ func TestPodDisruptionBudgetServiceGetCreateOrUpdate(t *testing.T) {
 			errorOnGet:                   kubeerrors.NewNotFound(schema.GroupResource{}, ""),
 			errorOnCreation:              nil,
 			expActions: []kubetesting.Action{
-				newPodDisruptionBudgetGetAction(testns, testPodDisruptionBudget.ObjectMeta.Name),
+				newPodDisruptionBudgetGetAction(testns, testPodDisruptionBudget.Name),
 				newPodDisruptionBudgetCreateAction(testns, testPodDisruptionBudget),
 			},
 			expErr: false,
@@ -70,7 +70,7 @@ func TestPodDisruptionBudgetServiceGetCreateOrUpdate(t *testing.T) {
 			errorOnGet:                   kubeerrors.NewNotFound(schema.GroupResource{}, ""),
 			errorOnCreation:              errors.New("wanted error"),
 			expActions: []kubetesting.Action{
-				newPodDisruptionBudgetGetAction(testns, testPodDisruptionBudget.ObjectMeta.Name),
+				newPodDisruptionBudgetGetAction(testns, testPodDisruptionBudget.Name),
 				newPodDisruptionBudgetCreateAction(testns, testPodDisruptionBudget),
 			},
 			expErr: true,
@@ -82,7 +82,7 @@ func TestPodDisruptionBudgetServiceGetCreateOrUpdate(t *testing.T) {
 			errorOnGet:                   nil,
 			errorOnCreation:              nil,
 			expActions: []kubetesting.Action{
-				newPodDisruptionBudgetGetAction(testns, testPodDisruptionBudget.ObjectMeta.Name),
+				newPodDisruptionBudgetGetAction(testns, testPodDisruptionBudget.Name),
 				newPodDisruptionBudgetUpdateAction(testns, testPodDisruptionBudget),
 			},
 			expErr: false,
@@ -91,7 +91,7 @@ func TestPodDisruptionBudgetServiceGetCreateOrUpdate(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert := assert.New(t)
+			assertTest := assert.New(t)
 
 			// Mock.
 			mcli := &kubernetes.Clientset{}
@@ -106,11 +106,11 @@ func TestPodDisruptionBudgetServiceGetCreateOrUpdate(t *testing.T) {
 			err := service.CreateOrUpdatePodDisruptionBudget(testns, test.podDisruptionBudget)
 
 			if test.expErr {
-				assert.Error(err)
+				assertTest.Error(err)
 			} else {
-				assert.NoError(err)
+				assertTest.NoError(err)
 				// Check calls to kubernetes.
-				assert.Equal(test.expActions, mcli.Actions())
+				assertTest.Equal(test.expActions, mcli.Actions())
 			}
 		})
 	}
