@@ -38,7 +38,7 @@ jobs:
     needs: [check, unit-test]
     strategy:
       matrix:
-        kubernetes: [ 1.30.1, 1.31.0, 1.32.0 ]
+        kubernetes: [ 1.30.1, 1.31.0, 1.32.0, 1.33.1 ]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
