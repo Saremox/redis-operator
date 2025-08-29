@@ -350,7 +350,8 @@ kubectl delete redisfailover <NAME>
 
 ### Redis Operator
 
-[![Redis Operator Image](https://quay.io/repository/spotahome/redis-operator/status "Redis Operator Image")](https://quay.io/repository/spotahome/redis-operator)
+* [Redis Operator Image](https://github.com/Saremox/redis-operator/pkgs/container/redis-operator)
+
 ## Documentation
 
 For the code documentation, you can lookup on the [GoDoc](https://godoc.org/github.com/Saremox/redis-operator).
