@@ -3,9 +3,9 @@ package v1
 const (
 	defaultRedisNumber           = 3
 	defaultSentinelNumber        = 3
-	defaultSentinelExporterImage = "quay.io/oliver006/redis_exporter:v1.43.0"
-	defaultExporterImage         = "quay.io/oliver006/redis_exporter:v1.43.0"
-	defaultImage                 = "redis:6.2.6-alpine"
+	defaultSentinelExporterImage = "quay.io/oliver006/redis_exporter:v1.80.0-alpine"
+	defaultExporterImage         = "quay.io/oliver006/redis_exporter:v1.80.0-alpine"
+	defaultImage                 = "redis:7.2.12-alpine"
 	defaultRedisPort             = 6379
 	HealthyState                 = "Healthy"
 	NotHealthyState              = "NotHealthy"
