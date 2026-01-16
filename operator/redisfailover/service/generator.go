@@ -519,6 +519,11 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 	volumeMounts := getSentinelVolumeMounts(rf)
 	volumes := getSentinelVolumes(rf, configMapName)
 
+	if rf.Spec.Sentinel.ServiceAccountName == "" {
+		sa := generateSentinelServiceAccount(rf)
+		rf.Spec.Sentinel.ServiceAccountName = sa.Name
+	}
+
 	sd := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            name,
@@ -1200,4 +1205,13 @@ func envExists(env []corev1.EnvVar, name string) bool {
 		}
 	}
 	return false
+}
+
+func generateSentinelServiceAccount(rf *redisfailoverv1.RedisFailover) *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rf.Name,
+			Namespace: rf.Namespace,
+		},
+	}
 }
