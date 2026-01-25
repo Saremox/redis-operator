@@ -83,7 +83,7 @@ loading_loaded_bytes:500000
 }
 
 func TestHealthServerHealthzHealthy(t *testing.T) {
-	h := NewHealthServer(8080, "6379")
+	h := NewHealthServer(8080, "6379", "")
 	h.startTime = time.Now().Add(-60 * time.Second) // 60 seconds ago
 	h.SetRedisPID(1234)
 	h.redisHealthy.Store(true)
@@ -105,7 +105,7 @@ func TestHealthServerHealthzHealthy(t *testing.T) {
 }
 
 func TestHealthServerHealthzUnhealthy(t *testing.T) {
-	h := NewHealthServer(8080, "6379")
+	h := NewHealthServer(8080, "6379", "")
 	h.redisHealthy.Store(false)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -124,7 +124,7 @@ func TestHealthServerHealthzUnhealthy(t *testing.T) {
 }
 
 func TestHealthServerReadyzReady(t *testing.T) {
-	h := NewHealthServer(8080, "6379")
+	h := NewHealthServer(8080, "6379", "")
 	h.redisReady.Store(true)
 	h.redisHealthy.Store(true)
 
@@ -154,7 +154,7 @@ func TestHealthServerReadyzReady(t *testing.T) {
 }
 
 func TestHealthServerReadyzNotReadyLoading(t *testing.T) {
-	h := NewHealthServer(8080, "6379")
+	h := NewHealthServer(8080, "6379", "")
 	h.redisReady.Store(false)
 	h.redisHealthy.Store(true)
 
@@ -182,7 +182,7 @@ func TestHealthServerReadyzNotReadyLoading(t *testing.T) {
 }
 
 func TestHealthServerReadyzNotReadySyncing(t *testing.T) {
-	h := NewHealthServer(8080, "6379")
+	h := NewHealthServer(8080, "6379", "")
 	h.redisReady.Store(false)
 	h.redisHealthy.Store(true)
 
@@ -212,7 +212,7 @@ func TestHealthServerReadyzNotReadySyncing(t *testing.T) {
 }
 
 func TestHealthServerReadyzNotReadyMasterLinkDown(t *testing.T) {
-	h := NewHealthServer(8080, "6379")
+	h := NewHealthServer(8080, "6379", "")
 	h.redisReady.Store(false)
 	h.redisHealthy.Store(true)
 
@@ -240,7 +240,7 @@ func TestHealthServerReadyzNotReadyMasterLinkDown(t *testing.T) {
 }
 
 func TestHealthServerReadyzNotReadyNoMasterConfigured(t *testing.T) {
-	h := NewHealthServer(8080, "6379")
+	h := NewHealthServer(8080, "6379", "")
 	h.redisReady.Store(false)
 	h.redisHealthy.Store(true)
 
@@ -269,7 +269,7 @@ func TestHealthServerReadyzNotReadyNoMasterConfigured(t *testing.T) {
 }
 
 func TestHealthServerStatus(t *testing.T) {
-	h := NewHealthServer(8080, "6379")
+	h := NewHealthServer(8080, "6379", "")
 	h.startTime = time.Now().Add(-120 * time.Second)
 	h.SetRedisPID(5678)
 	h.SetCleanupDone(true)
@@ -313,14 +313,14 @@ func TestHealthServerStatus(t *testing.T) {
 	assert.Equal(t, int64(99999), resp.Replication.MasterReplOffset)
 
 	// Instance manager status
-	assert.Equal(t, "v1.7.0", resp.InstanceManager.Version)
+	assert.Equal(t, "4.0.0", resp.InstanceManager.Version)
 	assert.GreaterOrEqual(t, resp.InstanceManager.UptimeSeconds, int64(120))
 	assert.True(t, resp.InstanceManager.StartupCleanupDone)
 	assert.Equal(t, 8080, resp.InstanceManager.HealthPort)
 }
 
 func TestHealthServerMethodNotAllowed(t *testing.T) {
-	h := NewHealthServer(8080, "6379")
+	h := NewHealthServer(8080, "6379", "")
 
 	endpoints := []string{"/healthz", "/readyz", "/status"}
 	methods := []string{http.MethodPost, http.MethodPut, http.MethodDelete}
@@ -369,7 +369,7 @@ func TestIndexByte(t *testing.T) {
 }
 
 func TestHealthServerStartStop(t *testing.T) {
-	h := NewHealthServer(0, "6379") // Port 0 = random available port
+	h := NewHealthServer(0, "6379", "") // Port 0 = random available port
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

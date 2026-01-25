@@ -108,7 +108,8 @@ func runInstance(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 3: Start health server (provides /healthz, /readyz, /status)
-	healthServer = NewHealthServer(healthPort, redisPort)
+	redisPassword := os.Getenv("REDIS_PASSWORD")
+	healthServer = NewHealthServer(healthPort, redisPort, redisPassword)
 	healthServer.SetCleanupDone(cleanupErr == nil)
 	if err := healthServer.Start(ctx); err != nil {
 		fmt.Printf("redis-instance: warning: failed to start health server: %v\n", err)
