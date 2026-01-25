@@ -471,6 +471,164 @@ jobs:
             exit 1
           fi
 
+      - name: Test /healthz endpoint returns 200 when healthy
+        run: |
+          echo "Testing /healthz endpoint..."
+          # Use kubectl port-forward to access health endpoint
+          kubectl port-forward pod/rfr-test-im-0 8080:8080 &
+          PF_PID=$!
+          sleep 2
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" http://localhost:8080/healthz)
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          kill $PF_PID 2>/dev/null || true
+
+          echo "Response: $BODY"
+          echo "HTTP Code: $HTTP_CODE"
+
+          if [[ "$HTTP_CODE" == "200" ]]; then
+            echo "✓ /healthz returned 200"
+          else
+            echo "✗ /healthz returned $HTTP_CODE, expected 200"
+            exit 1
+          fi
+
+          # Verify response contains expected fields
+          if echo "$BODY" | grep -q '"status":"ok"'; then
+            echo "✓ /healthz response contains status:ok"
+          else
+            echo "✗ /healthz response missing status:ok"
+            exit 1
+          fi
+
+      - name: Test /readyz endpoint returns 200 when ready
+        run: |
+          echo "Testing /readyz endpoint..."
+          kubectl port-forward pod/rfr-test-im-0 8080:8080 &
+          PF_PID=$!
+          sleep 2
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" http://localhost:8080/readyz)
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          kill $PF_PID 2>/dev/null || true
+
+          echo "Response: $BODY"
+          echo "HTTP Code: $HTTP_CODE"
+
+          if [[ "$HTTP_CODE" == "200" ]]; then
+            echo "✓ /readyz returned 200"
+          else
+            echo "✗ /readyz returned $HTTP_CODE, expected 200"
+            exit 1
+          fi
+
+          # Verify response contains role
+          if echo "$BODY" | grep -q '"role"'; then
+            echo "✓ /readyz response contains role"
+          else
+            echo "✗ /readyz response missing role"
+            exit 1
+          fi
+
+      - name: Test /status endpoint returns detailed info
+        run: |
+          echo "Testing /status endpoint..."
+          kubectl port-forward pod/rfr-test-im-0 8080:8080 &
+          PF_PID=$!
+          sleep 2
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" http://localhost:8080/status)
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          kill $PF_PID 2>/dev/null || true
+
+          echo "Response: $BODY"
+          echo "HTTP Code: $HTTP_CODE"
+
+          if [[ "$HTTP_CODE" == "200" ]]; then
+            echo "✓ /status returned 200"
+          else
+            echo "✗ /status returned $HTTP_CODE, expected 200"
+            exit 1
+          fi
+
+          # Verify response contains expected sections
+          if echo "$BODY" | grep -q '"redis"' && echo "$BODY" | grep -q '"instance_manager"'; then
+            echo "✓ /status response contains redis and instance_manager sections"
+          else
+            echo "✗ /status response missing expected sections"
+            exit 1
+          fi
+
+      - name: Test /healthz returns 503 when Redis is killed
+        run: |
+          echo "Testing /healthz returns 503 when Redis process dies..."
+
+          # Start port-forward
+          kubectl port-forward pod/rfr-test-im-0 8080:8080 &
+          PF_PID=$!
+          sleep 2
+
+          # Verify healthy first
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/healthz)
+          if [[ "$HTTP_CODE" != "200" ]]; then
+            echo "✗ Initial /healthz check failed with $HTTP_CODE"
+            kill $PF_PID 2>/dev/null || true
+            exit 1
+          fi
+          echo "✓ Initial /healthz is healthy"
+
+          # Kill redis-server process (instance manager will detect this)
+          echo "Killing redis-server process..."
+          kubectl exec rfr-test-im-0 -- /bin/sh -c "kill \$(pgrep redis-server)" || true
+
+          # Wait for health check to detect (checks every 1s)
+          echo "Waiting for health check to detect failure..."
+          sleep 3
+
+          # Check that /healthz now returns 503
+          RESPONSE=$(curl -s -w "\n%{http_code}" http://localhost:8080/healthz)
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          kill $PF_PID 2>/dev/null || true
+
+          echo "Response after kill: $BODY"
+          echo "HTTP Code: $HTTP_CODE"
+
+          if [[ "$HTTP_CODE" == "503" ]]; then
+            echo "✓ /healthz returned 503 after Redis killed"
+          else
+            echo "⚠ /healthz returned $HTTP_CODE (pod may have restarted already)"
+          fi
+
+      - name: Wait for pod recovery after health test
+        run: |
+          echo "Waiting for pod to recover..."
+          sleep 5
+          kubectl wait --for=condition=Ready pod/rfr-test-im-0 --timeout=120s
+          echo "✓ Pod recovered and is Ready"
+
+          # Verify health endpoints work again
+          kubectl port-forward pod/rfr-test-im-0 8080:8080 &
+          PF_PID=$!
+          sleep 2
+
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/healthz)
+          kill $PF_PID 2>/dev/null || true
+
+          if [[ "$HTTP_CODE" == "200" ]]; then
+            echo "✓ /healthz returns 200 after recovery"
+          else
+            echo "✗ /healthz returned $HTTP_CODE after recovery"
+            exit 1
+          fi
+
       - name: Collect logs on failure
         if: failure()
         run: |

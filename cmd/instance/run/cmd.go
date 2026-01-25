@@ -28,6 +28,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// healthServer is the global health server instance
+var healthServer *HealthServer
+
 const (
 	defaultDataDir      = "/data"
 	defaultDBFilename   = "dump.rdb"
@@ -44,6 +47,8 @@ var (
 	dataDir    string
 	dbFilename string
 	redisConf  string
+	healthPort int
+	redisPort  string
 )
 
 // NewCmd creates the run command
@@ -77,6 +82,8 @@ This architecture provides:
 	cmd.Flags().StringVar(&dataDir, "data-dir", defaultDataDir, "Redis data directory")
 	cmd.Flags().StringVar(&dbFilename, "db-filename", defaultDBFilename, "Main RDB filename to preserve during cleanup")
 	cmd.Flags().StringVar(&redisConf, "redis-conf", defaultRedisConf, "Path to redis.conf")
+	cmd.Flags().IntVar(&healthPort, "health-port", defaultHealthPort, "Port for health check endpoints")
+	cmd.Flags().StringVar(&redisPort, "redis-port", "6379", "Redis port for health checks")
 
 	return cmd
 }
@@ -94,12 +101,27 @@ func runInstance(cmd *cobra.Command, args []string) error {
 	go runZombieReaper(ctx)
 
 	// Step 2: Perform startup cleanup
-	if err := performStartupCleanup(); err != nil {
+	cleanupErr := performStartupCleanup()
+	if cleanupErr != nil {
 		// Log but don't fail - Redis should still be able to start
-		fmt.Printf("redis-instance: warning: startup cleanup failed: %v\n", err)
+		fmt.Printf("redis-instance: warning: startup cleanup failed: %v\n", cleanupErr)
 	}
 
-	// Step 3: Main process loop (CNPG pattern)
+	// Step 3: Start health server (provides /healthz, /readyz, /status)
+	healthServer = NewHealthServer(healthPort, redisPort)
+	healthServer.SetCleanupDone(cleanupErr == nil)
+	if err := healthServer.Start(ctx); err != nil {
+		fmt.Printf("redis-instance: warning: failed to start health server: %v\n", err)
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := healthServer.Stop(shutdownCtx); err != nil {
+			fmt.Printf("redis-instance: warning: health server stop error: %v\n", err)
+		}
+	}()
+
+	// Step 4: Main process loop (CNPG pattern)
 	// This loop allows for process restarts without manager exit
 	return runProcessLoop(ctx, cancel)
 }
@@ -126,6 +148,11 @@ func runProcessLoop(ctx context.Context, cancel context.CancelFunc) error {
 
 		redisPid := redisCmd.Process.Pid
 		fmt.Printf("redis-instance: redis-server started with PID %d\n", redisPid)
+
+		// Notify health server of Redis PID
+		if healthServer != nil {
+			healthServer.SetRedisPID(redisPid)
+		}
 
 		// Wait for either Redis to exit or a signal
 		doneChan := make(chan error, 1)
