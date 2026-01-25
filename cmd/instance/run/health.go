@@ -265,7 +265,7 @@ func (h *HealthServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleReadyz handles the /readyz readiness endpoint
@@ -286,7 +286,7 @@ func (h *HealthServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if clients, ok := info["connected_clients"]; ok {
-		fmt.Sscanf(clients, "%d", &resp.ConnectedClients)
+		_, _ = fmt.Sscanf(clients, "%d", &resp.ConnectedClients)
 	}
 
 	if h.redisReady.Load() {
@@ -308,7 +308,7 @@ func (h *HealthServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleStatus handles the /status detailed status endpoint
@@ -349,15 +349,15 @@ func (h *HealthServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse integer fields
-	fmt.Sscanf(info["connected_clients"], "%d", &resp.Redis.ConnectedClients)
-	fmt.Sscanf(info["connected_slaves"], "%d", &resp.Replication.ConnectedSlaves)
-	fmt.Sscanf(info["master_port"], "%d", &resp.Replication.MasterPort)
-	fmt.Sscanf(info["slave_repl_offset"], "%d", &resp.Replication.SlaveReplOffset)
-	fmt.Sscanf(info["master_repl_offset"], "%d", &resp.Replication.MasterReplOffset)
+	_, _ = fmt.Sscanf(info["connected_clients"], "%d", &resp.Redis.ConnectedClients)
+	_, _ = fmt.Sscanf(info["connected_slaves"], "%d", &resp.Replication.ConnectedSlaves)
+	_, _ = fmt.Sscanf(info["master_port"], "%d", &resp.Replication.MasterPort)
+	_, _ = fmt.Sscanf(info["slave_repl_offset"], "%d", &resp.Replication.SlaveReplOffset)
+	_, _ = fmt.Sscanf(info["master_repl_offset"], "%d", &resp.Replication.MasterReplOffset)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // parseRedisInfo parses Redis INFO command output into a map
