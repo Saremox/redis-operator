@@ -1,5 +1,11 @@
 package v1
 
+import (
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
 const (
 	defaultRedisNumber           = 3
 	defaultSentinelNumber        = 3
@@ -9,6 +15,13 @@ const (
 	defaultRedisPort             = 6379
 	HealthyState                 = "Healthy"
 	NotHealthyState              = "NotHealthy"
+)
+
+var (
+	// DefaultSentinelEnabled is the default value for sentinel.enabled
+	DefaultSentinelEnabled = true
+	// DefaultFailoverTimeout is the default timeout for operator-managed failover
+	DefaultFailoverTimeout = metav1.Duration{Duration: 10 * time.Second}
 )
 
 var (

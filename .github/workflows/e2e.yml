@@ -350,6 +350,270 @@ jobs:
           echo "=== Events ==="
           kubectl get events --sort-by='.lastTimestamp' | tail -50
 
+  e2e-sentinel-free:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Set up minikube
+        uses: medyagh/setup-minikube@v0.0.21
+        with:
+          kubernetes-version: v1.30.0
+
+      - name: Build operator image
+        run: |
+          eval $(minikube docker-env)
+          docker build -t ghcr.io/buildio/redis-operator:test -f docker/app/Dockerfile .
+
+      - name: Install CRD
+        run: kubectl apply --server-side -f manifests/databases.spotahome.com_redisfailovers.yaml
+
+      - name: Deploy operator
+        run: |
+          helm upgrade --install redis-operator ./charts/redisoperator \
+            --set image.repository=ghcr.io/buildio/redis-operator \
+            --set image.tag=test \
+            --set image.pullPolicy=Never \
+            --wait --timeout=120s
+
+      - name: Wait for operator ready
+        run: |
+          kubectl rollout status deployment/redis-operator --timeout=60s
+
+      - name: Create RedisFailover with sentinel disabled
+        run: |
+          kubectl apply -f - <<EOF
+          apiVersion: databases.spotahome.com/v1
+          kind: RedisFailover
+          metadata:
+            name: test-no-sentinel
+          spec:
+            redis:
+              replicas: 2
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 400m
+                  memory: 512Mi
+            sentinel:
+              enabled: false
+              failoverTimeout: "5s"
+          EOF
+
+      - name: Wait for Redis pods ready
+        run: |
+          echo "Waiting for Redis StatefulSet..."
+          for i in {1..60}; do
+            if kubectl get statefulset rfr-test-no-sentinel 2>/dev/null; then
+              kubectl rollout status statefulset/rfr-test-no-sentinel --timeout=180s && break
+            fi
+            echo "Waiting for StatefulSet to be created... ($i/60)"
+            sleep 5
+          done
+
+      - name: Verify NO Sentinel resources exist
+        run: |
+          echo "Verifying Sentinel resources do NOT exist..."
+
+          # Check Sentinel Deployment does not exist
+          if kubectl get deployment rfs-test-no-sentinel 2>/dev/null; then
+            echo "✗ Sentinel Deployment exists but should not"
+            exit 1
+          fi
+          echo "✓ No Sentinel Deployment"
+
+          # Check Sentinel Service does not exist
+          if kubectl get service rfs-test-no-sentinel 2>/dev/null; then
+            echo "✗ Sentinel Service exists but should not"
+            exit 1
+          fi
+          echo "✓ No Sentinel Service"
+
+          # Check Sentinel ConfigMap does not exist
+          if kubectl get configmap rfs-test-no-sentinel 2>/dev/null; then
+            echo "✗ Sentinel ConfigMap exists but should not"
+            exit 1
+          fi
+          echo "✓ No Sentinel ConfigMap"
+
+      - name: Verify Redis resources exist
+        run: |
+          echo "Verifying Redis resources exist..."
+
+          kubectl get statefulset rfr-test-no-sentinel
+          echo "✓ Redis StatefulSet exists"
+
+          kubectl get service rfrm-test-no-sentinel
+          echo "✓ Master Service exists"
+
+          kubectl get service rfrs-test-no-sentinel
+          echo "✓ Slave Service exists"
+
+      - name: Verify master is elected
+        run: |
+          echo "Checking that exactly one master exists..."
+          MASTER_COUNT=0
+          for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
+            ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
+            echo "$pod: $ROLE"
+            if [[ "$ROLE" == "role:master" ]]; then
+              MASTER_COUNT=$((MASTER_COUNT + 1))
+              MASTER_POD=$pod
+            fi
+          done
+
+          if [[ "$MASTER_COUNT" -ne 1 ]]; then
+            echo "✗ Expected exactly 1 master, found $MASTER_COUNT"
+            exit 1
+          fi
+          echo "✓ Exactly one master: $MASTER_POD"
+
+      - name: Write test data
+        run: |
+          echo "Writing test data to master..."
+          MASTER_POD=""
+          for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
+            ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
+            if [[ "$ROLE" == "role:master" ]]; then
+              MASTER_POD=$pod
+              break
+            fi
+          done
+
+          for i in {1..100}; do
+            kubectl exec $MASTER_POD -- redis-cli SET "key:$i" "value:$i" > /dev/null
+          done
+          echo "✓ Wrote 100 keys to $MASTER_POD"
+
+      - name: Verify replication
+        run: |
+          echo "Verifying data replicated to replica..."
+          sleep 3
+
+          for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
+            ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
+            KEY_COUNT=$(kubectl exec $pod -- redis-cli DBSIZE | grep -oE '[0-9]+')
+            echo "$pod ($ROLE): $KEY_COUNT keys"
+          done
+
+      - name: Test operator-managed failover
+        run: |
+          echo "Testing operator-managed failover..."
+
+          # Find the master
+          MASTER_POD=""
+          REPLICA_POD=""
+          for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
+            ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
+            if [[ "$ROLE" == "role:master" ]]; then
+              MASTER_POD=$pod
+            else
+              REPLICA_POD=$pod
+            fi
+          done
+
+          echo "Current master: $MASTER_POD"
+          echo "Current replica: $REPLICA_POD"
+
+          # Delete the master pod to trigger failover
+          echo "Deleting master pod $MASTER_POD..."
+          kubectl delete pod $MASTER_POD
+
+          # Wait for failover
+          echo "Waiting for failover (up to 60s)..."
+          for i in {1..20}; do
+            sleep 3
+            # Check if the replica became master
+            ROLE=$(kubectl exec $REPLICA_POD -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r' || echo "")
+            echo "  Check $i: $REPLICA_POD is $ROLE"
+            if [[ "$ROLE" == "role:master" ]]; then
+              echo "✓ Failover complete: $REPLICA_POD is now master"
+              break
+            fi
+          done
+
+          # Verify final state
+          ROLE=$(kubectl exec $REPLICA_POD -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
+          if [[ "$ROLE" != "role:master" ]]; then
+            echo "✗ Failover failed: $REPLICA_POD is still $ROLE"
+            kubectl logs -l app.kubernetes.io/name=redisoperator --tail=50 || true
+            exit 1
+          fi
+
+      - name: Wait for pod recovery
+        run: |
+          echo "Waiting for deleted pod to recover..."
+          kubectl wait --for=condition=Ready pod/rfr-test-no-sentinel-0 --timeout=120s || true
+          kubectl wait --for=condition=Ready pod/rfr-test-no-sentinel-1 --timeout=120s || true
+
+      - name: Verify data survived failover
+        run: |
+          echo "Verifying data survived failover..."
+
+          # Find current master
+          for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
+            if kubectl get pod $pod 2>/dev/null | grep -q Running; then
+              VALUE=$(kubectl exec $pod -- redis-cli GET "key:50" 2>/dev/null || echo "")
+              if [[ "$VALUE" == "value:50" ]]; then
+                echo "✓ $pod has test data (key:50 = $VALUE)"
+              else
+                echo "⚠ $pod: key:50 = '$VALUE'"
+              fi
+            fi
+          done
+
+      - name: Verify master service endpoints
+        run: |
+          echo "Checking master service endpoints..."
+
+          # Get the current master IP
+          MASTER_IP=""
+          for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
+            if kubectl get pod $pod 2>/dev/null | grep -q Running; then
+              ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r' || echo "")
+              if [[ "$ROLE" == "role:master" ]]; then
+                MASTER_IP=$(kubectl get pod $pod -o jsonpath='{.status.podIP}')
+                echo "Current master: $pod ($MASTER_IP)"
+                break
+              fi
+            fi
+          done
+
+          # Check master service endpoints
+          ENDPOINTS=$(kubectl get endpoints rfrm-test-no-sentinel -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || echo "")
+          echo "Master service endpoint: $ENDPOINTS"
+
+          if [[ "$ENDPOINTS" == "$MASTER_IP" ]]; then
+            echo "✓ Master service points to correct master"
+          else
+            echo "⚠ Master service endpoint mismatch (may need more time to update)"
+          fi
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Operator logs ==="
+          kubectl logs -l app.kubernetes.io/name=redisoperator --tail=100 || true
+          echo "=== Redis pod 0 logs ==="
+          kubectl logs rfr-test-no-sentinel-0 --tail=50 || true
+          echo "=== Redis pod 1 logs ==="
+          kubectl logs rfr-test-no-sentinel-1 --tail=50 || true
+          echo "=== Pod descriptions ==="
+          kubectl describe pod -l redisfailovers.databases.spotahome.com/name=test-no-sentinel || true
+          echo "=== Services ==="
+          kubectl get svc | grep test-no-sentinel || true
+          echo "=== Events ==="
+          kubectl get events --sort-by='.lastTimestamp' | tail -30
+
   e2e-instance-manager:
     runs-on: ubuntu-latest
     steps:

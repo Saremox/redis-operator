@@ -82,6 +82,12 @@ type RedisSettings struct {
 
 // SentinelSettings defines the specification of the sentinel cluster
 type SentinelSettings struct {
+	// Enabled controls whether Sentinel is deployed. When false, the operator
+	// manages failover instead of Sentinel. Defaults to true.
+	Enabled *bool `json:"enabled,omitempty"`
+	// FailoverTimeout is how long to wait before promoting a replica when
+	// operator-managed failover is used (sentinel.enabled=false). Defaults to 10s.
+	FailoverTimeout            *metav1.Duration                  `json:"failoverTimeout,omitempty"`
 	Image                      string                            `json:"image,omitempty"`
 	ImagePullPolicy            corev1.PullPolicy                 `json:"imagePullPolicy,omitempty"`
 	Replicas                   int32                             `json:"replicas,omitempty"`

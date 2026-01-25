@@ -70,6 +70,7 @@ const (
 	GET_SENTINEL_MONITOR        = "SENTINEL_GET_MASTER_INSTANCE"
 	CHECK_SENTINEL_QUORUM       = "SENTINEL_CKQUORUM"
 	SLAVE_IS_READY              = "CHECK_IF_SLAVE_IS_READY"
+	GET_REPLICATION_INFO        = "GET_REPLICATION_INFO"
 )
 
 var ( // used for grabage collection of metrics

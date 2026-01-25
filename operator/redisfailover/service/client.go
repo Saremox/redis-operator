@@ -25,6 +25,7 @@ type RedisFailoverClient interface {
 	EnsureRedisReadinessConfigMap(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
 	EnsureRedisConfigMap(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
 	EnsureNotPresentRedisService(rFailover *redisfailoverv1.RedisFailover) error
+	EnsureNotPresentSentinelResources(rFailover *redisfailoverv1.RedisFailover) error
 }
 
 // RedisFailoverKubeClient implements the required methods to talk with kubernetes
@@ -166,6 +167,47 @@ func (r *RedisFailoverKubeClient) EnsureNotPresentRedisService(rf *redisfailover
 	if _, err := r.K8SService.GetService(namespace, name); err == nil {
 		return r.K8SService.DeleteService(namespace, name)
 	}
+	return nil
+}
+
+// EnsureNotPresentSentinelResources cleans up Sentinel resources when sentinel.enabled is false
+func (r *RedisFailoverKubeClient) EnsureNotPresentSentinelResources(rf *redisfailoverv1.RedisFailover) error {
+	name := GetSentinelName(rf)
+	namespace := rf.Namespace
+
+	// Delete Sentinel Deployment
+	if _, err := r.K8SService.GetDeployment(namespace, name); err == nil {
+		r.logger.WithField("namespace", namespace).WithField("name", name).Info("Deleting Sentinel Deployment")
+		if err := r.K8SService.DeleteDeployment(namespace, name); err != nil {
+			return err
+		}
+	}
+
+	// Delete Sentinel Service
+	if _, err := r.K8SService.GetService(namespace, name); err == nil {
+		r.logger.WithField("namespace", namespace).WithField("name", name).Info("Deleting Sentinel Service")
+		if err := r.K8SService.DeleteService(namespace, name); err != nil {
+			return err
+		}
+	}
+
+	// Delete Sentinel ConfigMap
+	if _, err := r.K8SService.GetConfigMap(namespace, name); err == nil {
+		r.logger.WithField("namespace", namespace).WithField("name", name).Info("Deleting Sentinel ConfigMap")
+		if err := r.K8SService.DeleteConfigMap(namespace, name); err != nil {
+			return err
+		}
+	}
+
+	// Delete Sentinel PodDisruptionBudget
+	pdbName := generateName(sentinelName, rf.Name)
+	if _, err := r.K8SService.GetPodDisruptionBudget(namespace, pdbName); err == nil {
+		r.logger.WithField("namespace", namespace).WithField("name", pdbName).Info("Deleting Sentinel PodDisruptionBudget")
+		if err := r.K8SService.DeletePodDisruptionBudget(namespace, pdbName); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
