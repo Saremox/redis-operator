@@ -200,7 +200,17 @@ update-codegen:
 	-e GENERATION_TARGETS="deepcopy,client" \
 	$(CODEGEN_IMAGE)
 
+# Generate CRD using controller-gen (requires controller-gen v0.20.0+ for Go 1.25+)
+# Install: go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+.PHONY: generate-crd
 generate-crd:
+	controller-gen crd paths=./api/... output:crd:dir=./manifests
+	cp -f manifests/databases.spotahome.com_redisfailovers.yaml manifests/kustomize/base/
+	cp -f manifests/databases.spotahome.com_redisfailovers.yaml charts/redisoperator/crds/
+
+# Legacy CRD generation using docker (deprecated - use generate-crd instead)
+.PHONY: generate-crd-docker
+generate-crd-docker:
 	docker run -it --rm \
 	-v $(PWD):/go/src/$(PROJECT_PACKAGE) \
 	-e GO_PROJECT_ROOT=/go/src/$(PROJECT_PACKAGE) \
