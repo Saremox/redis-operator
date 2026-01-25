@@ -52,6 +52,7 @@ jobs:
           spec:
             redis:
               replicas: 1
+              imagePullPolicy: IfNotPresent
               instanceManagerImage: ghcr.io/buildio/redis-operator:test
               resources:
                 requests:
