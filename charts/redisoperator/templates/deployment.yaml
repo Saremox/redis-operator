@@ -29,6 +29,7 @@ spec:
         {{- include "chart.selectorLabels" $data | nindent 8 }}
     spec:
       serviceAccountName: {{ template "chart.serviceAccountName" . }}
+      enableServiceLinks: false
       {{- if (and .Values.imageCredentials.create (not .Values.imageCredentials.existsSecrets)) }}
       imagePullSecrets:
         - name: {{ $fullName }}-{{ $name }}

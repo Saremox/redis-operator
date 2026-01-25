@@ -8,9 +8,10 @@ spec:
     type: RollingUpdate
   template:
     spec:
+      enableServiceLinks: false
       containers:
         - name: redis-operator
-          image: ghcr.io/saremox/redis-operator:v1.4.0
+          image: ghcr.io/buildio/redis-operator:v1.6.1
           imagePullPolicy: IfNotPresent
           securityContext:
             readOnlyRootFilesystem: true
