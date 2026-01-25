@@ -65,7 +65,7 @@ func TestRunCleanup(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to create temp dir: %v", err)
 			}
-			defer os.RemoveAll(tmpDir)
+			defer func() { _ = os.RemoveAll(tmpDir) }()
 
 			// Create test files
 			for _, f := range tt.files {
@@ -110,7 +110,7 @@ func TestRunCleanupDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create test files
 	files := []string{"dump.rdb", "temp-1234.rdb"}
@@ -158,8 +158,8 @@ func TestRunCleanupNotADirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	// Set package variables for the test
 	dataDir = tmpFile.Name()
