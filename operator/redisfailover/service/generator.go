@@ -387,6 +387,7 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 					PriorityClassName:             rf.Spec.Redis.PriorityClassName,
 					ServiceAccountName:            rf.Spec.Redis.ServiceAccountName,
 					TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
+					EnableServiceLinks:            ptrBool(false),
 					Containers: []corev1.Container{
 						{
 							Name:            "redis",
@@ -561,6 +562,7 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 					ImagePullSecrets:          rf.Spec.Sentinel.ImagePullSecrets,
 					PriorityClassName:         rf.Spec.Sentinel.PriorityClassName,
 					ServiceAccountName:        rf.Spec.Sentinel.ServiceAccountName,
+					EnableServiceLinks:        ptrBool(false),
 					InitContainers: []corev1.Container{
 						{
 							Name:            "sentinel-config-copy",
@@ -1169,6 +1171,12 @@ func pullPolicy(specPolicy corev1.PullPolicy) corev1.PullPolicy {
 		return corev1.PullAlways
 	}
 	return specPolicy
+}
+
+// ptrBool returns a pointer to a bool value.
+// Used for optional PodSpec fields like EnableServiceLinks.
+func ptrBool(b bool) *bool {
+	return &b
 }
 
 func getTerminationGracePeriodSeconds(rf *redisfailoverv1.RedisFailover) int64 {
