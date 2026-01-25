@@ -87,6 +87,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: false
           tags: |
-            ghcr.io/saremox/redis-operator:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
           build-args: |
             VERSION=${{ github.sha }}
