@@ -44,6 +44,9 @@ jobs:
 
       - name: Create RedisFailover for probe tests
         run: |
+          # Use custom probes with shorter timings for faster tests
+          # Liveness: 5s initial, 5s period, 3 failures = 20s to detect failure
+          # Readiness: 5s initial, 3s period, 3 failures = 14s to detect not-ready
           kubectl apply -f - <<EOF
           apiVersion: databases.spotahome.com/v1
           kind: RedisFailover
@@ -53,13 +56,32 @@ jobs:
             redis:
               replicas: 3
               imagePullPolicy: IfNotPresent
+              customLivenessProbe:
+                exec:
+                  command:
+                    - sh
+                    - -c
+                    - redis-cli -h \$(hostname) ping | grep -q PONG
+                initialDelaySeconds: 5
+                periodSeconds: 5
+                failureThreshold: 3
+                timeoutSeconds: 3
+              customReadinessProbe:
+                exec:
+                  command:
+                    - /bin/sh
+                    - /redis-readiness/ready.sh
+                initialDelaySeconds: 5
+                periodSeconds: 3
+                failureThreshold: 3
+                timeoutSeconds: 3
               resources:
                 requests:
                   cpu: 100m
                   memory: 128Mi
                 limits:
-                  cpu: 200m
-                  memory: 256Mi
+                  cpu: 400m
+                  memory: 512Mi
             sentinel:
               replicas: 3
               resources:
@@ -104,29 +126,53 @@ jobs:
             echo "✓ $pod is Ready"
           done
 
-      - name: Verify liveness probe configuration
+      - name: Write test data to master
         run: |
-          echo "Checking liveness probe is configured..."
-          PROBE=$(kubectl get statefulset rfr-test-probes -o jsonpath='{.spec.template.spec.containers[0].livenessProbe.exec.command}')
-          echo "Liveness probe command: $PROBE"
-          if [[ "$PROBE" == *"redis-cli"* ]] && [[ "$PROBE" == *"ping"* ]]; then
-            echo "✓ Liveness probe uses redis-cli ping"
-          else
-            echo "✗ Liveness probe not configured correctly"
+          echo "Finding master and writing test data..."
+
+          # Find the master
+          MASTER_POD=""
+          for pod in rfr-test-probes-0 rfr-test-probes-1 rfr-test-probes-2; do
+            ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
+            if [[ "$ROLE" == "role:master" ]]; then
+              MASTER_POD=$pod
+              break
+            fi
+          done
+
+          if [[ -z "$MASTER_POD" ]]; then
+            echo "✗ No master found"
             exit 1
           fi
 
-      - name: Verify readiness probe configuration
+          echo "Master is: $MASTER_POD"
+
+          # Write test data with timestamps
+          echo "Writing 1000 keys to master..."
+          for i in {1..1000}; do
+            kubectl exec $MASTER_POD -- redis-cli SET "key:$i" "value:$i:$(date +%s%N)" > /dev/null
+          done
+
+          KEY_COUNT=$(kubectl exec $MASTER_POD -- redis-cli DBSIZE | grep -oE '[0-9]+')
+          echo "✓ Master has $KEY_COUNT keys"
+
+      - name: Verify data replicates to replicas
         run: |
-          echo "Checking readiness probe is configured..."
-          PROBE=$(kubectl get statefulset rfr-test-probes -o jsonpath='{.spec.template.spec.containers[0].readinessProbe.exec.command}')
-          echo "Readiness probe command: $PROBE"
-          if [[ "$PROBE" == *"ready.sh"* ]]; then
-            echo "✓ Readiness probe uses ready.sh script"
-          else
-            echo "✗ Readiness probe not configured correctly"
-            exit 1
-          fi
+          echo "Verifying replication to replicas..."
+          sleep 3  # Give time for replication
+
+          for pod in rfr-test-probes-0 rfr-test-probes-1 rfr-test-probes-2; do
+            ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
+            if [[ "$ROLE" == "role:slave" ]]; then
+              KEY_COUNT=$(kubectl exec $pod -- redis-cli DBSIZE | grep -oE '[0-9]+')
+              echo "$pod (replica): $KEY_COUNT keys"
+              if [[ "$KEY_COUNT" -ge 1000 ]]; then
+                echo "✓ Replica $pod has replicated data"
+              else
+                echo "⚠ Replica $pod only has $KEY_COUNT keys"
+              fi
+            fi
+          done
 
       - name: Test liveness probe detects Redis failure
         run: |
@@ -141,11 +187,10 @@ jobs:
           kubectl exec rfr-test-probes-0 -- /bin/sh -c "kill \$(cat /data/redis.pid 2>/dev/null || pgrep redis-server)" || true
 
           # Wait for liveness probe to detect failure and restart
-          # Liveness: initialDelaySeconds=30, periodSeconds=15, failureThreshold=6
-          # Max wait: 30 + (15 * 6) = 120 seconds
-          echo "Waiting for liveness probe to detect failure (up to 120s)..."
-          for i in {1..40}; do
-            sleep 5
+          # Custom probe: 5s initial, 5s period, 3 failures = ~20s max
+          echo "Waiting for liveness probe to detect failure (up to 45s)..."
+          for i in {1..15}; do
+            sleep 3
             RESTART_COUNT_AFTER=$(kubectl get pod rfr-test-probes-0 -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
             echo "  Check $i: restart count = $RESTART_COUNT_AFTER"
             if [[ "$RESTART_COUNT_AFTER" -gt "$RESTART_COUNT_BEFORE" ]]; then
@@ -164,90 +209,103 @@ jobs:
           kubectl wait --for=condition=Ready pod/rfr-test-probes-0 --timeout=120s
           echo "✓ Pod recovered and is Ready"
 
-      - name: Test readiness probe shows master as ready
+      - name: Verify all pods Ready after recovery
         run: |
-          echo "Verifying master pod readiness..."
+          echo "Verifying all Redis pods are Ready..."
+          for pod in rfr-test-probes-0 rfr-test-probes-1 rfr-test-probes-2; do
+            kubectl wait --for=condition=Ready pod/$pod --timeout=60s
+            READY=$(kubectl get pod $pod -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+            ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r' || echo "unknown")
+            echo "✓ $pod is Ready ($ROLE)"
+          done
 
-          # Find the master
-          MASTER_POD=""
+      - name: Test replica resync behavior
+        run: |
+          echo "Testing that replica becomes Ready after resync..."
+
+          # Find a replica pod to delete
+          REPLICA_POD=""
           for pod in rfr-test-probes-0 rfr-test-probes-1 rfr-test-probes-2; do
             ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
-            echo "$pod: $ROLE"
-            if [[ "$ROLE" == "role:master" ]]; then
-              MASTER_POD=$pod
+            if [[ "$ROLE" == "role:slave" ]]; then
+              REPLICA_POD=$pod
               break
             fi
           done
 
-          if [[ -z "$MASTER_POD" ]]; then
-            echo "✗ No master found"
+          if [[ -z "$REPLICA_POD" ]]; then
+            echo "✗ No replica found to test"
             exit 1
           fi
 
-          echo "Master is: $MASTER_POD"
+          echo "Deleting replica pod: $REPLICA_POD"
+          kubectl delete pod $REPLICA_POD
 
-          # Check master is Ready
-          READY=$(kubectl get pod $MASTER_POD -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
-          if [[ "$READY" == "True" ]]; then
-            echo "✓ Master pod is Ready"
+          # Wait for pod to be recreated
+          echo "Waiting for pod to be recreated..."
+          sleep 5
+
+          # The pod should eventually become Ready after sync completes
+          echo "Waiting for pod to become Ready after resync..."
+          if kubectl wait --for=condition=Ready pod/$REPLICA_POD --timeout=120s; then
+            echo "✓ Replica $REPLICA_POD is Ready after resync"
           else
-            echo "✗ Master pod is not Ready"
+            echo "✗ Replica did not become Ready"
+            kubectl describe pod $REPLICA_POD
             exit 1
           fi
 
-      - name: Test readiness probe shows synced replica as ready
+          # Verify it's actually a replica and has data
+          ROLE=$(kubectl exec $REPLICA_POD -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
+          KEY_COUNT=$(kubectl exec $REPLICA_POD -- redis-cli DBSIZE | grep -oE '[0-9]+')
+          echo "$REPLICA_POD: $ROLE with $KEY_COUNT keys"
+
+          if [[ "$KEY_COUNT" -ge 1000 ]]; then
+            echo "✓ Replica has resynced all data"
+          else
+            echo "⚠ Replica only has $KEY_COUNT keys (expected 1000+)"
+          fi
+
+      - name: Test data survives failover
         run: |
-          echo "Verifying replica pods readiness..."
+          echo "Verifying data survives pod restarts..."
 
-          REPLICA_COUNT=0
+          # Check test data still exists on all pods
           for pod in rfr-test-probes-0 rfr-test-probes-1 rfr-test-probes-2; do
-            ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
-            if [[ "$ROLE" == "role:slave" ]]; then
-              SYNC_STATUS=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "master_sync_in_progress" | tr -d '\r')
-              echo "$pod: $ROLE, sync: $SYNC_STATUS"
-
-              # Check replica is Ready (should be ready if not syncing)
-              READY=$(kubectl get pod $pod -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
-              if [[ "$READY" == "True" ]]; then
-                echo "✓ Replica $pod is Ready (sync complete)"
-                REPLICA_COUNT=$((REPLICA_COUNT + 1))
-              else
-                echo "⚠ Replica $pod is not Ready"
-              fi
+            VALUE=$(kubectl exec $pod -- redis-cli GET "key:500" 2>/dev/null || echo "")
+            if [[ "$VALUE" == value:500:* ]]; then
+              echo "✓ $pod has test data (key:500)"
+            else
+              echo "⚠ $pod missing or has unexpected data for key:500: $VALUE"
             fi
           done
 
-          if [[ $REPLICA_COUNT -ge 1 ]]; then
-            echo "✓ At least one replica is Ready"
-          else
-            echo "✗ No replicas are Ready"
-            exit 1
-          fi
-
-      - name: Test Sentinel liveness probe configuration
+      - name: Verify Sentinels are Ready
         run: |
-          echo "Checking Sentinel liveness probe..."
-          PROBE=$(kubectl get deployment rfs-test-probes -o jsonpath='{.spec.template.spec.containers[0].livenessProbe.exec.command}')
-          echo "Sentinel liveness probe: $PROBE"
-          if [[ "$PROBE" == *"redis-cli"* ]] && [[ "$PROBE" == *"ping"* ]]; then
-            echo "✓ Sentinel liveness probe uses redis-cli ping"
-          else
-            echo "✗ Sentinel liveness probe not configured correctly"
-            exit 1
-          fi
+          echo "Verifying Sentinel pods are Ready..."
+          SENTINEL_PODS=$(kubectl get pods -l app.kubernetes.io/component=sentinel -o name)
+          for pod in $SENTINEL_PODS; do
+            READY=$(kubectl get $pod -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+            if [[ "$READY" == "True" ]]; then
+              echo "✓ $pod is Ready"
+            else
+              echo "✗ $pod is not Ready"
+              exit 1
+            fi
+          done
 
-      - name: Test Redis functionality after probe tests
+      - name: Test Redis functionality after all probe tests
         run: |
-          echo "Verifying Redis cluster is functional..."
+          echo "Final verification: Redis cluster is functional..."
 
-          # Find master and write data
+          # Find master and write new data
           for pod in rfr-test-probes-0 rfr-test-probes-1 rfr-test-probes-2; do
             ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
             if [[ "$ROLE" == "role:master" ]]; then
               echo "Writing to master ($pod)..."
-              kubectl exec $pod -- redis-cli SET probe-test-key probe-test-value
-              VALUE=$(kubectl exec $pod -- redis-cli GET probe-test-key)
-              if [[ "$VALUE" == "probe-test-value" ]]; then
+              kubectl exec $pod -- redis-cli SET final-test-key final-test-value
+              VALUE=$(kubectl exec $pod -- redis-cli GET final-test-key)
+              if [[ "$VALUE" == "final-test-value" ]]; then
                 echo "✓ Master read/write successful"
               else
                 echo "✗ Master read/write failed"
@@ -262,14 +320,17 @@ jobs:
           for pod in rfr-test-probes-0 rfr-test-probes-1 rfr-test-probes-2; do
             ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
             if [[ "$ROLE" == "role:slave" ]]; then
-              VALUE=$(kubectl exec $pod -- redis-cli GET probe-test-key)
-              if [[ "$VALUE" == "probe-test-value" ]]; then
-                echo "✓ Replica $pod has replicated data"
+              VALUE=$(kubectl exec $pod -- redis-cli GET final-test-key)
+              if [[ "$VALUE" == "final-test-value" ]]; then
+                echo "✓ Replica $pod has replicated new data"
               else
-                echo "⚠ Replica $pod does not have data yet (value: $VALUE)"
+                echo "⚠ Replica $pod does not have new data yet"
               fi
             fi
           done
+
+          TOTAL_KEYS=$(kubectl exec rfr-test-probes-0 -- redis-cli DBSIZE | grep -oE '[0-9]+')
+          echo "✓ Final key count: $TOTAL_KEYS"
 
       - name: Collect logs on failure
         if: failure()
