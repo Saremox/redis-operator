@@ -15,11 +15,12 @@ This is a fork of `spotahome/redis-operator` → `Saremox/redis-operator` → `b
 v4.0.0 makes the instance manager the default and only mode. Legacy exec probes are removed.
 
 **Key changes:**
+- **Sentinel disabled by default** - operator-managed failover is now the default
 - Instance manager is always enabled (no opt-out)
 - HTTP health probes (`/healthz`, `/readyz`) are now the only probe type
-- Chart version aligned with operator version (4.0.0 / v4.0.0)
+- Chart version aligned with operator version (4.0.0)
 
-**Minimal configuration (instance manager auto-configured):**
+**Minimal configuration (operator-managed failover, no sentinel):**
 ```yaml
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover
@@ -28,11 +29,9 @@ metadata:
 spec:
   redis:
     replicas: 2
-  sentinel:
-    replicas: 3
 ```
 
-**With sentinel-free mode:**
+**With Redis Sentinel (opt-in):**
 ```yaml
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover
@@ -42,7 +41,8 @@ spec:
   redis:
     replicas: 2
   sentinel:
-    enabled: false
+    enabled: true
+    replicas: 3
 ```
 
 ## What's New in v1.7.0
@@ -106,17 +106,15 @@ Tested against Kubernetes 1.29, 1.30, 1.31, 1.32, 1.33, 1.34 and Redis 6, 7.
 
 ## Versioning
 
-**Chart version, appVersion, and Docker image tag are identical** (no leading `v`):
+**Starting with 4.0.0, we no longer use 'v' prefix anywhere:**
 
-| Git Tag | Chart Version | Image Tag | Notes |
-|---------|---------------|-----------|-------|
-| v4.0.0 | 4.0.0 | 4.0.0 | Git tag has `v`, everything else doesn't |
+| Git Tag | Chart Version | Image Tag |
+|---------|---------------|-----------|
+| 4.0.0 | 4.0.0 | 4.0.0 |
 
-**Example:** Git tag `v4.0.0` produces:
-- Helm chart version: `4.0.0`
-- Docker image: `ghcr.io/buildio/redis-operator:4.0.0`
+**Warning:** Previous releases used `v` prefix for git tags (e.g., `v1.7.0`). Starting with 4.0.0, git tags are bare version numbers (e.g., `4.0.0`).
 
-If you don't specify `image.tag`, the chart automatically uses the appVersion (e.g., `4.0.0`).
+If you don't specify `image.tag`, the chart automatically uses the appVersion.
 
 ## Quick Start
 

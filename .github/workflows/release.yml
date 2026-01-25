@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      # Tags without leading 'v' (e.g., 4.0.0, not v4.0.0)
+      - '[0-9]*'
 
 env:
   REGISTRY: ghcr.io
@@ -110,14 +111,14 @@ jobs:
 
       - name: Update Chart version and image
         run: |
-          # Strip leading 'v' from git tag (v4.0.0 -> 4.0.0)
-          VERSION="${GITHUB_REF_NAME#v}"
+          # Git tag is the version directly (4.0.0, no 'v' prefix)
+          VERSION="${GITHUB_REF_NAME}"
 
-          # Update Chart.yaml - both version and appVersion use same value (no 'v')
+          # Update Chart.yaml - version, appVersion all match tag
           sed -i "s/^version:.*/version: $VERSION/" charts/redisoperator/Chart.yaml
           sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/redisoperator/Chart.yaml
 
-          # Update values.yaml with new image (tag matches version, no 'v')
+          # Update values.yaml with new image
           sed -i "s|repository:.*|repository: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}|" charts/redisoperator/values.yaml
           sed -i "s/tag:.*/tag: \"$VERSION\"/" charts/redisoperator/values.yaml
 
