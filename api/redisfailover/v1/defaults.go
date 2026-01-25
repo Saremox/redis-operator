@@ -19,7 +19,8 @@ const (
 	// DefaultInstanceManagerImage is the default image used for the instance manager.
 	// This image contains the redis-instance binary that runs as PID 1.
 	// Users can override this per-RedisFailover via spec.redis.instanceManagerImage.
-	DefaultInstanceManagerImage = "ghcr.io/buildio/redis-operator:v4.0.0"
+	// NOTE: This must reference an existing released version with the redis-instance binary.
+	DefaultInstanceManagerImage = "ghcr.io/buildio/redis-operator:v1.7.0"
 )
 
 var (

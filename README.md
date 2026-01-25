@@ -17,7 +17,7 @@ v4.0.0 makes the instance manager the default and only mode. Legacy exec probes 
 **Key changes:**
 - Instance manager is always enabled (no opt-out)
 - HTTP health probes (`/healthz`, `/readyz`) are now the only probe type
-- Default `instanceManagerImage` is `ghcr.io/buildio/redis-operator:v4.0.0`
+- Default `instanceManagerImage` is `ghcr.io/buildio/redis-operator:v1.7.0`
 - Chart version aligned with operator version (4.0.0)
 
 **Minimal configuration (instance manager auto-configured):**
