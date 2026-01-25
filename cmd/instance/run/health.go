@@ -25,11 +25,12 @@ const (
 // It maintains a persistent connection to Redis and caches health status
 // to minimize load on Redis.
 type HealthServer struct {
-	port       int
-	redisAddr  string
-	redisPort  string
-	server     *http.Server
-	client     *redis.Client
+	port          int
+	redisAddr     string
+	redisPort     string
+	redisPassword string
+	server        *http.Server
+	client        *redis.Client
 
 	// Cached status (updated every healthCheckInterval)
 	mu            sync.RWMutex
@@ -102,13 +103,14 @@ type InstanceManagerStatus struct {
 }
 
 // NewHealthServer creates a new health server
-func NewHealthServer(port int, redisPort string) *HealthServer {
+func NewHealthServer(port int, redisPort string, redisPassword string) *HealthServer {
 	return &HealthServer{
-		port:       port,
-		redisAddr:  "127.0.0.1",
-		redisPort:  redisPort,
-		startTime:  time.Now(),
-		cachedInfo: make(map[string]string),
+		port:          port,
+		redisAddr:     "127.0.0.1",
+		redisPort:     redisPort,
+		redisPassword: redisPassword,
+		startTime:     time.Now(),
+		cachedInfo:    make(map[string]string),
 	}
 }
 
@@ -131,6 +133,7 @@ func (h *HealthServer) Start(ctx context.Context) error {
 	// Create Redis client
 	h.client = redis.NewClient(&redis.Options{
 		Addr:         net.JoinHostPort(h.redisAddr, h.redisPort),
+		Password:     h.redisPassword,
 		DialTimeout:  redisConnectTimeout,
 		ReadTimeout:  redisCommandTimeout,
 		WriteTimeout: redisCommandTimeout,
@@ -345,7 +348,7 @@ func (h *HealthServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			MasterSyncInProgress: info["master_sync_in_progress"] == "1",
 		},
 		InstanceManager: InstanceManagerStatus{
-			Version:            "v1.7.0",
+			Version:            "4.0.0",
 			UptimeSeconds:      int64(time.Since(h.startTime).Seconds()),
 			StartupCleanupDone: cleanupDone,
 			HealthPort:         h.port,
