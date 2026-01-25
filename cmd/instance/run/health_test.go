@@ -239,6 +239,35 @@ func TestHealthServerReadyzNotReadyMasterLinkDown(t *testing.T) {
 	assert.Contains(t, resp.Error, "master link")
 }
 
+func TestHealthServerReadyzNotReadyNoMasterConfigured(t *testing.T) {
+	h := NewHealthServer(8080, "6379")
+	h.redisReady.Store(false)
+	h.redisHealthy.Store(true)
+
+	h.mu.Lock()
+	h.cachedInfo = map[string]string{
+		"role":                    "slave",
+		"loading":                 "0",
+		"master_sync_in_progress": "0",
+		"master_link_status":      "up",
+		"master_host":             "127.0.0.1", // No real master, pointing to self
+	}
+	h.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+
+	h.handleReadyz(w, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+
+	var resp ReadyResponse
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	assert.Contains(t, resp.Error, "no master configured")
+}
+
 func TestHealthServerStatus(t *testing.T) {
 	h := NewHealthServer(8080, "6379")
 	h.startTime = time.Now().Add(-120 * time.Second)
