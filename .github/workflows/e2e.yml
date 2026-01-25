@@ -449,6 +449,28 @@ jobs:
             exit 1
           fi
 
+      - name: Verify httpGet readiness probe is configured
+        run: |
+          echo "Checking readiness probe configuration..."
+          PROBE_TYPE=$(kubectl get statefulset rfr-test-im -o jsonpath='{.spec.template.spec.containers[0].readinessProbe.httpGet.path}')
+          echo "Readiness probe path: $PROBE_TYPE"
+          if [[ "$PROBE_TYPE" == "/readyz" ]]; then
+            echo "✓ HTTP readiness probe is configured with /readyz path"
+          else
+            echo "✗ Expected httpGet probe with /readyz path"
+            kubectl get statefulset rfr-test-im -o yaml | grep -A 10 readinessProbe
+            exit 1
+          fi
+
+          PROBE_PORT=$(kubectl get statefulset rfr-test-im -o jsonpath='{.spec.template.spec.containers[0].readinessProbe.httpGet.port}')
+          echo "Readiness probe port: $PROBE_PORT"
+          if [[ "$PROBE_PORT" == "8080" ]]; then
+            echo "✓ HTTP readiness probe is configured on port 8080"
+          else
+            echo "✗ Expected probe on port 8080, got $PROBE_PORT"
+            exit 1
+          fi
+
       - name: Verify health port is exposed
         run: |
           echo "Checking container ports..."

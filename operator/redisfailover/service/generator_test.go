@@ -2870,3 +2870,62 @@ func TestSentinelCustomStartupProbe(t *testing.T) {
 		assert.Equal(test.expectedStartupProbe, startupProbe)
 	}
 }
+
+func TestRedisHTTPReadinessProbeWithInstanceManager(t *testing.T) {
+	assert := assert.New(t)
+
+	var readinessProbe *corev1.Probe
+
+	rf := generateRF()
+	rf.Spec.Redis.InstanceManagerImage = "ghcr.io/buildio/redis-operator:v1.7.0"
+	rf.Spec.Redis.Port = 6379
+
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		s := args.Get(1).(*appsv1.StatefulSet)
+		readinessProbe = s.Spec.Template.Spec.Containers[0].ReadinessProbe
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
+	assert.NoError(err)
+
+	// Verify HTTP readiness probe is used
+	assert.NotNil(readinessProbe)
+	assert.NotNil(readinessProbe.HTTPGet, "Expected HTTPGet probe when instance manager is enabled")
+	assert.Nil(readinessProbe.Exec, "Expected no Exec probe when instance manager is enabled")
+	assert.Equal("/readyz", readinessProbe.HTTPGet.Path)
+	assert.Equal(int32(8080), readinessProbe.HTTPGet.Port.IntVal)
+	assert.Equal(int32(30), readinessProbe.InitialDelaySeconds)
+	assert.Equal(int32(5), readinessProbe.TimeoutSeconds)
+	assert.Equal(int32(3), readinessProbe.FailureThreshold)
+	assert.Equal(int32(10), readinessProbe.PeriodSeconds)
+}
+
+func TestRedisExecReadinessProbeWithoutInstanceManager(t *testing.T) {
+	assert := assert.New(t)
+
+	var readinessProbe *corev1.Probe
+
+	rf := generateRF()
+	rf.Spec.Redis.InstanceManagerImage = "" // Explicitly no instance manager
+	rf.Spec.Redis.Port = 6379
+
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		s := args.Get(1).(*appsv1.StatefulSet)
+		readinessProbe = s.Spec.Template.Spec.Containers[0].ReadinessProbe
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
+	assert.NoError(err)
+
+	// Verify Exec readiness probe is used (legacy behavior)
+	assert.NotNil(readinessProbe)
+	assert.Nil(readinessProbe.HTTPGet, "Expected no HTTPGet probe when instance manager is disabled")
+	assert.NotNil(readinessProbe.Exec, "Expected Exec probe when instance manager is disabled")
+	assert.Contains(readinessProbe.Exec.Command[0], "/bin/sh")
+}

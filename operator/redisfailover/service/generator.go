@@ -49,6 +49,7 @@ sentinel parallel-syncs mymaster 2`
 	instanceManagerBinaryName  = "redis-instance"
 	instanceManagerHealthPort  = 8080
 	instanceManagerHealthzPath = "/healthz"
+	instanceManagerReadyzPath  = "/readyz"
 
 	graceTime = 30
 )
@@ -495,7 +496,23 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 
 	if rf.Spec.Redis.CustomReadinessProbe != nil {
 		ss.Spec.Template.Spec.Containers[0].ReadinessProbe = rf.Spec.Redis.CustomReadinessProbe
+	} else if instanceManagerEnabled(rf) {
+		// Use HTTP probe when instance manager is enabled (CNPG model)
+		// The /readyz endpoint checks: not loading, not syncing, master link up
+		ss.Spec.Template.Spec.Containers[0].ReadinessProbe = &corev1.Probe{
+			InitialDelaySeconds: graceTime,
+			TimeoutSeconds:      5,
+			PeriodSeconds:       10,
+			FailureThreshold:    3,
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: instanceManagerReadyzPath,
+					Port: intstr.FromInt32(instanceManagerHealthPort),
+				},
+			},
+		}
 	} else {
+		// Legacy exec probe for backwards compatibility
 		ss.Spec.Template.Spec.Containers[0].ReadinessProbe = &corev1.Probe{
 			InitialDelaySeconds: graceTime,
 			TimeoutSeconds:      5,

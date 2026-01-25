@@ -220,17 +220,19 @@ func (h *HealthServer) updateHealthStatus(ctx context.Context) {
 	h.mu.Unlock()
 
 	// Determine readiness
-	// Not ready if: loading, syncing from master with no master link
+	// Not ready if: loading, syncing from master, master link down, or no real master
 	loading := h.cachedInfo["loading"] == "1"
 	syncInProgress := h.cachedInfo["master_sync_in_progress"] == "1"
 	masterLinkDown := h.cachedInfo["master_link_status"] == "down"
+	// master_host:127.0.0.1 means no real master configured (replica pointing to itself)
+	noMasterConfigured := h.cachedInfo["master_host"] == "127.0.0.1"
 
-	// Replica is not ready if syncing or master link is down
+	// Replica is not ready if syncing, master link is down, or no real master
 	isReplica := h.cachedInfo["role"] == "slave"
 
 	ready := !loading
 	if isReplica {
-		ready = ready && !syncInProgress && !masterLinkDown
+		ready = ready && !syncInProgress && !masterLinkDown && !noMasterConfigured
 	}
 
 	h.redisReady.Store(ready)
@@ -301,6 +303,8 @@ func (h *HealthServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
 			resp.Error = "replica sync in progress"
 		} else if info["master_link_status"] == "down" {
 			resp.Error = "master link is down"
+		} else if info["master_host"] == "127.0.0.1" {
+			resp.Error = "no master configured (replica pointing to self)"
 		} else if !h.redisHealthy.Load() {
 			resp.Error = "redis not responding"
 		}
