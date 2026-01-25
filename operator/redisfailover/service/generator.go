@@ -42,6 +42,12 @@ sentinel parallel-syncs mymaster 2`
 	redisStorageVolumeName                 = "redis-data"
 	sentinelStartupConfigurationVolumeName = "sentinel-startup-config"
 
+	// Instance manager volume and paths (follows CNPG model)
+	// See: https://cloudnative-pg.io/documentation/current/instance_manager/
+	instanceManagerVolumeName = "instance-manager"
+	instanceManagerMountPath  = "/controller"
+	instanceManagerBinaryName = "redis-instance"
+
 	graceTime = 30
 )
 
@@ -491,6 +497,14 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 		ss.Spec.Template.Spec.Containers = append(ss.Spec.Template.Spec.Containers, exporter)
 	}
 
+	// Add instance manager init container if enabled (CNPG model)
+	// This must come before user-provided init containers so the binary is
+	// available for any custom init logic that might need it.
+	if instanceManagerEnabled(rf) {
+		initContainer := createInstanceManagerInitContainer(rf)
+		ss.Spec.Template.Spec.InitContainers = append(ss.Spec.Template.Spec.InitContainers, initContainer)
+	}
+
 	if rf.Spec.Redis.InitContainers != nil {
 		initContainers := getInitContainersWithRedisEnv(rf)
 		ss.Spec.Template.Spec.InitContainers = append(ss.Spec.Template.Spec.InitContainers, initContainers...)
@@ -875,6 +889,14 @@ func getRedisVolumeMounts(rf *redisfailoverv1.RedisFailover) []corev1.VolumeMoun
 		},
 	}
 
+	// Add instance manager volume mount if enabled (CNPG model)
+	if instanceManagerEnabled(rf) {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      instanceManagerVolumeName,
+			MountPath: instanceManagerMountPath,
+		})
+	}
+
 	if rf.Spec.Redis.StartupConfigMap != "" {
 		startupVolumeMount := corev1.VolumeMount{
 			Name:      redisStartupConfigurationVolumeName,
@@ -952,6 +974,18 @@ func getRedisVolumes(rf *redisfailoverv1.RedisFailover) []corev1.Volume {
 				},
 			},
 		},
+	}
+
+	// Add instance manager volume if enabled (CNPG model)
+	// This emptyDir volume is used to share the redis-instance binary
+	// between the init container and the main container.
+	if instanceManagerEnabled(rf) {
+		volumes = append(volumes, corev1.Volume{
+			Name: instanceManagerVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
 	}
 
 	if rf.Spec.Redis.StartupConfigMap != "" {
@@ -1065,9 +1099,57 @@ func getRedisCommand(rf *redisfailoverv1.RedisFailover) []string {
 	if len(rf.Spec.Redis.Command) > 0 {
 		return rf.Spec.Redis.Command
 	}
+	// If instance manager is enabled, use it as PID 1 (CNPG model)
+	if rf.Spec.Redis.InstanceManagerImage != "" {
+		return []string{
+			fmt.Sprintf("%s/%s", instanceManagerMountPath, instanceManagerBinaryName),
+			"run",
+			"--redis-conf", fmt.Sprintf("/redis/%s", redisConfigFileName),
+		}
+	}
 	return []string{
 		"redis-server",
 		fmt.Sprintf("/redis/%s", redisConfigFileName),
+	}
+}
+
+// instanceManagerEnabled returns true if the instance manager is configured.
+// The instance manager follows the CloudNativePG model where it runs as PID 1
+// and manages the Redis process as a child.
+// See: https://cloudnative-pg.io/documentation/current/instance_manager/
+func instanceManagerEnabled(rf *redisfailoverv1.RedisFailover) bool {
+	return rf.Spec.Redis.InstanceManagerImage != ""
+}
+
+// createInstanceManagerInitContainer creates an init container that copies the
+// redis-instance binary to a shared volume. This follows the CNPG model.
+func createInstanceManagerInitContainer(rf *redisfailoverv1.RedisFailover) corev1.Container {
+	return corev1.Container{
+		Name:            "instance-manager-init",
+		Image:           rf.Spec.Redis.InstanceManagerImage,
+		ImagePullPolicy: pullPolicy(rf.Spec.Redis.ImagePullPolicy),
+		Command: []string{
+			"cp",
+			fmt.Sprintf("/usr/local/bin/%s", instanceManagerBinaryName),
+			fmt.Sprintf("%s/%s", instanceManagerMountPath, instanceManagerBinaryName),
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      instanceManagerVolumeName,
+				MountPath: instanceManagerMountPath,
+			},
+		},
+		// Use minimal resources for the copy operation
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("10m"),
+				corev1.ResourceMemory: resource.MustParse("16Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("100m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			},
+		},
 	}
 }
 

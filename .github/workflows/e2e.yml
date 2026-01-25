@@ -1,0 +1,140 @@
+name: E2E Tests
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  e2e-instance-manager:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Set up minikube
+        uses: medyagh/setup-minikube@v0.0.21
+        with:
+          kubernetes-version: v1.30.0
+
+      - name: Build operator image
+        run: |
+          eval $(minikube docker-env)
+          docker build -t ghcr.io/buildio/redis-operator:test -f docker/app/Dockerfile .
+
+      - name: Install CRD
+        run: kubectl apply --server-side -f manifests/databases.spotahome.com_redisfailovers.yaml
+
+      - name: Deploy operator
+        run: |
+          helm upgrade --install redis-operator ./charts/redisoperator \
+            --set image.repository=ghcr.io/buildio/redis-operator \
+            --set image.tag=test \
+            --set image.pullPolicy=Never \
+            --wait --timeout=120s
+
+      - name: Wait for operator ready
+        run: |
+          kubectl rollout status deployment/redis-operator --timeout=60s
+
+      - name: Create RedisFailover with instance manager
+        run: |
+          kubectl apply -f - <<EOF
+          apiVersion: databases.spotahome.com/v1
+          kind: RedisFailover
+          metadata:
+            name: test-im
+          spec:
+            redis:
+              replicas: 1
+              imagePullPolicy: IfNotPresent
+              instanceManagerImage: ghcr.io/buildio/redis-operator:test
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
+            sentinel:
+              replicas: 1
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
+          EOF
+
+      - name: Wait for Redis pods
+        run: |
+          echo "Waiting for Redis StatefulSet..."
+          for i in {1..60}; do
+            if kubectl get statefulset rfr-test-im 2>/dev/null; then
+              kubectl rollout status statefulset/rfr-test-im --timeout=120s && break
+            fi
+            echo "Waiting for StatefulSet to be created... ($i/60)"
+            sleep 5
+          done
+
+      - name: Verify instance manager is PID 1
+        run: |
+          echo "Checking process tree..."
+          kubectl exec rfr-test-im-0 -- ps aux
+          PID1_CMD=$(kubectl exec rfr-test-im-0 -- cat /proc/1/cmdline | tr '\0' ' ')
+          echo "PID 1 command: $PID1_CMD"
+          if [[ "$PID1_CMD" == *"redis-instance"* ]]; then
+            echo "✓ Instance manager is running as PID 1"
+          else
+            echo "✗ Instance manager is NOT PID 1"
+            exit 1
+          fi
+
+      - name: Test RDB cleanup on restart
+        run: |
+          echo "Creating temp RDB files..."
+          kubectl exec rfr-test-im-0 -- touch /data/temp-1234.rdb /data/temp-5678.rdb
+          kubectl exec rfr-test-im-0 -- ls -la /data/
+
+          echo "Deleting pod to trigger restart..."
+          kubectl delete pod rfr-test-im-0
+
+          echo "Waiting for pod to restart..."
+          kubectl wait --for=condition=Ready pod/rfr-test-im-0 --timeout=120s
+
+          echo "Checking if temp files were cleaned..."
+          if kubectl exec rfr-test-im-0 -- ls /data/temp-1234.rdb 2>/dev/null; then
+            echo "✗ temp-1234.rdb still exists - cleanup failed"
+            exit 1
+          fi
+          echo "✓ Temp RDB files were cleaned up on restart"
+
+      - name: Test Redis is functional
+        run: |
+          kubectl exec rfr-test-im-0 -- redis-cli PING
+          kubectl exec rfr-test-im-0 -- redis-cli SET test-key test-value
+          VALUE=$(kubectl exec rfr-test-im-0 -- redis-cli GET test-key)
+          if [[ "$VALUE" == "test-value" ]]; then
+            echo "✓ Redis is functional"
+          else
+            echo "✗ Redis read/write failed"
+            exit 1
+          fi
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Operator logs ==="
+          kubectl logs -l app.kubernetes.io/name=redisoperator --tail=100 || true
+          echo "=== Redis pod logs ==="
+          kubectl logs rfr-test-im-0 --tail=100 || true
+          echo "=== Pod describe ==="
+          kubectl describe pod rfr-test-im-0 || true
+          echo "=== Events ==="
+          kubectl get events --sort-by='.lastTimestamp' | tail -30

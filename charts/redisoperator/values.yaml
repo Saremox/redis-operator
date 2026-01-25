@@ -4,9 +4,9 @@
 
 # Name of the image repository to pull the container image from.
 image:
-  repository: ghcr.io/saremox/redis-operator
+  repository: ghcr.io/buildio/redis-operator
   pullPolicy: IfNotPresent
-  tag: v1.5.0-rc0
+  tag: v1.5.0
   cli_args: ""
 
 imageCredentials:
