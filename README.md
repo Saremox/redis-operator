@@ -8,6 +8,41 @@ Redis Operator creates/configures/manages redis-failovers atop Kubernetes.
 
 This is a fork of `spotahome/redis-operator` → `Saremox/redis-operator` → `buildio/redis-operator`.
 
+## What's New in v1.7.0
+
+**Sentinel-Free Architecture** ([#9](https://github.com/buildio/redis-operator/issues/9))
+
+v1.7.0 introduces operator-managed failover as an alternative to Redis Sentinel, reducing pod overhead from 5 pods (2 Redis + 3 Sentinel) to just 2 pods (Redis only).
+
+```yaml
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: my-redis
+spec:
+  redis:
+    replicas: 2
+  sentinel:
+    enabled: false  # Operator manages failover instead of Sentinel
+    failoverTimeout: "10s"  # Optional, defaults to 10s
+```
+
+**How it works:**
+- Operator monitors Redis pods and detects master failures
+- On failure, promotes the replica with highest replication offset (minimizes data loss)
+- Automatically reconfigures remaining replicas to follow new master
+- Master Service (`rf-rm-<name>`) endpoints update automatically via label selectors
+
+**When to use:**
+- Development/testing environments where you want fewer pods
+- Cost-sensitive deployments where 3 Sentinel pods are overhead
+- Simple HA setups where operator-managed failover is sufficient
+
+**When to keep Sentinel:**
+- Production environments requiring sub-second failover
+- Complex topologies with multiple Redis clusters
+- When you need Sentinel's pub/sub notifications
+
 ## What's New in v1.6.1
 
 **Disable Service Links** ([#3](https://github.com/buildio/redis-operator/issues/3))
@@ -34,20 +69,21 @@ metadata:
 spec:
   redis:
     replicas: 3
-    instanceManagerImage: ghcr.io/buildio/redis-operator:v1.6.1
+    instanceManagerImage: ghcr.io/buildio/redis-operator:v1.7.0
   sentinel:
     replicas: 3
 ```
 
 ### Roadmap
 
-| Version | Instance Manager Status | Notes |
-|---------|------------------------|-------|
-| v1.6.1 | Opt-in via `instanceManagerImage` | Current release |
-| v1.7.0 | Enabled by default | Opt-out via `instanceManagerImage: ""` |
-| v2.0.0 | Required | Legacy mode removed |
+| Version | Features | Notes |
+|---------|----------|-------|
+| v1.6.1 | Instance Manager opt-in | `instanceManagerImage` field |
+| v1.7.0 | Sentinel-free mode | Current release - `sentinel.enabled: false` |
+| v1.8.0 | Instance Manager default | Opt-out via `instanceManagerImage: ""` |
+| v2.0.0 | Instance Manager required | Legacy mode removed |
 
-See [Issue #2](https://github.com/buildio/redis-operator/issues/2) for full details on readiness criteria and transition plan.
+See [Issue #2](https://github.com/buildio/redis-operator/issues/2) for instance manager details and [Issue #9](https://github.com/buildio/redis-operator/issues/9) for sentinel-free architecture.
 
 ## Requirements
 
@@ -80,7 +116,7 @@ helm install redis-operator redis-operator/redis-operator
 ### Install with kubectl
 
 ```bash
-REDIS_OPERATOR_VERSION=v1.6.1
+REDIS_OPERATOR_VERSION=v1.7.0
 kubectl apply --server-side -f https://raw.githubusercontent.com/buildio/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
 kubectl apply -f https://raw.githubusercontent.com/buildio/redis-operator/${REDIS_OPERATOR_VERSION}/example/operator/all-redis-operator-resources.yaml
 ```
@@ -89,13 +125,13 @@ kubectl apply -f https://raw.githubusercontent.com/buildio/redis-operator/${REDI
 
 ```bash
 # Default installation with RBAC, service account, resource limits
-kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/default?ref=v1.6.1 | kubectl apply -f -
+kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/default?ref=v1.7.0 | kubectl apply -f -
 
 # Minimal installation
-kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/minimal?ref=v1.6.1 | kubectl apply -f -
+kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/minimal?ref=v1.7.0 | kubectl apply -f -
 
 # Full installation with Prometheus ServiceMonitor
-kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/full?ref=v1.6.1 | kubectl apply -f -
+kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/full?ref=v1.7.0 | kubectl apply -f -
 ```
 
 ## Updating
@@ -105,7 +141,7 @@ kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/f
 Helm only manages CRD creation on first install. To update the CRD:
 
 ```bash
-REDIS_OPERATOR_VERSION=v1.6.1
+REDIS_OPERATOR_VERSION=v1.7.0
 kubectl replace --server-side -f https://raw.githubusercontent.com/buildio/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
 ```
 
@@ -120,7 +156,7 @@ helm upgrade redis-operator redis-operator/redis-operator
 ### Create a Redis Failover
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/buildio/redis-operator/v1.6.1/example/redisfailover/basic.yaml
+kubectl apply -f https://raw.githubusercontent.com/buildio/redis-operator/v1.7.0/example/redisfailover/basic.yaml
 ```
 
 This creates the following resources:
@@ -141,7 +177,7 @@ metadata:
 spec:
   redis:
     replicas: 3
-    instanceManagerImage: ghcr.io/buildio/redis-operator:v1.6.1
+    instanceManagerImage: ghcr.io/buildio/redis-operator:v1.7.0
   sentinel:
     replicas: 3
 ```
@@ -150,6 +186,37 @@ When `instanceManagerImage` is set:
 1. An init container copies the `redis-instance` binary to a shared volume
 2. The main container runs `redis-instance run` as PID 1
 3. The instance manager performs cleanup and manages Redis as a child process
+
+### Sentinel-Free Mode
+
+For simpler deployments, disable Sentinel and let the operator manage failover:
+
+```yaml
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: my-redis
+spec:
+  redis:
+    replicas: 2
+  sentinel:
+    enabled: false
+    failoverTimeout: "10s"  # Optional, defaults to 10s
+```
+
+This creates only:
+- `rfr-<NAME>`: Redis StatefulSet (2 pods)
+- `rf-rm-<NAME>`: Master Service (points to current master via label selector)
+- `rf-rs-<NAME>`: Slave Service (points to replicas)
+
+**No Sentinel pods are created.**
+
+The operator handles failover by:
+1. Detecting master failure via health checks
+2. Selecting the replica with highest replication offset
+3. Promoting it to master (`SLAVEOF NO ONE`)
+4. Reconfiguring other replicas to follow the new master
+5. Updating pod labels so Services route correctly
 
 ### Instance Manager CLI
 
@@ -168,6 +235,8 @@ redis-instance cleanup --data-dir /data --dry-run
 
 ### Connection
 
+**With Sentinel (default):**
+
 Connect using a [Sentinel-ready client library](https://redis.io/topics/sentinel-clients):
 
 ```
@@ -175,6 +244,17 @@ url: rfs-<NAME>
 port: 26379
 master-name: mymaster
 ```
+
+**Without Sentinel (`sentinel.enabled: false`):**
+
+Connect directly to the master service:
+
+```
+url: rf-rm-<NAME>
+port: 6379
+```
+
+The master service automatically routes to the current master pod.
 
 ### Enable Authentication
 
@@ -276,6 +356,8 @@ The E2E workflow validates:
 - Instance manager runs as PID 1
 - RDB cleanup works on pod restart
 - Redis remains functional after restart
+- Sentinel-free mode: no Sentinel resources created
+- Sentinel-free mode: operator-managed failover works
 
 ## Development
 
