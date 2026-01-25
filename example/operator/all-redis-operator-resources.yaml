@@ -19,7 +19,7 @@ spec:
       serviceAccountName: redisoperator
       enableServiceLinks: false
       containers:
-        - image: ghcr.io/buildio/redis-operator:v1.6.1
+        - image: ghcr.io/buildio/redis-operator:4.0.0
           imagePullPolicy: IfNotPresent
           name: app
           securityContext:

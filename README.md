@@ -142,7 +142,7 @@ helm install redis-operator redis-operator/redis-operator
 ### Install with kubectl
 
 ```bash
-REDIS_OPERATOR_VERSION=v4.0.0
+REDIS_OPERATOR_VERSION=4.0.0
 kubectl apply --server-side -f https://raw.githubusercontent.com/buildio/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
 kubectl apply -f https://raw.githubusercontent.com/buildio/redis-operator/${REDIS_OPERATOR_VERSION}/example/operator/all-redis-operator-resources.yaml
 ```
@@ -151,13 +151,13 @@ kubectl apply -f https://raw.githubusercontent.com/buildio/redis-operator/${REDI
 
 ```bash
 # Default installation with RBAC, service account, resource limits
-kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/default?ref=v4.0.0 | kubectl apply -f -
+kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/default?ref=4.0.0 | kubectl apply -f -
 
 # Minimal installation
-kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/minimal?ref=v4.0.0 | kubectl apply -f -
+kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/minimal?ref=4.0.0 | kubectl apply -f -
 
 # Full installation with Prometheus ServiceMonitor
-kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/full?ref=v4.0.0 | kubectl apply -f -
+kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/full?ref=4.0.0 | kubectl apply -f -
 ```
 
 ## Updating
@@ -167,7 +167,7 @@ kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/f
 Helm only manages CRD creation on first install. To update the CRD:
 
 ```bash
-REDIS_OPERATOR_VERSION=v4.0.0
+REDIS_OPERATOR_VERSION=4.0.0
 kubectl replace --server-side -f https://raw.githubusercontent.com/buildio/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
 ```
 
@@ -182,7 +182,7 @@ helm upgrade redis-operator redis-operator/redis-operator
 ### Create a Redis Failover
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/buildio/redis-operator/v4.0.0/example/redisfailover/basic.yaml
+kubectl apply -f https://raw.githubusercontent.com/buildio/redis-operator/4.0.0/example/redisfailover/basic.yaml
 ```
 
 This creates the following resources:

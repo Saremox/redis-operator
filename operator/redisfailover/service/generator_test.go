@@ -2510,7 +2510,7 @@ func TestRedisHTTPLivenessProbeWithInstanceManager(t *testing.T) {
 	var containerPorts []corev1.ContainerPort
 
 	rf := generateRF()
-	rf.Spec.Redis.InstanceManagerImage = "ghcr.io/buildio/redis-operator:v1.7.0"
+	rf.Spec.Redis.InstanceManagerImage = "ghcr.io/buildio/redis-operator:1.7.0"
 	rf.Spec.Redis.Port = 6379
 
 	ms := &mK8SService.Services{}
@@ -2568,12 +2568,12 @@ func TestRedisDefaultInstanceManagerImage(t *testing.T) {
 	assert.NoError(err)
 
 	// Verify instance manager init container uses default image
-	// Note: Historical releases use tags without leading 'v' (1.7.0)
+	// Note: Starting with 4.0.0, tags do not have leading 'v'
 	var instanceManagerFound bool
 	for _, c := range initContainers {
 		if c.Name == "instance-manager-init" {
 			instanceManagerFound = true
-			assert.Equal("ghcr.io/buildio/redis-operator:1.7.0", c.Image)
+			assert.Equal("ghcr.io/buildio/redis-operator:4.0.0", c.Image)
 		}
 	}
 	assert.True(instanceManagerFound, "Expected instance-manager-init container with default image")
@@ -2939,7 +2939,7 @@ func TestRedisHTTPReadinessProbeWithInstanceManager(t *testing.T) {
 	var readinessProbe *corev1.Probe
 
 	rf := generateRF()
-	rf.Spec.Redis.InstanceManagerImage = "ghcr.io/buildio/redis-operator:v1.7.0"
+	rf.Spec.Redis.InstanceManagerImage = "ghcr.io/buildio/redis-operator:1.7.0"
 	rf.Spec.Redis.Port = 6379
 
 	ms := &mK8SService.Services{}
