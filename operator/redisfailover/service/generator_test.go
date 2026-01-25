@@ -2568,11 +2568,12 @@ func TestRedisDefaultInstanceManagerImage(t *testing.T) {
 	assert.NoError(err)
 
 	// Verify instance manager init container uses default image
+	// Note: Historical releases use tags without leading 'v' (1.7.0)
 	var instanceManagerFound bool
 	for _, c := range initContainers {
 		if c.Name == "instance-manager-init" {
 			instanceManagerFound = true
-			assert.Equal("ghcr.io/buildio/redis-operator:v1.7.0", c.Image)
+			assert.Equal("ghcr.io/buildio/redis-operator:1.7.0", c.Image)
 		}
 	}
 	assert.True(instanceManagerFound, "Expected instance-manager-init container with default image")

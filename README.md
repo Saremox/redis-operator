@@ -17,8 +17,7 @@ v4.0.0 makes the instance manager the default and only mode. Legacy exec probes 
 **Key changes:**
 - Instance manager is always enabled (no opt-out)
 - HTTP health probes (`/healthz`, `/readyz`) are now the only probe type
-- Default `instanceManagerImage` is `ghcr.io/buildio/redis-operator:v1.7.0`
-- Chart version aligned with operator version (4.0.0)
+- Chart version aligned with operator version (4.0.0 / v4.0.0)
 
 **Minimal configuration (instance manager auto-configured):**
 ```yaml
@@ -105,20 +104,39 @@ See [Issue #2](https://github.com/buildio/redis-operator/issues/2) for instance 
 
 Tested against Kubernetes 1.29, 1.30, 1.31, 1.32, 1.33, 1.34 and Redis 6, 7.
 
+## Versioning
+
+**Chart and image versions are aligned.** Starting with v4.0.0:
+
+| Chart Version | Image Tag | Git Tag | Notes |
+|---------------|-----------|---------|-------|
+| 4.0.0 | v4.0.0 | v4.0.0 | All use leading `v` for image/git |
+
+**Important:**
+- **Helm chart version**: `4.0.0` (no leading `v`, per Helm convention)
+- **Docker image tag**: `v4.0.0` (includes leading `v`)
+- **Git tag**: `v4.0.0` (includes leading `v`)
+
+**Note:** Historical releases (v1.7.0 and earlier) used image tags without leading `v` (e.g., `1.7.0`).
+
+If you don't specify `image.tag`, the chart automatically uses the correct image version matching the chart's appVersion.
+
 ## Quick Start
 
-### Install from GitHub Container Registry
+### Install from GitHub Container Registry (Recommended)
 
 ```bash
 # Install CRD
 kubectl apply --server-side -f https://raw.githubusercontent.com/buildio/redis-operator/main/manifests/databases.spotahome.com_redisfailovers.yaml
 
-# Install operator
+# Install operator (uses default image version matching chart)
 helm upgrade --install redis-operator oci://ghcr.io/buildio/redis-operator/charts/redisoperator \
   --namespace redis-operator --create-namespace
 ```
 
-### Install with Helm
+No additional parameters required - the chart defaults to the correct image version.
+
+### Install with Helm Repository
 
 ```bash
 helm repo add redis-operator https://buildio.github.io/redis-operator

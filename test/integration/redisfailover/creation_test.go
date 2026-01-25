@@ -171,7 +171,8 @@ func (c *clients) testCRCreation(t *testing.T) {
 			Redis: redisfailoverv1.RedisSettings{
 				Replicas: redisSize,
 				// Instance manager image must be set to a valid image that exists in the test environment
-				InstanceManagerImage: "ghcr.io/buildio/redis-operator:v1.7.0",
+				// Note: Historical releases (pre-v4.0.0) use tags without leading 'v'
+				InstanceManagerImage: "ghcr.io/buildio/redis-operator:1.7.0",
 				Exporter: redisfailoverv1.Exporter{
 					Enabled: true,
 				},

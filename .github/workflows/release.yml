@@ -40,10 +40,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Image tags include leading 'v' to match git tags (v4.0.0)
+          # This keeps versioning consistent: git tag, image tag, and chart appVersion all use v4.0.0
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
             type=sha
 
       - name: Build and push Docker image
