@@ -56,6 +56,7 @@ jobs:
             redis:
               replicas: 3
               imagePullPolicy: IfNotPresent
+              instanceManagerImage: ghcr.io/buildio/redis-operator:test
               customLivenessProbe:
                 exec:
                   command:
@@ -397,6 +398,7 @@ jobs:
             redis:
               replicas: 2
               imagePullPolicy: IfNotPresent
+              instanceManagerImage: ghcr.io/buildio/redis-operator:test
               resources:
                 requests:
                   cpu: 100m
