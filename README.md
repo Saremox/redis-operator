@@ -217,8 +217,8 @@ Without Sentinel, failure detection relies on the operator's health checks. The 
 
 This creates only:
 - `rfr-<NAME>`: Redis StatefulSet (2 pods)
-- `rf-rm-<NAME>`: Master Service (points to current master via label selector)
-- `rf-rs-<NAME>`: Slave Service (points to replicas)
+- `rfrm-<NAME>`: Master Service (points to current master via label selector)
+- `rfrs-<NAME>`: Slave Service (points to replicas)
 
 **No Sentinel pods are created.**
 
@@ -261,7 +261,7 @@ master-name: mymaster
 Connect directly to the master service:
 
 ```
-url: rf-rm-<NAME>
+url: rfrm-<NAME>
 port: 6379
 ```
 
