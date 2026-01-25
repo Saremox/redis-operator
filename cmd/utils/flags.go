@@ -23,6 +23,7 @@ type CMDFlags struct {
 	Concurrency              int
 	SyncInterval             int
 	LogLevel                 string
+	InstanceManagerImage     string
 }
 
 // Init initializes and parse the flags
@@ -41,6 +42,7 @@ func (c *CMDFlags) Init() {
 	flag.IntVar(&c.Concurrency, "concurrency", 3, "Number of conccurent workers meant to process events")
 	flag.IntVar(&c.SyncInterval, "sync-interval", 30, "Number of seconds between checks")
 	flag.StringVar(&c.LogLevel, "log-level", "info", "set log level")
+	flag.StringVar(&c.InstanceManagerImage, "instance-manager-image", "", "Image containing the redis-instance binary for init containers (defaults to empty, which disables RDB cleanup)")
 	// Parse flags
 	flag.Parse()
 
@@ -57,5 +59,6 @@ func (c *CMDFlags) ToRedisOperatorConfig() redisfailover.Config {
 		Concurrency:              c.Concurrency,
 		SyncInterval:             c.SyncInterval,
 		SupportedNamespacesRegex: c.SupportedNamespacesRegex,
+		InstanceManagerImage:     c.InstanceManagerImage,
 	}
 }
