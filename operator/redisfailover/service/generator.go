@@ -257,7 +257,11 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	rfName := strings.ReplaceAll(strings.ToUpper(rf.Name), "-", "_")
 
 	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
-	shutdownContent := fmt.Sprintf(`master=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+
+	var shutdownContent string
+	if rf.SentinelEnabled() {
+		// Standard shutdown with Sentinel failover
+		shutdownContent = fmt.Sprintf(`master=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
 if [ "$master" = "$(hostname -i)" ]; then
   redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} SENTINEL failover mymaster
   sleep 31
@@ -268,6 +272,16 @@ if [ ! -z "${REDIS_PASSWORD}" ]; then
 fi
 save_command="${cmd} save"
 eval $save_command`, rfName, port)
+	} else {
+		// Operator-managed mode: just save data, no Sentinel failover
+		// The operator will handle master election during the next reconcile
+		shutdownContent = fmt.Sprintf(`cmd="redis-cli -p %[1]v"
+if [ ! -z "${REDIS_PASSWORD}" ]; then
+	export REDISCLI_AUTH=${REDIS_PASSWORD}
+fi
+save_command="${cmd} save"
+eval $save_command`, port)
+	}
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{

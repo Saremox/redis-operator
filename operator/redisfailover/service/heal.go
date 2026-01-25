@@ -24,6 +24,8 @@ type RedisFailoverHeal interface {
 	SetSentinelCustomConfig(ip string, rFailover *redisfailoverv1.RedisFailover) error
 	SetRedisCustomConfig(ip string, rFailover *redisfailoverv1.RedisFailover) error
 	DeletePod(podName string, rFailover *redisfailoverv1.RedisFailover) error
+	// Operator-managed failover methods
+	PromoteBestReplica(newMasterIP string, rFailover *redisfailoverv1.RedisFailover) error
 }
 
 // RedisFailoverHealer is our implementation of RedisFailoverCheck interface
@@ -257,4 +259,76 @@ func (r *RedisFailoverHealer) SetRedisCustomConfig(ip string, rf *redisfailoverv
 func (r *RedisFailoverHealer) DeletePod(podName string, rFailover *redisfailoverv1.RedisFailover) error {
 	r.logger.WithField("redisfailover", rFailover.Name).WithField("namespace", rFailover.Namespace).Infof("Deleting pods %s...", podName)
 	return r.k8sService.DeletePod(rFailover.Namespace, podName)
+}
+
+// PromoteBestReplica promotes a replica to master and reconfigures all other replicas.
+// This is used for operator-managed failover when Sentinel is disabled.
+func (r *RedisFailoverHealer) PromoteBestReplica(newMasterIP string, rf *redisfailoverv1.RedisFailover) error {
+	password, err := k8s.GetRedisPassword(r.k8sService, rf)
+	if err != nil {
+		return err
+	}
+
+	port := getRedisPort(rf.Spec.Redis.Port)
+
+	// Step 1: Promote the selected replica to master
+	r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
+		Infof("Promoting replica %s to master", newMasterIP)
+
+	if err := r.redisClient.MakeMaster(newMasterIP, port, password); err != nil {
+		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
+			Errorf("Failed to promote replica %s to master: %v", newMasterIP, err)
+		return err
+	}
+
+	// Step 2: Update pod labels for the new master
+	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
+	if err != nil {
+		return err
+	}
+
+	for _, rp := range rps.Items {
+		if rp.Status.PodIP == newMasterIP {
+			if err := r.setMasterLabelIfNecessary(rf.Namespace, rp); err != nil {
+				r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
+					Errorf("Failed to set master label on pod %s: %v", rp.Name, err)
+				return err
+			}
+			break
+		}
+	}
+
+	// Step 3: Reconfigure all other replicas to point to the new master
+	r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
+		Infof("Reconfiguring replicas to use new master %s", newMasterIP)
+
+	for _, rp := range rps.Items {
+		if rp.Status.PodIP == newMasterIP {
+			continue
+		}
+		if rp.Status.Phase != v1.PodRunning || rp.DeletionTimestamp != nil {
+			continue
+		}
+
+		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
+			Infof("Making pod %s slave of %s", rp.Name, newMasterIP)
+
+		if err := r.redisClient.MakeSlaveOfWithPort(rp.Status.PodIP, newMasterIP, port, password); err != nil {
+			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
+				Errorf("Failed to make %s slave of %s: %v", rp.Status.PodIP, newMasterIP, err)
+			// Continue with other replicas even if one fails
+			continue
+		}
+
+		if err := r.setSlaveLabelIfNecessary(rf.Namespace, rp); err != nil {
+			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
+				Errorf("Failed to set slave label on pod %s: %v", rp.Name, err)
+			// Continue with other replicas even if label update fails
+		}
+	}
+
+	r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
+		Infof("Failover completed: %s is now master", newMasterIP)
+
+	return nil
 }
