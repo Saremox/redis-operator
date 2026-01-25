@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      # Tags without leading 'v' (e.g., 4.0.0, not v4.0.0)
+      - '[0-9]*'
 
 env:
   REGISTRY: ghcr.io
@@ -40,6 +41,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Image tags WITHOUT leading 'v' (git tag v4.0.0 -> image tag 4.0.0)
+          # Chart version and image tag are the same (4.0.0)
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -108,14 +111,16 @@ jobs:
 
       - name: Update Chart version and image
         run: |
-          # Update Chart.yaml version to match tag
-          VERSION="${GITHUB_REF_NAME#v}"
+          # Git tag is the version directly (4.0.0, no 'v' prefix)
+          VERSION="${GITHUB_REF_NAME}"
+
+          # Update Chart.yaml - version, appVersion all match tag
           sed -i "s/^version:.*/version: $VERSION/" charts/redisoperator/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$GITHUB_REF_NAME\"/" charts/redisoperator/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/redisoperator/Chart.yaml
 
           # Update values.yaml with new image
           sed -i "s|repository:.*|repository: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}|" charts/redisoperator/values.yaml
-          sed -i "s/tag:.*/tag: $GITHUB_REF_NAME/" charts/redisoperator/values.yaml
+          sed -i "s/tag:.*/tag: \"$VERSION\"/" charts/redisoperator/values.yaml
 
       - name: Release Helm Chart
         uses: helm/chart-releaser-action@v1.7.0
