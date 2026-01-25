@@ -44,9 +44,11 @@ sentinel parallel-syncs mymaster 2`
 
 	// Instance manager volume and paths (follows CNPG model)
 	// See: https://cloudnative-pg.io/documentation/current/instance_manager/
-	instanceManagerVolumeName = "instance-manager"
-	instanceManagerMountPath  = "/controller"
-	instanceManagerBinaryName = "redis-instance"
+	instanceManagerVolumeName  = "instance-manager"
+	instanceManagerMountPath   = "/controller"
+	instanceManagerBinaryName  = "redis-instance"
+	instanceManagerHealthPort  = 8080
+	instanceManagerHealthzPath = "/healthz"
 
 	graceTime = 30
 )
@@ -443,9 +445,37 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 		}
 	}
 
+	// Add health port when instance manager is enabled
+	if instanceManagerEnabled(rf) {
+		ss.Spec.Template.Spec.Containers[0].Ports = append(
+			ss.Spec.Template.Spec.Containers[0].Ports,
+			corev1.ContainerPort{
+				Name:          "health",
+				ContainerPort: instanceManagerHealthPort,
+				Protocol:      corev1.ProtocolTCP,
+			},
+		)
+	}
+
 	if rf.Spec.Redis.CustomLivenessProbe != nil {
 		ss.Spec.Template.Spec.Containers[0].LivenessProbe = rf.Spec.Redis.CustomLivenessProbe
+	} else if instanceManagerEnabled(rf) {
+		// Use HTTP probe when instance manager is enabled (CNPG model)
+		// This avoids process spawning and works better under memory pressure
+		ss.Spec.Template.Spec.Containers[0].LivenessProbe = &corev1.Probe{
+			InitialDelaySeconds: graceTime,
+			TimeoutSeconds:      5,
+			FailureThreshold:    6,
+			PeriodSeconds:       15,
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: instanceManagerHealthzPath,
+					Port: intstr.FromInt32(instanceManagerHealthPort),
+				},
+			},
+		}
 	} else {
+		// Legacy exec probe for backwards compatibility
 		ss.Spec.Template.Spec.Containers[0].LivenessProbe = &corev1.Probe{
 			InitialDelaySeconds: graceTime,
 			TimeoutSeconds:      5,
