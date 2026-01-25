@@ -19,3 +19,7 @@ f_ver="-X main.Version=${VERSION:-dev}"
 # Build the operator binary
 echo "Building redis-operator binary at ./bin/redis-operator"
 CGO_ENABLED=0 go build -o ./bin/redis-operator --ldflags "${ldf_cmp} ${f_ver}" ./cmd/redisoperator
+
+# Build the instance manager binary
+echo "Building redis-instance binary at ./bin/redis-instance"
+CGO_ENABLED=0 go build -o ./bin/redis-instance --ldflags "${ldf_cmp} ${f_ver}" ./cmd/instance
