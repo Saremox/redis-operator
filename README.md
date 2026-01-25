@@ -8,6 +8,12 @@ Redis Operator creates/configures/manages redis-failovers atop Kubernetes.
 
 This is a fork of `spotahome/redis-operator` → `Saremox/redis-operator` → `buildio/redis-operator`.
 
+## What's New in v1.6.1
+
+**Disable Service Links** ([#3](https://github.com/buildio/redis-operator/issues/3))
+
+v1.6.1 sets `enableServiceLinks: false` on all pods to prevent startup failures in namespaces with many services. Kubernetes by default injects environment variables for every service in the namespace, which can exceed limits and cause pod failures.
+
 ## What's New in v1.6.0
 
 **CNPG-style Instance Manager** ([#2](https://github.com/buildio/redis-operator/issues/2))
@@ -28,7 +34,7 @@ metadata:
 spec:
   redis:
     replicas: 3
-    instanceManagerImage: ghcr.io/buildio/redis-operator:v1.6.0
+    instanceManagerImage: ghcr.io/buildio/redis-operator:v1.6.1
   sentinel:
     replicas: 3
 ```
@@ -37,7 +43,7 @@ spec:
 
 | Version | Instance Manager Status | Notes |
 |---------|------------------------|-------|
-| v1.6.0 | Opt-in via `instanceManagerImage` | Current release |
+| v1.6.1 | Opt-in via `instanceManagerImage` | Current release |
 | v1.7.0 | Enabled by default | Opt-out via `instanceManagerImage: ""` |
 | v2.0.0 | Required | Legacy mode removed |
 
@@ -74,7 +80,7 @@ helm install redis-operator redis-operator/redis-operator
 ### Install with kubectl
 
 ```bash
-REDIS_OPERATOR_VERSION=v1.6.0
+REDIS_OPERATOR_VERSION=v1.6.1
 kubectl apply --server-side -f https://raw.githubusercontent.com/buildio/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
 kubectl apply -f https://raw.githubusercontent.com/buildio/redis-operator/${REDIS_OPERATOR_VERSION}/example/operator/all-redis-operator-resources.yaml
 ```
@@ -83,13 +89,13 @@ kubectl apply -f https://raw.githubusercontent.com/buildio/redis-operator/${REDI
 
 ```bash
 # Default installation with RBAC, service account, resource limits
-kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/default?ref=v1.6.0 | kubectl apply -f -
+kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/default?ref=v1.6.1 | kubectl apply -f -
 
 # Minimal installation
-kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/minimal?ref=v1.6.0 | kubectl apply -f -
+kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/minimal?ref=v1.6.1 | kubectl apply -f -
 
 # Full installation with Prometheus ServiceMonitor
-kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/full?ref=v1.6.0 | kubectl apply -f -
+kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/full?ref=v1.6.1 | kubectl apply -f -
 ```
 
 ## Updating
@@ -99,7 +105,7 @@ kustomize build github.com/buildio/redis-operator/manifests/kustomize/overlays/f
 Helm only manages CRD creation on first install. To update the CRD:
 
 ```bash
-REDIS_OPERATOR_VERSION=v1.6.0
+REDIS_OPERATOR_VERSION=v1.6.1
 kubectl replace --server-side -f https://raw.githubusercontent.com/buildio/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
 ```
 
@@ -114,7 +120,7 @@ helm upgrade redis-operator redis-operator/redis-operator
 ### Create a Redis Failover
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/buildio/redis-operator/v1.6.0/example/redisfailover/basic.yaml
+kubectl apply -f https://raw.githubusercontent.com/buildio/redis-operator/v1.6.1/example/redisfailover/basic.yaml
 ```
 
 This creates the following resources:
@@ -135,7 +141,7 @@ metadata:
 spec:
   redis:
     replicas: 3
-    instanceManagerImage: ghcr.io/buildio/redis-operator:v1.6.0
+    instanceManagerImage: ghcr.io/buildio/redis-operator:v1.6.1
   sentinel:
     replicas: 3
 ```
