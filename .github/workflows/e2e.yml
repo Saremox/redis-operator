@@ -452,10 +452,10 @@ jobs:
           kubectl get statefulset rfr-test-no-sentinel
           echo "✓ Redis StatefulSet exists"
 
-          kubectl get service rf-rm-test-no-sentinel
+          kubectl get service rfrm-test-no-sentinel
           echo "✓ Master Service exists"
 
-          kubectl get service rf-rs-test-no-sentinel
+          kubectl get service rfrs-test-no-sentinel
           echo "✓ Slave Service exists"
 
       - name: Verify master is elected
@@ -589,7 +589,7 @@ jobs:
           done
 
           # Check master service endpoints
-          ENDPOINTS=$(kubectl get endpoints rf-rm-test-no-sentinel -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || echo "")
+          ENDPOINTS=$(kubectl get endpoints rfrm-test-no-sentinel -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || echo "")
           echo "Master service endpoint: $ENDPOINTS"
 
           if [[ "$ENDPOINTS" == "$MASTER_IP" ]]; then
