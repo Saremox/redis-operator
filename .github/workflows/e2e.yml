@@ -427,6 +427,41 @@ jobs:
             sleep 5
           done
 
+      - name: Verify httpGet liveness probe is configured
+        run: |
+          echo "Checking liveness probe configuration..."
+          PROBE_TYPE=$(kubectl get statefulset rfr-test-im -o jsonpath='{.spec.template.spec.containers[0].livenessProbe.httpGet.path}')
+          echo "Liveness probe path: $PROBE_TYPE"
+          if [[ "$PROBE_TYPE" == "/healthz" ]]; then
+            echo "✓ HTTP liveness probe is configured with /healthz path"
+          else
+            echo "✗ Expected httpGet probe with /healthz path"
+            kubectl get statefulset rfr-test-im -o yaml | grep -A 10 livenessProbe
+            exit 1
+          fi
+
+          PROBE_PORT=$(kubectl get statefulset rfr-test-im -o jsonpath='{.spec.template.spec.containers[0].livenessProbe.httpGet.port}')
+          echo "Liveness probe port: $PROBE_PORT"
+          if [[ "$PROBE_PORT" == "8080" ]]; then
+            echo "✓ HTTP liveness probe is configured on port 8080"
+          else
+            echo "✗ Expected probe on port 8080, got $PROBE_PORT"
+            exit 1
+          fi
+
+      - name: Verify health port is exposed
+        run: |
+          echo "Checking container ports..."
+          HEALTH_PORT=$(kubectl get statefulset rfr-test-im -o jsonpath='{.spec.template.spec.containers[0].ports[?(@.name=="health")].containerPort}')
+          echo "Health port: $HEALTH_PORT"
+          if [[ "$HEALTH_PORT" == "8080" ]]; then
+            echo "✓ Health port 8080 is exposed"
+          else
+            echo "✗ Expected health port 8080"
+            kubectl get statefulset rfr-test-im -o jsonpath='{.spec.template.spec.containers[0].ports}'
+            exit 1
+          fi
+
       - name: Verify instance manager is PID 1
         run: |
           echo "Checking process tree..."

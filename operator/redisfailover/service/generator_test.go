@@ -2442,6 +2442,84 @@ func TestRedisCustomLivenessProbe(t *testing.T) {
 	}
 }
 
+func TestRedisHTTPLivenessProbeWithInstanceManager(t *testing.T) {
+	assert := assert.New(t)
+
+	var livenessProbe *corev1.Probe
+	var containerPorts []corev1.ContainerPort
+
+	rf := generateRF()
+	rf.Spec.Redis.InstanceManagerImage = "ghcr.io/buildio/redis-operator:v1.7.0"
+	rf.Spec.Redis.Port = 6379
+
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		s := args.Get(1).(*appsv1.StatefulSet)
+		livenessProbe = s.Spec.Template.Spec.Containers[0].LivenessProbe
+		containerPorts = s.Spec.Template.Spec.Containers[0].Ports
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
+	assert.NoError(err)
+
+	// Verify HTTP liveness probe is used
+	assert.NotNil(livenessProbe)
+	assert.NotNil(livenessProbe.HTTPGet, "Expected HTTPGet probe when instance manager is enabled")
+	assert.Nil(livenessProbe.Exec, "Expected no Exec probe when instance manager is enabled")
+	assert.Equal("/healthz", livenessProbe.HTTPGet.Path)
+	assert.Equal(int32(8080), livenessProbe.HTTPGet.Port.IntVal)
+	assert.Equal(int32(30), livenessProbe.InitialDelaySeconds)
+	assert.Equal(int32(5), livenessProbe.TimeoutSeconds)
+	assert.Equal(int32(6), livenessProbe.FailureThreshold)
+	assert.Equal(int32(15), livenessProbe.PeriodSeconds)
+
+	// Verify health port is added to container
+	var healthPortFound bool
+	for _, port := range containerPorts {
+		if port.Name == "health" && port.ContainerPort == 8080 {
+			healthPortFound = true
+			break
+		}
+	}
+	assert.True(healthPortFound, "Expected health port 8080 to be added when instance manager is enabled")
+}
+
+func TestRedisExecLivenessProbeWithoutInstanceManager(t *testing.T) {
+	assert := assert.New(t)
+
+	var livenessProbe *corev1.Probe
+	var containerPorts []corev1.ContainerPort
+
+	rf := generateRF()
+	rf.Spec.Redis.InstanceManagerImage = "" // Explicitly no instance manager
+	rf.Spec.Redis.Port = 6379
+
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		s := args.Get(1).(*appsv1.StatefulSet)
+		livenessProbe = s.Spec.Template.Spec.Containers[0].LivenessProbe
+		containerPorts = s.Spec.Template.Spec.Containers[0].Ports
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
+	assert.NoError(err)
+
+	// Verify Exec liveness probe is used (legacy behavior)
+	assert.NotNil(livenessProbe)
+	assert.Nil(livenessProbe.HTTPGet, "Expected no HTTPGet probe when instance manager is disabled")
+	assert.NotNil(livenessProbe.Exec, "Expected Exec probe when instance manager is disabled")
+	assert.Contains(livenessProbe.Exec.Command[2], "redis-cli")
+
+	// Verify health port is NOT added to container
+	for _, port := range containerPorts {
+		assert.NotEqual("health", port.Name, "Health port should not be added when instance manager is disabled")
+	}
+}
+
 func TestSentinelCustomLivenessProbe(t *testing.T) {
 	tests := []struct {
 		name                  string
