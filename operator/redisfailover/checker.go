@@ -106,6 +106,11 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		return r.checkAndHealBootstrapMode(rf)
 	}
 
+	// Route to operator-managed mode when Sentinel is disabled
+	if rf.OperatorManagedFailover() {
+		return r.checkAndHealOperatorManagedMode(rf)
+	}
+
 	// Number of redis is equal as the set on the RF spec
 	// Number of sentinel is equal as the set on the RF spec
 	// Check only one master
@@ -309,6 +314,152 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		}
 	}
 	return r.checkAndHealSentinels(rf, sentinels)
+}
+
+// checkAndHealOperatorManagedMode handles failover when Sentinel is disabled.
+// The operator directly manages master election and failover.
+func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailoverv1.RedisFailover) error {
+	if !r.rfChecker.IsRedisRunning(rf) {
+		errorMsg := "not all replicas running"
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: errorMsg,
+		}
+		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.REDIS_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
+		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of redis mismatch, waiting for redis statefulset reconcile")
+		return nil
+	}
+
+	nMasters, err := r.rfChecker.GetNumberMasters(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to get number of masters",
+		}
+		return err
+	}
+
+	switch nMasters {
+	case 0:
+		// No master available - elect one
+		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no masters detected"))
+		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("No master available, operator will elect one")
+
+		// Try to select best replica by replication offset
+		bestReplica, err := r.rfChecker.GetBestReplicaForPromotion(rf)
+		if err != nil {
+			// Fall back to oldest pod if we can't determine best replica
+			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
+				Warnf("Could not determine best replica: %v, falling back to oldest", err)
+			err = r.rfHealer.SetOldestAsMaster(rf)
+			setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err)
+			if err != nil {
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: "failed to elect master",
+				}
+				return err
+			}
+		} else {
+			// Promote the best replica
+			err = r.rfHealer.PromoteBestReplica(bestReplica.IP, rf)
+			setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err)
+			if err != nil {
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: "failed to promote replica",
+				}
+				return err
+			}
+		}
+		return nil
+
+	case 1:
+		// Exactly one master - check its health
+		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NUMBER_OF_MASTERS, metrics.NOT_APPLICABLE, nil)
+
+		healthy, masterIP, err := r.rfChecker.CheckMasterHealth(rf)
+		if err != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: "unable to check master health",
+			}
+			return err
+		}
+
+		if !healthy {
+			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
+				Warningf("Master %s is unhealthy, initiating failover", masterIP)
+
+			// Master is unhealthy - promote a replica
+			bestReplica, err := r.rfChecker.GetBestReplicaForPromotion(rf)
+			if err != nil {
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: "no healthy replica available for failover",
+				}
+				return err
+			}
+
+			err = r.rfHealer.PromoteBestReplica(bestReplica.IP, rf)
+			if err != nil {
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: "failover failed",
+				}
+				return err
+			}
+			return nil
+		}
+
+		// Master is healthy - ensure all slaves are connected to it
+		err = r.rfChecker.CheckAllSlavesFromMaster(masterIP, rf)
+		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.SLAVE_WRONG_MASTER, metrics.NOT_APPLICABLE, err)
+		if err != nil {
+			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
+				Warningf("Slave not associated to master: %s", err.Error())
+			if err = r.rfHealer.SetMasterOnAll(masterIP, rf); err != nil {
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: "failed to configure slaves",
+				}
+				return err
+			}
+		}
+
+	default:
+		// Multiple masters - error state
+		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NUMBER_OF_MASTERS, metrics.NOT_APPLICABLE, errors.New("multiple masters detected"))
+		errorMsg := "multiple masters detected, fix manually"
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: errorMsg,
+		}
+		return errors.New(errorMsg)
+	}
+
+	// Apply custom Redis configuration
+	err = r.applyRedisCustomConfig(rf)
+	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.APPLY_REDIS_CONFIG, metrics.NOT_APPLICABLE, err)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to apply custom config",
+		}
+		return err
+	}
+
+	// Update stale pods
+	err = r.UpdateRedisesPods(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to update redis pods",
+		}
+		return err
+	}
+
+	return nil
 }
 
 func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.RedisFailover) error {

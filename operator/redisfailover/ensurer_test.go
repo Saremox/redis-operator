@@ -115,6 +115,9 @@ func TestEnsure(t *testing.T) {
 				mrfs.On("EnsureSentinelService", rf, mock.Anything, mock.Anything).Once().Return(nil)
 				mrfs.On("EnsureSentinelConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
 				mrfs.On("EnsureSentinelDeployment", rf, mock.Anything, mock.Anything).Once().Return(nil)
+			} else {
+				// When bootstrapping without allowing sentinels, cleanup is called
+				mrfs.On("EnsureNotPresentSentinelResources", rf).Once().Return(nil)
 			}
 
 			mrfs.On("EnsureRedisMasterService", rf, mock.Anything, mock.Anything).Once().Return(nil)
