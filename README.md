@@ -106,20 +106,17 @@ Tested against Kubernetes 1.29, 1.30, 1.31, 1.32, 1.33, 1.34 and Redis 6, 7.
 
 ## Versioning
 
-**Chart and image versions are aligned.** Starting with v4.0.0:
+**Chart version, appVersion, and Docker image tag are identical** (no leading `v`):
 
-| Chart Version | Image Tag | Git Tag | Notes |
-|---------------|-----------|---------|-------|
-| 4.0.0 | v4.0.0 | v4.0.0 | All use leading `v` for image/git |
+| Git Tag | Chart Version | Image Tag | Notes |
+|---------|---------------|-----------|-------|
+| v4.0.0 | 4.0.0 | 4.0.0 | Git tag has `v`, everything else doesn't |
 
-**Important:**
-- **Helm chart version**: `4.0.0` (no leading `v`, per Helm convention)
-- **Docker image tag**: `v4.0.0` (includes leading `v`)
-- **Git tag**: `v4.0.0` (includes leading `v`)
+**Example:** Git tag `v4.0.0` produces:
+- Helm chart version: `4.0.0`
+- Docker image: `ghcr.io/buildio/redis-operator:4.0.0`
 
-**Note:** Historical releases (v1.7.0 and earlier) used image tags without leading `v` (e.g., `1.7.0`).
-
-If you don't specify `image.tag`, the chart automatically uses the correct image version matching the chart's appVersion.
+If you don't specify `image.tag`, the chart automatically uses the appVersion (e.g., `4.0.0`).
 
 ## Quick Start
 
