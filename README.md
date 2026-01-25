@@ -22,10 +22,13 @@ metadata:
 spec:
   redis:
     replicas: 2
+    instanceManagerImage: ghcr.io/buildio/redis-operator:v1.7.0  # Recommended for faster failure detection
   sentinel:
     enabled: false  # Operator manages failover instead of Sentinel
     failoverTimeout: "10s"  # Optional, defaults to 10s
 ```
+
+**Note:** Using `instanceManagerImage` with sentinel-free mode is recommended. The instance manager's HTTP health endpoints (`/healthz`, `/readyz`) provide faster and more reliable failure detection than exec probes.
 
 **How it works:**
 - Operator monitors Redis pods and detects master failures
@@ -199,10 +202,18 @@ metadata:
 spec:
   redis:
     replicas: 2
+    instanceManagerImage: ghcr.io/buildio/redis-operator:v1.7.0  # Recommended
   sentinel:
     enabled: false
     failoverTimeout: "10s"  # Optional, defaults to 10s
 ```
+
+**Why use instanceManagerImage with sentinel-free mode?**
+
+Without Sentinel, failure detection relies on the operator's health checks. The instance manager provides:
+- HTTP health probes (faster than exec probes)
+- Immediate detection of Redis process crashes
+- No process spawning overhead during health checks
 
 This creates only:
 - `rfr-<NAME>`: Redis StatefulSet (2 pods)
