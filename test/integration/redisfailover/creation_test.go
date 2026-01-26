@@ -51,6 +51,10 @@ type clients struct {
 	redisClient redis.Client
 }
 
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 func (c *clients) prepareNS() error {
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -162,6 +166,9 @@ func TestRedisFailover(t *testing.T) {
 
 func (c *clients) testCRCreation(t *testing.T) {
 	assert := assert.New(t)
+	// Get instance manager image from environment, fallback to test tag
+	instanceManagerImage := "ghcr.io/buildio/redis-operator:test"
+
 	toCreate := &redisfailoverv1.RedisFailover{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -169,10 +176,8 @@ func (c *clients) testCRCreation(t *testing.T) {
 		},
 		Spec: redisfailoverv1.RedisFailoverSpec{
 			Redis: redisfailoverv1.RedisSettings{
-				Replicas: redisSize,
-				// Instance manager image must be set to a valid image that exists in the test environment
-				// Note: Historical releases (pre-v4.0.0) use tags without leading 'v'
-				InstanceManagerImage: "ghcr.io/buildio/redis-operator:1.7.0",
+				Replicas:             redisSize,
+				InstanceManagerImage: instanceManagerImage,
 				Exporter: redisfailoverv1.Exporter{
 					Enabled: true,
 				},
@@ -180,6 +185,8 @@ func (c *clients) testCRCreation(t *testing.T) {
 			},
 			Sentinel: redisfailoverv1.SentinelSettings{
 				Replicas: sentinelSize,
+				// Sentinel must be explicitly enabled in v4.0.0+ (default is false)
+				Enabled: boolPtr(true),
 			},
 			Auth: redisfailoverv1.AuthSettings{
 				SecretPath: authSecretPath,
