@@ -3,8 +3,12 @@ VERSION := v1.5.0-rc0
 # Name of this service/application
 SERVICE_NAME := redis-operator
 
-# Docker image name for this project
-IMAGE_NAME := saremox/$(SERVICE_NAME)
+# Docker image name for this project - derived from git remote
+# Extracts owner/repo from git@github.com:owner/repo.git or https://github.com/owner/repo.git
+IMAGE_NAME := $(shell git remote get-url origin 2>/dev/null | sed -E 's|.*github.com[:/]||; s|\.git$$||')
+ifeq ($(IMAGE_NAME),)
+  IMAGE_NAME := local/$(SERVICE_NAME)
+endif
 
 # Repository url for this project
 REPOSITORY := ghcr.io/$(IMAGE_NAME)
@@ -196,7 +200,17 @@ update-codegen:
 	-e GENERATION_TARGETS="deepcopy,client" \
 	$(CODEGEN_IMAGE)
 
+# Generate CRD using controller-gen (requires controller-gen v0.20.0+ for Go 1.25+)
+# Install: go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+.PHONY: generate-crd
 generate-crd:
+	controller-gen crd paths=./api/... output:crd:dir=./manifests
+	cp -f manifests/databases.spotahome.com_redisfailovers.yaml manifests/kustomize/base/
+	cp -f manifests/databases.spotahome.com_redisfailovers.yaml charts/redisoperator/crds/
+
+# Legacy CRD generation using docker (deprecated - use generate-crd instead)
+.PHONY: generate-crd-docker
+generate-crd-docker:
 	docker run -it --rm \
 	-v $(PWD):/go/src/$(PROJECT_PACKAGE) \
 	-e GO_PROJECT_ROOT=/go/src/$(PROJECT_PACKAGE) \
