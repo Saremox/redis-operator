@@ -6,7 +6,9 @@
 image:
   repository: ghcr.io/buildio/redis-operator
   pullPolicy: IfNotPresent
-  tag: v1.5.0
+  # Image tag. If not specified, defaults to Chart appVersion (e.g., "4.0.0").
+  # Note: Starting with 4.0.0, tags do NOT have a leading "v" (4.0.0, not v4.0.0).
+  tag: ""
   cli_args: ""
 
 imageCredentials:

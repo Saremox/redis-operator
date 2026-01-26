@@ -470,12 +470,15 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 				Protocol:      corev1.ProtocolTCP,
 			},
 		)
+
+		// Note: REDIS_PASSWORD env var is added by getRedisEnv() when auth is configured.
+		// The instance manager health server reads this env var to authenticate to Redis.
 	}
 
 	if rf.Spec.Redis.CustomLivenessProbe != nil {
 		ss.Spec.Template.Spec.Containers[0].LivenessProbe = rf.Spec.Redis.CustomLivenessProbe
-	} else if instanceManagerEnabled(rf) {
-		// Use HTTP probe when instance manager is enabled (CNPG model)
+	} else {
+		// HTTP probe via instance manager (CNPG model)
 		// This avoids process spawning and works better under memory pressure
 		ss.Spec.Template.Spec.Containers[0].LivenessProbe = &corev1.Probe{
 			InitialDelaySeconds: graceTime,
@@ -489,29 +492,12 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 				},
 			},
 		}
-	} else {
-		// Legacy exec probe for backwards compatibility
-		ss.Spec.Template.Spec.Containers[0].LivenessProbe = &corev1.Probe{
-			InitialDelaySeconds: graceTime,
-			TimeoutSeconds:      5,
-			FailureThreshold:    6,
-			PeriodSeconds:       15,
-			ProbeHandler: corev1.ProbeHandler{
-				Exec: &corev1.ExecAction{
-					Command: []string{
-						"sh",
-						"-c",
-						fmt.Sprintf("redis-cli -h $(hostname) -p %[1]v --user pinger --pass pingpass --no-auth-warning ping | grep PONG", rf.Spec.Redis.Port),
-					},
-				},
-			},
-		}
 	}
 
 	if rf.Spec.Redis.CustomReadinessProbe != nil {
 		ss.Spec.Template.Spec.Containers[0].ReadinessProbe = rf.Spec.Redis.CustomReadinessProbe
-	} else if instanceManagerEnabled(rf) {
-		// Use HTTP probe when instance manager is enabled (CNPG model)
+	} else {
+		// HTTP probe via instance manager (CNPG model)
 		// The /readyz endpoint checks: not loading, not syncing, master link up
 		ss.Spec.Template.Spec.Containers[0].ReadinessProbe = &corev1.Probe{
 			InitialDelaySeconds: graceTime,
@@ -522,17 +508,6 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: instanceManagerReadyzPath,
 					Port: intstr.FromInt32(instanceManagerHealthPort),
-				},
-			},
-		}
-	} else {
-		// Legacy exec probe for backwards compatibility
-		ss.Spec.Template.Spec.Containers[0].ReadinessProbe = &corev1.Probe{
-			InitialDelaySeconds: graceTime,
-			TimeoutSeconds:      5,
-			ProbeHandler: corev1.ProbeHandler{
-				Exec: &corev1.ExecAction{
-					Command: []string{"/bin/sh", "/redis-readiness/ready.sh"},
 				},
 			},
 		}
@@ -1162,26 +1137,32 @@ func getRedisCommand(rf *redisfailoverv1.RedisFailover) []string {
 	if len(rf.Spec.Redis.Command) > 0 {
 		return rf.Spec.Redis.Command
 	}
-	// If instance manager is enabled, use it as PID 1 (CNPG model)
-	if rf.Spec.Redis.InstanceManagerImage != "" {
-		return []string{
-			fmt.Sprintf("%s/%s", instanceManagerMountPath, instanceManagerBinaryName),
-			"run",
-			"--redis-conf", fmt.Sprintf("/redis/%s", redisConfigFileName),
-		}
-	}
+	// Instance manager runs as PID 1 (CNPG model)
+	// This is required in v4.0.0+ - legacy mode is removed
 	return []string{
-		"redis-server",
-		fmt.Sprintf("/redis/%s", redisConfigFileName),
+		fmt.Sprintf("%s/%s", instanceManagerMountPath, instanceManagerBinaryName),
+		"run",
+		"--redis-conf", fmt.Sprintf("/redis/%s", redisConfigFileName),
 	}
 }
 
-// instanceManagerEnabled returns true if the instance manager is configured.
+// instanceManagerEnabled returns true if the instance manager should be used.
+// Since v4.0.0, instance manager is always enabled - legacy exec probes are removed.
 // The instance manager follows the CloudNativePG model where it runs as PID 1
 // and manages the Redis process as a child.
 // See: https://cloudnative-pg.io/documentation/current/instance_manager/
 func instanceManagerEnabled(rf *redisfailoverv1.RedisFailover) bool {
-	return rf.Spec.Redis.InstanceManagerImage != ""
+	// Always enabled in v4.0.0+. Legacy exec probes are removed.
+	return true
+}
+
+// getInstanceManagerImage returns the instance manager image to use.
+// If not specified in the CRD, uses the default operator image.
+func getInstanceManagerImage(rf *redisfailoverv1.RedisFailover) string {
+	if rf.Spec.Redis.InstanceManagerImage != "" {
+		return rf.Spec.Redis.InstanceManagerImage
+	}
+	return redisfailoverv1.DefaultInstanceManagerImage
 }
 
 // createInstanceManagerInitContainer creates an init container that copies the
@@ -1189,7 +1170,7 @@ func instanceManagerEnabled(rf *redisfailoverv1.RedisFailover) bool {
 func createInstanceManagerInitContainer(rf *redisfailoverv1.RedisFailover) corev1.Container {
 	return corev1.Container{
 		Name:            "instance-manager-init",
-		Image:           rf.Spec.Redis.InstanceManagerImage,
+		Image:           getInstanceManagerImage(rf),
 		ImagePullPolicy: pullPolicy(rf.Spec.Redis.ImagePullPolicy),
 		Command: []string{
 			"cp",

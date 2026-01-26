@@ -313,7 +313,7 @@ func TestHealthServerStatus(t *testing.T) {
 	assert.Equal(t, int64(99999), resp.Replication.MasterReplOffset)
 
 	// Instance manager status
-	assert.Equal(t, "v1.7.0", resp.InstanceManager.Version)
+	assert.Equal(t, "4.0.0", resp.InstanceManager.Version)
 	assert.GreaterOrEqual(t, resp.InstanceManager.UptimeSeconds, int64(120))
 	assert.True(t, resp.InstanceManager.StartupCleanupDone)
 	assert.Equal(t, 8080, resp.InstanceManager.HealthPort)

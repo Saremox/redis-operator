@@ -348,7 +348,7 @@ func (h *HealthServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			MasterSyncInProgress: info["master_sync_in_progress"] == "1",
 		},
 		InstanceManager: InstanceManagerStatus{
-			Version:            "v1.7.0",
+			Version:            "4.0.0",
 			UptimeSeconds:      int64(time.Since(h.startTime).Seconds()),
 			StartupCleanupDone: cleanupDone,
 			HealthPort:         h.port,

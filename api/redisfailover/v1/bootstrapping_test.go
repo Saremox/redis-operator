@@ -63,26 +63,36 @@ func TestBootstrapping(t *testing.T) {
 }
 
 func TestSentinelsAllowed(t *testing.T) {
+	trueVal := true
 	tests := []struct {
 		name              string
 		expectation       bool
+		sentinelEnabled   *bool
 		bootstrapSettings *BootstrapSettings
 	}{
 		{
-			name:        "without BootstrapSettings",
-			expectation: true,
+			name:            "without BootstrapSettings (sentinel disabled by default)",
+			expectation:     false,
+			sentinelEnabled: nil,
 		},
 		{
-			name:        "with BootstrapSettings",
+			name:            "sentinel explicitly enabled",
+			expectation:     true,
+			sentinelEnabled: &trueVal,
+		},
+		{
+			name:        "sentinel enabled with BootstrapSettings",
 			expectation: false,
+			sentinelEnabled: &trueVal,
 			bootstrapSettings: &BootstrapSettings{
 				Host: "127.0.0.1",
 				Port: "6379",
 			},
 		},
 		{
-			name:        "with BootstrapSettings that allows sentinels",
+			name:        "sentinel enabled with BootstrapSettings that allows sentinels",
 			expectation: true,
+			sentinelEnabled: &trueVal,
 			bootstrapSettings: &BootstrapSettings{
 				Host:           "127.0.0.1",
 				Port:           "6379",
@@ -93,7 +103,18 @@ func TestSentinelsAllowed(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			rf := generateRedisFailover("test", test.bootstrapSettings)
+			rf := &RedisFailover{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "namespace",
+				},
+				Spec: RedisFailoverSpec{
+					Sentinel: SentinelSettings{
+						Enabled: test.sentinelEnabled,
+					},
+					BootstrapNode: test.bootstrapSettings,
+				},
+			}
 			assert.Equal(t, test.expectation, rf.SentinelsAllowed())
 		})
 	}
@@ -109,9 +130,9 @@ func TestSentinelEnabled(t *testing.T) {
 		expectation     bool
 	}{
 		{
-			name:            "nil (default true)",
+			name:            "nil (default false in v4.0.0+)",
 			sentinelEnabled: nil,
-			expectation:     true,
+			expectation:     false,
 		},
 		{
 			name:            "explicitly true",
@@ -143,9 +164,9 @@ func TestOperatorManagedFailover(t *testing.T) {
 		expectation     bool
 	}{
 		{
-			name:            "nil (default - Sentinel enabled, operator NOT managing)",
+			name:            "nil (default - Sentinel disabled, operator IS managing in v4.0.0+)",
 			sentinelEnabled: nil,
-			expectation:     false,
+			expectation:     true,
 		},
 		{
 			name:            "sentinel explicitly enabled - operator NOT managing",
@@ -178,14 +199,14 @@ func TestSentinelsAllowedWithSentinelEnabled(t *testing.T) {
 		expectation       bool
 	}{
 		{
-			name:            "sentinel disabled - sentinels not allowed",
+			name:            "sentinel disabled explicitly - sentinels not allowed",
 			sentinelEnabled: &falseVal,
 			expectation:     false,
 		},
 		{
-			name:            "sentinel enabled (default) - sentinels allowed",
+			name:            "sentinel disabled (default in v4.0.0+) - sentinels not allowed",
 			sentinelEnabled: nil,
-			expectation:     true,
+			expectation:     false,
 		},
 		{
 			name:            "sentinel enabled explicitly - sentinels allowed",
