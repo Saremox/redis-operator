@@ -178,13 +178,15 @@ func (c *clients) testCRCreation(t *testing.T) {
 			Redis: redisfailoverv1.RedisSettings{
 				Replicas:             redisSize,
 				InstanceManagerImage: instanceManagerImage,
+				ImagePullPolicy:      corev1.PullNever, // Use locally built image
 				Exporter: redisfailoverv1.Exporter{
 					Enabled: true,
 				},
 				CustomConfig: []string{`save ""`},
 			},
 			Sentinel: redisfailoverv1.SentinelSettings{
-				Replicas: sentinelSize,
+				Replicas:        sentinelSize,
+				ImagePullPolicy: corev1.PullNever, // Use locally built image
 				// Sentinel must be explicitly enabled in v4.0.0+ (default is false)
 				Enabled: boolPtr(true),
 			},
