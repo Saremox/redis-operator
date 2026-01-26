@@ -17,6 +17,8 @@ jobs:
           go-version-file: go.mod
       - name: Build redis-operator
         run: go build -v ./cmd/redisoperator
+      - name: Build redis-instance
+        run: go build -v ./cmd/instance
 
   check:
     name: Lint
