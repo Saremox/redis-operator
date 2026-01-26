@@ -69,9 +69,7 @@ jobs:
           minikube-version: 1.37.0
           driver: none
       - name: Build operator image for tests
-        run: |
-          eval $(minikube docker-env)
-          docker build -t ghcr.io/buildio/redis-operator:test -f docker/app/Dockerfile .
+        run: docker build -t ghcr.io/buildio/redis-operator:test -f docker/app/Dockerfile .
       - name: Add redisfailover CRD
         run: kubectl create -f manifests/databases.spotahome.com_redisfailovers.yaml
       - run: make ci-integration-test
