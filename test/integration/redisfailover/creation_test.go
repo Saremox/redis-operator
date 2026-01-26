@@ -55,6 +55,73 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
+// waitForPodsReady waits for all pods matching the label selector to be Ready
+func (c *clients) waitForPodsReady(labelSelector string, expectedCount int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		listOptions := metav1.ListOptions{
+			LabelSelector: labelSelector,
+		}
+		pods, err := c.k8sClient.CoreV1().Pods(namespace).List(context.Background(), listOptions)
+		if err != nil {
+			return err
+		}
+
+		readyCount := 0
+		for _, pod := range pods.Items {
+			for _, cond := range pod.Status.Conditions {
+				if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+					readyCount++
+					break
+				}
+			}
+		}
+
+		if readyCount >= expectedCount {
+			return nil
+		}
+
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf("timed out waiting for %d pods to be Ready", expectedCount)
+}
+
+// printPodDiagnostics prints pod status for debugging
+func (c *clients) printPodDiagnostics() {
+	pods, err := c.k8sClient.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		fmt.Printf("Error listing pods: %v\n", err)
+		return
+	}
+
+	fmt.Println("=== Pod Diagnostics ===")
+	for _, pod := range pods.Items {
+		fmt.Printf("Pod: %s, Phase: %s\n", pod.Name, pod.Status.Phase)
+		for _, cond := range pod.Status.Conditions {
+			fmt.Printf("  Condition: %s = %s (Reason: %s)\n", cond.Type, cond.Status, cond.Reason)
+		}
+		for _, cs := range pod.Status.ContainerStatuses {
+			fmt.Printf("  Container: %s, Ready: %t, RestartCount: %d\n", cs.Name, cs.Ready, cs.RestartCount)
+			if cs.State.Waiting != nil {
+				fmt.Printf("    Waiting: %s - %s\n", cs.State.Waiting.Reason, cs.State.Waiting.Message)
+			}
+			if cs.State.Terminated != nil {
+				fmt.Printf("    Terminated: %s - %s\n", cs.State.Terminated.Reason, cs.State.Terminated.Message)
+			}
+		}
+		for _, cs := range pod.Status.InitContainerStatuses {
+			fmt.Printf("  InitContainer: %s, Ready: %t\n", cs.Name, cs.Ready)
+			if cs.State.Waiting != nil {
+				fmt.Printf("    Waiting: %s - %s\n", cs.State.Waiting.Reason, cs.State.Waiting.Message)
+			}
+			if cs.State.Terminated != nil {
+				fmt.Printf("    Terminated: ExitCode=%d, Reason=%s\n", cs.State.Terminated.ExitCode, cs.State.Terminated.Reason)
+			}
+		}
+	}
+	fmt.Println("=== End Pod Diagnostics ===")
+}
+
 func (c *clients) prepareNS() error {
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -139,6 +206,20 @@ func TestRedisFailover(t *testing.T) {
 
 	// Giving time to the operator to create the resources
 	time.Sleep(3 * time.Minute)
+
+	// Wait for Redis pods to be Ready before running connectivity tests
+	redisLabelSelector := fmt.Sprintf("app.kubernetes.io/component=redis,redisfailovers.databases.spotahome.com/name=%s", name)
+	if err := clients.waitForPodsReady(redisLabelSelector, int(redisSize), 3*time.Minute); err != nil {
+		t.Logf("Warning: Redis pods not ready: %v", err)
+		clients.printPodDiagnostics()
+	}
+
+	// Wait for Sentinel pods to be Ready
+	sentinelLabelSelector := fmt.Sprintf("app.kubernetes.io/component=sentinel,redisfailovers.databases.spotahome.com/name=%s", name)
+	if err := clients.waitForPodsReady(sentinelLabelSelector, int(sentinelSize), 2*time.Minute); err != nil {
+		t.Logf("Warning: Sentinel pods not ready: %v", err)
+		clients.printPodDiagnostics()
+	}
 
 	// Verify that auth is set and actually working
 	t.Run("Check that auth is set in sentinel and redis configs", clients.testAuth)
