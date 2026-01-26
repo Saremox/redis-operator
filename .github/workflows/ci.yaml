@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches:
@@ -98,6 +101,10 @@ jobs:
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        # This is kinda hacky, but it's the simplest way to get the lowercase repo name https://github.com/orgs/community/discussions/25768
+      - name: downcase REPO
+        run: |
+          echo "REPO=${GITHUB_REPOSITORY,,}" >>${GITHUB_ENV}
       - name: Build Docker image
         uses: docker/build-push-action@v6
         with:
@@ -105,4 +112,4 @@ jobs:
           file: ./docker/app/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: false
-          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          tags: ghcr.io/${{ env.REPO }}:${{ github.sha }}
