@@ -8,6 +8,7 @@ spec:
     type: RollingUpdate
   template:
     spec:
+      enableServiceLinks: false
       containers:
         - name: redis-operator
           image: ghcr.io/saremox/redis-operator:v1.4.0
