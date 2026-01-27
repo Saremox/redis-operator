@@ -969,7 +969,8 @@ func (_m *Services) WatchRedisFailovers(ctx context.Context, namespace string, o
 	return r0, r1
 }
 
-func (_m *Services) UpdateRedisFailoverStatus(ctx context.Context, namespace string, redisFailover *redisfailoverv1.RedisFailover, opts metav1.PatchOptions) {}
+func (_m *Services) UpdateRedisFailoverStatus(ctx context.Context, namespace string, redisFailover *redisfailoverv1.RedisFailover, opts metav1.PatchOptions) {
+}
 
 type mockConstructorTestingTNewServices interface {
 	mock.TestingT

@@ -247,8 +247,6 @@ func TestRedisFailover(t *testing.T) {
 
 func (c *clients) testCRCreation(t *testing.T) {
 	assert := assert.New(t)
-	// Get instance manager image from environment, fallback to test tag
-	instanceManagerImage := "ghcr.io/buildio/redis-operator:test"
 
 	toCreate := &redisfailoverv1.RedisFailover{
 		ObjectMeta: metav1.ObjectMeta{
@@ -257,9 +255,8 @@ func (c *clients) testCRCreation(t *testing.T) {
 		},
 		Spec: redisfailoverv1.RedisFailoverSpec{
 			Redis: redisfailoverv1.RedisSettings{
-				Replicas:             redisSize,
-				InstanceManagerImage: instanceManagerImage,
-				ImagePullPolicy:      corev1.PullNever, // Use locally built image
+				Replicas:        redisSize,
+				ImagePullPolicy: corev1.PullIfNotPresent, // Use locally built image
 				Exporter: redisfailoverv1.Exporter{
 					Enabled: true,
 				},
@@ -267,7 +264,7 @@ func (c *clients) testCRCreation(t *testing.T) {
 			},
 			Sentinel: redisfailoverv1.SentinelSettings{
 				Replicas:        sentinelSize,
-				ImagePullPolicy: corev1.PullNever, // Use locally built image
+				ImagePullPolicy: corev1.PullIfNotPresent, // Use locally built image
 				// Sentinel must be explicitly enabled in v4.0.0+ (default is false)
 				Enabled: boolPtr(true),
 			},

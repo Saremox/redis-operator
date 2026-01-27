@@ -28,6 +28,9 @@ func generateConfig() rfOperator.Config {
 }
 
 func generateRF(enableExporter bool, bootstrapping bool) *redisfailoverv1.RedisFailover {
+	// Explicitly enable sentinel for tests that expect sentinel behavior
+	// (sentinel is disabled by default in v4.0.0+)
+	sentinelEnabled := true
 	return &redisfailoverv1.RedisFailover{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -41,6 +44,7 @@ func generateRF(enableExporter bool, bootstrapping bool) *redisfailoverv1.RedisF
 				},
 			},
 			Sentinel: redisfailoverv1.SentinelSettings{
+				Enabled:  &sentinelEnabled,
 				Replicas: int32(3),
 			},
 			BootstrapNode: generateRFBootstrappingNode(bootstrapping),
@@ -115,6 +119,9 @@ func TestEnsure(t *testing.T) {
 				mrfs.On("EnsureSentinelService", rf, mock.Anything, mock.Anything).Once().Return(nil)
 				mrfs.On("EnsureSentinelConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
 				mrfs.On("EnsureSentinelDeployment", rf, mock.Anything, mock.Anything).Once().Return(nil)
+			} else {
+				// When bootstrapping without allowing sentinels, cleanup is called
+				mrfs.On("EnsureNotPresentSentinelResources", rf).Once().Return(nil)
 			}
 
 			mrfs.On("EnsureRedisMasterService", rf, mock.Anything, mock.Anything).Once().Return(nil)
