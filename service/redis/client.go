@@ -14,6 +14,18 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
+// ReplicationInfo contains replication information for a Redis instance
+type ReplicationInfo struct {
+	Role             string // "master" or "slave"
+	MasterHost       string // only for slaves
+	MasterPort       string // only for slaves
+	MasterLinkStatus string // "up" or "down"
+	SlaveReplOffset  int64  // replication offset for slaves
+	MasterReplOffset int64  // replication offset for masters
+	ConnectedSlaves  int    // number of connected slaves (for masters)
+	SyncInProgress   bool   // true if slave is syncing
+}
+
 // Client defines the functions neccesary to connect to redis and sentinel to get or set what we nned
 type Client interface {
 	GetNumberSentinelsInMemory(ip string) (int32, error)
@@ -31,6 +43,7 @@ type Client interface {
 	SetCustomRedisConfig(ip string, port string, configs []string, password string) error
 	SlaveIsReady(ip, port, password string) (bool, error)
 	SentinelCheckQuorum(ip string) error
+	GetReplicationInfo(ip, port, password string) (*ReplicationInfo, error)
 }
 
 type client struct {
@@ -520,6 +533,75 @@ func (c *client) SlaveIsReady(ip, port, password string) (bool, error) {
 		strings.Contains(info, redisLinkUp)
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, strings.Split(rClient.Options().Addr, ":")[0], metrics.SLAVE_IS_READY, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return ok, nil
+}
+
+// GetReplicationInfo returns detailed replication information for a Redis instance.
+// This is used for operator-managed failover to select the best replica for promotion.
+func (c *client) GetReplicationInfo(ip, port, password string) (*ReplicationInfo, error) {
+	options := &rediscli.Options{
+		Addr:     net.JoinHostPort(ip, port),
+		Password: password,
+		DB:       0,
+	}
+	rClient := rediscli.NewClient(options)
+	defer func(rClient *rediscli.Client) {
+		err := rClient.Close()
+		if err != nil {
+			log.Error(err.Error())
+		}
+	}(rClient)
+
+	info, err := rClient.Info(context.TODO(), "replication").Result()
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_REPLICATION_INFO, metrics.FAIL, getRedisError(err))
+		return nil, err
+	}
+
+	replInfo := &ReplicationInfo{}
+
+	// Parse the INFO replication output
+	lines := strings.Split(info, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		switch key {
+		case "role":
+			replInfo.Role = value
+		case "master_host":
+			replInfo.MasterHost = value
+		case "master_port":
+			replInfo.MasterPort = value
+		case "master_link_status":
+			replInfo.MasterLinkStatus = value
+		case "slave_repl_offset":
+			if offset, err := strconv.ParseInt(value, 10, 64); err == nil {
+				replInfo.SlaveReplOffset = offset
+			}
+		case "master_repl_offset":
+			if offset, err := strconv.ParseInt(value, 10, 64); err == nil {
+				replInfo.MasterReplOffset = offset
+			}
+		case "connected_slaves":
+			if count, err := strconv.Atoi(value); err == nil {
+				replInfo.ConnectedSlaves = count
+			}
+		case "master_sync_in_progress":
+			replInfo.SyncInProgress = value == "1"
+		}
+	}
+
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_REPLICATION_INFO, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return replInfo, nil
 }
 
 func getRedisError(err error) string {

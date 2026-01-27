@@ -17,6 +17,7 @@ spec:
         app: redisoperator
     spec:
       serviceAccountName: redisoperator
+      enableServiceLinks: false
       containers:
         - image: ghcr.io/saremox/redis-operator:v1.4.0
           imagePullPolicy: IfNotPresent

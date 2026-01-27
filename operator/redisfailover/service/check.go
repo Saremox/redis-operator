@@ -17,6 +17,14 @@ import (
 	"github.com/saremox/redis-operator/service/redis"
 )
 
+// ReplicaInfo holds information about a Redis replica for failover decisions
+type ReplicaInfo struct {
+	IP                string
+	PodName           string
+	ReplicationOffset int64
+	IsReady           bool
+}
+
 // RedisFailoverCheck defines the interface able to check the correct status of redis failover
 type RedisFailoverCheck interface {
 	CheckRedisNumber(rFailover *redisfailoverv1.RedisFailover) error
@@ -40,6 +48,10 @@ type RedisFailoverCheck interface {
 	IsRedisRunning(rFailover *redisfailoverv1.RedisFailover) bool
 	IsSentinelRunning(rFailover *redisfailoverv1.RedisFailover) bool
 	IsClusterRunning(rFailover *redisfailoverv1.RedisFailover) bool
+	// Operator-managed failover methods
+	CheckMasterHealth(rFailover *redisfailoverv1.RedisFailover) (bool, string, error)
+	GetBestReplicaForPromotion(rFailover *redisfailoverv1.RedisFailover) (*ReplicaInfo, error)
+	GetReplicaReplicationOffsets(rFailover *redisfailoverv1.RedisFailover) ([]ReplicaInfo, error)
 }
 
 // RedisFailoverChecker is our implementation of RedisFailoverCheck interface
@@ -490,6 +502,119 @@ func (r *RedisFailoverChecker) IsSentinelRunning(rFailover *redisfailoverv1.Redi
 // IsClusterRunning returns true if all the pods in the given redisfailover are Running
 func (r *RedisFailoverChecker) IsClusterRunning(rFailover *redisfailoverv1.RedisFailover) bool {
 	return r.IsSentinelRunning(rFailover) && r.IsRedisRunning(rFailover)
+}
+
+// CheckMasterHealth checks if the current master is healthy and reachable.
+// Returns (healthy, masterIP, error)
+func (r *RedisFailoverChecker) CheckMasterHealth(rf *redisfailoverv1.RedisFailover) (bool, string, error) {
+	masterIP, err := r.GetMasterIP(rf)
+	if err != nil {
+		// No master found
+		return false, "", nil
+	}
+
+	password, err := k8s.GetRedisPassword(r.k8sService, rf)
+	if err != nil {
+		return false, masterIP, err
+	}
+
+	port := getRedisPort(rf.Spec.Redis.Port)
+
+	// Check if master responds to ping
+	isMaster, err := r.redisClient.IsMaster(masterIP, port, password)
+	if err != nil {
+		r.logger.WithField("ip", masterIP).Warnf("Master health check failed: %v", err)
+		return false, masterIP, nil
+	}
+
+	return isMaster, masterIP, nil
+}
+
+// GetBestReplicaForPromotion returns the best replica to promote as master.
+// Selection is based on replication offset (highest wins) to minimize data loss.
+func (r *RedisFailoverChecker) GetBestReplicaForPromotion(rf *redisfailoverv1.RedisFailover) (*ReplicaInfo, error) {
+	replicas, err := r.GetReplicaReplicationOffsets(rf)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(replicas) == 0 {
+		return nil, errors.New("no replicas available for promotion")
+	}
+
+	// Find replica with highest replication offset that is ready
+	var best *ReplicaInfo
+	for i := range replicas {
+		replica := &replicas[i]
+		if !replica.IsReady {
+			continue
+		}
+		if best == nil || replica.ReplicationOffset > best.ReplicationOffset {
+			best = replica
+		}
+	}
+
+	// If no ready replica found, fall back to any replica with highest offset
+	if best == nil {
+		for i := range replicas {
+			replica := &replicas[i]
+			if best == nil || replica.ReplicationOffset > best.ReplicationOffset {
+				best = replica
+			}
+		}
+	}
+
+	if best == nil {
+		return nil, errors.New("no suitable replica found for promotion")
+	}
+
+	r.logger.Infof("Selected replica %s (offset: %d) for promotion", best.IP, best.ReplicationOffset)
+	return best, nil
+}
+
+// GetReplicaReplicationOffsets returns replication offset information for all replicas
+func (r *RedisFailoverChecker) GetReplicaReplicationOffsets(rf *redisfailoverv1.RedisFailover) ([]ReplicaInfo, error) {
+	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
+	if err != nil {
+		return nil, err
+	}
+
+	password, err := k8s.GetRedisPassword(r.k8sService, rf)
+	if err != nil {
+		return nil, err
+	}
+
+	port := getRedisPort(rf.Spec.Redis.Port)
+	var replicas []ReplicaInfo
+
+	for _, rp := range rps.Items {
+		if rp.Status.Phase != corev1.PodRunning || rp.DeletionTimestamp != nil {
+			continue
+		}
+
+		replInfo, err := r.redisClient.GetReplicationInfo(rp.Status.PodIP, port, password)
+		if err != nil {
+			r.logger.WithField("ip", rp.Status.PodIP).Warnf("Failed to get replication info: %v", err)
+			continue
+		}
+
+		// Skip masters
+		if replInfo.Role == "master" {
+			continue
+		}
+
+		// Check if replica is ready (not syncing, link up)
+		isReady := !replInfo.SyncInProgress && replInfo.MasterLinkStatus == "up"
+
+		replicas = append(replicas, ReplicaInfo{
+			IP:                rp.Status.PodIP,
+			PodName:           rp.Name,
+			ReplicationOffset: replInfo.SlaveReplOffset,
+			IsReady:           isReady,
+		})
+	}
+
+	return replicas, nil
 }
 
 func getRedisPort(p int32) string {

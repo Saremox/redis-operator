@@ -9631,6 +9631,11 @@ spec:
                   dnsPolicy:
                     description: DNSPolicy defines how a pod's DNS will be configured.
                     type: string
+                  enabled:
+                    description: |-
+                      Enabled controls whether Sentinel is deployed. When false, the operator
+                      manages failover instead of Sentinel. Defaults to true.
+                    type: boolean
                   exporter:
                     description: Exporter defines the specification for the redis/sentinel
                       exporter
@@ -13312,6 +13317,11 @@ spec:
                       - name
                       type: object
                     type: array
+                  failoverTimeout:
+                    description: |-
+                      FailoverTimeout is how long to wait before promoting a replica when
+                      operator-managed failover is used (sentinel.enabled=false). Defaults to 10s.
+                    type: string
                   hostNetwork:
                     type: boolean
                   image:
