@@ -81,8 +81,8 @@ func TestSentinelsAllowed(t *testing.T) {
 			sentinelEnabled: &trueVal,
 		},
 		{
-			name:        "sentinel enabled with BootstrapSettings",
-			expectation: false,
+			name:            "sentinel enabled with BootstrapSettings",
+			expectation:     false,
 			sentinelEnabled: &trueVal,
 			bootstrapSettings: &BootstrapSettings{
 				Host: "127.0.0.1",
@@ -90,8 +90,8 @@ func TestSentinelsAllowed(t *testing.T) {
 			},
 		},
 		{
-			name:        "sentinel enabled with BootstrapSettings that allows sentinels",
-			expectation: true,
+			name:            "sentinel enabled with BootstrapSettings that allows sentinels",
+			expectation:     true,
 			sentinelEnabled: &trueVal,
 			bootstrapSettings: &BootstrapSettings{
 				Host:           "127.0.0.1",

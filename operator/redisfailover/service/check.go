@@ -19,10 +19,10 @@ import (
 
 // ReplicaInfo holds information about a Redis replica for failover decisions
 type ReplicaInfo struct {
-	IP              string
-	PodName         string
+	IP                string
+	PodName           string
 	ReplicationOffset int64
-	IsReady         bool
+	IsReady           bool
 }
 
 // RedisFailoverCheck defines the interface able to check the correct status of redis failover

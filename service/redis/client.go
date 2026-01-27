@@ -16,14 +16,14 @@ import (
 
 // ReplicationInfo contains replication information for a Redis instance
 type ReplicationInfo struct {
-	Role              string // "master" or "slave"
-	MasterHost        string // only for slaves
-	MasterPort        string // only for slaves
-	MasterLinkStatus  string // "up" or "down"
-	SlaveReplOffset   int64  // replication offset for slaves
-	MasterReplOffset  int64  // replication offset for masters
-	ConnectedSlaves   int    // number of connected slaves (for masters)
-	SyncInProgress    bool   // true if slave is syncing
+	Role             string // "master" or "slave"
+	MasterHost       string // only for slaves
+	MasterPort       string // only for slaves
+	MasterLinkStatus string // "up" or "down"
+	SlaveReplOffset  int64  // replication offset for slaves
+	MasterReplOffset int64  // replication offset for masters
+	ConnectedSlaves  int    // number of connected slaves (for masters)
+	SyncInProgress   bool   // true if slave is syncing
 }
 
 // Client defines the functions neccesary to connect to redis and sentinel to get or set what we nned
