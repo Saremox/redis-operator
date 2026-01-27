@@ -24,6 +24,7 @@ type RedisFailoverHeal interface {
 	SetSentinelCustomConfig(ip string, rFailover *redisfailoverv1.RedisFailover) error
 	SetRedisCustomConfig(ip string, rFailover *redisfailoverv1.RedisFailover) error
 	DeletePod(podName string, rFailover *redisfailoverv1.RedisFailover) error
+	// Operator-managed failover methods
 	PromoteBestReplica(newMasterIP string, rFailover *redisfailoverv1.RedisFailover) error
 }
 

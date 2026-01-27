@@ -15,6 +15,20 @@ const (
 	defaultRedisPort             = 6379
 	HealthyState                 = "Healthy"
 	NotHealthyState              = "NotHealthy"
+
+	// DefaultInstanceManagerImage is the default image used for the instance manager.
+	// This image contains the redis-instance binary that runs as PID 1.
+	// Users can override this per-RedisFailover via spec.redis.instanceManagerImage.
+	DefaultInstanceManagerImage = "ghcr.io/buildio/redis-operator:4.0.0"
+)
+
+var (
+	// DefaultSentinelEnabled is the default value for sentinel.enabled
+	// Starting with 4.0.0, sentinel is DISABLED by default (operator-managed failover)
+	// Set sentinel.enabled: true to use Redis Sentinel for failover
+	DefaultSentinelEnabled = false
+	// DefaultFailoverTimeout is the default timeout for operator-managed failover
+	DefaultFailoverTimeout = metav1.Duration{Duration: 10 * time.Second}
 )
 
 var (

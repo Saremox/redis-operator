@@ -55,6 +55,10 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											Name:      "redis-data",
 											MountPath: "/data",
 										},
+										{
+											Name:      "instance-manager",
+											MountPath: "/controller",
+										},
 									},
 								},
 							},
@@ -89,6 +93,12 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											},
 											DefaultMode: &executeMode,
 										},
+									},
+								},
+								{
+									Name: "instance-manager",
+									VolumeSource: corev1.VolumeSource{
+										EmptyDir: &corev1.EmptyDirVolumeSource{},
 									},
 								},
 								{
@@ -129,6 +139,10 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											Name:      "redis-data",
 											MountPath: "/data",
 										},
+										{
+											Name:      "instance-manager",
+											MountPath: "/controller",
+										},
 									},
 								},
 							},
@@ -163,6 +177,12 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											},
 											DefaultMode: &executeMode,
 										},
+									},
+								},
+								{
+									Name: "instance-manager",
+									VolumeSource: corev1.VolumeSource{
+										EmptyDir: &corev1.EmptyDirVolumeSource{},
 									},
 								},
 								{
@@ -209,6 +229,10 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											Name:      "pvc-data",
 											MountPath: "/data",
 										},
+										{
+											Name:      "instance-manager",
+											MountPath: "/controller",
+										},
 									},
 								},
 							},
@@ -243,6 +267,12 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											},
 											DefaultMode: &executeMode,
 										},
+									},
+								},
+								{
+									Name: "instance-manager",
+									VolumeSource: corev1.VolumeSource{
+										EmptyDir: &corev1.EmptyDirVolumeSource{},
 									},
 								},
 							},
@@ -319,6 +349,10 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											Name:      "pvc-data",
 											MountPath: "/data",
 										},
+										{
+											Name:      "instance-manager",
+											MountPath: "/controller",
+										},
 									},
 								},
 							},
@@ -353,6 +387,12 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											},
 											DefaultMode: &executeMode,
 										},
+									},
+								},
+								{
+									Name: "instance-manager",
+									VolumeSource: corev1.VolumeSource{
+										EmptyDir: &corev1.EmptyDirVolumeSource{},
 									},
 								},
 							},
@@ -434,6 +474,10 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											Name:      "pvc-data",
 											MountPath: "/data",
 										},
+										{
+											Name:      "instance-manager",
+											MountPath: "/controller",
+										},
 									},
 								},
 							},
@@ -468,6 +512,12 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											},
 											DefaultMode: &executeMode,
 										},
+									},
+								},
+								{
+									Name: "instance-manager",
+									VolumeSource: corev1.VolumeSource{
+										EmptyDir: &corev1.EmptyDirVolumeSource{},
 									},
 								},
 							},
@@ -554,7 +604,9 @@ func TestRedisStatefulSetCommands(t *testing.T) {
 			name:          "Default values",
 			givenCommands: []string{},
 			expectedCommands: []string{
-				"redis-server",
+				"/controller/redis-instance",
+				"run",
+				"--redis-conf",
 				"/redis/redis.conf",
 			},
 		},
@@ -2029,8 +2081,20 @@ func TestRedisExtraVolumeMounts(t *testing.T) {
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
 		ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			s := args.Get(1).(*appsv1.StatefulSet)
-			extraVolume = s.Spec.Template.Spec.Volumes[3]
-			extraVolumeMount = s.Spec.Template.Spec.Containers[0].VolumeMounts[4]
+			// Find the extra volume by name (order may vary with instance manager)
+			for _, v := range s.Spec.Template.Spec.Volumes {
+				if v.Name == test.expectedVolumes[0].Name {
+					extraVolume = v
+					break
+				}
+			}
+			// Find the extra volume mount by name
+			for _, vm := range s.Spec.Template.Spec.Containers[0].VolumeMounts {
+				if vm.Name == test.expectedVolumeMounts[0].Name {
+					extraVolumeMount = vm
+					break
+				}
+			}
 		}).Return(nil)
 
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
@@ -2408,12 +2472,9 @@ func TestRedisCustomLivenessProbe(t *testing.T) {
 				FailureThreshold:    6,
 				PeriodSeconds:       15,
 				ProbeHandler: corev1.ProbeHandler{
-					Exec: &corev1.ExecAction{
-						Command: []string{
-							"sh",
-							"-c",
-							"redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep PONG",
-						},
+					HTTPGet: &corev1.HTTPGetAction{
+						Path: "/healthz",
+						Port: intstr.FromInt32(8080),
 					},
 				},
 			},
@@ -2440,6 +2501,82 @@ func TestRedisCustomLivenessProbe(t *testing.T) {
 		assert.NoError(err)
 		assert.Equal(test.expectedLivenessProbe, livenessProbe)
 	}
+}
+
+func TestRedisHTTPLivenessProbeWithInstanceManager(t *testing.T) {
+	assert := assert.New(t)
+
+	var livenessProbe *corev1.Probe
+	var containerPorts []corev1.ContainerPort
+
+	rf := generateRF()
+	rf.Spec.Redis.InstanceManagerImage = "ghcr.io/buildio/redis-operator:1.7.0"
+	rf.Spec.Redis.Port = 6379
+
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		s := args.Get(1).(*appsv1.StatefulSet)
+		livenessProbe = s.Spec.Template.Spec.Containers[0].LivenessProbe
+		containerPorts = s.Spec.Template.Spec.Containers[0].Ports
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
+	assert.NoError(err)
+
+	// Verify HTTP liveness probe is used
+	assert.NotNil(livenessProbe)
+	assert.NotNil(livenessProbe.HTTPGet, "Expected HTTPGet probe when instance manager is enabled")
+	assert.Nil(livenessProbe.Exec, "Expected no Exec probe when instance manager is enabled")
+	assert.Equal("/healthz", livenessProbe.HTTPGet.Path)
+	assert.Equal(int32(8080), livenessProbe.HTTPGet.Port.IntVal)
+	assert.Equal(int32(30), livenessProbe.InitialDelaySeconds)
+	assert.Equal(int32(5), livenessProbe.TimeoutSeconds)
+	assert.Equal(int32(6), livenessProbe.FailureThreshold)
+	assert.Equal(int32(15), livenessProbe.PeriodSeconds)
+
+	// Verify health port is added to container
+	var healthPortFound bool
+	for _, port := range containerPorts {
+		if port.Name == "health" && port.ContainerPort == 8080 {
+			healthPortFound = true
+			break
+		}
+	}
+	assert.True(healthPortFound, "Expected health port 8080 to be added when instance manager is enabled")
+}
+
+func TestRedisDefaultInstanceManagerImage(t *testing.T) {
+	assert := assert.New(t)
+
+	var initContainers []corev1.Container
+
+	rf := generateRF()
+	rf.Spec.Redis.InstanceManagerImage = "" // No explicit image - should use default
+	rf.Spec.Redis.Port = 6379
+
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		s := args.Get(1).(*appsv1.StatefulSet)
+		initContainers = s.Spec.Template.Spec.InitContainers
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
+	assert.NoError(err)
+
+	// Verify instance manager init container uses default image
+	// Note: Starting with 4.0.0, tags do not have leading 'v'
+	var instanceManagerFound bool
+	for _, c := range initContainers {
+		if c.Name == "instance-manager-init" {
+			instanceManagerFound = true
+			assert.Equal("ghcr.io/buildio/redis-operator:4.0.0", c.Image)
+		}
+	}
+	assert.True(instanceManagerFound, "Expected instance-manager-init container with default image")
 }
 
 func TestSentinelCustomLivenessProbe(t *testing.T) {
@@ -2558,9 +2695,12 @@ func TestRedisCustomReadinessProbe(t *testing.T) {
 			expectedReadinessProbe: &corev1.Probe{
 				InitialDelaySeconds: 30,
 				TimeoutSeconds:      5,
+				PeriodSeconds:       10,
+				FailureThreshold:    3,
 				ProbeHandler: corev1.ProbeHandler{
-					Exec: &corev1.ExecAction{
-						Command: []string{"/bin/sh", "/redis-readiness/ready.sh"},
+					HTTPGet: &corev1.HTTPGetAction{
+						Path: "/readyz",
+						Port: intstr.FromInt32(8080),
 					},
 				},
 			},
@@ -2791,4 +2931,63 @@ func TestSentinelCustomStartupProbe(t *testing.T) {
 		assert.NoError(err)
 		assert.Equal(test.expectedStartupProbe, startupProbe)
 	}
+}
+
+func TestRedisHTTPReadinessProbeWithInstanceManager(t *testing.T) {
+	assert := assert.New(t)
+
+	var readinessProbe *corev1.Probe
+
+	rf := generateRF()
+	rf.Spec.Redis.InstanceManagerImage = "ghcr.io/buildio/redis-operator:1.7.0"
+	rf.Spec.Redis.Port = 6379
+
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		s := args.Get(1).(*appsv1.StatefulSet)
+		readinessProbe = s.Spec.Template.Spec.Containers[0].ReadinessProbe
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
+	assert.NoError(err)
+
+	// Verify HTTP readiness probe is used
+	assert.NotNil(readinessProbe)
+	assert.NotNil(readinessProbe.HTTPGet, "Expected HTTPGet probe when instance manager is enabled")
+	assert.Nil(readinessProbe.Exec, "Expected no Exec probe when instance manager is enabled")
+	assert.Equal("/readyz", readinessProbe.HTTPGet.Path)
+	assert.Equal(int32(8080), readinessProbe.HTTPGet.Port.IntVal)
+	assert.Equal(int32(30), readinessProbe.InitialDelaySeconds)
+	assert.Equal(int32(5), readinessProbe.TimeoutSeconds)
+	assert.Equal(int32(3), readinessProbe.FailureThreshold)
+	assert.Equal(int32(10), readinessProbe.PeriodSeconds)
+}
+
+func TestRedisHTTPReadinessProbeAlwaysUsed(t *testing.T) {
+	assert := assert.New(t)
+
+	var readinessProbe *corev1.Probe
+
+	rf := generateRF()
+	rf.Spec.Redis.InstanceManagerImage = "" // No explicit image - uses default, HTTP probes required
+	rf.Spec.Redis.Port = 6379
+
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		s := args.Get(1).(*appsv1.StatefulSet)
+		readinessProbe = s.Spec.Template.Spec.Containers[0].ReadinessProbe
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
+	assert.NoError(err)
+
+	// Verify HTTP readiness probe is always used (v4.0.0+)
+	assert.NotNil(readinessProbe)
+	assert.NotNil(readinessProbe.HTTPGet, "Expected HTTPGet probe in v4.0.0+")
+	assert.Equal("/readyz", readinessProbe.HTTPGet.Path)
+	assert.Equal(int32(8080), readinessProbe.HTTPGet.Port.IntVal)
 }

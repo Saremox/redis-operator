@@ -40,6 +40,12 @@ type RedisCommandRename struct {
 type RedisSettings struct {
 	Image                         string                            `json:"image,omitempty"`
 	ImagePullPolicy               corev1.PullPolicy                 `json:"imagePullPolicy,omitempty"`
+	// InstanceManagerImage is the image containing the redis-instance binary.
+	// When specified, the instance manager runs as PID 1 and manages Redis,
+	// following the CloudNativePG model. This enables RDB cleanup on startup
+	// and proper signal handling for graceful shutdown.
+	// See: https://cloudnative-pg.io/documentation/current/instance_manager/
+	InstanceManagerImage          string                            `json:"instanceManagerImage,omitempty"`
 	Replicas                      int32                             `json:"replicas,omitempty"`
 	Port                          int32                             `json:"port,omitempty"`
 	Resources                     corev1.ResourceRequirements       `json:"resources,omitempty"`

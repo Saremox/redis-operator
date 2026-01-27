@@ -42,6 +42,15 @@ sentinel parallel-syncs mymaster 2`
 	redisStorageVolumeName                 = "redis-data"
 	sentinelStartupConfigurationVolumeName = "sentinel-startup-config"
 
+	// Instance manager volume and paths (follows CNPG model)
+	// See: https://cloudnative-pg.io/documentation/current/instance_manager/
+	instanceManagerVolumeName  = "instance-manager"
+	instanceManagerMountPath   = "/controller"
+	instanceManagerBinaryName  = "redis-instance"
+	instanceManagerHealthPort  = 8080
+	instanceManagerHealthzPath = "/healthz"
+	instanceManagerReadyzPath  = "/readyz"
+
 	graceTime = 30
 )
 
@@ -248,7 +257,11 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	rfName := strings.ReplaceAll(strings.ToUpper(rf.Name), "-", "_")
 
 	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
-	shutdownContent := fmt.Sprintf(`master=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+
+	var shutdownContent string
+	if rf.SentinelEnabled() {
+		// Standard shutdown with Sentinel failover
+		shutdownContent = fmt.Sprintf(`master=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
 if [ "$master" = "$(hostname -i)" ]; then
   redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} SENTINEL failover mymaster
   sleep 31
@@ -259,6 +272,16 @@ if [ ! -z "${REDIS_PASSWORD}" ]; then
 fi
 save_command="${cmd} save"
 eval $save_command`, rfName, port)
+	} else {
+		// Operator-managed mode: just save data, no Sentinel failover
+		// The operator will handle master election during the next reconcile
+		shutdownContent = fmt.Sprintf(`cmd="redis-cli -p %[1]v"
+if [ ! -z "${REDIS_PASSWORD}" ]; then
+	export REDISCLI_AUTH=${REDIS_PASSWORD}
+fi
+save_command="${cmd} save"
+eval $save_command`, port)
+	}
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -381,6 +404,7 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 					PriorityClassName:             rf.Spec.Redis.PriorityClassName,
 					ServiceAccountName:            rf.Spec.Redis.ServiceAccountName,
 					TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
+					EnableServiceLinks:            ptrBool(false),
 					Containers: []corev1.Container{
 						{
 							Name:            "redis",
@@ -436,21 +460,35 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 		}
 	}
 
+	// Add health port when instance manager is enabled
+	if instanceManagerEnabled(rf) {
+		ss.Spec.Template.Spec.Containers[0].Ports = append(
+			ss.Spec.Template.Spec.Containers[0].Ports,
+			corev1.ContainerPort{
+				Name:          "health",
+				ContainerPort: instanceManagerHealthPort,
+				Protocol:      corev1.ProtocolTCP,
+			},
+		)
+
+		// Note: REDIS_PASSWORD env var is added by getRedisEnv() when auth is configured.
+		// The instance manager health server reads this env var to authenticate to Redis.
+	}
+
 	if rf.Spec.Redis.CustomLivenessProbe != nil {
 		ss.Spec.Template.Spec.Containers[0].LivenessProbe = rf.Spec.Redis.CustomLivenessProbe
 	} else {
+		// HTTP probe via instance manager (CNPG model)
+		// This avoids process spawning and works better under memory pressure
 		ss.Spec.Template.Spec.Containers[0].LivenessProbe = &corev1.Probe{
 			InitialDelaySeconds: graceTime,
 			TimeoutSeconds:      5,
 			FailureThreshold:    6,
 			PeriodSeconds:       15,
 			ProbeHandler: corev1.ProbeHandler{
-				Exec: &corev1.ExecAction{
-					Command: []string{
-						"sh",
-						"-c",
-						fmt.Sprintf("redis-cli -h $(hostname) -p %[1]v --user pinger --pass pingpass --no-auth-warning ping | grep PONG", rf.Spec.Redis.Port),
-					},
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: instanceManagerHealthzPath,
+					Port: intstr.FromInt32(instanceManagerHealthPort),
 				},
 			},
 		}
@@ -459,12 +497,17 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 	if rf.Spec.Redis.CustomReadinessProbe != nil {
 		ss.Spec.Template.Spec.Containers[0].ReadinessProbe = rf.Spec.Redis.CustomReadinessProbe
 	} else {
+		// HTTP probe via instance manager (CNPG model)
+		// The /readyz endpoint checks: not loading, not syncing, master link up
 		ss.Spec.Template.Spec.Containers[0].ReadinessProbe = &corev1.Probe{
 			InitialDelaySeconds: graceTime,
 			TimeoutSeconds:      5,
+			PeriodSeconds:       10,
+			FailureThreshold:    3,
 			ProbeHandler: corev1.ProbeHandler{
-				Exec: &corev1.ExecAction{
-					Command: []string{"/bin/sh", "/redis-readiness/ready.sh"},
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: instanceManagerReadyzPath,
+					Port: intstr.FromInt32(instanceManagerHealthPort),
 				},
 			},
 		}
@@ -489,6 +532,14 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 	if rf.Spec.Redis.Exporter.Enabled {
 		exporter := createRedisExporterContainer(rf)
 		ss.Spec.Template.Spec.Containers = append(ss.Spec.Template.Spec.Containers, exporter)
+	}
+
+	// Add instance manager init container if enabled (CNPG model)
+	// This must come before user-provided init containers so the binary is
+	// available for any custom init logic that might need it.
+	if instanceManagerEnabled(rf) {
+		initContainer := createInstanceManagerInitContainer(rf)
+		ss.Spec.Template.Spec.InitContainers = append(ss.Spec.Template.Spec.InitContainers, initContainer)
 	}
 
 	if rf.Spec.Redis.InitContainers != nil {
@@ -547,6 +598,7 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 					ImagePullSecrets:          rf.Spec.Sentinel.ImagePullSecrets,
 					PriorityClassName:         rf.Spec.Sentinel.PriorityClassName,
 					ServiceAccountName:        rf.Spec.Sentinel.ServiceAccountName,
+					EnableServiceLinks:        ptrBool(false),
 					InitContainers: []corev1.Container{
 						{
 							Name:            "sentinel-config-copy",
@@ -875,6 +927,14 @@ func getRedisVolumeMounts(rf *redisfailoverv1.RedisFailover) []corev1.VolumeMoun
 		},
 	}
 
+	// Add instance manager volume mount if enabled (CNPG model)
+	if instanceManagerEnabled(rf) {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      instanceManagerVolumeName,
+			MountPath: instanceManagerMountPath,
+		})
+	}
+
 	if rf.Spec.Redis.StartupConfigMap != "" {
 		startupVolumeMount := corev1.VolumeMount{
 			Name:      redisStartupConfigurationVolumeName,
@@ -952,6 +1012,18 @@ func getRedisVolumes(rf *redisfailoverv1.RedisFailover) []corev1.Volume {
 				},
 			},
 		},
+	}
+
+	// Add instance manager volume if enabled (CNPG model)
+	// This emptyDir volume is used to share the redis-instance binary
+	// between the init container and the main container.
+	if instanceManagerEnabled(rf) {
+		volumes = append(volumes, corev1.Volume{
+			Name: instanceManagerVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
 	}
 
 	if rf.Spec.Redis.StartupConfigMap != "" {
@@ -1065,9 +1137,63 @@ func getRedisCommand(rf *redisfailoverv1.RedisFailover) []string {
 	if len(rf.Spec.Redis.Command) > 0 {
 		return rf.Spec.Redis.Command
 	}
+	// Instance manager runs as PID 1 (CNPG model)
+	// This is required in v4.0.0+ - legacy mode is removed
 	return []string{
-		"redis-server",
-		fmt.Sprintf("/redis/%s", redisConfigFileName),
+		fmt.Sprintf("%s/%s", instanceManagerMountPath, instanceManagerBinaryName),
+		"run",
+		"--redis-conf", fmt.Sprintf("/redis/%s", redisConfigFileName),
+	}
+}
+
+// instanceManagerEnabled returns true if the instance manager should be used.
+// Since v4.0.0, instance manager is always enabled - legacy exec probes are removed.
+// The instance manager follows the CloudNativePG model where it runs as PID 1
+// and manages the Redis process as a child.
+// See: https://cloudnative-pg.io/documentation/current/instance_manager/
+func instanceManagerEnabled(rf *redisfailoverv1.RedisFailover) bool {
+	// Always enabled in v4.0.0+. Legacy exec probes are removed.
+	return true
+}
+
+// getInstanceManagerImage returns the instance manager image to use.
+// If not specified in the CRD, uses the default operator image.
+func getInstanceManagerImage(rf *redisfailoverv1.RedisFailover) string {
+	if rf.Spec.Redis.InstanceManagerImage != "" {
+		return rf.Spec.Redis.InstanceManagerImage
+	}
+	return redisfailoverv1.DefaultInstanceManagerImage
+}
+
+// createInstanceManagerInitContainer creates an init container that copies the
+// redis-instance binary to a shared volume. This follows the CNPG model.
+func createInstanceManagerInitContainer(rf *redisfailoverv1.RedisFailover) corev1.Container {
+	return corev1.Container{
+		Name:            "instance-manager-init",
+		Image:           getInstanceManagerImage(rf),
+		ImagePullPolicy: pullPolicy(rf.Spec.Redis.ImagePullPolicy),
+		Command: []string{
+			"cp",
+			fmt.Sprintf("/usr/local/bin/%s", instanceManagerBinaryName),
+			fmt.Sprintf("%s/%s", instanceManagerMountPath, instanceManagerBinaryName),
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      instanceManagerVolumeName,
+				MountPath: instanceManagerMountPath,
+			},
+		},
+		// Use minimal resources for the copy operation
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("10m"),
+				corev1.ResourceMemory: resource.MustParse("16Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("100m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			},
+		},
 	}
 }
 
@@ -1087,6 +1213,12 @@ func pullPolicy(specPolicy corev1.PullPolicy) corev1.PullPolicy {
 		return corev1.PullAlways
 	}
 	return specPolicy
+}
+
+// ptrBool returns a pointer to a bool value.
+// Used for optional PodSpec fields like EnableServiceLinks.
+func ptrBool(b bool) *bool {
+	return &b
 }
 
 func getTerminationGracePeriodSeconds(rf *redisfailoverv1.RedisFailover) int64 {

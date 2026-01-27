@@ -14,9 +14,10 @@ FROM alpine:latest
 RUN apk --no-cache add \
   ca-certificates
 COPY --from=build /src/bin/redis-operator /usr/local/bin
+COPY --from=build /src/bin/redis-instance /usr/local/bin
 RUN addgroup -g 1000 rf && \
   adduser -D -u 1000 -G rf rf && \
-  chown rf:rf /usr/local/bin/redis-operator
+  chown rf:rf /usr/local/bin/redis-operator /usr/local/bin/redis-instance
 USER rf
 
 ENTRYPOINT ["/usr/local/bin/redis-operator"]
