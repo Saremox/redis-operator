@@ -168,6 +168,20 @@ func (_m *RedisFailoverClient) EnsureSentinelService(rFailover *v1.RedisFailover
 	return r0
 }
 
+// EnsureNotPresentSentinelResources provides a mock function with given fields: rFailover
+func (_m *RedisFailoverClient) EnsureNotPresentSentinelResources(rFailover *v1.RedisFailover) error {
+	ret := _m.Called(rFailover)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover) error); ok {
+		r0 = rf(rFailover)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 type mockConstructorTestingTNewRedisFailoverClient interface {
 	mock.TestingT
 	Cleanup(func())

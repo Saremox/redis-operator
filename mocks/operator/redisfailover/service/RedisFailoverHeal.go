@@ -153,6 +153,20 @@ func (_m *RedisFailoverHeal) SetSentinelCustomConfig(ip string, rFailover *v1.Re
 	return r0
 }
 
+// PromoteBestReplica provides a mock function with given fields: newMasterIP, rFailover
+func (_m *RedisFailoverHeal) PromoteBestReplica(newMasterIP string, rFailover *v1.RedisFailover) error {
+	ret := _m.Called(newMasterIP, rFailover)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, *v1.RedisFailover) error); ok {
+		r0 = rf(newMasterIP, rFailover)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 type mockConstructorTestingTNewRedisFailoverHeal interface {
 	mock.TestingT
 	Cleanup(func())

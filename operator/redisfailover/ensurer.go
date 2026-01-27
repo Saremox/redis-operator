@@ -27,6 +27,11 @@ func (w *RedisFailoverHandler) Ensure(rf *redisfailoverv1.RedisFailover, labels 
 		if err := w.rfService.EnsureSentinelConfigMap(rf, labels, or); err != nil {
 			return err
 		}
+	} else {
+		// Clean up Sentinel resources when Sentinel is disabled
+		if err := w.rfService.EnsureNotPresentSentinelResources(rf); err != nil {
+			return err
+		}
 	}
 
 	if err := w.rfService.EnsureRedisMasterService(rf, labels, or); err != nil {
