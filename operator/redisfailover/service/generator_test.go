@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -2791,4 +2792,162 @@ func TestSentinelCustomStartupProbe(t *testing.T) {
 		assert.NoError(err)
 		assert.Equal(test.expectedStartupProbe, startupProbe)
 	}
+}
+
+func TestRedisPDBUsesRedisReplicaCount(t *testing.T) {
+	tests := []struct {
+		name             string
+		redisReplicas    int32
+		sentinelReplicas int32
+		expectedMin      intstr.IntOrString
+	}{
+		{
+			name:             "Redis replicas > 2 gives minAvailable 2",
+			redisReplicas:    3,
+			sentinelReplicas: 1, // should not affect Redis PDB
+			expectedMin:      intstr.FromInt(2),
+		},
+		{
+			name:             "Redis replicas <= 2 gives minAvailable 1",
+			redisReplicas:    2,
+			sentinelReplicas: 5, // should not affect Redis PDB
+			expectedMin:      intstr.FromInt(1),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF()
+			rf.Spec.Redis.Replicas = test.redisReplicas
+			rf.Spec.Sentinel.Replicas = test.sentinelReplicas
+
+			var gotPDB *policyv1.PodDisruptionBudget
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				gotPDB = args.Get(1).(*policyv1.PodDisruptionBudget)
+			}).Return(nil)
+			ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Return(nil)
+
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
+
+			assert.NoError(err)
+			assert.NotNil(gotPDB)
+			assert.Equal(test.expectedMin, *gotPDB.Spec.MinAvailable)
+		})
+	}
+}
+
+func TestSentinelPDBUsesSentinelReplicaCount(t *testing.T) {
+	tests := []struct {
+		name             string
+		redisReplicas    int32
+		sentinelReplicas int32
+		expectedMin      intstr.IntOrString
+	}{
+		{
+			name:             "Sentinel replicas > 2 gives minAvailable 2",
+			redisReplicas:    1, // should not affect Sentinel PDB
+			sentinelReplicas: 3,
+			expectedMin:      intstr.FromInt(2),
+		},
+		{
+			name:             "Sentinel replicas <= 2 gives minAvailable 1",
+			redisReplicas:    5, // should not affect Sentinel PDB
+			sentinelReplicas: 2,
+			expectedMin:      intstr.FromInt(1),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF()
+			rf.Spec.Redis.Replicas = test.redisReplicas
+			rf.Spec.Sentinel.Replicas = test.sentinelReplicas
+
+			var gotPDB *policyv1.PodDisruptionBudget
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				gotPDB = args.Get(1).(*policyv1.PodDisruptionBudget)
+			}).Return(nil)
+			ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Return(nil)
+
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
+
+			assert.NoError(err)
+			assert.NotNil(gotPDB)
+			assert.Equal(test.expectedMin, *gotPDB.Spec.MinAvailable)
+		})
+	}
+}
+
+func TestPDBSelectorContainsOnlyStableLabels(t *testing.T) {
+	// Extra metadata labels that should appear on the PDB resource but NOT in the selector.
+	extraLabels := map[string]string{
+		"team":        "infra",
+		"environment": "production",
+	}
+	stableKeys := []string{
+		"app.kubernetes.io/name",
+		"app.kubernetes.io/component",
+		"app.kubernetes.io/part-of",
+	}
+
+	t.Run("Redis PDB selector is stable", func(t *testing.T) {
+		assert := assert.New(t)
+		rf := generateRF()
+
+		var gotPDB *policyv1.PodDisruptionBudget
+		ms := &mK8SService.Services{}
+		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+			gotPDB = args.Get(1).(*policyv1.PodDisruptionBudget)
+		}).Return(nil)
+		ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Return(nil)
+
+		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+		err := client.EnsureRedisStatefulset(rf, extraLabels, []metav1.OwnerReference{})
+
+		assert.NoError(err)
+		assert.NotNil(gotPDB)
+		selector := gotPDB.Spec.Selector.MatchLabels
+		// Extra propagated labels must not appear in the selector.
+		for k := range extraLabels {
+			assert.NotContains(selector, k, "extra label %q must not appear in PDB selector", k)
+		}
+		// Stable workload labels must be present.
+		for _, k := range stableKeys {
+			assert.Contains(selector, k, "stable label %q must be present in PDB selector", k)
+		}
+		// The selector must contain only the stable keys.
+		assert.Len(selector, len(stableKeys))
+	})
+
+	t.Run("Sentinel PDB selector is stable", func(t *testing.T) {
+		assert := assert.New(t)
+		rf := generateRF()
+
+		var gotPDB *policyv1.PodDisruptionBudget
+		ms := &mK8SService.Services{}
+		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+			gotPDB = args.Get(1).(*policyv1.PodDisruptionBudget)
+		}).Return(nil)
+		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Return(nil)
+
+		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+		err := client.EnsureSentinelDeployment(rf, extraLabels, []metav1.OwnerReference{})
+
+		assert.NoError(err)
+		assert.NotNil(gotPDB)
+		selector := gotPDB.Spec.Selector.MatchLabels
+		for k := range extraLabels {
+			assert.NotContains(selector, k, "extra label %q must not appear in PDB selector", k)
+		}
+		for _, k := range stableKeys {
+			assert.Contains(selector, k, "stable label %q must be present in PDB selector", k)
+		}
+		assert.Len(selector, len(stableKeys))
+	})
 }
