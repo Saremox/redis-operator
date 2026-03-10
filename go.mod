@@ -8,10 +8,10 @@ require (
 	github.com/sirupsen/logrus v1.9.4
 	github.com/spotahome/kooper/v2 v2.9.0
 	github.com/stretchr/testify v1.11.1
-	k8s.io/api v0.35.2
-	k8s.io/apiextensions-apiserver v0.35.2
-	k8s.io/apimachinery v0.35.2
-	k8s.io/client-go v0.35.2
+	k8s.io/api v0.34.5
+	k8s.io/apiextensions-apiserver v0.34.5
+	k8s.io/apimachinery v0.34.5
+	k8s.io/client-go v0.34.5
 )
 
 require (
@@ -36,6 +36,7 @@ require (
 	github.com/go-openapi/swag/stringutils v0.25.5 // indirect
 	github.com/go-openapi/swag/typeutils v0.25.5 // indirect
 	github.com/go-openapi/swag/yamlutils v0.25.5 // indirect
+	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
