@@ -42,7 +42,7 @@ jobs:
 
       - name: Extract metadata for Docker
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # Image tags WITHOUT leading 'v' (git tag v4.0.0 -> image tag 4.0.0)
