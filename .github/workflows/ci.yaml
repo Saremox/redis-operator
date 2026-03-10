@@ -96,7 +96,7 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
         # This is kinda hacky, but it's the simplest way to get the lowercase repo name https://github.com/orgs/community/discussions/25768
       - name: downcase REPO
         run: |
