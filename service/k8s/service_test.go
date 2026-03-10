@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	kubernetes "k8s.io/client-go/kubernetes/fake"
 	kubetesting "k8s.io/client-go/testing"
 
@@ -116,4 +117,120 @@ func TestServiceServiceGetCreateOrUpdate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCreateOrUpdateServicePreservesImmutableFields(t *testing.T) {
+	testns := "testns"
+
+	ipFamilyPolicy := corev1.IPFamilyPolicySingleStack
+	storedService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "testsvc",
+			ResourceVersion: "42",
+		},
+		Spec: corev1.ServiceSpec{
+			ClusterIP:      "10.0.0.1",
+			ClusterIPs:     []string{"10.0.0.1"},
+			IPFamilies:     []corev1.IPFamily{corev1.IPv4Protocol},
+			IPFamilyPolicy: &ipFamilyPolicy,
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "redis",
+					Port:       6379,
+					TargetPort: intstr.FromString("redis"),
+					Protocol:   corev1.ProtocolTCP,
+					NodePort:   30001,
+				},
+			},
+		},
+	}
+
+	// Desired service omits server-assigned immutable fields (as generators do).
+	desiredService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "testsvc",
+			Labels: map[string]string{"app": "redis"},
+		},
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeClusterIP,
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "redis",
+					Port:       6379,
+					TargetPort: intstr.FromString("redis"),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
+
+	var updatedService *corev1.Service
+	mcli := &kubernetes.Clientset{}
+	mcli.AddReactor("get", "services", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		return true, storedService, nil
+	})
+	mcli.AddReactor("update", "services", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		ua := action.(kubetesting.UpdateAction)
+		updatedService = ua.GetObject().(*corev1.Service)
+		return true, updatedService, nil
+	})
+
+	svc := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
+	err := svc.CreateOrUpdateService(testns, desiredService)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "42", updatedService.ResourceVersion, "ResourceVersion must be preserved")
+	assert.Equal(t, "10.0.0.1", updatedService.Spec.ClusterIP, "clusterIP must be preserved")
+	assert.Equal(t, []string{"10.0.0.1"}, updatedService.Spec.ClusterIPs, "clusterIPs must be preserved")
+	assert.Equal(t, []corev1.IPFamily{corev1.IPv4Protocol}, updatedService.Spec.IPFamilies, "ipFamilies must be preserved")
+	assert.Equal(t, &ipFamilyPolicy, updatedService.Spec.IPFamilyPolicy, "ipFamilyPolicy must be preserved")
+	assert.Equal(t, int32(30001), updatedService.Spec.Ports[0].NodePort, "nodePort must be preserved for matching port")
+	// Mutable fields must still reflect desired state.
+	assert.Equal(t, map[string]string{"app": "redis"}, updatedService.Labels, "labels must come from desired service")
+}
+
+func TestCreateOrUpdateServicePreservesHealthCheckNodePort(t *testing.T) {
+	testns := "testns"
+
+	storedService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "testsvc-hc",
+			ResourceVersion: "7",
+		},
+		Spec: corev1.ServiceSpec{
+			Type:                  corev1.ServiceTypeLoadBalancer,
+			ExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyLocal,
+			HealthCheckNodePort:   32100,
+			ClusterIP:             "10.0.0.2",
+			ClusterIPs:            []string{"10.0.0.2"},
+		},
+	}
+
+	desiredService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "testsvc-hc",
+		},
+		Spec: corev1.ServiceSpec{
+			Type:                  corev1.ServiceTypeLoadBalancer,
+			ExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyLocal,
+		},
+	}
+
+	var updatedService *corev1.Service
+	mcli := &kubernetes.Clientset{}
+	mcli.AddReactor("get", "services", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		return true, storedService, nil
+	})
+	mcli.AddReactor("update", "services", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		ua := action.(kubetesting.UpdateAction)
+		updatedService = ua.GetObject().(*corev1.Service)
+		return true, updatedService, nil
+	})
+
+	svc := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
+	err := svc.CreateOrUpdateService(testns, desiredService)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int32(32100), updatedService.Spec.HealthCheckNodePort, "healthCheckNodePort must be preserved")
+	assert.Equal(t, "10.0.0.2", updatedService.Spec.ClusterIP, "clusterIP must be preserved")
 }
