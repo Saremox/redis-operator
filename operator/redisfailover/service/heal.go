@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 
@@ -11,6 +12,12 @@ import (
 	"github.com/saremox/redis-operator/service/redis"
 	v1 "k8s.io/api/core/v1"
 )
+
+// ErrPartialReconciliation is returned by PromoteBestReplica when the new
+// master was promoted successfully but one or more replicas could not be
+// repointed or relabelled.  The caller should treat this as an incomplete
+// failover, not a total failure.
+var ErrPartialReconciliation = errors.New("promotion succeeded but replica reconciliation incomplete")
 
 // RedisFailoverHeal defines the interface able to fix the problems on the redis failovers
 type RedisFailoverHeal interface {
@@ -301,6 +308,7 @@ func (r *RedisFailoverHealer) PromoteBestReplica(newMasterIP string, rf *redisfa
 	r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
 		Infof("Reconfiguring replicas to use new master %s", newMasterIP)
 
+	var reconcileErrs []error
 	for _, rp := range rps.Items {
 		if rp.Status.PodIP == newMasterIP {
 			continue
@@ -315,15 +323,19 @@ func (r *RedisFailoverHealer) PromoteBestReplica(newMasterIP string, rf *redisfa
 		if err := r.redisClient.MakeSlaveOfWithPort(rp.Status.PodIP, newMasterIP, port, password); err != nil {
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
 				Errorf("Failed to make %s slave of %s: %v", rp.Status.PodIP, newMasterIP, err)
-			// Continue with other replicas even if one fails
+			reconcileErrs = append(reconcileErrs, err)
 			continue
 		}
 
 		if err := r.setSlaveLabelIfNecessary(rf.Namespace, rp); err != nil {
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
 				Errorf("Failed to set slave label on pod %s: %v", rp.Name, err)
-			// Continue with other replicas even if label update fails
+			reconcileErrs = append(reconcileErrs, err)
 		}
+	}
+
+	if joinedErr := errors.Join(reconcileErrs...); joinedErr != nil {
+		return fmt.Errorf("%w: %w", ErrPartialReconciliation, joinedErr)
 	}
 
 	r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
