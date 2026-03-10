@@ -95,7 +95,41 @@ func (s *ServiceService) CreateOrUpdateService(namespace string, service *corev1
 	// namespace is our spec(https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#concurrency-control-and-consistency),
 	// we will replace the current namespace state.
 	service.ResourceVersion = storedService.ResourceVersion
+	mergeImmutableServiceFields(storedService, service)
 	return s.UpdateService(namespace, service)
+}
+
+// mergeImmutableServiceFields copies server-assigned immutable fields from the
+// stored Service into the desired Service so that update calls do not drop them.
+// The operator still controls labels, selectors, annotations, and desired ports.
+func mergeImmutableServiceFields(stored, desired *corev1.Service) {
+	if desired.Spec.ClusterIP == "" {
+		desired.Spec.ClusterIP = stored.Spec.ClusterIP
+	}
+	if len(desired.Spec.ClusterIPs) == 0 {
+		desired.Spec.ClusterIPs = stored.Spec.ClusterIPs
+	}
+	if len(desired.Spec.IPFamilies) == 0 {
+		desired.Spec.IPFamilies = stored.Spec.IPFamilies
+	}
+	if desired.Spec.IPFamilyPolicy == nil {
+		desired.Spec.IPFamilyPolicy = stored.Spec.IPFamilyPolicy
+	}
+	if desired.Spec.HealthCheckNodePort == 0 {
+		desired.Spec.HealthCheckNodePort = stored.Spec.HealthCheckNodePort
+	}
+
+	// Preserve nodePort for each port that matches by name and protocol.
+	storedPorts := make(map[string]int32, len(stored.Spec.Ports))
+	for _, p := range stored.Spec.Ports {
+		storedPorts[p.Name+"/"+string(p.Protocol)] = p.NodePort
+	}
+	for i := range desired.Spec.Ports {
+		p := &desired.Spec.Ports[i]
+		if p.NodePort == 0 {
+			p.NodePort = storedPorts[p.Name+"/"+string(p.Protocol)]
+		}
+	}
 }
 
 func (s *ServiceService) DeleteService(namespace string, name string) error {
