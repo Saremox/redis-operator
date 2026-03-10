@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -144,8 +145,13 @@ func TestRedisFailover(t *testing.T) {
 	stopC := make(chan struct{})
 	errC := make(chan error)
 
+	kubeconfig := os.Getenv("KUBECONFIG")
+	if kubeconfig == "" {
+		kubeconfig = filepath.Join(homedir.HomeDir(), ".kube", "config")
+	}
+
 	flags := &utils.CMDFlags{
-		KubeConfig:  filepath.Join(homedir.HomeDir(), ".kube", "config"),
+		KubeConfig:  kubeconfig,
 		Development: true,
 	}
 
