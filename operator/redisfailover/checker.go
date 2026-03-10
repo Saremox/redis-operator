@@ -10,6 +10,7 @@ import (
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
+	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
 // UpdateRedisesPods if the running version of pods is equal to the statefulset one
@@ -365,9 +366,13 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 			err = r.rfHealer.PromoteBestReplica(bestReplica.IP, rf)
 			setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err)
 			if err != nil {
+				msg := "failed to promote replica"
+				if errors.Is(err, rfservice.ErrPartialReconciliation) {
+					msg = "failover incomplete: replica reconfiguration failed"
+				}
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
-					Message: "failover incomplete: replica reconfiguration failed",
+					Message: msg,
 				}
 				return err
 			}
@@ -403,9 +408,13 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 
 			err = r.rfHealer.PromoteBestReplica(bestReplica.IP, rf)
 			if err != nil {
+				msg := "failover failed"
+				if errors.Is(err, rfservice.ErrPartialReconciliation) {
+					msg = "failover incomplete: replica reconfiguration failed"
+				}
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
-					Message: "failover incomplete: replica reconfiguration failed",
+					Message: msg,
 				}
 				return err
 			}

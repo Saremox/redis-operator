@@ -431,6 +431,7 @@ func TestPromoteBestReplicaReplicaRepointerFails(t *testing.T) {
 
 	err := healer.PromoteBestReplica(newMasterIP, rf)
 	assert.Error(err, "partial failover should not be reported as success")
+	assert.True(errors.Is(err, rfservice.ErrPartialReconciliation), "replica repoint failure should be wrapped as ErrPartialReconciliation")
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
@@ -474,6 +475,26 @@ func TestPromoteBestReplicaLabelUpdateFails(t *testing.T) {
 
 	err := healer.PromoteBestReplica(newMasterIP, rf)
 	assert.Error(err, "label update failure should not be reported as success")
+	assert.True(errors.Is(err, rfservice.ErrPartialReconciliation), "slave label update failure should be wrapped as ErrPartialReconciliation")
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t)
+}
+
+func TestPromoteBestReplicaMakeMasterFails(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	newMasterIP := "1.1.1.1"
+
+	ms := &mK8SService.Services{}
+	mr := &mRedisService.Client{}
+	mr.On("MakeMaster", newMasterIP, "0", "").Once().Return(errors.New("promotion failed"))
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+
+	err := healer.PromoteBestReplica(newMasterIP, rf)
+	assert.Error(err, "MakeMaster failure should return an error")
+	assert.False(errors.Is(err, rfservice.ErrPartialReconciliation), "full promotion failure should not be wrapped as ErrPartialReconciliation")
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
