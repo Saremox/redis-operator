@@ -351,6 +351,133 @@ func TestSetExternalMasterOnAll(t *testing.T) {
 	}
 }
 
+func TestPromoteBestReplicaSuccess(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	newMasterIP := "1.1.1.1"
+	replicaIP := "2.2.2.2"
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-master"},
+				Status: corev1.PodStatus{
+					PodIP: newMasterIP,
+					Phase: corev1.PodRunning,
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-replica"},
+				Status: corev1.PodStatus{
+					PodIP: replicaIP,
+					Phase: corev1.PodRunning,
+				},
+			},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
+
+	mr := &mRedisService.Client{}
+	mr.On("MakeMaster", newMasterIP, "0", "").Once().Return(nil)
+	mr.On("MakeSlaveOfWithPort", replicaIP, newMasterIP, "0", "").Once().Return(nil)
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+
+	err := healer.PromoteBestReplica(newMasterIP, rf)
+	assert.NoError(err)
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t)
+}
+
+func TestPromoteBestReplicaReplicaRepointerFails(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	newMasterIP := "1.1.1.1"
+	replicaIP := "2.2.2.2"
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-master"},
+				Status: corev1.PodStatus{
+					PodIP: newMasterIP,
+					Phase: corev1.PodRunning,
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-replica"},
+				Status: corev1.PodStatus{
+					PodIP: replicaIP,
+					Phase: corev1.PodRunning,
+				},
+			},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	ms.On("UpdatePodLabels", namespace, "pod-master", mock.Anything).Return(nil)
+
+	mr := &mRedisService.Client{}
+	mr.On("MakeMaster", newMasterIP, "0", "").Once().Return(nil)
+	mr.On("MakeSlaveOfWithPort", replicaIP, newMasterIP, "0", "").Once().Return(errors.New("replica repoint failed"))
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+
+	err := healer.PromoteBestReplica(newMasterIP, rf)
+	assert.Error(err, "partial failover should not be reported as success")
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t)
+}
+
+func TestPromoteBestReplicaLabelUpdateFails(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	newMasterIP := "1.1.1.1"
+	replicaIP := "2.2.2.2"
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-master"},
+				Status: corev1.PodStatus{
+					PodIP: newMasterIP,
+					Phase: corev1.PodRunning,
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-replica"},
+				Status: corev1.PodStatus{
+					PodIP: replicaIP,
+					Phase: corev1.PodRunning,
+				},
+			},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	ms.On("UpdatePodLabels", namespace, "pod-master", mock.Anything).Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-replica", mock.Anything).Return(errors.New("label update failed"))
+
+	mr := &mRedisService.Client{}
+	mr.On("MakeMaster", newMasterIP, "0", "").Once().Return(nil)
+	mr.On("MakeSlaveOfWithPort", replicaIP, newMasterIP, "0", "").Once().Return(nil)
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+
+	err := healer.PromoteBestReplica(newMasterIP, rf)
+	assert.Error(err, "label update failure should not be reported as success")
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t)
+}
+
 func TestNewSentinelMonitor(t *testing.T) {
 	tests := []struct {
 		name                string

@@ -367,7 +367,7 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 			if err != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
-					Message: "failed to promote replica",
+					Message: "failover incomplete: replica reconfiguration failed",
 				}
 				return err
 			}
@@ -405,7 +405,7 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 			if err != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
-					Message: "failover failed",
+					Message: "failover incomplete: replica reconfiguration failed",
 				}
 				return err
 			}

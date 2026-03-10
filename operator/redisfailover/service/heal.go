@@ -301,6 +301,7 @@ func (r *RedisFailoverHealer) PromoteBestReplica(newMasterIP string, rf *redisfa
 	r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
 		Infof("Reconfiguring replicas to use new master %s", newMasterIP)
 
+	var reconcileErrs []error
 	for _, rp := range rps.Items {
 		if rp.Status.PodIP == newMasterIP {
 			continue
@@ -315,15 +316,19 @@ func (r *RedisFailoverHealer) PromoteBestReplica(newMasterIP string, rf *redisfa
 		if err := r.redisClient.MakeSlaveOfWithPort(rp.Status.PodIP, newMasterIP, port, password); err != nil {
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
 				Errorf("Failed to make %s slave of %s: %v", rp.Status.PodIP, newMasterIP, err)
-			// Continue with other replicas even if one fails
+			reconcileErrs = append(reconcileErrs, err)
 			continue
 		}
 
 		if err := r.setSlaveLabelIfNecessary(rf.Namespace, rp); err != nil {
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
 				Errorf("Failed to set slave label on pod %s: %v", rp.Name, err)
-			// Continue with other replicas even if label update fails
+			reconcileErrs = append(reconcileErrs, err)
 		}
+	}
+
+	if err := errors.Join(reconcileErrs...); err != nil {
+		return err
 	}
 
 	r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
