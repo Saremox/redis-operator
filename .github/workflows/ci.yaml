@@ -51,11 +51,11 @@ jobs:
           fail_ci_if_error: false
 
   integration-test:
-    name: Integration test
+    name: Integration tests
     runs-on: ubuntu-24.04
     needs: [check, unit-test]
     strategy:
-      matrix:
+      matrix: &kubernetes-matrix
         kubernetes: [1.32.0, 1.33.1, 1.34.0, 1.35.1]
     steps:
       - uses: actions/checkout@v6
@@ -64,18 +64,23 @@ jobs:
           go-version-file: go.mod
       - name: Install conntrack
         run: sudo apt-get install -y conntrack
-      - uses: medyagh/setup-minikube@v0.0.21
+      - &setup-minikube
+        name: Start minikube
+        uses: medyagh/setup-minikube@v0.0.21
         with:
           kubernetes-version: ${{ matrix.kubernetes }}
           minikube-version: 1.38.1
           driver: none
-      - name: Add redisfailover CRD
+      - name: Install redisfailover CRD
         run: kubectl create -f manifests/databases.spotahome.com_redisfailovers.yaml
-      - run: make ci-integration-test
+      - name: Run integration tests
+        run: make ci-integration-test
 
   chart-test:
-    name: Chart testing
-    runs-on: ubuntu-latest
+    name: Chart tests
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix: *kubernetes-matrix
     steps:
       - uses: actions/checkout@v6
         with:
@@ -84,7 +89,8 @@ jobs:
         uses: azure/setup-helm@v4
         with:
           version: v3.7.2
-      - name: Helm test
+      - *setup-minikube
+      - name: Run chart tests
         run: make helm-test
 
   docker:

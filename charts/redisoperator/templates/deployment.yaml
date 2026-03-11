@@ -1,6 +1,78 @@
 {{- $fullName := include "chart.fullname" . -}}
-{{ $name := "registry" }}
+{{- $name := "registry" -}}
 {{- $data := dict "Chart" .Chart "Release" .Release "Values" .Values -}}
+{{- $legacySecurityContext := .Values.securityContext | default dict -}}
+{{- $podSecurityContext := .Values.podSecurityContext | default (pick $legacySecurityContext "fsGroup" "fsGroupChangePolicy" "supplementalGroups" "supplementalGroupsPolicy" "sysctls") -}}
+{{- $containerSecurityContext := .Values.containerSecurityContext | default (omit $legacySecurityContext "fsGroup" "fsGroupChangePolicy" "supplementalGroups" "supplementalGroupsPolicy" "sysctls") -}}
+{{- $imagePullSecrets := list -}}
+{{- with .Values.imagePullSecrets }}
+  {{- range . }}
+    {{- $secretName := trim . -}}
+    {{- if $secretName }}
+      {{- $imagePullSecrets = append $imagePullSecrets (dict "name" $secretName) -}}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- with .Values.imageCredentials.existsSecrets }}
+  {{- range . }}
+    {{- $secretName := trim . -}}
+    {{- if $secretName }}
+      {{- $imagePullSecrets = append $imagePullSecrets (dict "name" $secretName) -}}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- if and .Values.imageCredentials.create (eq (len $imagePullSecrets) 0) }}
+  {{- $imagePullSecrets = append $imagePullSecrets (dict "name" (printf "%s-%s" $fullName $name)) -}}
+{{- end }}
+{{- $args := list -}}
+{{- with .Values.operator.logLevel }}
+  {{- if ne . "" }}
+    {{- $args = append $args (printf "--log-level=%s" .) -}}
+  {{- end }}
+{{- end }}
+{{- with .Values.operator.supportedNamespacesRegex }}
+  {{- if ne . "" }}
+    {{- $args = append $args (printf "--supported-namespaces-regex=%s" .) -}}
+  {{- end }}
+{{- end }}
+{{- with .Values.operator.listenAddress }}
+  {{- if ne . "" }}
+    {{- $args = append $args (printf "--listen-address=%s" .) -}}
+  {{- end }}
+{{- end }}
+{{- with .Values.operator.metricsPath }}
+  {{- if ne . "" }}
+    {{- $args = append $args (printf "--metrics-path=%s" .) -}}
+  {{- end }}
+{{- end }}
+{{- with .Values.operator.k8sCliQpsLimit }}
+  {{- $args = append $args (printf "--k8s-cli-qps-limit=%v" .) -}}
+{{- end }}
+{{- with .Values.operator.k8sCliBurstableLimit }}
+  {{- $args = append $args (printf "--k8s-cli-burstable-limit=%v" .) -}}
+{{- end }}
+{{- with .Values.operator.concurrency }}
+  {{- $args = append $args (printf "--concurrency=%v" .) -}}
+{{- end }}
+{{- with .Values.operator.syncInterval }}
+  {{- $args = append $args (printf "--sync-interval=%v" .) -}}
+{{- end }}
+{{- with .Values.operator.extraArgs }}
+  {{- range . }}
+    {{- $arg := trim . -}}
+    {{- if $arg }}
+      {{- $args = append $args $arg -}}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- with .Values.image.cli_args }}
+  {{- range (splitList " " (trim .)) }}
+    {{- $arg := trim . -}}
+    {{- if $arg }}
+      {{- $args = append $args $arg -}}
+    {{- end }}
+  {{- end }}
+{{- end }}
 apiVersion: {{ template "common.capabilities.deployment.apiVersion" . }}
 kind: Deployment
 metadata:
@@ -30,23 +102,31 @@ spec:
     spec:
       serviceAccountName: {{ template "chart.serviceAccountName" . }}
       enableServiceLinks: false
-      {{- if (and .Values.imageCredentials.create (not .Values.imageCredentials.existsSecrets)) }}
-      imagePullSecrets:
-        - name: {{ $fullName }}-{{ $name }}
-      {{- else if (and .Values.imageCredentials.create .Values.imageCredentials.existsSecrets) }}
-      {{- range .Values.imageCredentials.existsSecrets }}
-      imagePullSecrets:
-        {{ printf "- name: %s" . }}
+      {{- if gt (len $podSecurityContext) 0 }}
+      securityContext:
+        {{- toYaml $podSecurityContext | nindent 8 }}
       {{- end }}
+      {{- if gt (len $imagePullSecrets) 0 }}
+      imagePullSecrets:
+        {{- toYaml $imagePullSecrets | nindent 8 }}
       {{- end }}
       containers:
       - name: {{ .Chart.Name }}
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion}}"
-        {{- if .Values.image.cli_args }}
-        args: 
-        - {{ quote .Values.image.cli_args }}
+        {{- if gt (len $args) 0 }}
+        args:
+          {{- toYaml $args | nindent 10 }}
         {{- end }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
+        env:
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.namespace
+          {{- with .Values.extraEnv }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
         ports:
           - name: metrics
             containerPort: {{ .Values.container.port }}
@@ -65,8 +145,10 @@ spec:
           timeoutSeconds: 5
           failureThreshold: 6
           successThreshold: 1
+        {{- if gt (len $containerSecurityContext) 0 }}
         securityContext:
-          {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- toYaml $containerSecurityContext | nindent 12 }}
+        {{- end }}
         resources:
           {{- toYaml .Values.resources | nindent 12 }}
     {{- with .Values.affinity }}
