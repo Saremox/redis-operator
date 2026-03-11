@@ -10,4 +10,4 @@ keywords:
   - "cluster"
 sources:
   - https://github.com/saremox/redis-operator
-kubeVersion: ">=1.32.0-0"
+kubeVersion: ">=1.22.0-0"
