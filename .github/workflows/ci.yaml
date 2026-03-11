@@ -79,8 +79,6 @@ jobs:
   chart-test:
     name: Chart tests
     runs-on: ubuntu-24.04
-    strategy:
-      matrix: *kubernetes-matrix
     steps:
       - uses: actions/checkout@v6
         with:
@@ -89,7 +87,6 @@ jobs:
         uses: azure/setup-helm@v4
         with:
           version: v3.7.2
-      - *setup-minikube
       - name: Run chart tests
         run: make helm-test
 
