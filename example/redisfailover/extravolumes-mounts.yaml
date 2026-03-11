@@ -11,7 +11,7 @@ metadata:
   namespace: exm
 type: Opaque
 stringData:
-  password: MWYyZDFlMmU2N2Rm
+  password: "MWYyZDFlMmU2N2Rm"
 ---
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover

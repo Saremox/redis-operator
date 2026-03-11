@@ -7,17 +7,19 @@ image:
   repository: ghcr.io/saremox/redis-operator
   pullPolicy: IfNotPresent
   tag: ""
+  # Deprecated: prefer `operator.*` values or `operator.extraArgs`.
   cli_args: ""
+
+imagePullSecrets: []
 
 imageCredentials:
   create: false
-  registry: url.private.registry
-  username: someone
-  password: somepassword
-  email: someone@example.com
-  # Use exists secrets in namespace
-  existsSecrets:
-    - registrysecret
+  registry: ""
+  username: ""
+  password: ""
+  email: ""
+  # Use existing secrets in the release namespace.
+  existsSecrets: []
 
 updateStrategy:
   type: RollingUpdate
@@ -43,6 +45,10 @@ serviceAccount:
   # If not set and create is true, a name is generated using the fullname template.
   name: ""
 
+rbac:
+  # Enable RBAC resource creation.
+  create: true
+
 service:
   type: ClusterIP
   port: 9710
@@ -50,12 +56,15 @@ service:
 container:
   port: 9710
 
+# Pod-level security context.
+podSecurityContext:
+  fsGroup: 1000
+
 # Container [security context](https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-container).
 # See the [API reference](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#security-context-1) for details.
-securityContext:
+containerSecurityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
-  fsGroup: 1000
   runAsGroup: 1000
   runAsNonRoot: true
   runAsUser: 1000
@@ -64,6 +73,9 @@ securityContext:
   capabilities:
     drop: 
       - ALL
+
+# Deprecated: use `podSecurityContext` and `containerSecurityContext`.
+securityContext: {}
 
 # Container resource [requests and limits](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/).
 # See the [API reference](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) for details.
@@ -86,6 +98,21 @@ monitoring:
   prometheus:
     name: unknown
 
+# Operator CLI flags rendered as container args.
+operator:
+  logLevel: ""
+  supportedNamespacesRegex: ""
+  listenAddress: ""
+  metricsPath: ""
+  k8sCliQpsLimit: null
+  k8sCliBurstableLimit: null
+  concurrency: null
+  syncInterval: null
+  extraArgs: []
+
+# Extra environment variables for the operator container.
+extraEnv: []
+
 # Annotations to be added to pods and deployments.
 annotations: {}
 
@@ -98,4 +125,3 @@ affinity: {}
 topologySpreadConstraints: []
 
 priorityClassName: ""
-

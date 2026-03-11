@@ -11,7 +11,7 @@ metadata:
   namespace: sc
 type: Opaque
 stringData:
-  password: pass
+  password: "pass"
 ---
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover

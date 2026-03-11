@@ -29,6 +29,8 @@ helm repo update
 helm install redis-operator redis-operator/redis-operator
 ```
 
+The Helm chart includes values schema validation. Invalid combinations such as enabling RBAC while reusing an existing Service Account without setting `serviceAccount.name`, or enabling `imageCredentials.create` without either existing secrets or registry credentials, will fail during `helm lint`, `helm template` or `helm install`.
+
 #### Update helm chart
 
 Helm chart only manages the creation of CRD in the first installation. To update the CRD, you will need to apply it directly.
@@ -41,6 +43,45 @@ kubectl replace -f https://raw.githubusercontent.com/Saremox/redis-operator/${RE
 ```
 helm upgrade redis-operator redis-operator/redis-operator
 ```
+
+#### Helm chart configuration
+
+The chart exposes a small set of options to customize operator deployment:
+
+- `imagePullSecrets` to reuse existing image pull secrets in the release namespace.
+- `imageCredentials` to create a pull secret from registry credentials, or reference existing secrets with `imageCredentials.existsSecrets`.
+- `serviceAccount.create`, `serviceAccount.name` and `serviceAccount.annotations` to create or reuse the Service Account used by the operator.
+- `rbac.create` to control creation of RBAC resources.
+- `podSecurityContext` and `containerSecurityContext` to configure pod and container security settings.
+- `operator.*` and `operator.extraArgs` to configure operator CLI flags.
+- `extraEnv` to add extra environment variables to the operator container.
+
+The following chart values are deprecated:
+
+- `image.cli_args`: prefer `operator.*` values or `operator.extraArgs`.
+- `securityContext`: prefer `podSecurityContext` and `containerSecurityContext`.
+
+Example:
+
+```yaml
+imagePullSecrets:
+  - registrysecret
+
+serviceAccount:
+  create: false
+  name: redis-operator
+
+operator:
+  logLevel: debug
+  supportedNamespacesRegex: "prod-.*"
+  extraArgs:
+    - --concurrency=5
+
+extraEnv:
+  - name: HTTP_PROXY
+    value: http://proxy.example:8080
+```
+
 ### Using kubectl
 
 To create the operator, you can directly create it with kubectl:
