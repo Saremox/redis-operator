@@ -1,6 +1,6 @@
 # Changelog
 
-Check [releases](https://github.com/spotahome/redis-operator/releases) section for Changelog
+Check [releases](https://github.com/Saremox/redis-operator/releases) section for Changelog
 
 ## [v1.1.0-rc.3] - 2022-01-19
 ### Changes
