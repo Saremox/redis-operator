@@ -21,7 +21,7 @@
     {{- end }}
   {{- end }}
 {{- end }}
-{{- if and .Values.imageCredentials.create (eq (len $imagePullSecrets) 0) }}
+{{- if .Values.imageCredentials.create }}
   {{- $imagePullSecrets = append $imagePullSecrets (dict "name" (printf "%s-%s" $fullName $name)) -}}
 {{- end }}
 {{- $args := list -}}
