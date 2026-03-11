@@ -1,24 +1,16 @@
 {{- $fullName := include "chart.fullname" . -}}
 {{- $name := "registry" -}}
 {{- $data := dict "name" $name "Chart" .Chart "Release" .Release "Values" .Values -}}
-{{- $imagePullSecrets := list -}}
-{{- with .Values.imagePullSecrets }}
-  {{- range . }}
-    {{- $secretName := trim . -}}
-    {{- if $secretName }}
-      {{- $imagePullSecrets = append $imagePullSecrets $secretName -}}
-    {{- end }}
-  {{- end }}
-{{- end }}
+{{- $imageCredentialsSecrets := list -}}
 {{- with .Values.imageCredentials.existsSecrets }}
   {{- range . }}
     {{- $secretName := trim . -}}
     {{- if $secretName }}
-      {{- $imagePullSecrets = append $imagePullSecrets $secretName -}}
+      {{- $imageCredentialsSecrets = append $imageCredentialsSecrets $secretName -}}
     {{- end }}
   {{- end }}
 {{- end }}
-{{- if and .Values.imageCredentials.create (eq (len $imagePullSecrets) 0) -}}
+{{- if and .Values.imageCredentials.create (eq (len $imageCredentialsSecrets) 0) -}}
 apiVersion: v1
 kind: Secret
 metadata:

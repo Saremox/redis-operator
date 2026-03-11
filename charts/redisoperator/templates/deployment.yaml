@@ -2,8 +2,17 @@
 {{- $name := "registry" -}}
 {{- $data := dict "Chart" .Chart "Release" .Release "Values" .Values -}}
 {{- $legacySecurityContext := .Values.securityContext | default dict -}}
-{{- $podSecurityContext := .Values.podSecurityContext | default (pick $legacySecurityContext "fsGroup" "fsGroupChangePolicy" "supplementalGroups" "supplementalGroupsPolicy" "sysctls") -}}
-{{- $containerSecurityContext := .Values.containerSecurityContext | default (omit $legacySecurityContext "fsGroup" "fsGroupChangePolicy" "supplementalGroups" "supplementalGroupsPolicy" "sysctls") -}}
+{{- $podSecurityContext := dict -}}
+{{- $containerSecurityContext := dict -}}
+{{- if $legacySecurityContext }}
+  {{- /* Start from legacy securityContext, then let new values override. */ -}}
+  {{- $podSecurityContext = merge (pick $legacySecurityContext "fsGroup" "fsGroupChangePolicy" "supplementalGroups" "supplementalGroupsPolicy" "sysctls") (.Values.podSecurityContext | default dict) -}}
+  {{- $containerSecurityContext = merge (omit $legacySecurityContext "fsGroup" "fsGroupChangePolicy" "supplementalGroups" "supplementalGroupsPolicy" "sysctls") (.Values.containerSecurityContext | default dict) -}}
+{{- else }}
+  {{- /* No legacy securityContext: just use the new values (or {} if unset). */ -}}
+  {{- $podSecurityContext = .Values.podSecurityContext | default dict -}}
+  {{- $containerSecurityContext = .Values.containerSecurityContext | default dict -}}
+{{- end }}
 {{- $imagePullSecrets := list -}}
 {{- with .Values.imagePullSecrets }}
   {{- range . }}
