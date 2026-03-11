@@ -4,6 +4,7 @@ metadata:
   name: redisfailover
 spec:
   sentinel:
+    enabled: true
     replicas: 3
   redis:
     replicas: 3
@@ -18,4 +19,4 @@ spec:
                     operator: In
                     values:
                       - us-west-1
-              topologyKey: failure-domain.beta.kubernetes.io/zone
+              topologyKey: topology.kubernetes.io/zone

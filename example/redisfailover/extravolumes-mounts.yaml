@@ -20,6 +20,7 @@ metadata:
   namespace: exm
 spec:
   sentinel:
+    enabled: true
     replicas: 3
     extraVolumes:
     - name: foo

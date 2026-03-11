@@ -10,6 +10,7 @@ metadata:
     anotherlabel: value
 spec:
   sentinel:
+    enabled: true
     replicas: 3
     resources:
       requests:

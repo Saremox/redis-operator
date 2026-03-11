@@ -4,10 +4,11 @@ metadata:
   name: redisfailover
 spec:
   sentinel:
+    enabled: true
     replicas: 3
-    image: redis:4.0-alpine
+    image: redis:7.2-alpine
     imagePullPolicy: IfNotPresent
   redis:
     replicas: 3
-    image: redis:4.0-alpine
+    image: redis:7.2-alpine
     imagePullPolicy: IfNotPresent

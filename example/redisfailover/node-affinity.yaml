@@ -15,6 +15,7 @@ spec:
                   values:
                     - productionnodes
   sentinel:
+    enabled: true
     replicas: 3
     affinity:
       nodeAffinity:

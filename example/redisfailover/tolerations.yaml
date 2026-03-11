@@ -11,6 +11,7 @@ spec:
         operator: Equal
         value: production
   sentinel:
+    enabled: true
     replicas: 3
     tolerations:
       - effect: NoExecute

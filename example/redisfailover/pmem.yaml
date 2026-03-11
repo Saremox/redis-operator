@@ -6,6 +6,7 @@ metadata:
   name: redisfailover-pmem
 spec:
   sentinel:
+    enabled: true
     replicas: 3
     command:
       - "redis-server"
@@ -18,7 +19,6 @@ spec:
       runAsNonRoot: False
     replicas: 3
     image: pmem/redis
-    version: latest
     command:
       - "redis-server"
       - "/redis/redis.conf"

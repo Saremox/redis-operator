@@ -11,6 +11,7 @@ spec:
       - "--protected-mode"
       - "no"
   sentinel:
+    enabled: true
     replicas: 3
     command:
       - "redis-server"

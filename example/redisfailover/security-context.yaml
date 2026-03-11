@@ -4,6 +4,7 @@ metadata:
   name: redisfailover
 spec:
   sentinel:
+    enabled: true
     replicas: 3
   redis:
     replicas: 3

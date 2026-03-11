@@ -25,6 +25,7 @@ spec:
       topologyKey: kubernetes.io/hostname
       whenUnsatisfiable: ScheduleAnyway
   sentinel:
+    enabled: true
     replicas: 3
     topologySpreadConstraints:
     - labelSelector:

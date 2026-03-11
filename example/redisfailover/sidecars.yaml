@@ -22,6 +22,7 @@ spec:
   auth:
     secretPath: redis-auth
   sentinel:
+    enabled: true
     initContainers:
     - name: echo
       image: busybox

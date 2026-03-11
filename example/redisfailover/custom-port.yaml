@@ -16,6 +16,7 @@ spec:
     port: 12345
     replicas: 3
   sentinel:
+    enabled: true
     exporter:
       enabled: true
     replicas: 3

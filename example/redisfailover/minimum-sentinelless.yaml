@@ -1,0 +1,7 @@
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: redisfailover-sentinelless
+spec:
+  sentinel:
+    enabled: false
