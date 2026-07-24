@@ -79,10 +79,11 @@ func generateSentinelService(rf *redisfailoverv1.RedisFailover, labels map[strin
 	// The sentinel exporter sidecar listens on sentinelExporterPort, but without
 	// a matching service port there is no way to scrape it through the service.
 	if rf.Spec.Sentinel.Exporter.Enabled {
+		port := sentinelExporterListenPort(rf)
 		svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{
 			Name:       "metrics",
-			Port:       sentinelExporterPort,
-			TargetPort: intstr.FromInt(sentinelExporterPort),
+			Port:       port,
+			TargetPort: intstr.FromInt(int(port)),
 			Protocol:   corev1.ProtocolTCP,
 		})
 	}
@@ -116,7 +117,7 @@ func generateRedisService(rf *redisfailoverv1.RedisFailover, labels map[string]s
 			ClusterIP: corev1.ClusterIPNone,
 			Ports: []corev1.ServicePort{
 				{
-					Port:     exporterPort,
+					Port:     redisExporterListenPort(rf),
 					Protocol: corev1.ProtocolTCP,
 					Name:     exporterPortName,
 				},
@@ -779,6 +780,24 @@ var exporterDefaultResourceRequirements = corev1.ResourceRequirements{
 	},
 }
 
+// redisExporterListenPort returns the port the redis exporter listens on,
+// falling back to the built-in default when the spec leaves it unset.
+func redisExporterListenPort(rf *redisfailoverv1.RedisFailover) int32 {
+	if p := rf.Spec.Redis.Exporter.Port; p != 0 {
+		return p
+	}
+	return exporterPort
+}
+
+// sentinelExporterListenPort returns the port the sentinel exporter listens on,
+// falling back to the built-in default when the spec leaves it unset.
+func sentinelExporterListenPort(rf *redisfailoverv1.RedisFailover) int32 {
+	if p := rf.Spec.Sentinel.Exporter.Port; p != 0 {
+		return p
+	}
+	return sentinelExporterPort
+}
+
 func createRedisExporterContainer(rf *redisfailoverv1.RedisFailover) corev1.Container {
 	resources := exporterDefaultResourceRequirements
 	if rf.Spec.Redis.Exporter.Resources != nil {
@@ -802,7 +821,7 @@ func createRedisExporterContainer(rf *redisfailoverv1.RedisFailover) corev1.Cont
 		Ports: []corev1.ContainerPort{
 			{
 				Name:          "metrics",
-				ContainerPort: exporterPort,
+				ContainerPort: redisExporterListenPort(rf),
 				Protocol:      corev1.ProtocolTCP,
 			},
 		},
@@ -820,6 +839,7 @@ func createSentinelExporterContainer(rf *redisfailoverv1.RedisFailover) corev1.C
 	if rf.Spec.Sentinel.Exporter.Resources != nil {
 		resources = *rf.Spec.Sentinel.Exporter.Resources
 	}
+	listenPort := sentinelExporterListenPort(rf)
 	container := corev1.Container{
 		Name:            sentinelExporterContainerName,
 		Image:           rf.Spec.Sentinel.Exporter.Image,
@@ -835,7 +855,7 @@ func createSentinelExporterContainer(rf *redisfailoverv1.RedisFailover) corev1.C
 			},
 		}, corev1.EnvVar{
 			Name:  "REDIS_EXPORTER_WEB_LISTEN_ADDRESS",
-			Value: fmt.Sprintf("0.0.0.0:%[1]v", sentinelExporterPort),
+			Value: fmt.Sprintf("0.0.0.0:%[1]v", listenPort),
 		}, corev1.EnvVar{
 			Name:  "REDIS_ADDR",
 			Value: "redis://127.0.0.1:26379",
@@ -844,7 +864,7 @@ func createSentinelExporterContainer(rf *redisfailoverv1.RedisFailover) corev1.C
 		Ports: []corev1.ContainerPort{
 			{
 				Name:          "metrics",
-				ContainerPort: sentinelExporterPort,
+				ContainerPort: listenPort,
 				Protocol:      corev1.ProtocolTCP,
 			},
 		},
