@@ -121,6 +121,26 @@ This redis-failover will be managed by the operator, resulting in the following 
 **NOTE**: `NAME` is the named provided when creating the RedisFailover.
 **IMPORTANT**: the name of the redis-failover to be created cannot be longer than 48 characters, due to prepend of redis/sentinel identification and statefulset limitation.
 
+### Sentinel update strategy and PodDisruptionBudget
+
+The sentinel `Deployment` update strategy can be overridden via `sentinel.strategy` (e.g. to set
+`rollingUpdate.maxSurge`/`maxUnavailable`). This helps when required anti-affinity plus
+`replicas == nodes` would otherwise deadlock the default rolling update:
+
+```yaml
+spec:
+  sentinel:
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 1
+        maxUnavailable: 0
+```
+
+The `PodDisruptionBudget` `minAvailable` for each component defaults to `2` (or `1` when redis
+`replicas <= 2`). Override it per component with `redis.podDisruptionBudgetMinAvailable` /
+`sentinel.podDisruptionBudgetMinAvailable` (an integer or percentage string such as `"60%"`).
+
 ### Persistence
 
 The operator can add persistence to Redis data. By default, an `emptyDir` will be used, so the data is not saved.
