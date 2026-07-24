@@ -46,7 +46,9 @@ type RedisFailoverCheck interface {
 	GetRedisRevisionHash(podName string, rFailover *redisfailoverv1.RedisFailover) (string, error)
 	CheckRedisSlavesReady(slaveIP string, rFailover *redisfailoverv1.RedisFailover) (bool, error)
 	IsRedisRunning(rFailover *redisfailoverv1.RedisFailover) bool
+	IsRedisRunningQuorum(rFailover *redisfailoverv1.RedisFailover) bool
 	IsSentinelRunning(rFailover *redisfailoverv1.RedisFailover) bool
+	IsSentinelRunningQuorum(rFailover *redisfailoverv1.RedisFailover) bool
 	IsClusterRunning(rFailover *redisfailoverv1.RedisFailover) bool
 	// Operator-managed failover methods
 	CheckMasterHealth(rFailover *redisfailoverv1.RedisFailover) (bool, string, error)
@@ -493,10 +495,26 @@ func (r *RedisFailoverChecker) IsRedisRunning(rFailover *redisfailoverv1.RedisFa
 	return err == nil && len(dp.Items) > int(rFailover.Spec.Redis.Replicas-1) && AreAllRunning(dp, int(rFailover.Spec.Redis.Replicas))
 }
 
+// IsRedisRunningQuorum returns true when at least a majority (quorum) of the
+// redis pods are Running. Unlike IsRedisRunning it does not require the full set,
+// so healing can still proceed while a minority of pods are stuck Pending.
+func (r *RedisFailoverChecker) IsRedisRunningQuorum(rFailover *redisfailoverv1.RedisFailover) bool {
+	dp, err := r.k8sService.GetStatefulSetPods(rFailover.Namespace, GetRedisName(rFailover))
+	return err == nil && AreQuorumRunning(dp, int(rFailover.Spec.Redis.Replicas))
+}
+
 // IsSentinelRunning returns true if all the pods are Running
 func (r *RedisFailoverChecker) IsSentinelRunning(rFailover *redisfailoverv1.RedisFailover) bool {
 	dp, err := r.k8sService.GetDeploymentPods(rFailover.Namespace, GetSentinelName(rFailover))
 	return err == nil && len(dp.Items) > int(rFailover.Spec.Sentinel.Replicas-1) && AreAllRunning(dp, int(rFailover.Spec.Sentinel.Replicas))
+}
+
+// IsSentinelRunningQuorum returns true when at least a majority (quorum) of the
+// sentinel pods are Running, so the operator can reconfigure the surviving
+// sentinels even while a minority are stuck Pending.
+func (r *RedisFailoverChecker) IsSentinelRunningQuorum(rFailover *redisfailoverv1.RedisFailover) bool {
+	dp, err := r.k8sService.GetDeploymentPods(rFailover.Namespace, GetSentinelName(rFailover))
+	return err == nil && AreQuorumRunning(dp, int(rFailover.Spec.Sentinel.Replicas))
 }
 
 // IsClusterRunning returns true if all the pods in the given redisfailover are Running
@@ -633,4 +651,20 @@ func AreAllRunning(pods *corev1.PodList, expectedRunningPods int) bool {
 		runningPods++
 	}
 	return runningPods >= expectedRunningPods
+}
+
+// AreQuorumRunning reports whether at least a majority (quorum) of the expected
+// pods are Running. Scheduling and terminal pods are not counted, but a minority
+// of Pending pods no longer blocks the result, so the operator can keep healing
+// the surviving pods after a partial outage instead of waiting for the full set.
+func AreQuorumRunning(pods *corev1.PodList, expectedReplicas int) bool {
+	var runningPods int
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if util.PodIsScheduling(pod) || util.PodIsTerminal(pod) {
+			continue
+		}
+		runningPods++
+	}
+	return runningPods >= expectedReplicas/2+1
 }
