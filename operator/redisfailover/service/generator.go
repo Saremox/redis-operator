@@ -580,6 +580,7 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &rf.Spec.Sentinel.Replicas,
+			Strategy: rf.Spec.Sentinel.Strategy,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: selectorLabels,
 			},
