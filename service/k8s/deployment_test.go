@@ -184,6 +184,81 @@ func TestDeploymentServiceUpdate(t *testing.T) {
 	}
 }
 
+// countActions tallies the verbs the fake clientset recorded.
+func countActions(actions []kubetesting.Action) map[string]int {
+	counts := map[string]int{}
+	for _, a := range actions {
+		counts[a.GetVerb()]++
+	}
+	return counts
+}
+
+func hashingTestDeployment(replicas int32) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "rfr-test", Namespace: "testns"},
+		Spec:       appsv1.DeploymentSpec{Replicas: &replicas},
+	}
+}
+
+// stampStored applies a deployment once with hashing on, so the object left in
+// the fake cluster carries the resource-hash annotation exactly as a real
+// hashing-enabled reconcile would leave it. It returns a fresh fake clientset
+// already holding the stamped object, and the number of update actions used to
+// stamp it (always 1) is discarded by the caller.
+func stampStored(t *testing.T, stored *appsv1.Deployment) *kubernetes.Clientset {
+	t.Helper()
+	mcli := kubernetes.NewClientset(stored)
+	svc := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy, k8s.WithObjectHashing(true))
+	// The stored object is not yet stamped, so this first apply stamps it.
+	assert.NoError(t, svc.CreateOrUpdateDeployment("testns", stored.DeepCopy()))
+	mcli.ClearActions()
+	return mcli
+}
+
+func TestDeploymentServiceObjectHashing(t *testing.T) {
+	const testns = "testns"
+
+	tests := []struct {
+		name          string
+		hashing       bool
+		desired       *appsv1.Deployment
+		expectUpdates int
+	}{
+		{
+			name:          "hashing off still updates an unchanged object",
+			hashing:       false,
+			desired:       hashingTestDeployment(3),
+			expectUpdates: 1,
+		},
+		{
+			name:          "hashing on skips an unchanged object",
+			hashing:       true,
+			desired:       hashingTestDeployment(3),
+			expectUpdates: 0,
+		},
+		{
+			name:          "hashing on updates a changed object",
+			hashing:       true,
+			desired:       hashingTestDeployment(9), // differs from the stamped stored object
+			expectUpdates: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			// The cluster already holds a deployment stamped by a prior apply.
+			mcli := stampStored(t, hashingTestDeployment(3))
+
+			service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy, k8s.WithObjectHashing(test.hashing))
+
+			assert.NoError(service.CreateOrUpdateDeployment(testns, test.desired))
+			assert.Equal(test.expectUpdates, countActions(mcli.Actions())["update"])
+		})
+	}
+}
+
 func TestDeploymentServiceDelete(t *testing.T) {
 	testns := "testns"
 
@@ -304,4 +379,49 @@ func TestDeploymentServiceGetDeploymentPods(t *testing.T) {
 		assertTest.True(kubeerrors.IsNotFound(err))
 		assertTest.Nil(pods)
 	})
+}
+
+func TestDeploymentServiceObjectHashingFirstPass(t *testing.T) {
+	assert := assert.New(t)
+
+	const testns = "testns"
+	// Stored object exists but was never stamped (pre-upgrade state).
+	stored := hashingTestDeployment(3)
+	stored.ResourceVersion = "42"
+	mcli := kubernetes.NewClientset(stored)
+
+	service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy, k8s.WithObjectHashing(true))
+
+	assert.NoError(service.CreateOrUpdateDeployment(testns, hashingTestDeployment(3)))
+	assert.Equal(1, countActions(mcli.Actions())["update"], "an unstamped object must be updated once")
+}
+
+// TestDeploymentServiceObjectHashingConvergence guards the ordering rule: the
+// hash is taken before ResourceVersion is copied, so once an object is applied
+// with hashing on, a second identical reconcile issues no further update.
+func TestDeploymentServiceObjectHashingConvergence(t *testing.T) {
+	assert := assert.New(t)
+
+	const testns = "testns"
+	replicas := int32(3)
+	desired := func() *appsv1.Deployment {
+		return &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "rfr-test", Namespace: testns},
+			Spec:       appsv1.DeploymentSpec{Replicas: &replicas},
+		}
+	}
+
+	// First apply: object exists but was never stamped, so it is updated once
+	// and the applied object carries the hash annotation.
+	stored := desired()
+	stored.ResourceVersion = "1"
+	mcli := kubernetes.NewClientset(stored)
+	service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy, k8s.WithObjectHashing(true))
+
+	assert.NoError(service.CreateOrUpdateDeployment(testns, desired()))
+	assert.Equal(1, countActions(mcli.Actions())["update"], "first reconcile stamps and updates")
+
+	// Second apply against the now-stamped object must be a no-op.
+	assert.NoError(service.CreateOrUpdateDeployment(testns, desired()))
+	assert.Equal(1, countActions(mcli.Actions())["update"], "second identical reconcile must not update again")
 }

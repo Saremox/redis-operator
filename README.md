@@ -121,6 +121,22 @@ This redis-failover will be managed by the operator, resulting in the following 
 **NOTE**: `NAME` is the named provided when creating the RedisFailover.
 **IMPORTANT**: the name of the redis-failover to be created cannot be longer than 48 characters, due to prepend of redis/sentinel identification and statefulset limitation.
 
+### Reducing update churn (`--enable-hash`)
+
+By default the operator rewrites every owned resource (statefulset, deployment, configmaps,
+services, PDBs, RBAC) on every reconcile, whether or not anything changed. On clusters with
+mutating admission webhooks (Kyverno, OPA/Gatekeeper) this fires the webhook on every loop and
+bumps `metadata.generation` continuously.
+
+Starting the operator with `--enable-hash` makes it store a hash of each resource it applies in a
+`databases.spotahome.com/resource-hash` annotation and skip the update when the resource it would
+write matches that hash.
+
+**Trade-off:** while enabled, a resource that is edited by hand is no longer corrected on the next
+sync, because the operator's *desired* object is unchanged and so its hash still matches. You are
+trading the operator's self-healing of manual drift for far fewer API writes. The flag is **off by
+default**, so upgrading changes nothing until you opt in.
+
 ### Persistence
 
 The operator can add persistence to Redis data. By default, an `emptyDir` will be used, so the data is not saved.

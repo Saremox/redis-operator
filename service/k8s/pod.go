@@ -70,6 +70,10 @@ func (p *PodService) UpdatePod(namespace string, pod *corev1.Pod) error {
 	p.logger.WithField("namespace", namespace).WithField("pod", pod.Name).Debugf("pod updated")
 	return nil
 }
+
+// CreateOrUpdatePod is intentionally left without the --enable-hash skip guard
+// the other CreateOrUpdate* methods carry: it is not part of the ensure loop, so
+// it does not contribute to the per-reconcile update churn that flag addresses.
 func (p *PodService) CreateOrUpdatePod(namespace string, pod *corev1.Pod) error {
 	storedPod, err := p.GetPod(namespace, pod.Name)
 	if err != nil {

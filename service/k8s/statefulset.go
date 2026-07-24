@@ -36,15 +36,17 @@ type StatefulSetService struct {
 	kubeClient      kubernetes.Interface
 	logger          log.Logger
 	metricsRecorder metrics.Recorder
+	hashingEnabled  bool
 }
 
 // NewStatefulSetService returns a new StatefulSet KubeService.
-func NewStatefulSetService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *StatefulSetService {
+func NewStatefulSetService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder, opts ...ServiceOption) *StatefulSetService {
 	logger = logger.With("service", "k8s.statefulSet")
 	return &StatefulSetService{
 		kubeClient:      kubeClient,
 		logger:          logger,
 		metricsRecorder: metricsRecorder,
+		hashingEnabled:  newServiceOptions(opts).hashingEnabled,
 	}
 }
 
@@ -103,6 +105,16 @@ func (s *StatefulSetService) CreateOrUpdateStatefulSet(namespace string, statefu
 			return s.CreateStatefulSet(namespace, statefulSet)
 		}
 		return err
+	}
+
+	if s.hashingEnabled {
+		if !shouldUpdate(statefulSet, storedStatefulSet) {
+			s.logger.WithField("namespace", namespace).WithField("statefulSet", statefulSet.Name).Debugf("statefulset is already up to date, skipping update")
+			return nil
+		}
+		if err := addHashAnnotation(statefulSet); err != nil {
+			return err
+		}
 	}
 
 	// Already exists, need to Update.

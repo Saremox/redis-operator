@@ -27,15 +27,17 @@ type ConfigMapService struct {
 	kubeClient      kubernetes.Interface
 	logger          log.Logger
 	metricsRecorder metrics.Recorder
+	hashingEnabled  bool
 }
 
 // NewConfigMapService returns a new ConfigMap KubeService.
-func NewConfigMapService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *ConfigMapService {
+func NewConfigMapService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder, opts ...ServiceOption) *ConfigMapService {
 	logger = logger.With("service", "k8s.configMap")
 	return &ConfigMapService{
 		kubeClient:      kubeClient,
 		logger:          logger,
 		metricsRecorder: metricsRecorder,
+		hashingEnabled:  newServiceOptions(opts).hashingEnabled,
 	}
 }
 
@@ -74,6 +76,16 @@ func (p *ConfigMapService) CreateOrUpdateConfigMap(namespace string, configMap *
 			return p.CreateConfigMap(namespace, configMap)
 		}
 		return err
+	}
+
+	if p.hashingEnabled {
+		if !shouldUpdate(configMap, storedConfigMap) {
+			p.logger.WithField("namespace", namespace).WithField("configMap", configMap.Name).Debugf("configmap is already up to date, skipping update")
+			return nil
+		}
+		if err := addHashAnnotation(configMap); err != nil {
+			return err
+		}
 	}
 
 	// Already exists, need to Update.

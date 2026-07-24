@@ -26,15 +26,17 @@ type PodDisruptionBudgetService struct {
 	kubeClient      kubernetes.Interface
 	logger          log.Logger
 	metricsRecorder metrics.Recorder
+	hashingEnabled  bool
 }
 
 // NewPodDisruptionBudgetService returns a new PodDisruptionBudget KubeService.
-func NewPodDisruptionBudgetService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *PodDisruptionBudgetService {
+func NewPodDisruptionBudgetService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder, opts ...ServiceOption) *PodDisruptionBudgetService {
 	logger = logger.With("service", "k8s.podDisruptionBudget")
 	return &PodDisruptionBudgetService{
 		kubeClient:      kubeClient,
 		logger:          logger,
 		metricsRecorder: metricsRecorder,
+		hashingEnabled:  newServiceOptions(opts).hashingEnabled,
 	}
 }
 
@@ -75,6 +77,16 @@ func (p *PodDisruptionBudgetService) CreateOrUpdatePodDisruptionBudget(namespace
 			return p.CreatePodDisruptionBudget(namespace, podDisruptionBudget)
 		}
 		return err
+	}
+
+	if p.hashingEnabled {
+		if !shouldUpdate(podDisruptionBudget, storedPodDisruptionBudget) {
+			p.logger.WithField("namespace", namespace).WithField("podDisruptionBudget", podDisruptionBudget.Name).Debugf("pod disruption budget is already up to date, skipping update")
+			return nil
+		}
+		if err := addHashAnnotation(podDisruptionBudget); err != nil {
+			return err
+		}
 	}
 
 	// Already exists, need to Update.
