@@ -79,6 +79,23 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			return err
 		}
 		if masterRevision != ssUR {
+			// Deleting the master makes sentinel run a failover. Only do that once
+			// every sentinel has the freshly (re)started slaves in memory - the
+			// redis-side readiness checked above is not enough, because sentinel
+			// fails over from its own view and its slave discovery lags. Replacing
+			// the master before then leaves the failover with no promotable replica
+			// and it dies with NOGOODSLAVE until manual repair.
+			sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
+			if err != nil {
+				return err
+			}
+			for _, sip := range sentinels {
+				if err := r.rfChecker.CheckSentinelSlavesNumberInMemory(sip, rf); err != nil {
+					r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("Waiting for sentinels to see all slaves before replacing the master: %s", err.Error())
+					return nil
+				}
+			}
+
 			err = r.rfHealer.DeletePod(master, rf)
 			if err != nil {
 				return err

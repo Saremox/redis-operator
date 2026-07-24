@@ -1308,6 +1308,9 @@ func TestUpdate(t *testing.T) {
 		errExpected   bool
 		bootstrapping bool
 		noMaster      bool
+		// sentinelSlavesShort makes the sentinels report fewer slaves than
+		// expected, so the master must not be replaced yet.
+		sentinelSlavesShort bool
 	}{
 		{
 			name: "all ok, no change needed",
@@ -1520,6 +1523,51 @@ func TestUpdate(t *testing.T) {
 			ssVersion:     "10",
 			errExpected:   false,
 			bootstrapping: false,
+		},
+		{
+			// Master is stale, all slaves are redis-ready, but the sentinels have
+			// not discovered the slaves yet. The master must not be replaced or the
+			// failover it triggers would fail with NOGOODSLAVE.
+			name: "master version incorrect but sentinels lack slaves",
+			pods: []podStatus{
+				{
+					pod: corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:   "slave1",
+							Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: "10"},
+						},
+						Status: corev1.PodStatus{PodIP: "0.0.0.0"},
+					},
+					master: false,
+					ready:  true,
+				},
+				{
+					pod: corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:   "slave2",
+							Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: "10"},
+						},
+						Status: corev1.PodStatus{PodIP: "0.0.0.1"},
+					},
+					master: false,
+					ready:  true,
+				},
+				{
+					pod: corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:   "master",
+							Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: "1"},
+						},
+						Status: corev1.PodStatus{PodIP: "1.1.1.1"},
+					},
+					master: true,
+					ready:  true,
+				},
+			},
+			ssVersion:           "10",
+			errExpected:         false,
+			bootstrapping:       false,
+			sentinelSlavesShort: true,
 		},
 		{
 			name: "all ok, no change needed when in bootstrap mode",
@@ -1777,12 +1825,13 @@ func TestUpdate(t *testing.T) {
 
 				for _, pod := range test.pods {
 					mrfc.On("GetRedisRevisionHash", pod.pod.Name, rf).Once().Return(pod.pod.Labels[appsv1.ControllerRevisionHashLabelKey], nil)
-					if pod.pod.Labels[appsv1.ControllerRevisionHashLabelKey] != test.ssVersion {
+					// A stale slave is deleted immediately in the slave loop; the
+					// master is deleted later and only after the sentinel gate, so
+					// its DeletePod expectation is set in the master block below.
+					if pod.pod.Labels[appsv1.ControllerRevisionHashLabelKey] != test.ssVersion && !pod.master {
 						mrfh.On("DeletePod", pod.pod.Name, rf).Once().Return(nil)
-						if pod.master == false {
-							next = false
-							break
-						}
+						next = false
+						break
 					}
 				}
 				fmt.Printf("%v - %v\n", test.name, next)
@@ -1791,6 +1840,24 @@ func TestUpdate(t *testing.T) {
 						mrfc.On("GetRedisesMasterPod", rf).Once().Return("", errors.New(""))
 					} else {
 						mrfc.On("GetRedisesMasterPod", rf).Once().Return("master", nil)
+
+						masterStale := false
+						for _, pod := range test.pods {
+							if pod.master && pod.pod.Labels[appsv1.ControllerRevisionHashLabelKey] != test.ssVersion {
+								masterStale = true
+							}
+						}
+						if masterStale {
+							// Before replacing the master the operator checks every
+							// sentinel has the slaves in memory.
+							mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{"sentinel0"}, nil)
+							if test.sentinelSlavesShort {
+								mrfc.On("CheckSentinelSlavesNumberInMemory", "sentinel0", rf).Once().Return(errors.New("redis slaves in sentinel memory mismatch"))
+							} else {
+								mrfc.On("CheckSentinelSlavesNumberInMemory", "sentinel0", rf).Once().Return(nil)
+								mrfh.On("DeletePod", "master", rf).Once().Return(nil)
+							}
+						}
 					}
 				}
 			}
@@ -1883,6 +1950,18 @@ func TestUpdateRedisesPodsErrorBranches(t *testing.T) {
 			},
 		},
 		{
+			name: "GetSentinelsIPs fails before replacing a stale master pod",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("GetRedisesIPs", rf).Once().Return([]string{master}, nil)
+				mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
+				mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("1", nil)
+				mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
+				mrfc.On("GetRedisesMasterPod", rf).Once().Return(master, nil)
+				mrfc.On("GetRedisRevisionHash", master, rf).Once().Return("stale", nil)
+				mrfc.On("GetSentinelsIPs", rf).Once().Return(nil, errors.New("sentinels ips err"))
+			},
+		},
+		{
 			name: "DeletePod fails for a stale master pod",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
 				mrfc.On("GetRedisesIPs", rf).Once().Return([]string{master}, nil)
@@ -1891,6 +1970,8 @@ func TestUpdateRedisesPodsErrorBranches(t *testing.T) {
 				mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
 				mrfc.On("GetRedisesMasterPod", rf).Once().Return(master, nil)
 				mrfc.On("GetRedisRevisionHash", master, rf).Once().Return("stale", nil)
+				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{"sentinel0"}, nil)
+				mrfc.On("CheckSentinelSlavesNumberInMemory", "sentinel0", rf).Once().Return(nil)
 				mrfh.On("DeletePod", master, rf).Once().Return(errors.New("delete master err"))
 			},
 		},
