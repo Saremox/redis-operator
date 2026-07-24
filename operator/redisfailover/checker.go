@@ -11,6 +11,7 @@ import (
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
+	"github.com/saremox/redis-operator/service/redis"
 )
 
 // UpdateRedisesPods if the running version of pods is equal to the statefulset one
@@ -588,6 +589,14 @@ func (r *RedisFailoverHandler) applyRedisCustomConfig(rf *redisfailoverv1.RedisF
 	}
 	for _, rip := range redises {
 		if err := r.rfHealer.SetRedisCustomConfig(rip, rf); err != nil {
+			// A pod on a downed node cannot be configured; skip it rather than
+			// aborting the whole reconcile, so the reachable pods and the rest of
+			// the heal still run. A non-connection error (bad config value, auth)
+			// is a real problem and still stops here.
+			if redis.IsUnreachableError(err) {
+				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Skipping custom config on unreachable redis %s: %s", rip, err.Error())
+				continue
+			}
 			return err
 		}
 	}
