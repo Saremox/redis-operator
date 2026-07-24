@@ -164,11 +164,15 @@ By default, Kubernetes will run containers as the user specified in the Dockerfi
 If you need the containers to run as a specific user (or provide any other PodSecurityContext options), then you can specify a custom `securityContext` in the
 `redisfailover` object. See the [SecurityContext example file](example/redisfailover/security-context.yaml) for an example. You can visit kubernetes documentation for detailed docs about [security context](https://kubernetes.io/docs/tasks/configure-pod-container/security-context/)
 
+A custom `securityContext` is merged on top of the operator defaults: fields you set win, and any field you leave unset keeps its default (e.g. setting only `runAsUser` no longer clears `fsGroup`/`runAsNonRoot`).
+
 ### Custom containerSecurityContext at container level
 
 By default, Kubernetes will run containers with default docker capabilities, for example; this is not always desirable.
 If you need the containers to run with specific capabilities or with read-only root file system (or provide any other securityContext options), then you can specify a custom `containerSecurityContext` in the
 `redisfailover` object. See the [ContainerSecurityContext example file](example/redisfailover/container-security-context.yaml) for an example. Keys available under containerSecurityContext are detailed [here](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#securitycontext-v1-core)
+
+A custom `containerSecurityContext` is merged on top of the operator defaults: fields you set win, and any field you leave unset keeps its default (e.g. the dropped `ALL` capabilities and `allowPrivilegeEscalation: false` are retained unless you override them).
 
 ### Custom command
 

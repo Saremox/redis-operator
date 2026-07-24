@@ -839,15 +839,14 @@ func getAffinity(affinity *corev1.Affinity, labels map[string]string) *corev1.Af
 	}
 }
 
+// getSecurityContext returns the operator's default pod security context, with
+// any field the user set on secctx taking precedence. A partial user context
+// only overrides the fields it specifies instead of dropping all the defaults.
 func getSecurityContext(secctx *corev1.PodSecurityContext) *corev1.PodSecurityContext {
-	if secctx != nil {
-		return secctx
-	}
-
 	defaultUserAndGroup := int64(1000)
 	runAsNonRoot := true
 
-	return &corev1.PodSecurityContext{
+	result := &corev1.PodSecurityContext{
 		RunAsUser:    &defaultUserAndGroup,
 		RunAsGroup:   &defaultUserAndGroup,
 		RunAsNonRoot: &runAsNonRoot,
@@ -856,13 +855,33 @@ func getSecurityContext(secctx *corev1.PodSecurityContext) *corev1.PodSecurityCo
 			Type: corev1.SeccompProfileTypeRuntimeDefault,
 		},
 	}
-}
-
-func getContainerSecurityContext(secctx *corev1.SecurityContext) *corev1.SecurityContext {
-	if secctx != nil {
-		return secctx
+	if secctx == nil {
+		return result
 	}
 
+	// Start from the user's context (so fields the operator has no default for
+	// are preserved) and only fall back to a default where the user left it unset.
+	merged := secctx.DeepCopy()
+	if merged.RunAsUser == nil {
+		merged.RunAsUser = result.RunAsUser
+	}
+	if merged.RunAsGroup == nil {
+		merged.RunAsGroup = result.RunAsGroup
+	}
+	if merged.RunAsNonRoot == nil {
+		merged.RunAsNonRoot = result.RunAsNonRoot
+	}
+	if merged.FSGroup == nil {
+		merged.FSGroup = result.FSGroup
+	}
+	return merged
+}
+
+// getContainerSecurityContext returns the operator's default container security
+// context, with any field the user set on secctx taking precedence. A partial
+// user context only overrides the fields it specifies instead of dropping all
+// the defaults.
+func getContainerSecurityContext(secctx *corev1.SecurityContext) *corev1.SecurityContext {
 	capabilities := &corev1.Capabilities{
 		Add: []corev1.Capability{},
 		Drop: []corev1.Capability{
@@ -875,7 +894,7 @@ func getContainerSecurityContext(secctx *corev1.SecurityContext) *corev1.Securit
 	allowPrivilegeEscalation := false
 	readOnlyRootFilesystem := true
 
-	return &corev1.SecurityContext{
+	result := &corev1.SecurityContext{
 		Capabilities:             capabilities,
 		Privileged:               &privileged,
 		RunAsUser:                &defaultUserAndGroup,
@@ -884,6 +903,33 @@ func getContainerSecurityContext(secctx *corev1.SecurityContext) *corev1.Securit
 		ReadOnlyRootFilesystem:   &readOnlyRootFilesystem,
 		AllowPrivilegeEscalation: &allowPrivilegeEscalation,
 	}
+	if secctx == nil {
+		return result
+	}
+
+	merged := secctx.DeepCopy()
+	if merged.Capabilities == nil {
+		merged.Capabilities = result.Capabilities
+	}
+	if merged.Privileged == nil {
+		merged.Privileged = result.Privileged
+	}
+	if merged.RunAsUser == nil {
+		merged.RunAsUser = result.RunAsUser
+	}
+	if merged.RunAsGroup == nil {
+		merged.RunAsGroup = result.RunAsGroup
+	}
+	if merged.RunAsNonRoot == nil {
+		merged.RunAsNonRoot = result.RunAsNonRoot
+	}
+	if merged.ReadOnlyRootFilesystem == nil {
+		merged.ReadOnlyRootFilesystem = result.ReadOnlyRootFilesystem
+	}
+	if merged.AllowPrivilegeEscalation == nil {
+		merged.AllowPrivilegeEscalation = result.AllowPrivilegeEscalation
+	}
+	return merged
 }
 
 func getDnsPolicy(dnspolicy corev1.DNSPolicy) corev1.DNSPolicy {
