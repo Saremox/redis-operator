@@ -114,13 +114,36 @@ func IsMasterPod(pod *corev1.Pod) bool {
 	return pod.Labels[redisRoleLabelKey] == redisRoleLabelMaster
 }
 
-func (r *RedisFailoverChecker) setMasterLabelIfNecessary(namespace string, pod corev1.Pod) error {
+// applyMasterEvictionAnnotation keeps the cluster-autoscaler safe-to-evict
+// annotation in sync with a pod's role, but only when the RedisFailover opts in
+// via spec.redis.preventMasterEviction. The master is pinned (false) and slaves
+// are marked evictable (true). It reads the desired state off the already-fetched
+// pod object and skips the patch when the annotation is already correct, so it is
+// safe to call on every reconcile without extra API writes.
+func applyMasterEvictionAnnotation(k8sService k8s.Services, rf *redisfailoverv1.RedisFailover, pod corev1.Pod, isMaster bool) error {
+	if !rf.Spec.Redis.PreventMasterEviction {
+		return nil
+	}
+	desired := "true"
+	if isMaster {
+		desired = "false"
+	}
+	if pod.Annotations[masterSafeToEvictAnnotation] == desired {
+		return nil
+	}
+	return k8sService.UpdatePodAnnotations(rf.Namespace, pod.Name, map[string]string{masterSafeToEvictAnnotation: desired})
+}
+
+func (r *RedisFailoverChecker) setMasterLabelIfNecessary(rf *redisfailoverv1.RedisFailover, pod corev1.Pod) error {
+	if err := applyMasterEvictionAnnotation(r.k8sService, rf, pod, true); err != nil {
+		return err
+	}
 	for labelKey, labelValue := range pod.Labels {
 		if labelKey == redisRoleLabelKey && labelValue == redisRoleLabelMaster {
 			return nil
 		}
 	}
-	return r.k8sService.UpdatePodLabels(namespace, pod.Name, generateRedisMasterRoleLabel())
+	return r.k8sService.UpdatePodLabels(rf.Namespace, pod.Name, generateRedisMasterRoleLabel())
 }
 
 func (r *RedisFailoverChecker) setSlaveLabelIfNecessary(rf *redisfailoverv1.RedisFailover, pod corev1.Pod, port, password string) error {
@@ -148,7 +171,7 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 	var wrongMasterErr error
 	for _, rp := range rps.Items {
 		if rp.Status.PodIP == master {
-			err = r.setMasterLabelIfNecessary(rf.Namespace, rp)
+			err = r.setMasterLabelIfNecessary(rf, rp)
 			if err != nil {
 				return err
 			}

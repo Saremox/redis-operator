@@ -46,3 +46,7 @@ const (
 // template hash, which the existing revision-based staleness check in
 // UpdateRedisesPods already uses to roll pods one at a time.
 const redisAuthSecretChecksumAnnotation = "redisfailovers.databases.spotahome.com/secret-checksum"
+
+// masterSafeToEvictAnnotation is the cluster-autoscaler annotation used to keep
+// the node running the redis master from being drained during scale-down.
+const masterSafeToEvictAnnotation = "cluster-autoscaler.kubernetes.io/safe-to-evict"
