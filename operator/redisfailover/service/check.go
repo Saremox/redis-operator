@@ -127,6 +127,12 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 	}
 
 	rport := getRedisPort(rf.Spec.Redis.Port)
+	// wrongMasterErr records a reachable slave replicating from the wrong master.
+	// It is returned after the loop so that every reachable pod is still labelled
+	// first - otherwise a single misconfigured or unreachable pod early in the
+	// list would stop the new master from ever being labelled, leaving the master
+	// Service pointing nowhere.
+	var wrongMasterErr error
 	for _, rp := range rps.Items {
 		if rp.Status.PodIP == master {
 			err = r.setMasterLabelIfNecessary(rf.Namespace, rp)
@@ -142,14 +148,17 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 
 		slave, err := r.redisClient.GetSlaveOf(rp.Status.PodIP, rport, password)
 		if err != nil {
+			// The pod is unreachable - typically the old master on a downed node.
+			// It cannot be verified or repaired, so skip it and keep reconciling
+			// the pods that are reachable rather than aborting the whole heal.
 			r.logger.Errorf("Get slave of master failed, maybe this node is not ready, pod ip: %s", rp.Status.PodIP)
-			return err
+			continue
 		}
-		if slave != "" && slave != master {
-			return fmt.Errorf("slave %s don't have the master %s, has %s", rp.Status.PodIP, master, slave)
+		if slave != "" && slave != master && wrongMasterErr == nil {
+			wrongMasterErr = fmt.Errorf("slave %s don't have the master %s, has %s", rp.Status.PodIP, master, slave)
 		}
 	}
-	return nil
+	return wrongMasterErr
 }
 
 // CheckSentinelNumberInMemory controls that the provided sentinel has only the living sentinels on its memory.

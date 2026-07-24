@@ -211,7 +211,11 @@ func TestSetMasterOnAllMakeMasterError(t *testing.T) {
 	assert.Error(err)
 }
 
-func TestSetMasterOnAllMakeSlaveOfError(t *testing.T) {
+// A slave that cannot be reached (MakeSlaveOf fails) is skipped rather than
+// aborting the heal, so the reachable slaves are still repointed at the new
+// master. The unreachable pod re-syncs via sentinel once its node recovers.
+// Part of the #674 fix.
+func TestSetMasterOnAllMakeSlaveOfErrorIsSkipped(t *testing.T) {
 	assert := assert.New(t)
 
 	rf := generateRF()
@@ -220,12 +224,17 @@ func TestSetMasterOnAllMakeSlaveOfError(t *testing.T) {
 		Items: []corev1.Pod{
 			{
 				Status: corev1.PodStatus{
-					PodIP: "0.0.0.0",
+					PodIP: "0.0.0.0", // new master
 				},
 			},
 			{
 				Status: corev1.PodStatus{
-					PodIP: "1.1.1.1",
+					PodIP: "1.1.1.1", // unreachable old master
+				},
+			},
+			{
+				Status: corev1.PodStatus{
+					PodIP: "2.2.2.2", // reachable slave
 				},
 			},
 		},
@@ -236,12 +245,15 @@ func TestSetMasterOnAllMakeSlaveOfError(t *testing.T) {
 	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("IsMaster", "0.0.0.0", "0", "").Return(true, nil)
-	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0.0.0.0", "0", "").Once().Return(errors.New(""))
+	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0.0.0.0", "0", "").Once().Return(errors.New("i/o timeout"))
+	// The reachable slave must still be repointed even though the previous pod failed.
+	mr.On("MakeSlaveOfWithPort", "2.2.2.2", "0.0.0.0", "0", "").Once().Return(nil)
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetMasterOnAll("0.0.0.0", rf)
-	assert.Error(err)
+	assert.NoError(err)
+	mr.AssertExpectations(t) // proves the reachable slave was still reconfigured
 }
 
 func TestSetMasterOnAll(t *testing.T) {
