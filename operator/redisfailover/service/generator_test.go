@@ -1119,6 +1119,61 @@ func TestSentinelService(t *testing.T) {
 	}
 }
 
+func TestSentinelServiceExporterPort(t *testing.T) {
+	sentinelPort := corev1.ServicePort{
+		Name:       "sentinel",
+		Port:       26379,
+		TargetPort: intstr.FromInt(26379),
+		Protocol:   corev1.ProtocolTCP,
+	}
+	metricsPort := corev1.ServicePort{
+		Name:       "metrics",
+		Port:       9355,
+		TargetPort: intstr.FromInt(9355),
+		Protocol:   corev1.ProtocolTCP,
+	}
+
+	tests := []struct {
+		name            string
+		exporterEnabled bool
+		expectedPorts   []corev1.ServicePort
+	}{
+		{
+			name:            "exporter disabled exposes only the sentinel port",
+			exporterEnabled: false,
+			expectedPorts:   []corev1.ServicePort{sentinelPort},
+		},
+		{
+			name:            "exporter enabled also exposes the metrics port",
+			exporterEnabled: true,
+			expectedPorts:   []corev1.ServicePort{sentinelPort, metricsPort},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			rf := generateRF()
+			rf.Spec.Sentinel.Exporter.Enabled = test.exporterEnabled
+
+			generatedService := corev1.Service{}
+
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdateService", rf.Namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				s := args.Get(1).(*corev1.Service)
+				generatedService = *s
+			}).Return(nil)
+
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			err := client.EnsureSentinelService(rf, nil, []metav1.OwnerReference{{Name: "testing"}})
+
+			assert.NoError(err)
+			assert.Equal(test.expectedPorts, generatedService.Spec.Ports)
+		})
+	}
+}
+
 func TestRedisService(t *testing.T) {
 	tests := []struct {
 		name            string
