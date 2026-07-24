@@ -24,6 +24,7 @@ type Pod interface {
 	DeletePod(namespace string, name string) error
 	ListPods(namespace string) (*corev1.PodList, error)
 	UpdatePodLabels(namespace, podName string, labels map[string]string) error
+	UpdatePodAnnotations(namespace, podName string, annotations map[string]string) error
 }
 
 // PodService is the pod service implementation using API calls to kubernetes.
@@ -125,6 +126,27 @@ func (p *PodService) UpdatePodLabels(namespace, podName string, labels map[strin
 	recordMetrics(namespace, "Pod", podName, "PATCH", err, p.metricsRecorder)
 	if err != nil {
 		p.logger.Errorf("Update pod labels failed, namespace: %s, pod name: %s, error: %v", namespace, podName, err)
+	}
+	return err
+}
+
+// UpdatePodAnnotations sets the given annotations on a pod. It uses a JSON merge
+// patch so the annotations map is created when absent and existing annotations
+// are left untouched, unlike the JSON-patch "replace" used for labels.
+func (p *PodService) UpdatePodAnnotations(namespace, podName string, annotations map[string]string) error {
+	p.logger.Infof("Update pod annotations, namespace: %s, pod name: %s, annotations: %v", namespace, podName, annotations)
+
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"annotations": annotations,
+		},
+	}
+	payloadBytes, _ := json.Marshal(patch)
+
+	_, err := p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.MergePatchType, payloadBytes, metav1.PatchOptions{})
+	recordMetrics(namespace, "Pod", podName, "PATCH", err, p.metricsRecorder)
+	if err != nil {
+		p.logger.Errorf("Update pod annotations failed, namespace: %s, pod name: %s, error: %v", namespace, podName, err)
 	}
 	return err
 }
