@@ -210,7 +210,7 @@ func generateSentinelConfigMap(rf *redisfailoverv1.RedisFailover, labels map[str
 	}
 }
 
-func generateRedisConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference, password string) *corev1.ConfigMap {
+func generateRedisConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.ConfigMap {
 	name := GetRedisName(rf)
 	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
 
@@ -224,11 +224,10 @@ func generateRedisConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string
 		panic(err)
 	}
 
+	// The password is intentionally NOT written here. requirepass/masterauth are
+	// passed to redis-server as command-line args from the REDIS_PASSWORD env
+	// (see getRedisCommand) so the secret never lands in this ConfigMap.
 	redisConfigFileContent := tplOutput.String()
-
-	if password != "" {
-		redisConfigFileContent = fmt.Sprintf("%s\nmasterauth %s\nrequirepass %s", redisConfigFileContent, password, password)
-	}
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1106,6 +1105,18 @@ func getRedisDataVolumeName(rf *redisfailoverv1.RedisFailover) string {
 func getRedisCommand(rf *redisfailoverv1.RedisFailover) []string {
 	if len(rf.Spec.Redis.Command) > 0 {
 		return rf.Spec.Redis.Command
+	}
+	// When auth is configured, pass requirepass/masterauth to redis-server as
+	// command-line args sourced from the REDIS_PASSWORD env (a SecretKeyRef),
+	// instead of baking the password into the redis ConfigMap in plaintext. A
+	// shell wrapper is needed to expand the env var; exec keeps redis as PID 1 so
+	// SIGTERM still reaches it for a graceful shutdown. The literal $REDIS_PASSWORD
+	// stays in the pod spec, so the password is not exposed in any cluster object.
+	if rf.Spec.Auth.SecretPath != "" {
+		return []string{
+			"sh", "-c",
+			fmt.Sprintf(`exec redis-server /redis/%s --requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD"`, redisConfigFileName),
+		}
 	}
 	return []string{
 		"redis-server",
