@@ -1,7 +1,9 @@
 package service_test
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -3008,4 +3010,409 @@ func TestPDBSelectorContainsOnlyStableLabels(t *testing.T) {
 		}
 		assert.Len(selector, len(stableKeys))
 	})
+}
+
+// ---------------------------------------------------------------------------
+// EnsureRedisConfigMap / generateRedisConfigMap
+//
+// These are the first tests asserting what generateRedisConfigMap actually
+// *renders* into redis.conf, rather than only exercising the upstream
+// CustomCommandRenames validation in api/redisfailover/v1/validate.go (which
+// restricts From/To to ^[A-Za-z_]+$ to prevent redis.conf injection). Pinning
+// the rendered template output here catches a regression in the template
+// itself, which the validation-layer tests alone cannot do.
+// ---------------------------------------------------------------------------
+
+func TestEnsureRedisConfigMapNoPassword(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	rf.Spec.Redis.Port = 6379
+
+	var gotCM *corev1.ConfigMap
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		gotCM = args.Get(1).(*corev1.ConfigMap)
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisConfigMap(rf, nil, []metav1.OwnerReference{})
+
+	assert.NoError(err)
+	if assert.NotNil(gotCM) {
+		content := gotCM.Data["redis.conf"]
+		assert.Contains(content, "slaveof 127.0.0.1 6379")
+		assert.Contains(content, "port 6379")
+		assert.Contains(content, "tcp-keepalive 60")
+		assert.Contains(content, "save 900 1")
+		assert.Contains(content, "save 300 10")
+		assert.Contains(content, "user pinger -@all +ping on >pingpass")
+		assert.NotContains(content, "masterauth", "no password configured: masterauth must not be rendered")
+		assert.NotContains(content, "requirepass", "no password configured: requirepass must not be rendered")
+	}
+}
+
+func TestEnsureRedisConfigMapWithPassword(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	rf.Spec.Auth.SecretPath = "redis-secret"
+
+	var gotCM *corev1.ConfigMap
+	ms := &mK8SService.Services{}
+	ms.On("GetSecret", namespace, "redis-secret").Once().Return(&corev1.Secret{
+		Data: map[string][]byte{"password": []byte("s3cr3t-pw")},
+	}, nil)
+	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		gotCM = args.Get(1).(*corev1.ConfigMap)
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisConfigMap(rf, nil, []metav1.OwnerReference{})
+
+	assert.NoError(err)
+	if assert.NotNil(gotCM) {
+		content := gotCM.Data["redis.conf"]
+		assert.Contains(content, "masterauth s3cr3t-pw")
+		assert.Contains(content, "requirepass s3cr3t-pw")
+	}
+}
+
+func TestEnsureRedisConfigMapCustomCommandRenames(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	rf.Spec.Redis.CustomCommandRenames = []redisfailoverv1.RedisCommandRename{
+		{From: "FLUSHALL", To: "RENAMED_FLUSHALL"},
+		{From: "CONFIG", To: "RENAMED_CONFIG"},
+	}
+
+	var gotCM *corev1.ConfigMap
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		gotCM = args.Get(1).(*corev1.ConfigMap)
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisConfigMap(rf, nil, []metav1.OwnerReference{})
+
+	assert.NoError(err)
+	if assert.NotNil(gotCM) {
+		content := gotCM.Data["redis.conf"]
+
+		firstLine := `rename-command "FLUSHALL" "RENAMED_FLUSHALL"`
+		secondLine := `rename-command "CONFIG" "RENAMED_CONFIG"`
+
+		firstIdx := strings.Index(content, firstLine)
+		secondIdx := strings.Index(content, secondLine)
+
+		assert.GreaterOrEqual(firstIdx, 0, "expected %q to be rendered on its own line", firstLine)
+		assert.GreaterOrEqual(secondIdx, 0, "expected %q to be rendered on its own line", secondLine)
+		assert.Less(firstIdx, secondIdx, "rename-command lines must be rendered in declaration order")
+	}
+}
+
+func TestEnsureRedisConfigMapPasswordFetchErrorPropagates(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	rf.Spec.Auth.SecretPath = "redis-secret"
+
+	ms := &mK8SService.Services{}
+	ms.On("GetSecret", namespace, "redis-secret").Once().Return(nil, errors.New("secret fetch failed"))
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisConfigMap(rf, nil, []metav1.OwnerReference{})
+
+	assert.Error(err)
+	ms.AssertNotCalled(t, "CreateOrUpdateConfigMap", mock.Anything, mock.Anything)
+}
+
+// ---------------------------------------------------------------------------
+// EnsureSentinelConfigMap / generateSentinelConfigMap
+// ---------------------------------------------------------------------------
+
+func TestEnsureSentinelConfigMapContent(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	rf.Spec.Redis.Port = 6379
+
+	var gotCM *corev1.ConfigMap
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		gotCM = args.Get(1).(*corev1.ConfigMap)
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureSentinelConfigMap(rf, nil, []metav1.OwnerReference{})
+
+	assert.NoError(err)
+	if assert.NotNil(gotCM) {
+		// This pins down the current fixed sentinel.conf values so a future
+		// accidental change to the template is caught.
+		expected := `sentinel monitor mymaster 127.0.0.1 6379 2
+sentinel down-after-milliseconds mymaster 1000
+sentinel failover-timeout mymaster 3000
+sentinel parallel-syncs mymaster 2`
+		assert.Equal(expected, gotCM.Data["sentinel.conf"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EnsureRedisShutdownConfigMap / generateRedisShutdownConfigMap
+// ---------------------------------------------------------------------------
+
+func TestEnsureRedisShutdownConfigMapGenerated(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	rf.Name = "my-redis"
+	rf.Spec.Redis.Port = 6379
+
+	var gotCM *corev1.ConfigMap
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		gotCM = args.Get(1).(*corev1.ConfigMap)
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
+
+	assert.NoError(err)
+	if assert.NotNil(gotCM) {
+		content := gotCM.Data["shutdown.sh"]
+		// rf.Name "my-redis" is upper-cased and its dashes replaced with
+		// underscores to build the RFS_<NAME>_SERVICE_* env var names.
+		assert.Contains(content, "RFS_MY_REDIS_SERVICE_HOST")
+		assert.Contains(content, "RFS_MY_REDIS_SERVICE_PORT_SENTINEL")
+		assert.Contains(content, "redis-cli -p 6379")
+	}
+}
+
+func TestEnsureRedisShutdownConfigMapUserSuppliedExists(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	rf.Spec.Redis.ShutdownConfigMap = "custom-shutdown-cm"
+
+	ms := &mK8SService.Services{}
+	ms.On("GetConfigMap", namespace, "custom-shutdown-cm").Once().Return(&corev1.ConfigMap{}, nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
+
+	assert.NoError(err)
+	ms.AssertNotCalled(t, "CreateOrUpdateConfigMap", mock.Anything, mock.Anything)
+	ms.AssertExpectations(t)
+}
+
+func TestEnsureRedisShutdownConfigMapUserSuppliedMissingPropagatesError(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	rf.Spec.Redis.ShutdownConfigMap = "custom-shutdown-cm"
+
+	ms := &mK8SService.Services{}
+	ms.On("GetConfigMap", namespace, "custom-shutdown-cm").Once().Return(nil, errors.New("configmaps \"custom-shutdown-cm\" not found"))
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
+
+	assert.Error(err)
+	ms.AssertNotCalled(t, "CreateOrUpdateConfigMap", mock.Anything, mock.Anything)
+}
+
+// ---------------------------------------------------------------------------
+// EnsureRedisReadinessConfigMap / generateRedisReadinessConfigMap
+// ---------------------------------------------------------------------------
+
+func TestEnsureRedisReadinessConfigMap(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	rf.Spec.Redis.Port = 6380
+
+	var gotCM *corev1.ConfigMap
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		gotCM = args.Get(1).(*corev1.ConfigMap)
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisReadinessConfigMap(rf, nil, []metav1.OwnerReference{})
+
+	assert.NoError(err)
+	if assert.NotNil(gotCM) {
+		content := gotCM.Data["ready.sh"]
+		assert.Contains(content, "redis-cli -p 6380")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EnsureNotPresentRedisService
+// ---------------------------------------------------------------------------
+
+func TestEnsureNotPresentRedisServiceDeletesExisting(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	svcName := rfservice.GetRedisName(rf)
+
+	ms := &mK8SService.Services{}
+	ms.On("GetService", namespace, svcName).Once().Return(&corev1.Service{}, nil)
+	ms.On("DeleteService", namespace, svcName).Once().Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureNotPresentRedisService(rf)
+
+	assert.NoError(err)
+	ms.AssertExpectations(t)
+}
+
+func TestEnsureNotPresentRedisServiceNoopWhenAbsent(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	svcName := rfservice.GetRedisName(rf)
+
+	ms := &mK8SService.Services{}
+	ms.On("GetService", namespace, svcName).Once().Return(nil, errors.New("services \""+svcName+"\" not found"))
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureNotPresentRedisService(rf)
+
+	assert.NoError(err)
+	ms.AssertNotCalled(t, "DeleteService", mock.Anything, mock.Anything)
+}
+
+// TestEnsureNotPresentRedisServiceSwallowsNonNotFoundGetErrors documents what
+// looks like a real bug found while adding this coverage (left unfixed, as
+// this PR is test-only): EnsureNotPresentRedisService only checks whether
+// GetService returned a nil error, so *any* error from GetService -- a real
+// API failure (forbidden, timeout, ...), not just "not found" -- is silently
+// treated as "the service does not exist" and the function returns nil
+// without ever attempting the delete or surfacing the failure to the caller.
+func TestEnsureNotPresentRedisServiceSwallowsNonNotFoundGetErrors(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	svcName := rfservice.GetRedisName(rf)
+
+	ms := &mK8SService.Services{}
+	ms.On("GetService", namespace, svcName).Once().Return(nil, errors.New("connection reset by peer"))
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureNotPresentRedisService(rf)
+
+	assert.NoError(err, "documents current behavior: any GetService error is treated as absence, see comment above")
+	ms.AssertNotCalled(t, "DeleteService", mock.Anything, mock.Anything)
+}
+
+func TestEnsureNotPresentRedisServiceDeleteErrorPropagates(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	svcName := rfservice.GetRedisName(rf)
+
+	ms := &mK8SService.Services{}
+	ms.On("GetService", namespace, svcName).Once().Return(&corev1.Service{}, nil)
+	ms.On("DeleteService", namespace, svcName).Once().Return(errors.New("delete failed"))
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureNotPresentRedisService(rf)
+
+	assert.Error(err)
+}
+
+// ---------------------------------------------------------------------------
+// EnsureNotPresentSentinelResources
+// ---------------------------------------------------------------------------
+
+func TestEnsureNotPresentSentinelResourcesDeletesAllExisting(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	resName := rfservice.GetSentinelName(rf)
+
+	ms := &mK8SService.Services{}
+	ms.On("GetDeployment", namespace, resName).Once().Return(&appsv1.Deployment{}, nil)
+	ms.On("DeleteDeployment", namespace, resName).Once().Return(nil)
+	ms.On("GetService", namespace, resName).Once().Return(&corev1.Service{}, nil)
+	ms.On("DeleteService", namespace, resName).Once().Return(nil)
+	ms.On("GetConfigMap", namespace, resName).Once().Return(&corev1.ConfigMap{}, nil)
+	ms.On("DeleteConfigMap", namespace, resName).Once().Return(nil)
+	ms.On("GetPodDisruptionBudget", namespace, resName).Once().Return(&policyv1.PodDisruptionBudget{}, nil)
+	ms.On("DeletePodDisruptionBudget", namespace, resName).Once().Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureNotPresentSentinelResources(rf)
+
+	assert.NoError(err)
+	ms.AssertExpectations(t)
+}
+
+func TestEnsureNotPresentSentinelResourcesNoopWhenAbsent(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	resName := rfservice.GetSentinelName(rf)
+
+	ms := &mK8SService.Services{}
+	ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
+	ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
+	ms.On("GetConfigMap", namespace, resName).Once().Return(nil, errors.New("not found"))
+	ms.On("GetPodDisruptionBudget", namespace, resName).Once().Return(nil, errors.New("not found"))
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureNotPresentSentinelResources(rf)
+
+	assert.NoError(err)
+	ms.AssertNotCalled(t, "DeleteDeployment", mock.Anything, mock.Anything)
+	ms.AssertNotCalled(t, "DeleteService", mock.Anything, mock.Anything)
+	ms.AssertNotCalled(t, "DeleteConfigMap", mock.Anything, mock.Anything)
+	ms.AssertNotCalled(t, "DeletePodDisruptionBudget", mock.Anything, mock.Anything)
+}
+
+func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(ms *mK8SService.Services, resName string)
+	}{
+		{
+			name: "Deployment delete error stops before other deletes",
+			setup: func(ms *mK8SService.Services, resName string) {
+				ms.On("GetDeployment", namespace, resName).Once().Return(&appsv1.Deployment{}, nil)
+				ms.On("DeleteDeployment", namespace, resName).Once().Return(errors.New("delete deployment failed"))
+			},
+		},
+		{
+			name: "Service delete error",
+			setup: func(ms *mK8SService.Services, resName string) {
+				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
+				ms.On("GetService", namespace, resName).Once().Return(&corev1.Service{}, nil)
+				ms.On("DeleteService", namespace, resName).Once().Return(errors.New("delete service failed"))
+			},
+		},
+		{
+			name: "ConfigMap delete error",
+			setup: func(ms *mK8SService.Services, resName string) {
+				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
+				ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
+				ms.On("GetConfigMap", namespace, resName).Once().Return(&corev1.ConfigMap{}, nil)
+				ms.On("DeleteConfigMap", namespace, resName).Once().Return(errors.New("delete configmap failed"))
+			},
+		},
+		{
+			name: "PodDisruptionBudget delete error",
+			setup: func(ms *mK8SService.Services, resName string) {
+				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
+				ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
+				ms.On("GetConfigMap", namespace, resName).Once().Return(nil, errors.New("not found"))
+				ms.On("GetPodDisruptionBudget", namespace, resName).Once().Return(&policyv1.PodDisruptionBudget{}, nil)
+				ms.On("DeletePodDisruptionBudget", namespace, resName).Once().Return(errors.New("delete pdb failed"))
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF()
+			resName := rfservice.GetSentinelName(rf)
+
+			ms := &mK8SService.Services{}
+			test.setup(ms, resName)
+
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			err := client.EnsureNotPresentSentinelResources(rf)
+
+			assert.Error(err)
+		})
+	}
 }
