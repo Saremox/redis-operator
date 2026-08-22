@@ -4,6 +4,7 @@ This is a fork of the `spotahome/redis-operator` repository.
 
 [![Build Status](https://github.com/Saremox/redis-operator/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/Saremox/redis-operator)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Saremox/redis-operator)](https://goreportcard.com/report/github.com/Saremox/redis-operator)
+[![codecov](https://codecov.io/gh/Saremox/redis-operator/branch/main/graph/badge.svg)](https://codecov.io/gh/Saremox/redis-operator)
 
 Redis Operator creates/configures/manages redis-failovers atop Kubernetes.
 

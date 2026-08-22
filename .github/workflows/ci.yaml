@@ -44,10 +44,11 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - run: make ci-unit-test
+      - run: make ci-unit-test-coverage
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
+          files: ./coverage.out
           fail_ci_if_error: false
 
   integration-test:
