@@ -91,10 +91,28 @@ func (r *RedisFailoverKubeClient) EnsureSentinelDeployment(rf *redisfailoverv1.R
 			return err
 		}
 	}
+
+	// Only auto-provision a ServiceAccount when the user hasn't set one themselves:
+	// if they did, it's their responsibility to have already created it, and we must
+	// not touch it.
+	if rf.Spec.Sentinel.ServiceAccountName == "" {
+		if err := r.ensureSentinelServiceAccount(rf, labels, ownerRefs); err != nil {
+			return err
+		}
+	}
+
 	d := generateSentinelDeployment(rf, labels, ownerRefs)
 	err := r.K8SService.CreateOrUpdateDeployment(rf.Namespace, d)
 
 	r.setEnsureOperationMetrics(d.Namespace, d.Name, "Deployment", rf.Name, err)
+	return err
+}
+
+// ensureSentinelServiceAccount makes sure the auto-provisioned Sentinel ServiceAccount exists.
+func (r *RedisFailoverKubeClient) ensureSentinelServiceAccount(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error {
+	sa := generateSentinelServiceAccount(rf, labels, ownerRefs)
+	err := r.K8SService.CreateOrUpdateServiceAccount(rf.Namespace, sa)
+	r.setEnsureOperationMetrics(sa.Namespace, sa.Name, "ServiceAccount", rf.Name, err)
 	return err
 }
 

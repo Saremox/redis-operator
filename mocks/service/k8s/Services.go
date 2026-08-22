@@ -167,6 +167,20 @@ func (_m *Services) CreateOrUpdateService(namespace string, service *v1.Service)
 	return r0
 }
 
+// CreateOrUpdateServiceAccount provides a mock function with given fields: namespace, serviceAccount
+func (_m *Services) CreateOrUpdateServiceAccount(namespace string, serviceAccount *v1.ServiceAccount) error {
+	ret := _m.Called(namespace, serviceAccount)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, *v1.ServiceAccount) error); ok {
+		r0 = rf(namespace, serviceAccount)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // CreateOrUpdateStatefulSet provides a mock function with given fields: namespace, statefulSet
 func (_m *Services) CreateOrUpdateStatefulSet(namespace string, statefulSet *appsv1.StatefulSet) error {
 	ret := _m.Called(namespace, statefulSet)
@@ -251,6 +265,20 @@ func (_m *Services) CreateService(namespace string, service *v1.Service) error {
 	return r0
 }
 
+// CreateServiceAccount provides a mock function with given fields: namespace, serviceAccount
+func (_m *Services) CreateServiceAccount(namespace string, serviceAccount *v1.ServiceAccount) error {
+	ret := _m.Called(namespace, serviceAccount)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, *v1.ServiceAccount) error); ok {
+		r0 = rf(namespace, serviceAccount)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // CreateStatefulSet provides a mock function with given fields: namespace, statefulSet
 func (_m *Services) CreateStatefulSet(namespace string, statefulSet *appsv1.StatefulSet) error {
 	ret := _m.Called(namespace, statefulSet)
@@ -323,6 +351,20 @@ func (_m *Services) DeletePodDisruptionBudget(namespace string, name string) err
 
 // DeleteService provides a mock function with given fields: namespace, name
 func (_m *Services) DeleteService(namespace string, name string) error {
+	ret := _m.Called(namespace, name)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string) error); ok {
+		r0 = rf(namespace, name)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// DeleteServiceAccount provides a mock function with given fields: namespace, name
+func (_m *Services) DeleteServiceAccount(namespace string, name string) error {
 	ret := _m.Called(namespace, name)
 
 	var r0 error
@@ -609,6 +651,32 @@ func (_m *Services) GetService(namespace string, name string) (*v1.Service, erro
 	return r0, r1
 }
 
+// GetServiceAccount provides a mock function with given fields: namespace, name
+func (_m *Services) GetServiceAccount(namespace string, name string) (*v1.ServiceAccount, error) {
+	ret := _m.Called(namespace, name)
+
+	var r0 *v1.ServiceAccount
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, string) (*v1.ServiceAccount, error)); ok {
+		return rf(namespace, name)
+	}
+	if rf, ok := ret.Get(0).(func(string, string) *v1.ServiceAccount); ok {
+		r0 = rf(namespace, name)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*v1.ServiceAccount)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(string, string) error); ok {
+		r1 = rf(namespace, name)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetStatefulSet provides a mock function with given fields: namespace, name
 func (_m *Services) GetStatefulSet(namespace string, name string) (*appsv1.StatefulSet, error) {
 	ret := _m.Called(namespace, name)
@@ -758,6 +826,32 @@ func (_m *Services) ListRedisFailovers(ctx context.Context, namespace string, op
 
 	if rf, ok := ret.Get(1).(func(context.Context, string, metav1.ListOptions) error); ok {
 		r1 = rf(ctx, namespace, opts)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// ListServiceAccounts provides a mock function with given fields: namespace
+func (_m *Services) ListServiceAccounts(namespace string) (*v1.ServiceAccountList, error) {
+	ret := _m.Called(namespace)
+
+	var r0 *v1.ServiceAccountList
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string) (*v1.ServiceAccountList, error)); ok {
+		return rf(namespace)
+	}
+	if rf, ok := ret.Get(0).(func(string) *v1.ServiceAccountList); ok {
+		r0 = rf(namespace)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*v1.ServiceAccountList)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(string) error); ok {
+		r1 = rf(namespace)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -922,6 +1016,20 @@ func (_m *Services) UpdateService(namespace string, service *v1.Service) error {
 	var r0 error
 	if rf, ok := ret.Get(0).(func(string, *v1.Service) error); ok {
 		r0 = rf(namespace, service)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// UpdateServiceAccount provides a mock function with given fields: namespace, serviceAccount
+func (_m *Services) UpdateServiceAccount(namespace string, serviceAccount *v1.ServiceAccount) error {
+	ret := _m.Called(namespace, serviceAccount)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, *v1.ServiceAccount) error); ok {
+		r0 = rf(namespace, serviceAccount)
 	} else {
 		r0 = ret.Error(0)
 	}

@@ -14,19 +14,20 @@ const (
 )
 
 const (
-	baseName               = "rf"
-	sentinelName           = "s"
-	sentinelRoleName       = "sentinel"
-	sentinelConfigFileName = "sentinel.conf"
-	redisConfigFileName    = "redis.conf"
-	redisName              = "r"
-	redisMasterName        = "rm"
-	redisSlaveName         = "rs"
-	redisShutdownName      = "r-s"
-	redisReadinessName     = "r-readiness"
-	redisRoleName          = "redis"
-	appLabel               = "redis-failover"
-	hostnameTopologyKey    = "kubernetes.io/hostname"
+	baseName                   = "rf"
+	sentinelName               = "s"
+	sentinelRoleName           = "sentinel"
+	sentinelConfigFileName     = "sentinel.conf"
+	redisConfigFileName        = "redis.conf"
+	redisName                  = "r"
+	redisMasterName            = "rm"
+	redisSlaveName             = "rs"
+	redisShutdownName          = "r-s"
+	redisReadinessName         = "r-readiness"
+	redisRoleName              = "redis"
+	sentinelServiceAccountName = "s-sa"
+	appLabel                   = "redis-failover"
+	hostnameTopologyKey        = "kubernetes.io/hostname"
 )
 
 const (

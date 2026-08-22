@@ -34,6 +34,13 @@ func GetSentinelName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(sentinelName, rf.Name)
 }
 
+// GetSentinelServiceAccountName returns the name for the ServiceAccount
+// auto-provisioned for the Sentinel Deployment when the user hasn't set
+// rf.Spec.Sentinel.ServiceAccountName themselves.
+func GetSentinelServiceAccountName(rf *redisfailoverv1.RedisFailover) string {
+	return generateName(sentinelServiceAccountName, rf.Name)
+}
+
 func GetRedisMasterName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(redisMasterName, rf.Name)
 }
