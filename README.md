@@ -309,6 +309,8 @@ spec:
 ```
 You need to set secretPath as the secret name which is created before.
 
+Rotating the password (updating the `password` key of that same Secret in place) is safe: the operator watches a checksum of the current password and rolls the Redis pods, one at a time, whenever it changes.
+
 ### Bootstrapping from pre-existing Redis Instance(s)
 If you are wanting to migrate off of a pre-existing Redis instance, you can provide a `bootstrapNode` to your `RedisFailover` resource spec.
 

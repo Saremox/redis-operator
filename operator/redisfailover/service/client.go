@@ -105,8 +105,14 @@ func (r *RedisFailoverKubeClient) EnsureRedisStatefulset(rf *redisfailoverv1.Red
 			return err
 		}
 	}
-	ss := generateRedisStatefulSet(rf, labels, ownerRefs)
-	err := r.K8SService.CreateOrUpdateStatefulSet(rf.Namespace, ss)
+
+	password, err := k8s.GetRedisPassword(r.K8SService, rf)
+	if err != nil {
+		return err
+	}
+
+	ss := generateRedisStatefulSet(rf, labels, ownerRefs, password)
+	err = r.K8SService.CreateOrUpdateStatefulSet(rf.Namespace, ss)
 
 	r.setEnsureOperationMetrics(ss.Namespace, ss.Name, "StatefulSet", rf.Name, err)
 	return err

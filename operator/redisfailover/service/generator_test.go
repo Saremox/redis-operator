@@ -691,9 +691,62 @@ func TestRedisStatefulSetPodAnnotations(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
+		// The Redis StatefulSet's pod template always carries an auth-secret
+		// checksum annotation (see redisAuthSecretChecksumAnnotation) so that
+		// pods roll when the referenced Secret's password value changes.
+		// Assert its presence/format separately, then compare the rest.
+		assert.Contains(gotPodAnnotations, "redisfailovers.databases.spotahome.com/secret-checksum")
+		assert.Len(gotPodAnnotations["redisfailovers.databases.spotahome.com/secret-checksum"], 64)
+		delete(gotPodAnnotations, "redisfailovers.databases.spotahome.com/secret-checksum")
+		if len(gotPodAnnotations) == 0 {
+			gotPodAnnotations = nil
+		}
+
 		assert.Equal(test.expectedPodAnnotations, gotPodAnnotations)
 		assert.NoError(err)
 	}
+}
+
+// TestRedisStatefulSetAuthSecretChecksumChangesWithPassword is a regression test
+// for spotahome/redis-operator#658: rotating the auth Secret's password value
+// (same Secret name, new data) must change the Redis pod template's checksum
+// annotation, so the operator's existing revision-based rolling update logic
+// actually replaces the running pods instead of leaving them stuck on the old
+// password while the operator itself starts using the new one.
+func TestRedisStatefulSetAuthSecretChecksumChangesWithPassword(t *testing.T) {
+	assert := assert.New(t)
+
+	generateSS := func(password string) map[string]string {
+		rf := generateRF()
+		rf.Spec.Auth.SecretPath = "redis-secret"
+
+		var gotAnnotations map[string]string
+		ms := &mK8SService.Services{}
+		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+		ms.On("GetSecret", namespace, "redis-secret").Once().Return(&corev1.Secret{
+			Data: map[string][]byte{"password": []byte(password)},
+		}, nil)
+		ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+			ss := args.Get(1).(*appsv1.StatefulSet)
+			gotAnnotations = ss.Spec.Template.ObjectMeta.Annotations
+		}).Return(nil)
+
+		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+		err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
+		assert.NoError(err)
+
+		return gotAnnotations
+	}
+
+	const checksumKey = "redisfailovers.databases.spotahome.com/secret-checksum"
+
+	annotationsV1 := generateSS("password-v1")
+	annotationsV1Again := generateSS("password-v1")
+	annotationsV2 := generateSS("password-v2")
+
+	assert.NotEmpty(annotationsV1[checksumKey])
+	assert.Equal(annotationsV1[checksumKey], annotationsV1Again[checksumKey], "same password must produce the same checksum")
+	assert.NotEqual(annotationsV1[checksumKey], annotationsV2[checksumKey], "a rotated password must produce a different checksum, so the pod template (and its revision hash) changes")
 }
 
 func TestSentinelDeploymentPodAnnotations(t *testing.T) {
@@ -2242,6 +2295,11 @@ func TestRedisEnv(t *testing.T) {
 
 		ms := &mK8SService.Services{}
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+		if test.auth != "" {
+			ms.On("GetSecret", namespace, test.auth).Once().Return(&corev1.Secret{
+				Data: map[string][]byte{"password": []byte("s3cr3t")},
+			}, nil)
+		}
 		ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			s := args.Get(1).(*appsv1.StatefulSet)
 			env = s.Spec.Template.Spec.Containers[0].Env
