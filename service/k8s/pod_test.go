@@ -1,6 +1,7 @@
 package k8s_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -32,6 +33,135 @@ func newPodGetAction(ns, name string) kubetesting.GetActionImpl {
 
 func newPodCreateAction(ns string, pod *corev1.Pod) kubetesting.CreateActionImpl {
 	return kubetesting.NewCreateAction(podsGroup, ns, pod)
+}
+
+// TestPodServiceUpdatePodLabels exercises UpdatePodLabels, the mechanism
+// behind master/slave role-label updates during failover. It builds a JSON
+// Patch with Op "replace", which per RFC 6902 requires the target path to
+// already exist -- these tests prove that behavior against a real fake
+// clientset rather than assuming it.
+func TestPodServiceUpdatePodLabels(t *testing.T) {
+	testns := "testns"
+
+	t.Run("updates an existing label to a new value", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "testpod",
+				Namespace: testns,
+				Labels: map[string]string{
+					"role": "slave",
+				},
+			},
+		}
+		mcli := kubernetes.NewSimpleClientset(pod)
+		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
+
+		err := service.UpdatePodLabels(testns, "testpod", map[string]string{"role": "master"})
+		assertTest.NoError(err)
+
+		got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
+		assertTest.NoError(err)
+		assertTest.Equal("master", got.Labels["role"])
+	})
+
+	t.Run("updates multiple existing labels at once", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "testpod",
+				Namespace: testns,
+				Labels: map[string]string{
+					"role":  "slave",
+					"ready": "false",
+				},
+			},
+		}
+		mcli := kubernetes.NewSimpleClientset(pod)
+		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
+
+		err := service.UpdatePodLabels(testns, "testpod", map[string]string{
+			"role":  "master",
+			"ready": "true",
+		})
+		assertTest.NoError(err)
+
+		got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
+		assertTest.NoError(err)
+		assertTest.Equal("master", got.Labels["role"])
+		assertTest.Equal("true", got.Labels["ready"])
+	})
+
+	t.Run("returns an error when the pod does not exist", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		mcli := kubernetes.NewSimpleClientset()
+		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
+
+		err := service.UpdatePodLabels(testns, "does-not-exist", map[string]string{"role": "master"})
+		assertTest.Error(err)
+	})
+
+	t.Run("documents actual replace semantics: a label key absent from the pod but with an existing labels map is upserted, not rejected", func(t *testing.T) {
+		// NOTE: strict RFC 6902 says "replace" must fail when the target path
+		// does not already exist. In practice, the JSON Patch library used
+		// here (gopkg.in/evanphx/json-patch.v4, via client-go's fake and real
+		// Patch codepaths) does NOT enforce that for object/map members: its
+		// "replace" implementation only errors when some *ancestor* path
+		// segment is entirely missing (see the next sub-test, where the pod
+		// has no labels map at all). When the labels map already exists --
+		// true for every pod in this codebase, since a default role label is
+		// baked into the pod template at creation -- "replace" against a
+		// label key that isn't present yet silently succeeds and adds it,
+		// behaving like an upsert rather than a strict replace. This is a
+		// real deviation from RFC 6902 in the dependency, not a bug in
+		// UpdatePodLabels itself -- documented here rather than fixed.
+		assertTest := assert.New(t)
+
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "testpod",
+				Namespace: testns,
+				Labels: map[string]string{
+					"role": "slave",
+				},
+			},
+		}
+		mcli := kubernetes.NewSimpleClientset(pod)
+		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
+
+		err := service.UpdatePodLabels(testns, "testpod", map[string]string{"new-label-key": "value"})
+		assertTest.NoError(err)
+
+		got, getErr := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
+		assertTest.NoError(getErr)
+		assertTest.Equal("slave", got.Labels["role"], "pre-existing labels are left untouched")
+		assertTest.Equal("value", got.Labels["new-label-key"], "the new key is upserted rather than rejected")
+	})
+
+	t.Run("replace fails when the pod has no labels map at all", func(t *testing.T) {
+		// This is the actual failure mode of "replace": it errors only when
+		// an ancestor container of the target path (here, /metadata/labels
+		// itself) does not exist on the object, not merely when the leaf key
+		// is missing. Every pod in this codebase gets a default role label at
+		// creation, so its labels map always exists in practice -- this case
+		// documents what would happen if that ever weren't true.
+		assertTest := assert.New(t)
+
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "nolabelspod",
+				Namespace: testns,
+			},
+		}
+		mcli := kubernetes.NewSimpleClientset(pod)
+		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
+
+		err := service.UpdatePodLabels(testns, "nolabelspod", map[string]string{"role": "master"})
+		assertTest.Error(err, "replace against a path whose parent container is entirely absent must fail")
+	})
 }
 
 func TestPodServiceGetCreateOrUpdate(t *testing.T) {
