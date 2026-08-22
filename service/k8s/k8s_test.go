@@ -20,7 +20,7 @@ import (
 func TestNew(t *testing.T) {
 	assertTest := assert.New(t)
 
-	kubecli := kubernetes.NewSimpleClientset()
+	kubecli := kubernetes.NewClientset()
 	crdcli := redisfailoverfake.NewSimpleClientset()
 	apiextcli := apiextensionsfake.NewSimpleClientset()
 

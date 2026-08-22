@@ -47,7 +47,7 @@ func TestServiceAccountServiceGet(t *testing.T) {
 				Namespace: testns,
 			},
 		}
-		mcli := kubernetes.NewSimpleClientset(sa)
+		mcli := kubernetes.NewClientset(sa)
 		service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
 
 		got, err := service.GetServiceAccount(testns, "testsa")
@@ -59,7 +59,7 @@ func TestServiceAccountServiceGet(t *testing.T) {
 	t.Run("returns an error when the ServiceAccount does not exist", func(t *testing.T) {
 		assertTest := assert.New(t)
 
-		mcli := kubernetes.NewSimpleClientset()
+		mcli := kubernetes.NewClientset()
 		service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
 
 		got, err := service.GetServiceAccount(testns, "does-not-exist")
@@ -78,7 +78,7 @@ func TestServiceAccountServiceCreate(t *testing.T) {
 			Namespace: testns,
 		},
 	}
-	mcli := kubernetes.NewSimpleClientset()
+	mcli := kubernetes.NewClientset()
 	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
 
 	err := service.CreateServiceAccount(testns, sa)
@@ -100,7 +100,7 @@ func TestServiceAccountServiceUpdate(t *testing.T) {
 			Labels:    map[string]string{"foo": "bar"},
 		},
 	}
-	mcli := kubernetes.NewSimpleClientset(sa)
+	mcli := kubernetes.NewClientset(sa)
 	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
 
 	sa.Labels["foo"] = "baz"
@@ -122,7 +122,7 @@ func TestServiceAccountServiceUpdateError(t *testing.T) {
 			Namespace: testns,
 		},
 	}
-	mcli := kubernetes.NewSimpleClientset()
+	mcli := kubernetes.NewClientset()
 	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
 
 	err := service.UpdateServiceAccount(testns, sa)
@@ -140,7 +140,7 @@ func TestServiceAccountServiceDelete(t *testing.T) {
 			Namespace: testns,
 		},
 	}
-	mcli := kubernetes.NewSimpleClientset(sa)
+	mcli := kubernetes.NewClientset(sa)
 	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
 
 	err := service.DeleteServiceAccount(testns, "testsa")
@@ -159,7 +159,7 @@ func TestServiceAccountServiceList(t *testing.T) {
 	sa2 := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "sa2", Namespace: testns}}
 	otherNsSa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "sa3", Namespace: "otherns"}}
 
-	mcli := kubernetes.NewSimpleClientset(sa1, sa2, otherNsSa)
+	mcli := kubernetes.NewClientset(sa1, sa2, otherNsSa)
 	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
 
 	list, err := service.ListServiceAccounts(testns)
