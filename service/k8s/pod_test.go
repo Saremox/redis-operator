@@ -55,7 +55,7 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 				},
 			},
 		}
-		mcli := kubernetes.NewSimpleClientset(pod)
+		mcli := kubernetes.NewClientset(pod)
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.UpdatePodLabels(testns, "testpod", map[string]string{"role": "master"})
@@ -79,7 +79,7 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 				},
 			},
 		}
-		mcli := kubernetes.NewSimpleClientset(pod)
+		mcli := kubernetes.NewClientset(pod)
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.UpdatePodLabels(testns, "testpod", map[string]string{
@@ -97,7 +97,7 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 	t.Run("returns an error when the pod does not exist", func(t *testing.T) {
 		assertTest := assert.New(t)
 
-		mcli := kubernetes.NewSimpleClientset()
+		mcli := kubernetes.NewClientset()
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.UpdatePodLabels(testns, "does-not-exist", map[string]string{"role": "master"})
@@ -129,7 +129,7 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 				},
 			},
 		}
-		mcli := kubernetes.NewSimpleClientset(pod)
+		mcli := kubernetes.NewClientset(pod)
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.UpdatePodLabels(testns, "testpod", map[string]string{"new-label-key": "value"})
@@ -156,7 +156,7 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 				Namespace: testns,
 			},
 		}
-		mcli := kubernetes.NewSimpleClientset(pod)
+		mcli := kubernetes.NewClientset(pod)
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.UpdatePodLabels(testns, "nolabelspod", map[string]string{"role": "master"})

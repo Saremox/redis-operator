@@ -85,6 +85,9 @@ func NewRedisFailoverRetriever(cfg Config, cli k8s.Services) controller.Retrieve
 		},
 		WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 			watcher, err := cli.WatchRedisFailovers(context.Background(), "", options)
+			if err != nil || watcher == nil {
+				return watcher, err
+			}
 			watcher = watch.Filter(watcher, func(event watch.Event) (watch.Event, bool) {
 				rf, ok := event.Object.(*redisfailoverv1.RedisFailover)
 				if !ok {
