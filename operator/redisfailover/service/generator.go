@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"text/template"
@@ -333,7 +334,7 @@ esac`, port)
 	}
 }
 
-func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *appsv1.StatefulSet {
+func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference, password string) *appsv1.StatefulSet {
 	name := GetRedisName(rf)
 	namespace := rf.Namespace
 
@@ -341,6 +342,11 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 	selectorLabels := generateSelectorLabels(redisRoleName, rf.Name)
 	labels = util.MergeLabels(labels, selectorLabels)
 	labels = util.MergeLabels(labels, generateRedisDefaultRoleLabel())
+
+	authSecretChecksum := fmt.Sprintf("%x", sha256.Sum256([]byte(password)))
+	podAnnotations := util.MergeAnnotations(rf.Spec.Redis.PodAnnotations, map[string]string{
+		redisAuthSecretChecksumAnnotation: authSecretChecksum,
+	})
 
 	volumeMounts := getRedisVolumeMounts(rf)
 	volumes := getRedisVolumes(rf)
@@ -367,7 +373,7 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      labels,
-					Annotations: rf.Spec.Redis.PodAnnotations,
+					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
 					Affinity:                      getAffinity(rf.Spec.Redis.Affinity, labels),
