@@ -2697,7 +2697,7 @@ func TestSentinelCustomReadinessProbe(t *testing.T) {
 						Command: []string{
 							"sh",
 							"-c",
-							"redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1'",
+							"redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1' && redis-cli -h $(hostname) -p 26379 sentinel ckquorum mymaster | grep -q '^OK'",
 						},
 					},
 				},
