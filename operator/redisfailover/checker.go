@@ -264,7 +264,19 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.SLAVE_WRONG_MASTER, metrics.NOT_APPLICABLE, err)
 	if err != nil {
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Slave not associated to master: %s", err.Error())
-		if err = r.rfHealer.SetMasterOnAll(master, rf); err != nil {
+		// Re-resolve master right before acting on it: `master` was captured
+		// above and pod churn since then could have moved it. Narrowing this
+		// window reduces how often SetMasterOnAll's own ownership check has
+		// to reject a stale IP and wait for the next reconcile.
+		freshMaster, ferr := r.rfChecker.GetMasterIP(rf)
+		if ferr != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: "unable to re-verify master IP",
+			}
+			return ferr
+		}
+		if err = r.rfHealer.SetMasterOnAll(freshMaster, rf); err != nil {
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
 				State: redisfailoverv1.NotHealthyState,
 			}
@@ -301,12 +313,29 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	}
 
 	port := getRedisPort(rf.Spec.Redis.Port)
+	// `master` may be stale by now (resolved above, before applyRedisCustomConfig
+	// and UpdateRedisesPods ran). Re-resolve it lazily, once, only if a sentinel
+	// actually needs fixing, and reuse that fresh value for the rest of the loop.
+	sentinelMonitorMaster := master
+	masterRefreshed := false
 	for _, sip := range sentinels {
 		err = r.rfChecker.CheckSentinelMonitor(sip, master, port)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
 		if err != nil {
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Fixing sentinel not monitoring expected master: %s", err.Error())
-			if err := r.rfHealer.NewSentinelMonitor(sip, master, rf); err != nil {
+			if !masterRefreshed {
+				freshMaster, ferr := r.rfChecker.GetMasterIP(rf)
+				if ferr != nil {
+					rf.Status = redisfailoverv1.RedisFailoverStatus{
+						State:   redisfailoverv1.NotHealthyState,
+						Message: "unable to re-verify master IP",
+					}
+					return ferr
+				}
+				sentinelMonitorMaster = freshMaster
+				masterRefreshed = true
+			}
+			if err := r.rfHealer.NewSentinelMonitor(sip, sentinelMonitorMaster, rf); err != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State: redisfailoverv1.NotHealthyState,
 				}

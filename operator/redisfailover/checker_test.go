@@ -362,7 +362,19 @@ func TestCheckAndHeal(t *testing.T) {
 					expErr = true
 				}
 				if !expErr && continueTests {
-					mrfc.On("GetMasterIP", rf).Twice().Return(master, nil)
+					// checker.go re-resolves GetMasterIP right before SetMasterOnAll
+					// (when slaves are wrong) and right before NewSentinelMonitor
+					// (when a sentinel isn't monitoring the right master), on top
+					// of the base call in checkAndHeal and the one inside
+					// UpdateRedisesPods.
+					getMasterIPCalls := 2
+					if !test.slavesOK {
+						getMasterIPCalls++
+					}
+					if !test.sentinelMonitorOK {
+						getMasterIPCalls++
+					}
+					mrfc.On("GetMasterIP", rf).Times(getMasterIPCalls).Return(master, nil)
 					if test.slavesOK {
 						mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
 					} else {
