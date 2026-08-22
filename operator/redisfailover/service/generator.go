@@ -630,10 +630,19 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 			TimeoutSeconds:      5,
 			ProbeHandler: corev1.ProbeHandler{
 				Exec: &corev1.ExecAction{
+					// The first check (unchanged) gates readiness until this
+					// sentinel has been configured with a real master. The
+					// second check (SENTINEL CKQUORUM) additionally fails
+					// readiness if this sentinel can't currently reach enough
+					// peer sentinels to authorize a failover - e.g. during a
+					// network partition, where the original check alone would
+					// keep reporting Ready from a stale cached master address
+					// even though this sentinel is effectively isolated (see
+					// https://github.com/spotahome/redis-operator/issues/663).
 					Command: []string{
 						"sh",
 						"-c",
-						"redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1'",
+						"redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1' && redis-cli -h $(hostname) -p 26379 sentinel ckquorum mymaster | grep -q '^OK'",
 					},
 				},
 			},
