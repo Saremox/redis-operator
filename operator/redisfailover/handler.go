@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	rfLabelManagedByKey = "app.kubernetes.io/managed-by"
-	rfLabelNameKey      = "redisfailovers.databases.spotahome.com/name"
+	rfLabelManagedByKey     = "app.kubernetes.io/managed-by"
+	rfLabelNameKey          = "redisfailovers.databases.spotahome.com/name"
+	skipReconcileAnnotation = "redisfailovers.databases.spotahome.com/skip-reconcile"
 )
 
 var (
@@ -57,6 +58,12 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 	rf, ok := obj.(*redisfailoverv1.RedisFailover)
 	if !ok {
 		return fmt.Errorf("can't handle the received object: not a redisfailover")
+	}
+
+	if rf.Annotations[skipReconcileAnnotation] == "true" {
+		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
+			Infof("skip-reconcile annotation set to true, skipping reconciliation")
+		return nil
 	}
 
 	if err := rf.Validate(); err != nil {
