@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/sha256"
 	"fmt"
 	"strings"
@@ -343,7 +344,9 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 	labels = util.MergeLabels(labels, selectorLabels)
 	labels = util.MergeLabels(labels, generateRedisDefaultRoleLabel())
 
-	authSecretChecksum := fmt.Sprintf("%x", sha256.Sum256([]byte(password)))
+	mac := hmac.New(sha256.New, []byte(rf.Namespace+"/"+rf.Name))
+	_, _ = mac.Write([]byte(password))
+	authSecretChecksum := fmt.Sprintf("%x", mac.Sum(nil))
 	podAnnotations := util.MergeAnnotations(rf.Spec.Redis.PodAnnotations, map[string]string{
 		redisAuthSecretChecksumAnnotation: authSecretChecksum,
 	})
