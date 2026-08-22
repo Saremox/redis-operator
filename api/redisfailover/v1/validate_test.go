@@ -14,6 +14,7 @@ func TestValidate(t *testing.T) {
 		rfBootstrapNode        *BootstrapSettings
 		rfRedisCustomConfig    []string
 		rfSentinelCustomConfig []string
+		rfCommandRenames       []RedisCommandRename
 		expectedError          string
 		expectedBootstrapNode  *BootstrapSettings
 	}{
@@ -65,6 +66,23 @@ func TestValidate(t *testing.T) {
 			rfBootstrapNode:       &BootstrapSettings{Host: "127.0.0.1"},
 			expectedBootstrapNode: &BootstrapSettings{Host: "127.0.0.1", Port: "6379"},
 		},
+		{
+			name:             "Allows valid command renames, including disabling a command",
+			rfName:           "test",
+			rfCommandRenames: []RedisCommandRename{{From: "CONFIG", To: "MYCONFIG"}, {From: "FLUSHALL", To: ""}},
+		},
+		{
+			name:             "Rejects command rename injection via quotes in from",
+			rfName:           "test",
+			rfCommandRenames: []RedisCommandRename{{From: `CONFIG"` + "\n" + `slave-read-only no` + "\n" + `rename-command "FLUSHALL`, To: `""`}},
+			expectedError:    `customCommandRenames: invalid "from" command name "CONFIG\"\nslave-read-only no\nrename-command \"FLUSHALL", must match ^[A-Za-z_]+$`,
+		},
+		{
+			name:             "Rejects command rename injection via quotes in to",
+			rfName:           "test",
+			rfCommandRenames: []RedisCommandRename{{From: "CONFIG", To: `" shutdown nosave #`}},
+			expectedError:    `customCommandRenames: invalid "to" command name "\" shutdown nosave #", must match ^[A-Za-z_]+$`,
+		},
 	}
 
 	for _, test := range tests {
@@ -73,6 +91,7 @@ func TestValidate(t *testing.T) {
 			rf := generateRedisFailover(test.rfName, test.rfBootstrapNode)
 			rf.Spec.Redis.CustomConfig = test.rfRedisCustomConfig
 			rf.Spec.Sentinel.CustomConfig = test.rfSentinelCustomConfig
+			rf.Spec.Redis.CustomCommandRenames = test.rfCommandRenames
 
 			err := rf.Validate()
 
@@ -108,7 +127,8 @@ func TestValidate(t *testing.T) {
 							Exporter: Exporter{
 								Image: defaultExporterImage,
 							},
-							CustomConfig: expectedRedisCustomConfig,
+							CustomConfig:         expectedRedisCustomConfig,
+							CustomCommandRenames: test.rfCommandRenames,
 						},
 						Sentinel: SentinelSettings{
 							Image:        defaultImage,
