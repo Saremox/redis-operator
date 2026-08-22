@@ -44,6 +44,8 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - name: Install redis-server (for service/redis unit tests)
+        run: sudo apt-get update && sudo apt-get install -y redis-server
       - run: make ci-unit-test-coverage
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
