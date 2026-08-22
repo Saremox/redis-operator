@@ -112,6 +112,24 @@ func TestServiceAccountServiceUpdate(t *testing.T) {
 	assertTest.Equal("baz", got.Labels["foo"])
 }
 
+func TestServiceAccountServiceUpdateError(t *testing.T) {
+	assertTest := assert.New(t)
+	testns := "testns"
+
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "does-not-exist",
+			Namespace: testns,
+		},
+	}
+	mcli := kubernetes.NewSimpleClientset()
+	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
+
+	err := service.UpdateServiceAccount(testns, sa)
+	assertTest.Error(err)
+	assertTest.True(kubeerrors.IsNotFound(err))
+}
+
 func TestServiceAccountServiceDelete(t *testing.T) {
 	assertTest := assert.New(t)
 	testns := "testns"
@@ -207,6 +225,17 @@ func TestServiceAccountServiceGetCreateOrUpdate(t *testing.T) {
 				newServiceAccountUpdateAction(testns, testServiceAccount),
 			},
 			expErr: false,
+		},
+		{
+			name:                    "A non-NotFound error on get should be returned as-is, without creating or updating.",
+			serviceAccount:          testServiceAccount,
+			getServiceAccountResult: nil,
+			errorOnGet:              errors.New("connection refused"),
+			errorOnCreation:         nil,
+			expActions: []kubetesting.Action{
+				newServiceAccountGetAction(testns, testServiceAccount.Name),
+			},
+			expErr: true,
 		},
 	}
 
