@@ -18,6 +18,7 @@ import (
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
+	"github.com/saremox/redis-operator/service/redis"
 )
 
 func generateRF() *redisfailoverv1.RedisFailover {
@@ -955,4 +956,858 @@ func TestClusterRunning(t *testing.T) {
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(allRunning, nil)
 	assert.False(checker.IsClusterRunning(rf))
 
+}
+
+// --- CheckMasterHealth ---
+//
+// CheckMasterHealth resolves the master via GetMasterIP (which itself calls
+// IsMaster once per known pod), then performs a *second*, independent
+// IsMaster call directly against the resolved master IP as the actual health
+// check. Tests below account for both calls.
+
+func TestCheckMasterHealthNoMasterFound(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(nil, errors.New(""))
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	healthy, masterIP, err := checker.CheckMasterHealth(rf)
+	assert.NoError(err)
+	assert.False(healthy)
+	assert.Equal("", masterIP)
+}
+
+func TestCheckMasterHealthPasswordError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+	rf.Spec.Auth.SecretPath = "redis-secret"
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "0.0.0.0", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	// First GetSecret call is made inside GetMasterIP and succeeds; the second
+	// is CheckMasterHealth's own password fetch, which fails.
+	ms.On("GetSecret", namespace, "redis-secret").Once().Return(&corev1.Secret{
+		Data: map[string][]byte{"password": []byte("pw1")},
+	}, nil)
+	ms.On("GetSecret", namespace, "redis-secret").Once().Return(nil, errors.New("secret unavailable"))
+	mr := &mRedisService.Client{}
+	mr.On("IsMaster", "0.0.0.0", "0", "pw1").Once().Return(true, nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	healthy, masterIP, err := checker.CheckMasterHealth(rf)
+	assert.Error(err)
+	assert.False(healthy)
+	assert.Equal("0.0.0.0", masterIP)
+}
+
+func TestCheckMasterHealthIsMasterCheckError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "0.0.0.0", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(true, nil)                          // used by GetMasterIP
+	mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(false, errors.New("ping timeout")) // used by the health check itself
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	healthy, masterIP, err := checker.CheckMasterHealth(rf)
+	assert.NoError(err)
+	assert.False(healthy)
+	assert.Equal("0.0.0.0", masterIP)
+}
+
+func TestCheckMasterHealthTrue(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "0.0.0.0", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("IsMaster", "0.0.0.0", "0", "").Twice().Return(true, nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	healthy, masterIP, err := checker.CheckMasterHealth(rf)
+	assert.NoError(err)
+	assert.True(healthy)
+	assert.Equal("0.0.0.0", masterIP)
+}
+
+func TestCheckMasterHealthFalse(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "0.0.0.0", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(true, nil)  // used by GetMasterIP
+	mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(false, nil) // used by the health check itself
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	healthy, masterIP, err := checker.CheckMasterHealth(rf)
+	assert.NoError(err)
+	assert.False(healthy)
+	assert.Equal("0.0.0.0", masterIP)
+}
+
+// --- GetReplicaReplicationOffsets ---
+
+func TestGetReplicaReplicationOffsetsGetStatefulSetPodsError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(nil, errors.New(""))
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	replicas, err := checker.GetReplicaReplicationOffsets(rf)
+	assert.Error(err)
+	assert.Nil(replicas)
+}
+
+func TestGetReplicaReplicationOffsetsPasswordError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+	rf.Spec.Auth.SecretPath = "redis-secret"
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{}, nil)
+	ms.On("GetSecret", namespace, "redis-secret").Once().Return(nil, errors.New("secret unavailable"))
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	replicas, err := checker.GetReplicaReplicationOffsets(rf)
+	assert.Error(err)
+	assert.Nil(replicas)
+}
+
+func TestGetReplicaReplicationOffsetsEmptyPods(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{}, nil)
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	replicas, err := checker.GetReplicaReplicationOffsets(rf)
+	assert.NoError(err)
+	assert.Empty(replicas)
+}
+
+func TestGetReplicaReplicationOffsetsFiltersNonRunningPods(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	deletionTime := metav1.Now()
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "replica-running"},
+				Status:     corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "replica-pending"},
+				Status:     corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodPending},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "replica-terminating",
+					DeletionTimestamp: &deletionTime,
+				},
+				Status: corev1.PodStatus{PodIP: "3.3.3.3", Phase: corev1.PodRunning},
+			},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetReplicationInfo", "1.1.1.1", "0", "").Once().Return(&redis.ReplicationInfo{
+		Role:             "slave",
+		MasterLinkStatus: "up",
+		SlaveReplOffset:  100,
+	}, nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	replicas, err := checker.GetReplicaReplicationOffsets(rf)
+	assert.NoError(err)
+	if assert.Len(replicas, 1) {
+		assert.Equal("1.1.1.1", replicas[0].IP)
+	}
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t) // GetReplicationInfo must not be called for pending/terminating pods
+}
+
+func TestGetReplicaReplicationOffsetsSkipsPodOnReplicationInfoError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{ObjectMeta: metav1.ObjectMeta{Name: "replica-bad"}, Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "replica-good"}, Status: corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetReplicationInfo", "1.1.1.1", "0", "").Once().Return(nil, errors.New("timeout"))
+	mr.On("GetReplicationInfo", "2.2.2.2", "0", "").Once().Return(&redis.ReplicationInfo{
+		Role:             "slave",
+		MasterLinkStatus: "up",
+		SlaveReplOffset:  200,
+	}, nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	replicas, err := checker.GetReplicaReplicationOffsets(rf)
+	assert.NoError(err, "a failed pod should be skipped, not surfaced as an error")
+	if assert.Len(replicas, 1) {
+		assert.Equal("2.2.2.2", replicas[0].IP)
+		assert.EqualValues(200, replicas[0].ReplicationOffset)
+	}
+}
+
+func TestGetReplicaReplicationOffsetsExcludesMaster(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{ObjectMeta: metav1.ObjectMeta{Name: "master"}, Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "replica"}, Status: corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetReplicationInfo", "1.1.1.1", "0", "").Once().Return(&redis.ReplicationInfo{
+		Role: "master",
+	}, nil)
+	mr.On("GetReplicationInfo", "2.2.2.2", "0", "").Once().Return(&redis.ReplicationInfo{
+		Role:             "slave",
+		MasterLinkStatus: "up",
+		SlaveReplOffset:  50,
+	}, nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	replicas, err := checker.GetReplicaReplicationOffsets(rf)
+	assert.NoError(err)
+	if assert.Len(replicas, 1) {
+		assert.Equal("2.2.2.2", replicas[0].IP)
+	}
+}
+
+func TestGetReplicaReplicationOffsetsIsReadyFlag(t *testing.T) {
+	tests := []struct {
+		name             string
+		syncInProgress   bool
+		masterLinkStatus string
+		expectedReady    bool
+	}{
+		{name: "synced and link up is ready", syncInProgress: false, masterLinkStatus: "up", expectedReady: true},
+		{name: "syncing is not ready", syncInProgress: true, masterLinkStatus: "up", expectedReady: false},
+		{name: "link down is not ready", syncInProgress: false, masterLinkStatus: "down", expectedReady: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF()
+
+			pods := &corev1.PodList{
+				Items: []corev1.Pod{
+					{ObjectMeta: metav1.ObjectMeta{Name: "replica"}, Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+				},
+			}
+
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+			mr := &mRedisService.Client{}
+			mr.On("GetReplicationInfo", "1.1.1.1", "0", "").Once().Return(&redis.ReplicationInfo{
+				Role:             "slave",
+				SyncInProgress:   test.syncInProgress,
+				MasterLinkStatus: test.masterLinkStatus,
+				SlaveReplOffset:  42,
+			}, nil)
+
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+			replicas, err := checker.GetReplicaReplicationOffsets(rf)
+			assert.NoError(err)
+			if assert.Len(replicas, 1) {
+				assert.Equal(test.expectedReady, replicas[0].IsReady)
+				assert.EqualValues(42, replicas[0].ReplicationOffset)
+			}
+		})
+	}
+}
+
+// --- GetBestReplicaForPromotion ---
+
+func TestGetBestReplicaForPromotionUnderlyingError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(nil, errors.New("boom"))
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	best, err := checker.GetBestReplicaForPromotion(rf)
+	assert.Error(err)
+	assert.Nil(best)
+}
+
+func TestGetBestReplicaForPromotionNoReplicas(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{}, nil)
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	best, err := checker.GetBestReplicaForPromotion(rf)
+	assert.Error(err)
+	assert.Nil(best)
+	assert.Contains(err.Error(), "no replicas available for promotion")
+}
+
+func TestGetBestReplicaForPromotionPicksHighestReadyOffset(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{ObjectMeta: metav1.ObjectMeta{Name: "replica-low"}, Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "replica-high"}, Status: corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodRunning}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "replica-notready"}, Status: corev1.PodStatus{PodIP: "3.3.3.3", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetReplicationInfo", "1.1.1.1", "0", "").Once().Return(&redis.ReplicationInfo{
+		Role: "slave", MasterLinkStatus: "up", SlaveReplOffset: 100,
+	}, nil)
+	mr.On("GetReplicationInfo", "2.2.2.2", "0", "").Once().Return(&redis.ReplicationInfo{
+		Role: "slave", MasterLinkStatus: "up", SlaveReplOffset: 500,
+	}, nil)
+	// Highest overall offset, but not ready: must lose to replica-high which is ready.
+	mr.On("GetReplicationInfo", "3.3.3.3", "0", "").Once().Return(&redis.ReplicationInfo{
+		Role: "slave", MasterLinkStatus: "up", SyncInProgress: true, SlaveReplOffset: 900,
+	}, nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	best, err := checker.GetBestReplicaForPromotion(rf)
+	assert.NoError(err)
+	if assert.NotNil(best) {
+		assert.Equal("2.2.2.2", best.IP)
+		assert.EqualValues(500, best.ReplicationOffset)
+		assert.True(best.IsReady)
+	}
+}
+
+func TestGetBestReplicaForPromotionFallsBackWhenNoneReady(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{ObjectMeta: metav1.ObjectMeta{Name: "replica-a"}, Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "replica-b"}, Status: corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	// Neither replica is ready (both still syncing), so the "ready" pass finds
+	// nothing and GetBestReplicaForPromotion must fall back to the highest
+	// offset among all replicas regardless of readiness.
+	mr.On("GetReplicationInfo", "1.1.1.1", "0", "").Once().Return(&redis.ReplicationInfo{
+		Role: "slave", MasterLinkStatus: "up", SyncInProgress: true, SlaveReplOffset: 300,
+	}, nil)
+	mr.On("GetReplicationInfo", "2.2.2.2", "0", "").Once().Return(&redis.ReplicationInfo{
+		Role: "slave", MasterLinkStatus: "up", SyncInProgress: true, SlaveReplOffset: 700,
+	}, nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	best, err := checker.GetBestReplicaForPromotion(rf)
+	assert.NoError(err)
+	if assert.NotNil(best) {
+		assert.Equal("2.2.2.2", best.IP, "fallback should still pick highest offset even though not ready")
+		assert.False(best.IsReady)
+	}
+}
+
+// --- CheckRedisSlavesReady ---
+
+func TestCheckRedisSlavesReadyPasswordError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+	rf.Spec.Auth.SecretPath = "redis-secret"
+
+	ms := &mK8SService.Services{}
+	ms.On("GetSecret", namespace, "redis-secret").Once().Return(nil, errors.New("secret unavailable"))
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	ready, err := checker.CheckRedisSlavesReady("1.1.1.1", rf)
+	assert.Error(err)
+	assert.False(ready)
+	mr.AssertExpectations(t) // no SlaveIsReady call should have happened
+}
+
+func TestCheckRedisSlavesReadyTrue(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	mr := &mRedisService.Client{}
+	mr.On("SlaveIsReady", "1.1.1.1", "0", "").Once().Return(true, nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	ready, err := checker.CheckRedisSlavesReady("1.1.1.1", rf)
+	assert.NoError(err)
+	assert.True(ready)
+}
+
+func TestCheckRedisSlavesReadyFalse(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	mr := &mRedisService.Client{}
+	mr.On("SlaveIsReady", "1.1.1.1", "0", "").Once().Return(false, nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	ready, err := checker.CheckRedisSlavesReady("1.1.1.1", rf)
+	assert.NoError(err)
+	assert.False(ready)
+}
+
+func TestCheckRedisSlavesReadyError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	mr := &mRedisService.Client{}
+	mr.On("SlaveIsReady", "1.1.1.1", "0", "").Once().Return(false, errors.New("check failed"))
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	ready, err := checker.CheckRedisSlavesReady("1.1.1.1", rf)
+	assert.Error(err)
+	assert.False(ready)
+}
+
+// --- CheckIfMasterLocalhost ---
+
+func TestCheckIfMasterLocalhostGetRedisesIPsEmpty(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{}, nil)
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	ok, err := checker.CheckIfMasterLocalhost(rf)
+	assert.Error(err)
+	assert.False(ok)
+}
+
+func TestCheckIfMasterLocalhostGetRedisesIPsError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(nil, errors.New("boom"))
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	ok, err := checker.CheckIfMasterLocalhost(rf)
+	assert.Error(err)
+	assert.False(ok)
+}
+
+func TestCheckIfMasterLocalhostPasswordError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+	rf.Spec.Auth.SecretPath = "redis-secret"
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	ms.On("GetSecret", namespace, "redis-secret").Once().Return(nil, errors.New("secret unavailable"))
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	ok, err := checker.CheckIfMasterLocalhost(rf)
+	assert.Error(err)
+	assert.False(ok)
+}
+
+func TestCheckIfMasterLocalhostGetSlaveOfError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetSlaveOf", "1.1.1.1", "0", "").Once().Return("", errors.New("timeout"))
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	ok, err := checker.CheckIfMasterLocalhost(rf)
+	assert.Error(err)
+	assert.False(ok)
+}
+
+func TestCheckIfMasterLocalhostEmptyMasterUnexpectedState(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetSlaveOf", "1.1.1.1", "0", "").Once().Return("", nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	ok, err := checker.CheckIfMasterLocalhost(rf)
+	assert.Error(err)
+	assert.False(ok)
+	assert.Contains(err.Error(), "unexpected master state")
+}
+
+func TestCheckIfMasterLocalhostAllLocalhost(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetSlaveOf", "1.1.1.1", "0", "").Once().Return("127.0.0.1", nil)
+	mr.On("GetSlaveOf", "2.2.2.2", "0", "").Once().Return("127.0.0.1", nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	ok, err := checker.CheckIfMasterLocalhost(rf)
+	assert.NoError(err)
+	assert.True(ok)
+}
+
+func TestCheckIfMasterLocalhostSomeNotLocalhost(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetSlaveOf", "1.1.1.1", "0", "").Once().Return("127.0.0.1", nil)
+	mr.On("GetSlaveOf", "2.2.2.2", "0", "").Once().Return("1.1.1.1", nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	ok, err := checker.CheckIfMasterLocalhost(rf)
+	assert.NoError(err)
+	assert.False(ok)
+}
+
+// --- CheckSentinelQuorum ---
+//
+// getQuorum(rf) = rf.Spec.Sentinel.Replicas/2 + 1. Tests below set Replicas
+// to 5, so quorum is 3.
+
+func TestCheckSentinelQuorumGetSentinelsIPsError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(nil, errors.New("boom"))
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	cnt, err := checker.CheckSentinelQuorum(rf)
+	assert.Error(err)
+	assert.Equal(-1, cnt)
+}
+
+func TestCheckSentinelQuorumInsufficientSentinels(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+	rf.Spec.Sentinel.Replicas = 5 // quorum = 3
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	cnt, err := checker.CheckSentinelQuorum(rf)
+	assert.Error(err)
+	assert.Equal(1, cnt, "unhealthy count should be quorum minus available sentinels")
+	mr.AssertExpectations(t) // no SentinelCheckQuorum calls should have happened
+}
+
+func TestCheckSentinelQuorumAllHealthy(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+	rf.Spec.Sentinel.Replicas = 5 // quorum = 3
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "3.3.3.3", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "4.4.4.4", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "5.5.5.5", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	for _, ip := range []string{"1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5"} {
+		mr.On("SentinelCheckQuorum", ip).Once().Return(nil)
+	}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	cnt, err := checker.CheckSentinelQuorum(rf)
+	assert.NoError(err)
+	assert.Equal(0, cnt)
+}
+
+func TestCheckSentinelQuorumSomeFailUnderThreshold(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+	rf.Spec.Sentinel.Replicas = 5 // quorum = 3
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "3.3.3.3", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "4.4.4.4", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "5.5.5.5", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("SentinelCheckQuorum", "1.1.1.1").Once().Return(errors.New("unreachable"))
+	mr.On("SentinelCheckQuorum", "2.2.2.2").Once().Return(errors.New("unreachable"))
+	mr.On("SentinelCheckQuorum", "3.3.3.3").Once().Return(nil)
+	mr.On("SentinelCheckQuorum", "4.4.4.4").Once().Return(nil)
+	mr.On("SentinelCheckQuorum", "5.5.5.5").Once().Return(nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	cnt, err := checker.CheckSentinelQuorum(rf)
+	assert.NoError(err, "unhealthy count still under quorum threshold should not be an error")
+	assert.Equal(2, cnt)
+}
+
+func TestCheckSentinelQuorumExceedsThreshold(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+	rf.Spec.Sentinel.Replicas = 5 // quorum = 3
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "3.3.3.3", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "4.4.4.4", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "5.5.5.5", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("SentinelCheckQuorum", "1.1.1.1").Once().Return(errors.New("unreachable"))
+	mr.On("SentinelCheckQuorum", "2.2.2.2").Once().Return(errors.New("unreachable"))
+	mr.On("SentinelCheckQuorum", "3.3.3.3").Once().Return(errors.New("unreachable"))
+	mr.On("SentinelCheckQuorum", "4.4.4.4").Once().Return(nil)
+	mr.On("SentinelCheckQuorum", "5.5.5.5").Once().Return(nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	cnt, err := checker.CheckSentinelQuorum(rf)
+	assert.Error(err)
+	assert.Equal(3, cnt)
+}
+
+// --- GetSentinelsIPs ---
+
+func TestGetSentinelsIPsGetDeploymentPodsError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(nil, errors.New("boom"))
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	ips, err := checker.GetSentinelsIPs(rf)
+	assert.Error(err)
+	assert.Nil(ips)
+}
+
+func TestGetSentinelsIPsFiltersNonRunningAndTerminating(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	deletionTime := metav1.Now()
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodPending}},
+			{
+				ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &deletionTime},
+				Status:     corev1.PodStatus{PodIP: "3.3.3.3", Phase: corev1.PodRunning},
+			},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	ips, err := checker.GetSentinelsIPs(rf)
+	assert.NoError(err)
+	assert.Equal([]string{"1.1.1.1"}, ips)
 }
