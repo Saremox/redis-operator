@@ -111,7 +111,7 @@ func TestStatefulSetServiceGetStatefulSetPods(t *testing.T) {
 		},
 	}
 
-	mcli := kubernetes.NewSimpleClientset(
+	mcli := kubernetes.NewClientset(
 		testStatefulSet,
 		matchingPod1,
 		matchingPod2,
@@ -167,7 +167,7 @@ func TestStatefulSetServiceGetStatefulSetPods(t *testing.T) {
 			},
 		}
 
-		mcli2 := kubernetes.NewSimpleClientset(
+		mcli2 := kubernetes.NewClientset(
 			emptySelectorSts,
 			matchingPod1,
 			matchingPod2,

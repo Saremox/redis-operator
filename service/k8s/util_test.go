@@ -34,7 +34,7 @@ func TestGetRedisPassword(t *testing.T) {
 		// No secret seeded at all: if GetRedisPassword attempted to read a
 		// secret here, the fake Get would fail (not found) and this
 		// assertion on a nil error would catch it.
-		mcli := kubernetes.NewSimpleClientset()
+		mcli := kubernetes.NewClientset()
 		s := newTestServices(mcli)
 
 		rf := &redisfailoverv1.RedisFailover{
@@ -58,7 +58,7 @@ func TestGetRedisPassword(t *testing.T) {
 				"password": []byte("s3cr3t"),
 			},
 		}
-		mcli := kubernetes.NewSimpleClientset(secret)
+		mcli := kubernetes.NewClientset(secret)
 		s := newTestServices(mcli)
 
 		rf := &redisfailoverv1.RedisFailover{
@@ -76,7 +76,7 @@ func TestGetRedisPassword(t *testing.T) {
 	t.Run("SecretPath set but the secret does not exist propagates the error", func(t *testing.T) {
 		assertTest := assert.New(t)
 
-		mcli := kubernetes.NewSimpleClientset()
+		mcli := kubernetes.NewClientset()
 		s := newTestServices(mcli)
 
 		rf := &redisfailoverv1.RedisFailover{
@@ -104,7 +104,7 @@ func TestGetRedisPassword(t *testing.T) {
 				"other-field": []byte("irrelevant"),
 			},
 		}
-		mcli := kubernetes.NewSimpleClientset(secret)
+		mcli := kubernetes.NewClientset(secret)
 		s := newTestServices(mcli)
 
 		rf := &redisfailoverv1.RedisFailover{
