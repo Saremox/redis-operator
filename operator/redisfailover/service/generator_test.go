@@ -637,6 +637,7 @@ func TestSentinelDeploymentCommands(t *testing.T) {
 
 		ms := &mK8SService.Services{}
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+		ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
 		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			d := args.Get(1).(*appsv1.Deployment)
 			gotCommands = d.Spec.Template.Spec.Containers[0].Command
@@ -786,6 +787,7 @@ func TestSentinelDeploymentPodAnnotations(t *testing.T) {
 
 		ms := &mK8SService.Services{}
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+		ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
 		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			d := args.Get(1).(*appsv1.Deployment)
 			gotPodAnnotations = d.Spec.Template.ObjectMeta.Annotations
@@ -843,43 +845,59 @@ func TestRedisStatefulSetServiceAccountName(t *testing.T) {
 
 func TestSentinelDeploymentServiceAccountName(t *testing.T) {
 	tests := []struct {
-		name                       string
-		givenServiceAccountName    string
-		expectedServiceAccountName string
+		name                        string
+		givenServiceAccountName     string
+		expectServiceAccountCreated bool
 	}{
 		{
-			name:                       "ServiceAccountName was not defined",
-			givenServiceAccountName:    "",
-			expectedServiceAccountName: "",
+			name:                        "ServiceAccountName was not defined: the operator auto-provisions one",
+			givenServiceAccountName:     "",
+			expectServiceAccountCreated: true,
 		},
 		{
-			name:                       "ServiceAccountName is defined",
-			givenServiceAccountName:    "sentinel-sa",
-			expectedServiceAccountName: "sentinel-sa",
+			name:                        "ServiceAccountName is defined: the user's own ServiceAccount is used as-is",
+			givenServiceAccountName:     "sentinel-sa",
+			expectServiceAccountCreated: false,
 		},
 	}
 
 	for _, test := range tests {
-		assert := assert.New(t)
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
 
-		// Generate a default RedisFailover and attaching the required Service Account
-		rf := generateRF()
-		rf.Spec.Sentinel.ServiceAccountName = test.givenServiceAccountName
+			// Generate a default RedisFailover and attaching the required Service Account
+			rf := generateRF()
+			rf.Spec.Sentinel.ServiceAccountName = test.givenServiceAccountName
 
-		gotServiceAccountName := ""
+			expectedServiceAccountName := test.givenServiceAccountName
+			if expectedServiceAccountName == "" {
+				expectedServiceAccountName = rfservice.GetSentinelServiceAccountName(rf)
+			}
 
-		ms := &mK8SService.Services{}
-		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
-		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
-			d := args.Get(1).(*appsv1.Deployment)
-			gotServiceAccountName = d.Spec.Template.Spec.ServiceAccountName
-		}).Return(nil)
+			gotServiceAccountName := ""
 
-		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-		err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+			if test.expectServiceAccountCreated {
+				ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
+			}
+			ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				d := args.Get(1).(*appsv1.Deployment)
+				gotServiceAccountName = d.Spec.Template.Spec.ServiceAccountName
+			}).Return(nil)
 
-		assert.Equal(test.expectedServiceAccountName, gotServiceAccountName)
-		assert.NoError(err)
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
+
+			assert.Equal(expectedServiceAccountName, gotServiceAccountName)
+			assert.NoError(err)
+
+			if test.expectServiceAccountCreated {
+				ms.AssertCalled(t, "CreateOrUpdateServiceAccount", namespace, mock.Anything)
+			} else {
+				ms.AssertNotCalled(t, "CreateOrUpdateServiceAccount", mock.Anything, mock.Anything)
+			}
+		})
 	}
 }
 
@@ -1912,6 +1930,7 @@ func TestSentinelHostNetworkAndDnsPolicy(t *testing.T) {
 
 		ms := &mK8SService.Services{}
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+		ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
 		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			d := args.Get(1).(*appsv1.Deployment)
 			actualHostNetwork = d.Spec.Template.Spec.HostNetwork
@@ -2008,6 +2027,7 @@ func TestSentinelImagePullPolicy(t *testing.T) {
 
 		ms := &mK8SService.Services{}
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+		ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
 		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			d := args.Get(1).(*appsv1.Deployment)
 			policy = d.Spec.Template.Spec.Containers[0].ImagePullPolicy
@@ -2158,6 +2178,7 @@ func TestSentinelExtraVolumeMounts(t *testing.T) {
 
 		ms := &mK8SService.Services{}
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+		ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
 		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			d := args.Get(1).(*appsv1.Deployment)
 			extraVolume = d.Spec.Template.Spec.Volumes[2]
@@ -2406,6 +2427,7 @@ func TestSentinelStartupProbe(t *testing.T) {
 
 		ms := &mK8SService.Services{}
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+		ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
 		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			d := args.Get(1).(*appsv1.Deployment)
 			startupVolumes = d.Spec.Template.Spec.Volumes
@@ -2569,6 +2591,7 @@ func TestSentinelCustomLivenessProbe(t *testing.T) {
 
 		ms := &mK8SService.Services{}
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+		ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
 		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			d := args.Get(1).(*appsv1.Deployment)
 			livenessProbe = d.Spec.Template.Spec.Containers[0].LivenessProbe
@@ -2715,6 +2738,7 @@ func TestSentinelCustomReadinessProbe(t *testing.T) {
 
 		ms := &mK8SService.Services{}
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+		ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
 		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			d := args.Get(1).(*appsv1.Deployment)
 			readinessProbe = d.Spec.Template.Spec.Containers[0].ReadinessProbe
@@ -2841,6 +2865,7 @@ func TestSentinelCustomStartupProbe(t *testing.T) {
 
 		ms := &mK8SService.Services{}
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+		ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
 		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			d := args.Get(1).(*appsv1.Deployment)
 			startupProbe = d.Spec.Template.Spec.Containers[0].StartupProbe
@@ -2932,6 +2957,7 @@ func TestSentinelPDBUsesSentinelReplicaCount(t *testing.T) {
 			ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 				gotPDB = args.Get(1).(*policyv1.PodDisruptionBudget)
 			}).Return(nil)
+			ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
 			ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Return(nil)
 
 			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
@@ -2994,6 +3020,7 @@ func TestPDBSelectorContainsOnlyStableLabels(t *testing.T) {
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			gotPDB = args.Get(1).(*policyv1.PodDisruptionBudget)
 		}).Return(nil)
+		ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
 		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Return(nil)
 
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)

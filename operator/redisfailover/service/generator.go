@@ -528,6 +528,11 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 	volumeMounts := getSentinelVolumeMounts(rf)
 	volumes := getSentinelVolumes(rf, configMapName)
 
+	serviceAccountName := rf.Spec.Sentinel.ServiceAccountName
+	if serviceAccountName == "" {
+		serviceAccountName = GetSentinelServiceAccountName(rf)
+	}
+
 	sd := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            name,
@@ -555,7 +560,7 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 					DNSPolicy:                 getDnsPolicy(rf.Spec.Sentinel.DNSPolicy),
 					ImagePullSecrets:          rf.Spec.Sentinel.ImagePullSecrets,
 					PriorityClassName:         rf.Spec.Sentinel.PriorityClassName,
-					ServiceAccountName:        rf.Spec.Sentinel.ServiceAccountName,
+					ServiceAccountName:        serviceAccountName,
 					InitContainers: []corev1.Container{
 						{
 							Name:            "sentinel-config-copy",
@@ -687,6 +692,25 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 	}
 
 	return sd
+}
+
+// generateSentinelServiceAccount builds the ServiceAccount that is auto-provisioned
+// for the Sentinel Deployment when the user hasn't set rf.Spec.Sentinel.ServiceAccountName
+// themselves. Like every other generate* function it is a pure read of rf that produces
+// a k8s object -- it never mutates rf.
+func generateSentinelServiceAccount(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.ServiceAccount {
+	name := GetSentinelServiceAccountName(rf)
+	selectorLabels := generateSelectorLabels(sentinelRoleName, rf.Name)
+	labels = util.MergeLabels(labels, selectorLabels)
+
+	return &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			Namespace:       rf.Namespace,
+			Labels:          labels,
+			OwnerReferences: ownerRefs,
+		},
+	}
 }
 
 func generatePodDisruptionBudget(name string, namespace string, labels map[string]string, ownerRefs []metav1.OwnerReference, minAvailable intstr.IntOrString, selectorLabels map[string]string) *policyv1.PodDisruptionBudget {
