@@ -23,10 +23,11 @@ RUN wget -c https://github.com/vektra/mockery/releases/download/v${MOCKERY_VERSI
 # Create user
 ARG uid=1000
 ARG gid=1000
-RUN addgroup -g $gid rf && \
-    adduser -D -u $uid -G rf rf && \
-    chown rf:rf -R /go
+RUN if ! getent passwd "$uid" > /dev/null 2>&1; then \
+      addgroup -g "$gid" rf && \
+      adduser -D -u "$uid" -G rf rf; \
+    fi && \
+    chown -R "$uid":"$gid" /go
 
-
-USER rf
+USER $uid
 WORKDIR /go/src/github.com/saremox/redis-operator
