@@ -18,6 +18,7 @@ import (
 	mRFService "github.com/saremox/redis-operator/mocks/operator/redisfailover/service"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	rfOperator "github.com/saremox/redis-operator/operator/redisfailover"
+	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
 func TestCheckAndHeal(t *testing.T) {
@@ -438,6 +439,318 @@ func TestCheckAndHeal(t *testing.T) {
 				assertTest.NoError(err)
 				assertTest.Equal(v1.HealthyState, rf.Status.State)
 			}
+			mrfc.AssertExpectations(t)
+			mrfh.AssertExpectations(t)
+		})
+	}
+}
+
+// operatorManagedRF returns a RedisFailover configured with Sentinel disabled
+// (sentinel.enabled=false) and no BootstrapNode, so that CheckAndHeal routes
+// into checkAndHealOperatorManagedMode.
+func operatorManagedRF() *v1.RedisFailover {
+	rf := generateRF(false, false)
+	sentinelDisabled := false
+	rf.Spec.Sentinel.Enabled = &sentinelDisabled
+	return rf
+}
+
+// TestCheckAndHealOperatorManagedMode exercises checkAndHealOperatorManagedMode
+// (operator/redisfailover/checker.go), the failover path used whenever Sentinel
+// is disabled (the default since v4.0.0). It is reached only via the exported
+// CheckAndHeal entrypoint, since checkAndHealOperatorManagedMode is unexported
+// and this file lives in the external redisfailover_test package.
+func TestCheckAndHealOperatorManagedMode(t *testing.T) {
+	const (
+		master     = "10.0.0.1"
+		promotedIP = "10.0.0.2"
+	)
+
+	// wrappedPartialErr simulates PromoteBestReplica returning an error that
+	// wraps rfservice.ErrPartialReconciliation, as heal.go's PromoteBestReplica
+	// does when the promotion itself succeeds but replica reconfiguration fails.
+	wrappedPartialErr := fmt.Errorf("reconfigure replicas: %w", rfservice.ErrPartialReconciliation)
+
+	// setupSharedSuccess wires up the calls made by applyRedisCustomConfig and
+	// UpdateRedisesPods (shared helpers, already covered elsewhere) so that both
+	// succeed cleanly with a single redis IP that is also the master.
+	setupSharedSuccess := func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+		mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{master}, nil)
+		mrfh.On("SetRedisCustomConfig", master, rf).Once().Return(nil)
+		mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
+		mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("1", nil)
+		mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
+		mrfc.On("GetRedisesMasterPod", rf).Once().Return(master, nil)
+		mrfc.On("GetRedisRevisionHash", master, rf).Once().Return("1", nil)
+	}
+
+	tests := []struct {
+		name        string
+		setup       func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover)
+		wantErr     bool
+		wantErrIs   error
+		wantState   string
+		wantMessage string
+	}{
+		{
+			name: "redis not running - waits for statefulset reconcile",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(false)
+			},
+			wantErr:     false,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "not all replicas running",
+		},
+		{
+			name: "GetNumberMasters errors",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(0, errors.New("num masters err"))
+			},
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "unable to get number of masters",
+		},
+		{
+			name: "no master - best replica found and promoted successfully",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
+				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
+				mrfh.On("PromoteBestReplica", promotedIP, rf).Once().Return(nil)
+				// NOTE: on success this branch returns nil immediately (see the
+				// `return nil` at the end of the nMasters==0 case in checker.go) -
+				// it does NOT continue on to applyRedisCustomConfig/UpdateRedisesPods
+				// in the same reconcile pass, unlike what a first read of the task
+				// might suggest. No further mock calls are expected here.
+			},
+			wantErr:   false,
+			wantState: v1.HealthyState,
+		},
+		{
+			name: "no master - best replica found but promotion fails",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
+				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
+				mrfh.On("PromoteBestReplica", promotedIP, rf).Once().Return(errors.New("promote fail"))
+			},
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "failed to promote replica",
+		},
+		{
+			name: "no master - best replica found but promotion partially fails",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
+				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
+				mrfh.On("PromoteBestReplica", promotedIP, rf).Once().Return(wrappedPartialErr)
+			},
+			wantErr:     true,
+			wantErrIs:   rfservice.ErrPartialReconciliation,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "failover incomplete: replica reconfiguration failed",
+		},
+		{
+			name: "no master - best replica lookup fails, falls back to oldest and succeeds",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
+				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(nil, errors.New("no replica info"))
+				mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
+				// Same as above: success here returns nil immediately, no shared
+				// config apply/pod update calls in this reconcile pass.
+			},
+			wantErr:   false,
+			wantState: v1.HealthyState,
+		},
+		{
+			name: "no master - best replica lookup fails, fallback to oldest also fails",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
+				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(nil, errors.New("no replica info"))
+				mrfh.On("SetOldestAsMaster", rf).Once().Return(errors.New("elect fail"))
+			},
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "failed to elect master",
+		},
+		{
+			name: "single master - health check errors",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				mrfc.On("CheckMasterHealth", rf).Once().Return(false, "", errors.New("health check err"))
+			},
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "unable to check master health",
+		},
+		{
+			name: "single master - unhealthy, replica found and promoted successfully",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
+				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
+				mrfh.On("PromoteBestReplica", promotedIP, rf).Once().Return(nil)
+				// Returns nil immediately on success here too - no shared
+				// config apply/pod update calls expected.
+			},
+			wantErr:   false,
+			wantState: v1.HealthyState,
+		},
+		{
+			name: "single master - unhealthy, no replica available for failover",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
+				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(nil, errors.New("no replica info"))
+			},
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "no healthy replica available for failover",
+		},
+		{
+			name: "single master - unhealthy, promotion fails",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
+				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
+				mrfh.On("PromoteBestReplica", promotedIP, rf).Once().Return(errors.New("promote fail"))
+			},
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "failover failed",
+		},
+		{
+			name: "single master - unhealthy, promotion partially fails",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
+				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
+				mrfh.On("PromoteBestReplica", promotedIP, rf).Once().Return(wrappedPartialErr)
+			},
+			wantErr:     true,
+			wantErrIs:   rfservice.ErrPartialReconciliation,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "failover incomplete: replica reconfiguration failed",
+		},
+		{
+			name: "single master - healthy, slaves already correct, config and pods updated",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				mrfc.On("CheckMasterHealth", rf).Once().Return(true, master, nil)
+				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
+				setupSharedSuccess(mrfc, mrfh, rf)
+			},
+			wantErr:   false,
+			wantState: v1.HealthyState,
+		},
+		{
+			name: "single master - healthy, slaves fixed, config and pods updated",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				mrfc.On("CheckMasterHealth", rf).Once().Return(true, master, nil)
+				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(errors.New("wrong master"))
+				mrfh.On("SetMasterOnAll", master, rf).Once().Return(nil)
+				setupSharedSuccess(mrfc, mrfh, rf)
+			},
+			wantErr:   false,
+			wantState: v1.HealthyState,
+		},
+		{
+			name: "single master - healthy, slaves wrong, fixing them fails",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				mrfc.On("CheckMasterHealth", rf).Once().Return(true, master, nil)
+				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(errors.New("wrong master"))
+				mrfh.On("SetMasterOnAll", master, rf).Once().Return(errors.New("set fail"))
+			},
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "failed to configure slaves",
+		},
+		{
+			name: "multiple masters detected",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(2, nil)
+			},
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "multiple masters detected, fix manually",
+		},
+		{
+			name: "single master - healthy, applying custom config fails",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				mrfc.On("CheckMasterHealth", rf).Once().Return(true, master, nil)
+				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
+				mrfc.On("GetRedisesIPs", rf).Once().Return([]string{master}, nil)
+				mrfh.On("SetRedisCustomConfig", master, rf).Once().Return(errors.New("cfg err"))
+			},
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "unable to apply custom config",
+		},
+		{
+			name: "single master - healthy, updating redis pods fails",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				mrfc.On("CheckMasterHealth", rf).Once().Return(true, master, nil)
+				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
+				mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{master}, nil)
+				mrfh.On("SetRedisCustomConfig", master, rf).Once().Return(nil)
+				mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
+				mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("", errors.New("ssur err"))
+			},
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "unable to update redis pods",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assertTest := assert.New(t)
+
+			rf := operatorManagedRF()
+
+			config := generateConfig()
+			mk := &mK8SService.Services{}
+			mrfs := &mRFService.RedisFailoverClient{}
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+
+			test.setup(mrfc, mrfh, rf)
+
+			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+			err := handler.CheckAndHeal(rf)
+
+			if test.wantErr {
+				assertTest.Error(err)
+			} else {
+				assertTest.NoError(err)
+			}
+			if test.wantErrIs != nil {
+				assertTest.True(errors.Is(err, test.wantErrIs), "expected error to wrap %v, got %v", test.wantErrIs, err)
+			}
+			assertTest.Equal(test.wantState, rf.Status.State)
+			if test.wantMessage != "" {
+				assertTest.Equal(test.wantMessage, rf.Status.Message)
+			}
+
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
 		})
