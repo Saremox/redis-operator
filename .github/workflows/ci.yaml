@@ -64,6 +64,11 @@ jobs:
           go-version-file: go.mod
       - name: Install conntrack
         run: sudo apt-get install -y conntrack
+      - name: Prepare CNI config directory
+        # medyagh/setup-minikube's driver=none setup chmods /etc/cni/net.d
+        # without creating it first, which fails on ubuntu-24.04 runners
+        # where the directory doesn't pre-exist.
+        run: sudo mkdir -p /etc/cni/net.d
       - uses: medyagh/setup-minikube@v0.0.21
         with:
           kubernetes-version: ${{ matrix.kubernetes }}
