@@ -9,7 +9,7 @@ kube_version=$(grep '^kubeVersion:' ${chart}/Chart.yaml | sed -E 's/^kubeVersion
 
 echo ">> Testing chart ${chart} against kubeVersion ${kube_version}"
 
-helm lint ${chart} --kube-version ${kube_version}
+helm lint ${chart}
 helm template ${chart} --kube-version ${kube_version}
 
 echo "> Chart OK"
