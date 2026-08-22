@@ -277,6 +277,34 @@ func TestSetMasterOnAll(t *testing.T) {
 	assert.NoError(err)
 }
 
+func TestSetMasterOnAllRejectsIPNotOwnedByRF(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	// None of this RedisFailover's own pods have this IP: it could be a stale
+	// value resolved earlier in the reconcile that's since been reassigned to
+	// an unrelated pod, possibly in a different namespace/RedisFailover. See
+	// https://github.com/spotahome/redis-operator/issues/698.
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "1.1.1.1"}},
+			{Status: corev1.PodStatus{PodIP: "2.2.2.2"}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+
+	err := healer.SetMasterOnAll("9.9.9.9", rf)
+	assert.Error(err, "should refuse to act on an IP that isn't currently one of this RedisFailover's own pods")
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t) // no IsMaster/MakeSlaveOfWithPort calls should have happened
+}
+
 func TestSetExternalMasterOnAll(t *testing.T) {
 	tests := []struct {
 		name                  string
@@ -486,7 +514,20 @@ func TestPromoteBestReplicaMakeMasterFails(t *testing.T) {
 
 	newMasterIP := "1.1.1.1"
 
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-master"},
+				Status: corev1.PodStatus{
+					PodIP: newMasterIP,
+					Phase: corev1.PodRunning,
+				},
+			},
+		},
+	}
+
 	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", newMasterIP, "0", "").Once().Return(errors.New("promotion failed"))
 
@@ -497,6 +538,40 @@ func TestPromoteBestReplicaMakeMasterFails(t *testing.T) {
 	assert.False(errors.Is(err, rfservice.ErrPartialReconciliation), "full promotion failure should not be wrapped as ErrPartialReconciliation")
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
+}
+
+func TestPromoteBestReplicaRejectsIPNotOwnedByRF(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	// newMasterIP isn't a pod of this RedisFailover: refuse to promote it
+	// rather than blindly issuing MakeMaster against a possibly-foreign
+	// instance. See https://github.com/spotahome/redis-operator/issues/698.
+	newMasterIP := "9.9.9.9"
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-replica"},
+				Status: corev1.PodStatus{
+					PodIP: "2.2.2.2",
+					Phase: corev1.PodRunning,
+				},
+			},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+
+	err := healer.PromoteBestReplica(newMasterIP, rf)
+	assert.Error(err, "should refuse to promote an IP that isn't currently one of this RedisFailover's own pods")
+	assert.False(errors.Is(err, rfservice.ErrPartialReconciliation))
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t) // no MakeMaster call should have happened
 }
 
 func TestNewSentinelMonitor(t *testing.T) {
