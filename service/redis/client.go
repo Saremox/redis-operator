@@ -460,6 +460,7 @@ func (c *client) SetCustomRedisConfig(ip string, port string, configs []string, 
 		}
 	}(rClient)
 
+	needsACLLoad := false
 	for _, config := range configs {
 		param, value, err := c.getConfigParameters(config)
 		if err != nil {
@@ -473,7 +474,34 @@ func (c *client) SetCustomRedisConfig(ip string, port string, configs []string, 
 		if err := c.applyRedisConfig(param, value, rClient); err != nil {
 			return err
 		}
+		if strings.EqualFold(param, "aclfile") {
+			needsACLLoad = true
+		}
 	}
+	// `CONFIG SET aclfile <path>` only changes the path Redis will use for its ACL file,
+	// it does not read the file's contents into the running ACL table. An explicit
+	// `ACL LOAD` is required afterwards, otherwise the users defined in the file never
+	// actually get created.
+	if needsACLLoad {
+		if err := c.applyACLLoad(rClient); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *client) applyACLLoad(rClient *rediscli.Client) error {
+	cmd := rediscli.NewStatusCmd(context.TODO(), "ACL", "LOAD")
+	err := rClient.Process(context.TODO(), cmd)
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, strings.Split(rClient.Options().Addr, ":")[0], metrics.APPLY_REDIS_CONFIG, metrics.FAIL, getRedisError(err))
+		return err
+	}
+	if _, err := cmd.Result(); err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, strings.Split(rClient.Options().Addr, ":")[0], metrics.APPLY_REDIS_CONFIG, metrics.FAIL, getRedisError(err))
+		return err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, strings.Split(rClient.Options().Addr, ":")[0], metrics.APPLY_REDIS_CONFIG, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
 }
 
