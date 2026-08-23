@@ -180,7 +180,9 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		r.k8sServiceOperations,
 		r.redisOperations,
 	)
+	mutex.Lock()
 	recorders = append(recorders, r)
+	mutex.Unlock()
 	return r
 }
 
@@ -243,7 +245,11 @@ func removeStaleMetrics() {
 	for {
 		metricsDeletedCount := 0
 		kubernetesResourceBasedLabels, customResourceBasedLabels, ipBasedLabels := getLabelsOfStaleMetrics()
-		for _, recorder := range recorders {
+		mutex.Lock()
+		currentRecorders := make([]recorder, len(recorders))
+		copy(currentRecorders, recorders)
+		mutex.Unlock()
+		for _, recorder := range currentRecorders {
 			for _, label := range kubernetesResourceBasedLabels {
 				metricsDeletedCount += recorder.ensureResource.DeletePartialMatch(label)
 				metricsDeletedCount += recorder.k8sServiceOperations.DeletePartialMatch(label)
@@ -271,6 +277,7 @@ func getLabelsOfStaleMetrics() (kubernetesResourceBasedLabels []prometheus.Label
 	customResourceBasedLabels = []prometheus.Labels{}
 	ipBasedLabels = []prometheus.Labels{}
 
+	mutex.Lock()
 	for key, value := range resourceMetricLastUpdated {
 		// if the key is stale
 		if value.Before(time.Now().Add(-metricsGCIntervalMinutes * time.Minute)) {
@@ -294,11 +301,12 @@ func getLabelsOfStaleMetrics() (kubernetesResourceBasedLabels []prometheus.Label
 			)
 			// once we have created labels out of the contents of the key,
 			// its not longer required - since it is known to be stale. remove it from the tracker.
-			mutex.Lock()
 			delete(resourceMetricLastUpdated, key)
-			mutex.Unlock()
 		}
 	}
+	mutex.Unlock()
+
+	mutex.Lock()
 	for IP, value := range instanceMetricLastUpdated {
 		if value.Before(time.Now().Add(-metricsGCIntervalMinutes * time.Minute)) {
 			ipBasedLabels = append(ipBasedLabels,
@@ -308,11 +316,10 @@ func getLabelsOfStaleMetrics() (kubernetesResourceBasedLabels []prometheus.Label
 			)
 			// once we have created labels out of the contents of the key,
 			// its not longer required - since it is known to be stale. remove it from the tracker.
-			mutex.Lock()
 			delete(instanceMetricLastUpdated, IP)
-			mutex.Unlock()
 		}
 
 	}
+	mutex.Unlock()
 	return kubernetesResourceBasedLabels, customResourceBasedLabels, ipBasedLabels
 }
