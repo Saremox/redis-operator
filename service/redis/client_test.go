@@ -10,14 +10,16 @@ package redis
 // rather than assumed, per the investigation that prompted this test suite:
 //   - SENTINEL CKQUORUM's NOQUORUM outcome (see TestSentinelCheckQuorum_NoQuorum).
 //   - CONFIG SET aclfile's immutability (see TestSetCustomRedisConfig_ACLFile).
-// Both surfaced apparent bugs in client.go; see the comments on those tests.
-// Per the task instructions, these are reported, not fixed, here.
+// The aclfile finding surfaced a real bug in client.go, fixed in the same
+// change as this test (see the comment on TestSetCustomRedisConfig_ACLFile).
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,9 +36,8 @@ func newTestClient() Client {
 
 // newTestClientStruct returns the concrete *client type (rather than the
 // Client interface newTestClient returns) so tests can call unexported
-// methods directly - used for applyACLLoad, which client.go's own public
-// entry point (SetCustomRedisConfig) can never actually reach against real
-// Redis, see TestSetCustomRedisConfig_ACLFile's comment for why.
+// methods directly - used for applyACLLoad to test it in isolation from
+// SetCustomRedisConfig's own aclfile handling.
 func newTestClientStruct() *client {
 	return &client{metricsRecorder: metrics.Dummy}
 }
@@ -493,12 +494,6 @@ func TestSetCustomRedisConfig_EmptyParameterSkipped(t *testing.T) {
 
 // ---------------------------------------------------------------------
 // applyACLLoad
-//
-// SetCustomRedisConfig can never actually reach applyACLLoad against real
-// Redis - see TestSetCustomRedisConfig_ACLFile's comment: CONFIG SET aclfile
-// is immutable, so the applyRedisConfig call for the "aclfile" parameter
-// always fails and returns before needsACLLoad is ever checked. applyACLLoad
-// is tested directly here instead, via newTestClientStruct.
 // ---------------------------------------------------------------------
 
 func TestApplyACLLoad_Success(t *testing.T) {
@@ -507,8 +502,8 @@ func TestApplyACLLoad_Success(t *testing.T) {
 	aclPath := dir + "/users.acl"
 	require.NoError(t, os.WriteFile(aclPath, []byte("user testuser on >testpass ~* +@all\n"), 0o600))
 
-	// As in TestSetCustomRedisConfig_ACLFile, the aclfile must already be
-	// configured at boot - it's the only way real Redis will accept it.
+	// The aclfile must already be configured at boot - it's the only way
+	// real Redis will accept it (see TestSetCustomRedisConfig_ACLFile).
 	r := startRedisProcess(t, "--aclfile", aclPath)
 	c := newTestClientStruct()
 
@@ -544,26 +539,22 @@ func TestApplyACLLoad_ConnectionError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestSetCustomRedisConfig_ACLFile documents a real bug found while building
-// this test suite (not fixed here, per instructions - see the task summary
-// for the full report):
+// TestSetCustomRedisConfig_ACLFile covers a real bug found while building
+// this test suite: `CONFIG SET aclfile <path>` is an *immutable* config in
+// real Redis (7.0.15, confirmed here; Redis docs mark aclfile as requiring a
+// server restart to change) - the server rejects it with "ERR CONFIG SET
+// failed... can't set immutable config", regardless of whether the value
+// being set matches the aclfile Redis was already started with.
 //
-// `CONFIG SET aclfile <path>` is an *immutable* config in real Redis (7.0.15,
-// confirmed here; Redis docs mark aclfile as requiring a server restart to
-// change) - the server rejects it with "ERR CONFIG SET failed... can't set
-// immutable config", regardless of whether the value being set matches the
-// aclfile Redis was already started with. This is true even when the target
-// file exists.
-//
-// client.go's SetCustomRedisConfig loop calls applyRedisConfig (CONFIG SET)
-// for every parameter *before* checking whether it was "aclfile" and
-// triggering applyACLLoad (ACL LOAD). Against real Redis, the CONFIG SET
-// aclfile call above fails and SetCustomRedisConfig returns that error
-// immediately - meaning applyACLLoad is unreachable dead code whenever the
-// custom config list contains an "aclfile" line, and RedisFailover CRs that
-// set `spec.redis.customConfig` to include an aclfile line (the exact
-// scenario commit 8add5ac "Fix aclfile in CustomConfig silently not loading
-// ACL users" was meant to fix) will always fail this call in practice.
+// SetCustomRedisConfig now special-cases "aclfile": it skips the CONFIG SET
+// for that parameter (it would always fail) and goes straight to ACL LOAD,
+// which re-reads whatever aclfile Redis already has configured (set at boot,
+// e.g. via a mounted ConfigMap + `--aclfile` flag). This test starts Redis
+// with an aclfile already configured, changes the file's *contents* (not its
+// path - only the path is immutable) and confirms a customConfig line of
+// `aclfile <path>` triggers a live ACL reload, matching the exact scenario
+// commit 8add5ac "Fix aclfile in CustomConfig silently not loading ACL
+// users" (spotahome/redis-operator#693) was meant to fix.
 func TestSetCustomRedisConfig_ACLFile(t *testing.T) {
 	requireRedisServer(t)
 	dir := t.TempDir()
@@ -576,8 +567,20 @@ func TestSetCustomRedisConfig_ACLFile(t *testing.T) {
 	c := newTestClient()
 
 	err := c.SetCustomRedisConfig(r.IP, strconv.Itoa(r.Port), []string{"aclfile " + aclPath}, "")
-	require.Error(t, err, "CONFIG SET aclfile is immutable in real Redis; this documents current (buggy) behavior, see comment above")
-	assert.Contains(t, err.Error(), "immutable")
+	require.NoError(t, err, "aclfile in customConfig should trigger an ACL LOAD, not a (failing) CONFIG SET")
+
+	rc := rediscli.NewClient(&rediscli.Options{Addr: r.Addr()})
+	defer func() { _ = rc.Close() }()
+	users, err := rc.Do(context.Background(), "ACL", "LIST").StringSlice()
+	require.NoError(t, err)
+	found := false
+	for _, u := range users {
+		if strings.HasPrefix(u, "user testuser ") && strings.Contains(u, "+@all") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected an ACL LIST entry for testuser with +@all, got %v", users)
 }
 
 // ---------------------------------------------------------------------
