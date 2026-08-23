@@ -1029,11 +1029,11 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 		},
 		{
 			// checkAndHealSentinels (called as the final statement of
-			// CheckAndHeal) does not set rf.Status on error, unlike every
-			// preceding branch in CheckAndHeal - see the note in the test
-			// body below and the final report for details. This test
-			// documents the actual observed behavior; it does not assert
-			// that behavior is correct.
+			// CheckAndHeal) used to return errors without setting rf.Status,
+			// unlike every preceding branch in CheckAndHeal - the HealthyState
+			// set at the top would stick despite the reconcile actually
+			// failing. Fixed to set NotHealthyState on each error path,
+			// matching the rest of the file.
 			name: "sentinel number-in-memory mismatch - RestoreSentinel fails",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
 				mrfc.On("IsRedisRunning", rf).Once().Return(true)
@@ -1054,13 +1054,9 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				mrfc.On("CheckSentinelNumberInMemory", sentinel, rf).Once().Return(errors.New("mismatch"))
 				mrfh.On("RestoreSentinel", sentinel).Once().Return(errors.New("restore err"))
 			},
-			wantErr: true,
-			// NOTE: unlike every other CheckAndHeal error branch, the
-			// rf.Status set at the top of CheckAndHeal (HealthyState) is
-			// never overwritten here - checkAndHealSentinels returns the
-			// error directly without touching rf.Status. See suspected-bug
-			// notes in this PR.
-			wantState: v1.HealthyState,
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "unable to restore sentinel",
 		},
 		{
 			name: "sentinel slaves-number-in-memory mismatch - RestoreSentinel fails",
@@ -1084,8 +1080,9 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(errors.New("mismatch"))
 				mrfh.On("RestoreSentinel", sentinel).Once().Return(errors.New("restore err"))
 			},
-			wantErr:   true,
-			wantState: v1.HealthyState, // see note above
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "unable to restore sentinel",
 		},
 		{
 			name: "SetSentinelCustomConfig fails",
@@ -1109,8 +1106,9 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(nil)
 				mrfh.On("SetSentinelCustomConfig", sentinel, rf).Once().Return(errors.New("set config err"))
 			},
-			wantErr:   true,
-			wantState: v1.HealthyState, // see note above
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "unable to set sentinel custom config",
 		},
 	}
 
@@ -1186,27 +1184,18 @@ func TestCheckAndHealBootstrapModeErrorBranches(t *testing.T) {
 	}{
 		{
 			// checkAndHealBootstrapMode's UpdateRedisesPods error handling
-			// (checker.go) sets rf.Status to NotHealthyState but, unlike
-			// every other error branch in this file, does not `return err`
-			// afterwards - execution falls through into
-			// applyRedisCustomConfig and beyond. If the rest of the
-			// function then succeeds, CheckAndHeal reports success (nil
-			// error) while rf.Status is left claiming NotHealthyState with
-			// this stale message. This test documents that actual,
-			// suspected-buggy behavior (see the PR description / final
-			// report) - it is not asserting that behavior is correct.
-			name: "UpdateRedisesPods fails but error is swallowed (suspected bug)",
+			// used to set rf.Status to NotHealthyState without a `return
+			// err` afterwards, unlike every other error branch in this
+			// file - execution fell through into applyRedisCustomConfig
+			// and beyond, so a real failure here could be swallowed and
+			// reported as success. Fixed to return immediately, matching
+			// every other branch; this now asserts the fixed behavior.
+			name: "UpdateRedisesPods fails",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
 				mrfc.On("IsRedisRunning", rf).Once().Return(true)
-				// UpdateRedisesPods' own GetRedisesIPs call fails...
 				mrfc.On("GetRedisesIPs", rf).Once().Return(nil, errors.New("update pods ips err"))
-				// ...but applyRedisCustomConfig's independent call (and the
-				// rest of the function) still runs and succeeds.
-				mrfc.On("GetRedisesIPs", rf).Once().Return([]string{bootstrapMaster}, nil)
-				mrfh.On("SetRedisCustomConfig", bootstrapMaster, rf).Once().Return(nil)
-				mrfh.On("SetExternalMasterOnAll", bootstrapMaster, bootstrapMasterPort, rf).Once().Return(nil)
 			},
-			wantErr:     false,
+			wantErr:     true,
 			wantState:   v1.NotHealthyState,
 			wantMessage: "unable to update Redis PODs",
 		},
