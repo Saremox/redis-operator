@@ -471,17 +471,20 @@ func (c *client) SetCustomRedisConfig(ip string, port string, configs []string, 
 		if strings.TrimSpace(param) == "" {
 			continue
 		}
+		// `aclfile` is an immutable config in real Redis - `CONFIG SET aclfile <path>`
+		// is always rejected at runtime, even when the value matches the path Redis
+		// was already started with; changing it requires a restart. The only way to
+		// pick up ACL users at runtime is `ACL LOAD`, which re-reads whatever aclfile
+		// Redis already has configured, so the CONFIG SET for this parameter is
+		// skipped entirely rather than sent (and failed) against the server.
+		if strings.EqualFold(param, "aclfile") {
+			needsACLLoad = true
+			continue
+		}
 		if err := c.applyRedisConfig(param, value, rClient); err != nil {
 			return err
 		}
-		if strings.EqualFold(param, "aclfile") {
-			needsACLLoad = true
-		}
 	}
-	// `CONFIG SET aclfile <path>` only changes the path Redis will use for its ACL file,
-	// it does not read the file's contents into the running ACL table. An explicit
-	// `ACL LOAD` is required afterwards, otherwise the users defined in the file never
-	// actually get created.
 	if needsACLLoad {
 		if err := c.applyACLLoad(rClient); err != nil {
 			return err
