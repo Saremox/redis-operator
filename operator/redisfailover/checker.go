@@ -516,6 +516,7 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 			State:   redisfailoverv1.NotHealthyState,
 			Message: "unable to update Redis PODs",
 		}
+		return err
 	}
 	err = r.applyRedisCustomConfig(rf)
 	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.APPLY_REDIS_CONFIG, metrics.NOT_APPLICABLE, err)
@@ -600,6 +601,10 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 		if err != nil {
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Sentinel %s mismatch number of sentinels in memory. resetting", sip)
 			if err := r.rfHealer.RestoreSentinel(sip); err != nil {
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: "unable to restore sentinel",
+				}
 				return err
 			}
 		}
@@ -611,6 +616,10 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 		if err != nil {
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Sentinel %s mismatch number of expected slaves in memory. resetting", sip)
 			if err := r.rfHealer.RestoreSentinel(sip); err != nil {
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: "unable to restore sentinel",
+				}
 				return err
 			}
 		}
@@ -619,6 +628,10 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 		err := r.rfHealer.SetSentinelCustomConfig(sip, rf)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.APPLY_SENTINEL_CONFIG, sip, err)
 		if err != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: "unable to set sentinel custom config",
+			}
 			return err
 		}
 	}

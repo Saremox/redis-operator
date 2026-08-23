@@ -1,6 +1,7 @@
 package redisfailover_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -136,6 +137,120 @@ func TestEnsure(t *testing.T) {
 			err := handler.Ensure(rf, map[string]string{}, []metav1.OwnerReference{}, metrics.Dummy)
 
 			assert.NoError(err)
+			mrfs.AssertExpectations(t)
+		})
+	}
+}
+
+// ensureStepSetup returns a closure that registers the mock expectation for
+// the named Ensure* / EnsureNotPresent* call performed by Ensure() in
+// ensurer.go, returning the given error (nil for a success stub).
+func ensureStepSetup(step string) func(m *mRFService.RedisFailoverClient, rf *redisfailoverv1.RedisFailover, err error) {
+	// Calls taking only rf (the "NotPresent" cleanup calls).
+	rfOnly := map[string]bool{
+		"EnsureNotPresentRedisService":      true,
+		"EnsureNotPresentSentinelResources": true,
+	}
+	if rfOnly[step] {
+		return func(m *mRFService.RedisFailoverClient, rf *redisfailoverv1.RedisFailover, err error) {
+			m.On(step, rf).Once().Return(err)
+		}
+	}
+	return func(m *mRFService.RedisFailoverClient, rf *redisfailoverv1.RedisFailover, err error) {
+		m.On(step, rf, mock.Anything, mock.Anything).Once().Return(err)
+	}
+}
+
+// TestEnsureErrorBranches exercises every early-return error branch in
+// Ensure() (operator/redisfailover/ensurer.go): each of the EnsureX /
+// EnsureNotPresentX calls it makes can fail, and Ensure() must stop and
+// propagate that error immediately without invoking any of the calls that
+// would normally follow. Two RF configurations are used because several
+// steps are mutually exclusive depending on exporter/sentinel settings:
+//   - modeA (exporter enabled, sentinels allowed) walks the "everything is
+//     enabled" branch of every either/or pair.
+//   - modeB (exporter disabled, sentinels disabled) walks the "cleanup"
+//     branch of the same either/or pairs.
+func TestEnsureErrorBranches(t *testing.T) {
+	modeA := []string{
+		"EnsureRedisService",
+		"EnsureSentinelService",
+		"EnsureSentinelConfigMap",
+		"EnsureRedisMasterService",
+		"EnsureRedisSlaveService",
+		"EnsureRedisShutdownConfigMap",
+		"EnsureRedisReadinessConfigMap",
+		"EnsureRedisConfigMap",
+		"EnsureRedisStatefulset",
+		"EnsureSentinelDeployment",
+	}
+	modeB := []string{
+		"EnsureNotPresentRedisService",
+		"EnsureNotPresentSentinelResources",
+		"EnsureRedisMasterService",
+		"EnsureRedisSlaveService",
+		"EnsureRedisShutdownConfigMap",
+		"EnsureRedisReadinessConfigMap",
+		"EnsureRedisConfigMap",
+		"EnsureRedisStatefulset",
+	}
+
+	tests := []struct {
+		name             string
+		exporter         bool
+		sentinelsAllowed bool
+		steps            []string
+		failAt           int
+	}{
+		{"EnsureRedisService fails", true, true, modeA, 0},
+		{"EnsureSentinelService fails", true, true, modeA, 1},
+		{"EnsureSentinelConfigMap fails", true, true, modeA, 2},
+		{"EnsureRedisMasterService fails", true, true, modeA, 3},
+		{"EnsureRedisSlaveService fails", true, true, modeA, 4},
+		{"EnsureRedisShutdownConfigMap fails", true, true, modeA, 5},
+		{"EnsureRedisReadinessConfigMap fails", true, true, modeA, 6},
+		{"EnsureRedisConfigMap fails", true, true, modeA, 7},
+		{"EnsureRedisStatefulset fails", true, true, modeA, 8},
+		{"EnsureSentinelDeployment fails", true, true, modeA, 9},
+		{"EnsureNotPresentRedisService fails", false, false, modeB, 0},
+		{"EnsureNotPresentSentinelResources fails", false, false, modeB, 1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			rf := generateRF(test.exporter, false)
+			if !test.sentinelsAllowed {
+				disabled := false
+				rf.Spec.Sentinel.Enabled = &disabled
+			}
+
+			config := generateConfig()
+			mk := &mK8SService.Services{}
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfs := &mRFService.RedisFailoverClient{}
+
+			wantErr := errors.New(test.steps[test.failAt] + " failed")
+			for i, step := range test.steps {
+				if i > test.failAt {
+					// Steps after the failure must never be called: leave
+					// them unmocked so an unexpected call fails the test.
+					break
+				}
+				setup := ensureStepSetup(step)
+				if i == test.failAt {
+					setup(mrfs, rf, wantErr)
+				} else {
+					setup(mrfs, rf, nil)
+				}
+			}
+
+			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+			err := handler.Ensure(rf, map[string]string{}, []metav1.OwnerReference{}, metrics.Dummy)
+
+			assert.Equal(wantErr, err)
 			mrfs.AssertExpectations(t)
 		})
 	}
