@@ -1,6 +1,7 @@
 package k8s_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -364,4 +365,55 @@ func TestStatefulSetServiceGetCreateOrUpdate(t *testing.T) {
 			assertTest.NoError(err)
 		})
 	}
+}
+
+func TestStatefulSetServiceDeleteStatefulSet(t *testing.T) {
+	testns := "testns"
+
+	t.Run("deletes an existing StatefulSet", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		sts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "teststatefulset",
+				Namespace: testns,
+			},
+		}
+		mcli := kubernetes.NewClientset(sts)
+		service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
+
+		err := service.DeleteStatefulSet(testns, "teststatefulset")
+		assertTest.NoError(err)
+
+		_, err = mcli.AppsV1().StatefulSets(testns).Get(context.TODO(), "teststatefulset", metav1.GetOptions{})
+		assertTest.Error(err)
+		assertTest.True(kubeerrors.IsNotFound(err))
+	})
+
+	t.Run("returns an error when deleting a non-existent StatefulSet", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		mcli := kubernetes.NewClientset()
+		service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
+
+		err := service.DeleteStatefulSet(testns, "does-not-exist")
+		assertTest.Error(err)
+		assertTest.True(kubeerrors.IsNotFound(err))
+	})
+}
+
+func TestStatefulSetServiceListStatefulSets(t *testing.T) {
+	assertTest := assert.New(t)
+	testns := "testns"
+
+	sts1 := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "sts1", Namespace: testns}}
+	sts2 := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "sts2", Namespace: testns}}
+	otherNsSts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "sts3", Namespace: "otherns"}}
+
+	mcli := kubernetes.NewClientset(sts1, sts2, otherNsSts)
+	service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
+
+	list, err := service.ListStatefulSets(testns)
+	assertTest.NoError(err)
+	assertTest.Len(list.Items, 2)
 }

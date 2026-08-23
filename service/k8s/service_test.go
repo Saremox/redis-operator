@@ -1,6 +1,7 @@
 package k8s_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -233,4 +234,136 @@ func TestCreateOrUpdateServicePreservesHealthCheckNodePort(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, int32(32100), updatedService.Spec.HealthCheckNodePort, "healthCheckNodePort must be preserved")
 	assert.Equal(t, "10.0.0.2", updatedService.Spec.ClusterIP, "clusterIP must be preserved")
+}
+
+func TestServiceServiceCreateOrUpdateServiceGetError(t *testing.T) {
+	assertTest := assert.New(t)
+	testns := "testns"
+
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "testsvc",
+		},
+	}
+
+	mcli := &kubernetes.Clientset{}
+	mcli.AddReactor("get", "services", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("connection refused")
+	})
+
+	svc := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
+	err := svc.CreateOrUpdateService(testns, service)
+	assertTest.Error(err)
+	assertTest.Equal([]kubetesting.Action{newServiceGetAction(testns, service.Name)}, mcli.Actions())
+}
+
+func TestServiceServiceDeleteService(t *testing.T) {
+	testns := "testns"
+
+	t.Run("deletes an existing Service", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "testsvc",
+				Namespace: testns,
+			},
+		}
+		mcli := kubernetes.NewClientset(svc)
+		service := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
+
+		err := service.DeleteService(testns, "testsvc")
+		assertTest.NoError(err)
+
+		_, err = mcli.CoreV1().Services(testns).Get(context.TODO(), "testsvc", metav1.GetOptions{})
+		assertTest.Error(err)
+		assertTest.True(kubeerrors.IsNotFound(err))
+	})
+
+	t.Run("returns an error when deleting a non-existent Service", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		mcli := kubernetes.NewClientset()
+		service := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
+
+		err := service.DeleteService(testns, "does-not-exist")
+		assertTest.Error(err)
+		assertTest.True(kubeerrors.IsNotFound(err))
+	})
+}
+
+func TestServiceServiceListServices(t *testing.T) {
+	assertTest := assert.New(t)
+	testns := "testns"
+
+	svc1 := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc1", Namespace: testns}}
+	svc2 := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc2", Namespace: testns}}
+	otherNsSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc3", Namespace: "otherns"}}
+
+	mcli := kubernetes.NewClientset(svc1, svc2, otherNsSvc)
+	service := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
+
+	list, err := service.ListServices(testns)
+	assertTest.NoError(err)
+	assertTest.Len(list.Items, 2)
+}
+
+func TestServiceServiceCreateIfNotExistsService(t *testing.T) {
+	testns := "testns"
+
+	t.Run("creates the service when it does not exist", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "testsvc",
+				Namespace: testns,
+			},
+		}
+		mcli := kubernetes.NewClientset()
+		service := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
+
+		err := service.CreateIfNotExistsService(testns, svc)
+		assertTest.NoError(err)
+
+		got, err := mcli.CoreV1().Services(testns).Get(context.TODO(), "testsvc", metav1.GetOptions{})
+		assertTest.NoError(err)
+		assertTest.Equal("testsvc", got.Name)
+	})
+
+	t.Run("does nothing when the service already exists", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "testsvc",
+				Namespace: testns,
+			},
+		}
+		mcli := kubernetes.NewClientset(svc)
+		service := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
+
+		err := service.CreateIfNotExistsService(testns, svc)
+		assertTest.NoError(err)
+	})
+
+	t.Run("returns a non-NotFound error from the get as-is", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "testsvc",
+			},
+		}
+
+		mcli := &kubernetes.Clientset{}
+		mcli.AddReactor("get", "services", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("connection refused")
+		})
+
+		service := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
+		err := service.CreateIfNotExistsService(testns, svc)
+		assertTest.Error(err)
+		assertTest.Equal([]kubetesting.Action{newServiceGetAction(testns, svc.Name)}, mcli.Actions())
+	})
 }
