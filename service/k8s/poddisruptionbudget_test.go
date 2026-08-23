@@ -1,6 +1,7 @@
 package k8s_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -30,6 +31,10 @@ func newPodDisruptionBudgetGetAction(ns, name string) kubetesting.GetActionImpl 
 
 func newPodDisruptionBudgetCreateAction(ns string, podDisruptionBudget *policyv1.PodDisruptionBudget) kubetesting.CreateActionImpl {
 	return kubetesting.NewCreateAction(podDisruptionBudgetsGroup, ns, podDisruptionBudget)
+}
+
+func newPodDisruptionBudgetDeleteAction(ns, name string) kubetesting.DeleteActionImpl {
+	return kubetesting.NewDeleteAction(podDisruptionBudgetsGroup, ns, name)
 }
 
 func TestPodDisruptionBudgetServiceGetCreateOrUpdate(t *testing.T) {
@@ -114,4 +119,95 @@ func TestPodDisruptionBudgetServiceGetCreateOrUpdate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPodDisruptionBudgetServiceUpdate(t *testing.T) {
+	testPodDisruptionBudget := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "testpodDisruptionBudget1",
+		},
+	}
+
+	testns := "testns"
+
+	tests := []struct {
+		name          string
+		errorOnUpdate error
+		expActions    []kubetesting.Action
+		expErr        bool
+	}{
+		{
+			name:          "Updating an existent podDisruptionBudget should not error.",
+			errorOnUpdate: nil,
+			expActions: []kubetesting.Action{
+				newPodDisruptionBudgetUpdateAction(testns, testPodDisruptionBudget),
+			},
+			expErr: false,
+		},
+		{
+			name:          "Updating should error when the client fails.",
+			errorOnUpdate: errors.New("wanted error"),
+			expActions: []kubetesting.Action{
+				newPodDisruptionBudgetUpdateAction(testns, testPodDisruptionBudget),
+			},
+			expErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assertTest := assert.New(t)
+
+			mcli := &kubernetes.Clientset{}
+			mcli.AddReactor("update", "poddisruptionbudgets", func(action kubetesting.Action) (bool, runtime.Object, error) {
+				return true, nil, test.errorOnUpdate
+			})
+
+			service := k8s.NewPodDisruptionBudgetService(mcli, log.Dummy, metrics.Dummy)
+			err := service.UpdatePodDisruptionBudget(testns, testPodDisruptionBudget)
+
+			if test.expErr {
+				assertTest.Error(err)
+			} else {
+				assertTest.NoError(err)
+			}
+			assertTest.Equal(test.expActions, mcli.Actions())
+		})
+	}
+}
+
+func TestPodDisruptionBudgetServiceDelete(t *testing.T) {
+	testns := "testns"
+
+	t.Run("deletes an existing podDisruptionBudget", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		pdb := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "testpodDisruptionBudget1",
+				Namespace: testns,
+			},
+		}
+		mcli := kubernetes.NewClientset(pdb)
+		service := k8s.NewPodDisruptionBudgetService(mcli, log.Dummy, metrics.Dummy)
+
+		err := service.DeletePodDisruptionBudget(testns, "testpodDisruptionBudget1")
+		assertTest.NoError(err)
+		assertTest.Equal([]kubetesting.Action{newPodDisruptionBudgetDeleteAction(testns, "testpodDisruptionBudget1")}, mcli.Actions())
+
+		_, getErr := mcli.PolicyV1().PodDisruptionBudgets(testns).Get(context.TODO(), "testpodDisruptionBudget1", metav1.GetOptions{})
+		assertTest.Error(getErr)
+		assertTest.True(kubeerrors.IsNotFound(getErr))
+	})
+
+	t.Run("returns a not found error when the podDisruptionBudget does not exist", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		mcli := kubernetes.NewClientset()
+		service := k8s.NewPodDisruptionBudgetService(mcli, log.Dummy, metrics.Dummy)
+
+		err := service.DeletePodDisruptionBudget(testns, "does-not-exist")
+		assertTest.Error(err)
+		assertTest.True(kubeerrors.IsNotFound(err))
+	})
 }
