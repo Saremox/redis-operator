@@ -14,6 +14,7 @@ package redis
 // Per the task instructions, these are reported, not fixed, here.
 
 import (
+	"errors"
 	"net"
 	"os"
 	"strconv"
@@ -29,6 +30,15 @@ import (
 
 func newTestClient() Client {
 	return New(metrics.Dummy)
+}
+
+// newTestClientStruct returns the concrete *client type (rather than the
+// Client interface newTestClient returns) so tests can call unexported
+// methods directly - used for applyACLLoad, which client.go's own public
+// entry point (SetCustomRedisConfig) can never actually reach against real
+// Redis, see TestSetCustomRedisConfig_ACLFile's comment for why.
+func newTestClientStruct() *client {
+	return &client{metricsRecorder: metrics.Dummy}
 }
 
 // ---------------------------------------------------------------------
@@ -173,9 +183,79 @@ func TestGetReplicationInfo_Replica(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
+// Connection-error branches: IsMaster / GetSlaveOf / SlaveIsReady /
+// GetReplicationInfo / MakeMaster / MakeSlaveOfWithPort all dial the target
+// redis instance at an explicit ip:port the caller provides, so pointing
+// them at a port nothing is listening on deterministically exercises their
+// `if err != nil` branch right after the connection/INFO/command attempt -
+// no real redis-server process is needed for any of these.
+// ---------------------------------------------------------------------
+
+func TestIsMaster_ConnectionError(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	c := newTestClient()
+
+	_, err = c.IsMaster(testLoopbackIP, strconv.Itoa(port), "")
+	assert.Error(t, err)
+}
+
+func TestGetSlaveOf_ConnectionError(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	c := newTestClient()
+
+	_, err = c.GetSlaveOf(testLoopbackIP, strconv.Itoa(port), "")
+	assert.Error(t, err)
+}
+
+func TestSlaveIsReady_ConnectionError(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	c := newTestClient()
+
+	_, err = c.SlaveIsReady(testLoopbackIP, strconv.Itoa(port), "")
+	assert.Error(t, err)
+}
+
+func TestGetReplicationInfo_ConnectionError(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	c := newTestClient()
+
+	info, err := c.GetReplicationInfo(testLoopbackIP, strconv.Itoa(port), "")
+	assert.Error(t, err)
+	assert.Nil(t, info)
+}
+
+// ---------------------------------------------------------------------
 // MakeMaster / MakeSlaveOf / MakeSlaveOfWithPort
 // (dedicated throwaway topologies - these mutate replication state)
 // ---------------------------------------------------------------------
+
+func TestMakeMaster_ConnectionError(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	c := newTestClient()
+
+	err = c.MakeMaster(testLoopbackIP, strconv.Itoa(port), "")
+	assert.Error(t, err)
+}
+
+// TestMakeSlaveOfWithPort_ConnectionError points at a port nothing is
+// listening on to exercise MakeSlaveOfWithPort's own connection-error
+// branch. It intentionally does not attempt to also reach a real master -
+// see TestMakeSlaveOfWithPort_MismatchedTargetPort for why the address
+// MakeSlaveOfWithPort actually connects to is (ip, masterPort), not
+// (ip, targetPort).
+func TestMakeSlaveOfWithPort_ConnectionError(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	c := newTestClient()
+
+	err = c.MakeSlaveOfWithPort(testLoopbackIP, "10.0.0.1", strconv.Itoa(port), "")
+	assert.Error(t, err)
+}
 
 func TestMakeMaster(t *testing.T) {
 	requireRedisServer(t)
@@ -389,6 +469,81 @@ func TestSetCustomRedisConfig_Malformed(t *testing.T) {
 	assert.Contains(t, err.Error(), "malformed")
 }
 
+// TestSetCustomRedisConfig_EmptyParameterSkipped covers the
+// `if strings.TrimSpace(param) == "" { continue }` branch in
+// SetCustomRedisConfig: a config line whose parameter name is empty (e.g. a
+// leading space before the value) is silently skipped rather than attempted
+// as a CONFIG SET call, which would otherwise fail. The subsequent config in
+// the list should still be applied normally.
+func TestSetCustomRedisConfig_EmptyParameterSkipped(t *testing.T) {
+	requireRedisServer(t)
+	r := startRedisProcess(t)
+	c := newTestClient()
+
+	err := c.SetCustomRedisConfig(r.IP, strconv.Itoa(r.Port), []string{" ignored-value", "maxmemory-policy allkeys-lru"}, "")
+	require.NoError(t, err)
+
+	rc := rediscli.NewClient(&rediscli.Options{Addr: r.Addr()})
+	defer func() { _ = rc.Close() }()
+	res, err := rc.ConfigGet(bgCtx(), "maxmemory-policy").Result()
+	require.NoError(t, err)
+	require.Len(t, res, 2)
+	assert.Equal(t, "allkeys-lru", res[1])
+}
+
+// ---------------------------------------------------------------------
+// applyACLLoad
+//
+// SetCustomRedisConfig can never actually reach applyACLLoad against real
+// Redis - see TestSetCustomRedisConfig_ACLFile's comment: CONFIG SET aclfile
+// is immutable, so the applyRedisConfig call for the "aclfile" parameter
+// always fails and returns before needsACLLoad is ever checked. applyACLLoad
+// is tested directly here instead, via newTestClientStruct.
+// ---------------------------------------------------------------------
+
+func TestApplyACLLoad_Success(t *testing.T) {
+	requireRedisServer(t)
+	dir := t.TempDir()
+	aclPath := dir + "/users.acl"
+	require.NoError(t, os.WriteFile(aclPath, []byte("user testuser on >testpass ~* +@all\n"), 0o600))
+
+	// As in TestSetCustomRedisConfig_ACLFile, the aclfile must already be
+	// configured at boot - it's the only way real Redis will accept it.
+	r := startRedisProcess(t, "--aclfile", aclPath)
+	c := newTestClientStruct()
+
+	rc := rediscli.NewClient(&rediscli.Options{Addr: r.Addr()})
+	defer func() { _ = rc.Close() }()
+
+	err := c.applyACLLoad(rc)
+	require.NoError(t, err, "ACL LOAD should succeed once an aclfile is configured")
+}
+
+func TestApplyACLLoad_NoACLFileConfigured(t *testing.T) {
+	requireRedisServer(t)
+	r := startRedisProcess(t)
+	c := newTestClientStruct()
+
+	rc := rediscli.NewClient(&rediscli.Options{Addr: r.Addr()})
+	defer func() { _ = rc.Close() }()
+
+	err := c.applyACLLoad(rc)
+	require.Error(t, err, "ACL LOAD should fail when the server has no aclfile configured")
+	assert.Contains(t, err.Error(), "not configured to use an ACL file")
+}
+
+func TestApplyACLLoad_ConnectionError(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	c := newTestClientStruct()
+
+	rc := rediscli.NewClient(&rediscli.Options{Addr: net.JoinHostPort(testLoopbackIP, strconv.Itoa(port))})
+	defer func() { _ = rc.Close() }()
+
+	err = c.applyACLLoad(rc)
+	assert.Error(t, err)
+}
+
 // TestSetCustomRedisConfig_ACLFile documents a real bug found while building
 // this test suite (not fixed here, per instructions - see the task summary
 // for the full report):
@@ -488,6 +643,10 @@ func TestGetNumberSentinelsInMemory_NotMonitoringAnything(t *testing.T) {
 	// so isSentinelReady should reject it.
 	_, err = c.GetNumberSentinelsInMemory(env.sentinel.IP)
 	assert.Error(t, err)
+
+	// GetNumberSentinelSlavesInMemory shares the same isSentinelReady gate.
+	_, err = c.GetNumberSentinelSlavesInMemory(env.sentinel.IP)
+	assert.Error(t, err)
 }
 
 // ---------------------------------------------------------------------
@@ -554,6 +713,21 @@ func TestMonitorRedisWithPort_WithPassword(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestMonitorRedisWithPort_InvalidPort passes a non-numeric port straight
+// through to `SENTINEL MONITOR`, which real Sentinel rejects with a RESP
+// error ("ERR Invalid port"). This exercises MonitorRedisWithPort's
+// `if err != nil` branch right after the initial MONITOR command via a real
+// redis-level protocol error rather than a connection failure.
+func TestMonitorRedisWithPort_InvalidPort(t *testing.T) {
+	env := getSharedEnv(t)
+	c := newTestClient()
+	t.Cleanup(func() { restoreSharedSentinel(t, env) })
+
+	err := c.MonitorRedisWithPort(env.sentinel.IP, testLoopbackIP, "not-a-port", "1", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Invalid port")
+}
+
 func TestSetCustomSentinelConfig(t *testing.T) {
 	env := getSharedEnv(t)
 	master := startRedisProcess(t)
@@ -614,6 +788,32 @@ func TestSentinelCheckQuorum_OK(t *testing.T) {
 // err != nil for failure still work correctly - this is a
 // dead-code/messaging bug, not a functional regression for existing
 // callers as far as we can tell).
+// ---------------------------------------------------------------------
+// getRedisError
+//
+// A pure string-classification function - no redis-server needed.
+// ---------------------------------------------------------------------
+
+func TestGetRedisError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"NOAUTH", errors.New("NOAUTH Authentication required."), metrics.NOAUTH},
+		{"WRONGPASS", errors.New("WRONGPASS invalid username-password pair or user is disabled."), metrics.WRONG_PASSWORD_USED},
+		{"NOPERM", errors.New("NOPERM this user has no permissions to run this command"), metrics.NOPERM},
+		{"io timeout", errors.New("dial tcp 127.0.0.1:6379: i/o timeout"), metrics.IO_TIMEOUT},
+		{"connection refused", errors.New("dial tcp 127.0.0.1:6379: connect: connection refused"), metrics.CONNECTION_REFUSED},
+		{"unrecognized error falls back to MISC", errors.New("something else entirely"), "MISC"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, getRedisError(tt.err))
+		})
+	}
+}
+
 func TestSentinelCheckQuorum_NoQuorum(t *testing.T) {
 	env := getSharedEnv(t)
 	master := startRedisProcess(t)
@@ -627,4 +827,56 @@ func TestSentinelCheckQuorum_NoQuorum(t *testing.T) {
 
 	err = c.SentinelCheckQuorum(env.sentinel.IP)
 	require.Error(t, err, "CKQUORUM should fail when quorum exceeds the number of known sentinels")
+}
+
+// TestSentinelFunctions_SentinelUnreachable exercises the connection-error
+// branch of the various Sentinel-facing Client methods (the `if err != nil`
+// branch immediately following the Info()/Process() call to the sentinel,
+// before any redis-level reply parsing happens) by making the sentinel
+// address genuinely unreachable.
+//
+// Every Sentinel-related Client method hardcodes sentinelPort as the port it
+// connects to (see newSentinelProcessOnPort's doc comment in
+// testutil_test.go), and this package runs exactly one sentinel process for
+// the whole test binary (sharedEnv's, since only one process can bind that
+// port at a time). That means the only way to make "connecting to the
+// sentinel" itself fail - as opposed to a command reaching a live sentinel
+// but getting an unexpected reply, which every other Sentinel test in this
+// file covers - is to stop the one process that's listening there.
+//
+// This test does exactly that: it kills the shared sentinel process outright
+// and, unlike every other test here that mutates sentinel state, never
+// restarts or restores it. It MUST THEREFORE STAY THE LAST TEST DECLARED IN
+// THIS FILE. `go test` runs the tests within a package sequentially, in the
+// order they're declared (nothing in this package calls t.Parallel - every
+// other sentinel-mutating test already relies on that same sequential
+// ordering, see e.g. restoreSharedSentinel's doc comment), so as long as
+// this stays last, no later test ever tries to reach a sentinel that no
+// longer exists. Do not add a test after this one that touches env.sentinel.
+func TestSentinelFunctions_SentinelUnreachable(t *testing.T) {
+	env := getSharedEnv(t)
+	c := newTestClient()
+
+	killProc(env.sentinel)
+
+	_, err := c.GetNumberSentinelsInMemory(env.sentinel.IP)
+	assert.Error(t, err, "GetNumberSentinelsInMemory should fail once nothing is listening on the sentinel port")
+
+	_, err = c.GetNumberSentinelSlavesInMemory(env.sentinel.IP)
+	assert.Error(t, err, "GetNumberSentinelSlavesInMemory should fail once nothing is listening on the sentinel port")
+
+	err = c.ResetSentinel(env.sentinel.IP)
+	assert.Error(t, err, "ResetSentinel should fail once nothing is listening on the sentinel port")
+
+	_, _, err = c.GetSentinelMonitor(env.sentinel.IP)
+	assert.Error(t, err, "GetSentinelMonitor should fail once nothing is listening on the sentinel port")
+
+	err = c.SetCustomSentinelConfig(env.sentinel.IP, []string{"down-after-milliseconds 1000"})
+	assert.Error(t, err, "SetCustomSentinelConfig should fail once nothing is listening on the sentinel port")
+
+	err = c.SentinelCheckQuorum(env.sentinel.IP)
+	assert.Error(t, err, "SentinelCheckQuorum should fail once nothing is listening on the sentinel port")
+
+	err = c.MonitorRedisWithPort(env.sentinel.IP, testLoopbackIP, redisPort, "1", "")
+	assert.Error(t, err, "MonitorRedisWithPort should fail once nothing is listening on the sentinel port")
 }
