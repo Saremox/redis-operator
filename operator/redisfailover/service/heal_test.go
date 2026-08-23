@@ -305,6 +305,42 @@ func TestSetMasterOnAllRejectsIPNotOwnedByRF(t *testing.T) {
 	mr.AssertExpectations(t) // no IsMaster/MakeSlaveOfWithPort calls should have happened
 }
 
+func TestSetMasterOnAllSlaveAlreadyLabeled(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				Status: corev1.PodStatus{
+					PodIP: "0.0.0.0",
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"redisfailovers-role": "slave"},
+				},
+				Status: corev1.PodStatus{
+					PodIP: "1.1.1.1",
+				},
+			},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("IsMaster", "0.0.0.0", "0", "").Return(true, nil)
+	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0.0.0.0", "0", "").Once().Return(nil)
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+
+	err := healer.SetMasterOnAll("0.0.0.0", rf)
+	assert.NoError(err)
+	ms.AssertExpectations(t) // pod already has the slave label, so UpdatePodLabels must not be called
+}
+
 func TestSetExternalMasterOnAll(t *testing.T) {
 	tests := []struct {
 		name                  string
@@ -616,6 +652,40 @@ func TestNewSentinelMonitor(t *testing.T) {
 			mr.AssertExpectations(t)
 		})
 	}
+}
+
+func TestNewSentinelMonitorPasswordError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+	rf.Spec.Auth.SecretPath = "redis-secret"
+
+	ms := &mK8SService.Services{}
+	ms.On("GetSecret", namespace, "redis-secret").Once().Return(nil, errors.New("secret unavailable"))
+	mr := &mRedisService.Client{}
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+
+	err := healer.NewSentinelMonitor("0.0.0.0", "1.1.1.1", rf)
+	assert.Error(err)
+	mr.AssertExpectations(t) // no MonitorRedisWithPort call should have happened
+}
+
+func TestNewSentinelMonitorWithPortPasswordError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+	rf.Spec.Auth.SecretPath = "redis-secret"
+
+	ms := &mK8SService.Services{}
+	ms.On("GetSecret", namespace, "redis-secret").Once().Return(nil, errors.New("secret unavailable"))
+	mr := &mRedisService.Client{}
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+
+	err := healer.NewSentinelMonitorWithPort("0.0.0.0", "1.1.1.1", "6379", rf)
+	assert.Error(err)
+	mr.AssertExpectations(t) // no MonitorRedisWithPort call should have happened
 }
 
 // --- MakeMaster ---
