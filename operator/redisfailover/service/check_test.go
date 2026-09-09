@@ -454,6 +454,62 @@ func TestCheckSentinelSlavesNumberInMemoryBootstrappingMatch(t *testing.T) {
 	assert.NoError(err)
 }
 
+func TestCheckSentinelSlavesNumberQuorumInMemoryGetNumberSentinelSlavesInMemoryError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	mr := &mRedisService.Client{}
+	mr.On("GetNumberSentinelSlavesInMemory", "1.1.1.1").Once().Return(int32(0), errors.New(""))
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	err := checker.CheckSentinelSlavesNumberQuorumInMemory("1.1.1.1", rf)
+	assert.Error(err)
+}
+
+// TestCheckSentinelSlavesNumberQuorumInMemory covers the fix for the
+// deadlock a full-strict CheckSentinelSlavesNumberInMemory gate can cause
+// before replacing a stale master: with 5 replicas (4 expected slaves,
+// quorum 3), sentinel seeing only 3 of the 4 (one permanently missing, e.g.
+// a replica whose PVC is stuck in a dead zone) must still be accepted,
+// where the exact-match check would block forever.
+func TestCheckSentinelSlavesNumberQuorumInMemory(t *testing.T) {
+	rf := generateRF()
+	rf.Spec.Redis.Replicas = 5 // 4 expected slaves, quorum = 4/2+1 = 3
+
+	tests := []struct {
+		name     string
+		nSlaves  int32
+		expError bool
+	}{
+		{"all expected slaves present", 4, false},
+		{"quorum met, one permanently missing slave", 3, false},
+		{"exactly one below quorum", 2, true},
+		{"far below quorum", 0, true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			ms := &mK8SService.Services{}
+			mr := &mRedisService.Client{}
+			mr.On("GetNumberSentinelSlavesInMemory", "1.1.1.1").Once().Return(test.nSlaves, nil)
+
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+			err := checker.CheckSentinelSlavesNumberQuorumInMemory("1.1.1.1", rf)
+			if test.expError {
+				assert.Error(err)
+			} else {
+				assert.NoError(err)
+			}
+		})
+	}
+}
+
 func TestCheckSentinelMonitorGetSentinelMonitorError(t *testing.T) {
 	assert := assert.New(t)
 

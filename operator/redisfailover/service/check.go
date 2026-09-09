@@ -32,6 +32,7 @@ type RedisFailoverCheck interface {
 	CheckAllSlavesFromMaster(master string, rFailover *redisfailoverv1.RedisFailover) error
 	CheckSentinelNumberInMemory(sentinel string, rFailover *redisfailoverv1.RedisFailover) error
 	CheckSentinelSlavesNumberInMemory(sentinel string, rFailover *redisfailoverv1.RedisFailover) error
+	CheckSentinelSlavesNumberQuorumInMemory(sentinel string, rFailover *redisfailoverv1.RedisFailover) error
 	CheckSentinelQuorum(rFailover *redisfailoverv1.RedisFailover) (int, error)
 	CheckIfMasterLocalhost(rFailover *redisfailoverv1.RedisFailover) (bool, error)
 	CheckSentinelMonitor(sentinel string, monitor ...string) error
@@ -253,6 +254,26 @@ func (r *RedisFailoverChecker) CheckSentinelSlavesNumberInMemory(sentinel string
 				return errors.New("redis slaves in sentinel memory mismatch")
 			}
 		}
+	}
+	return nil
+}
+
+// CheckSentinelSlavesNumberQuorumInMemory controls that the provided sentinel
+// has at least a majority (quorum) of the expected slaves in memory, rather
+// than requiring the full set. Used before replacing a stale master during a
+// rolling update: gating on the full expected count
+// (CheckSentinelSlavesNumberInMemory) can block forever if a single replica
+// is permanently unavailable (e.g. a PVC stuck in a dead zone), even though a
+// safe failover is available via the reachable majority.
+func (r *RedisFailoverChecker) CheckSentinelSlavesNumberQuorumInMemory(sentinel string, rf *redisfailoverv1.RedisFailover) error {
+	nSlaves, err := r.redisClient.GetNumberSentinelSlavesInMemory(sentinel)
+	if err != nil {
+		return err
+	}
+	expected := rf.Spec.Redis.Replicas - 1
+	quorum := expected/2 + 1
+	if nSlaves < quorum {
+		return fmt.Errorf("redis slaves in sentinel memory below quorum: have %d, need at least %d of %d expected", nSlaves, quorum, expected)
 	}
 	return nil
 

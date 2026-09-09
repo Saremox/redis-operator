@@ -1849,12 +1849,12 @@ func TestUpdate(t *testing.T) {
 						}
 						if masterStale {
 							// Before replacing the master the operator checks every
-							// sentinel has the slaves in memory.
+							// sentinel has a quorum of the slaves in memory.
 							mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{"sentinel0"}, nil)
 							if test.sentinelSlavesShort {
-								mrfc.On("CheckSentinelSlavesNumberInMemory", "sentinel0", rf).Once().Return(errors.New("redis slaves in sentinel memory mismatch"))
+								mrfc.On("CheckSentinelSlavesNumberQuorumInMemory", "sentinel0", rf).Once().Return(errors.New("redis slaves in sentinel memory below quorum"))
 							} else {
-								mrfc.On("CheckSentinelSlavesNumberInMemory", "sentinel0", rf).Once().Return(nil)
+								mrfc.On("CheckSentinelSlavesNumberQuorumInMemory", "sentinel0", rf).Once().Return(nil)
 								mrfh.On("DeletePod", "master", rf).Once().Return(nil)
 							}
 						}
@@ -1971,7 +1971,7 @@ func TestUpdateRedisesPodsErrorBranches(t *testing.T) {
 				mrfc.On("GetRedisesMasterPod", rf).Once().Return(master, nil)
 				mrfc.On("GetRedisRevisionHash", master, rf).Once().Return("stale", nil)
 				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{"sentinel0"}, nil)
-				mrfc.On("CheckSentinelSlavesNumberInMemory", "sentinel0", rf).Once().Return(nil)
+				mrfc.On("CheckSentinelSlavesNumberQuorumInMemory", "sentinel0", rf).Once().Return(nil)
 				mrfh.On("DeletePod", master, rf).Once().Return(errors.New("delete master err"))
 			},
 		},
