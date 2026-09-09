@@ -36,6 +36,16 @@ func TestGetSecurityContextMerge(t *testing.T) {
 		_ = getSecurityContext(user)
 		assert.Nil(t, user.FSGroup, "input must not be mutated")
 	})
+
+	t.Run("partial user context leaving RunAsUser unset still gets the default", func(t *testing.T) {
+		got := getSecurityContext(&corev1.PodSecurityContext{
+			RunAsGroup: int64Ptr(3000),
+		})
+		// The default fills RunAsUser since the user left it unset...
+		assert.Equal(t, int64(1000), *got.RunAsUser)
+		// ...while the user's RunAsGroup still wins.
+		assert.Equal(t, int64(3000), *got.RunAsGroup)
+	})
 }
 
 func TestGetContainerSecurityContextMerge(t *testing.T) {
