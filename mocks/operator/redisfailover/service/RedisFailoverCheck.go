@@ -179,6 +179,20 @@ func (_m *RedisFailoverCheck) CheckSentinelSlavesNumberInMemory(sentinel string,
 	return r0
 }
 
+// CheckSentinelSlavesNumberQuorumInMemory provides a mock function with given fields: sentinel, rFailover
+func (_m *RedisFailoverCheck) CheckSentinelSlavesNumberQuorumInMemory(sentinel string, rFailover *v1.RedisFailover) error {
+	ret := _m.Called(sentinel, rFailover)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, *v1.RedisFailover) error); ok {
+		r0 = rf(sentinel, rFailover)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // GetMasterIP provides a mock function with given fields: rFailover
 func (_m *RedisFailoverCheck) GetMasterIP(rFailover *v1.RedisFailover) (string, error) {
 	ret := _m.Called(rFailover)
