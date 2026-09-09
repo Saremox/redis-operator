@@ -168,7 +168,11 @@ func TestCheckAllSlavesFromMasterGetStatefulSetError(t *testing.T) {
 	assert.Error(err)
 }
 
-func TestCheckAllSlavesFromMasterGetSlaveOfError(t *testing.T) {
+// An unreachable pod (GetSlaveOf fails) must be skipped, not abort the check:
+// its label was already applied and there is nothing more the operator can do
+// for it. This is the core of the #674 fix - a downed node's stale master pod
+// used to stop the whole heal.
+func TestCheckAllSlavesFromMasterGetSlaveOfErrorIsSkipped(t *testing.T) {
 	assert := assert.New(t)
 
 	rf := generateRF()
@@ -193,7 +197,45 @@ func TestCheckAllSlavesFromMasterGetSlaveOfError(t *testing.T) {
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
 
 	err := checker.CheckAllSlavesFromMaster("", rf)
-	assert.Error(err)
+	assert.NoError(err)
+}
+
+// The #674 scenario: master is reachable, the old master pod on the downed node
+// is not. The new master must still get its master-role label (so the master
+// Service follows it) and the unreachable pod must not turn into an error.
+func TestCheckAllSlavesFromMasterLabelsMasterDespiteUnreachablePod(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-0"},
+				Status:     corev1.PodStatus{PodIP: "10.0.0.1", Phase: corev1.PodRunning},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-1"},
+				Status:     corev1.PodStatus{PodIP: "10.0.0.2", Phase: corev1.PodRunning},
+			},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	// The master pod must be labelled master; assert on that specific call.
+	ms.On("UpdatePodLabels", namespace, "rfr-test-0", map[string]string{"redisfailovers-role": "master"}).Once().Return(nil)
+	// The unreachable pod is still labelled slave before its GetSlaveOf fails.
+	ms.On("UpdatePodLabels", namespace, "rfr-test-1", map[string]string{"redisfailovers-role": "slave"}).Once().Return(nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetSlaveOf", "10.0.0.1", "0", "").Once().Return("", nil)                       // master, reachable
+	mr.On("GetSlaveOf", "10.0.0.2", "0", "").Once().Return("", errors.New("i/o timeout")) // old master, unreachable
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	err := checker.CheckAllSlavesFromMaster("10.0.0.1", rf)
+	assert.NoError(err)
+	ms.AssertExpectations(t) // proves the master-role label was applied
 }
 
 func TestCheckAllSlavesFromMasterDifferentMaster(t *testing.T) {
