@@ -2044,6 +2044,13 @@ spec:
                         description: PullPolicy describes a policy for if/when to
                           pull a container image
                         type: string
+                      port:
+                        description: |-
+                          Port the exporter sidecar listens on and the metrics service exposes.
+                          Defaults to 9121 for the redis exporter and 9355 for the sentinel exporter
+                          when left as 0.
+                        format: int32
+                        type: integer
                       resources:
                         description: ResourceRequirements describes the compute resource
                           requirements.
@@ -10343,6 +10350,13 @@ spec:
                         description: PullPolicy describes a policy for if/when to
                           pull a container image
                         type: string
+                      port:
+                        description: |-
+                          Port the exporter sidecar listens on and the metrics service exposes.
+                          Defaults to 9121 for the redis exporter and 9355 for the sentinel exporter
+                          when left as 0.
+                        format: int32
+                        type: integer
                       resources:
                         description: ResourceRequirements describes the compute resource
                           requirements.

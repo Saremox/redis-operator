@@ -135,6 +135,10 @@ type Exporter struct {
 	Args                     []string                     `json:"args,omitempty"`
 	Env                      []corev1.EnvVar              `json:"env,omitempty"`
 	Resources                *corev1.ResourceRequirements `json:"resources,omitempty"`
+	// Port the exporter sidecar listens on and the metrics service exposes.
+	// Defaults to 9121 for the redis exporter and 9355 for the sentinel exporter
+	// when left as 0.
+	Port int32 `json:"port,omitempty"`
 }
 
 // SentinelConfigCopy defines the specification for the sentinel exporter
