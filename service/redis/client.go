@@ -650,3 +650,26 @@ func getRedisError(err error) string {
 		return "MISC"
 	}
 }
+
+// IsUnreachableError reports whether err means the redis node could not be
+// reached (dial/timeout/reset), as opposed to the node being reached and
+// rejecting the command. Callers use it to skip a down node instead of aborting
+// the whole reconcile, while still surfacing genuine command errors (bad config,
+// auth failures).
+func IsUnreachableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+
+	msg := err.Error()
+	return strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no route to host") ||
+		strings.Contains(msg, "network is unreachable") ||
+		strings.Contains(msg, "connection reset")
+}
