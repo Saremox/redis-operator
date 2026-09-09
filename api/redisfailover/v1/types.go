@@ -1,8 +1,10 @@
 package v1
 
 import (
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // +genclient
@@ -72,6 +74,9 @@ type RedisSettings struct {
 	CustomReadinessProbe          *corev1.Probe                     `json:"customReadinessProbe,omitempty"`
 	CustomStartupProbe            *corev1.Probe                     `json:"customStartupProbe,omitempty"`
 	DisablePodDisruptionBudget    bool                              `json:"disablePodDisruptionBudget,omitempty"`
+	// PodDisruptionBudgetMinAvailable overrides the PodDisruptionBudget
+	// minAvailable for the redis pods. Defaults to 2 (or 1 when replicas <= 2).
+	PodDisruptionBudgetMinAvailable *intstr.IntOrString `json:"podDisruptionBudgetMinAvailable,omitempty"`
 }
 
 // SentinelSettings defines the specification of the sentinel cluster
@@ -112,6 +117,14 @@ type SentinelSettings struct {
 	CustomReadinessProbe       *corev1.Probe                     `json:"customReadinessProbe,omitempty"`
 	CustomStartupProbe         *corev1.Probe                     `json:"customStartupProbe,omitempty"`
 	DisablePodDisruptionBudget bool                              `json:"disablePodDisruptionBudget,omitempty"`
+	// Strategy overrides the sentinel Deployment update strategy (e.g. to set
+	// rollingUpdate maxSurge/maxUnavailable). Defaults to the Kubernetes default
+	// RollingUpdate strategy when unset.
+	Strategy appsv1.DeploymentStrategy `json:"strategy,omitempty"`
+	// PodDisruptionBudgetMinAvailable overrides the PodDisruptionBudget
+	// minAvailable for the sentinel pods. Defaults to 2 (or 1 when redis
+	// replicas <= 2).
+	PodDisruptionBudgetMinAvailable *intstr.IntOrString `json:"podDisruptionBudgetMinAvailable,omitempty"`
 }
 
 // AuthSettings contains settings about auth
