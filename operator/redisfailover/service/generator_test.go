@@ -3867,6 +3867,14 @@ func TestGetAffinityUsesUserSuppliedValue(t *testing.T) {
 	assert.Same(customAffinity, gotAffinity)
 }
 
+// TestGetSecurityContextUsesUserSuppliedValue used to assert that a partial
+// user-supplied PodSecurityContext replaced the operator's defaults
+// wholesale (returned unchanged, same pointer) - a real bug: setting only
+// RunAsUser silently dropped RunAsGroup/RunAsNonRoot/FSGroup too. Fixed to
+// merge instead: the user's fields win, unset fields keep their default. See
+// TestGetSecurityContextMerge in generator_securitycontext_test.go for
+// direct coverage of getSecurityContext itself; this asserts the same fixed
+// behavior end-to-end through EnsureRedisStatefulset.
 func TestGetSecurityContextUsesUserSuppliedValue(t *testing.T) {
 	assert := assert.New(t)
 
@@ -3890,11 +3898,20 @@ func TestGetSecurityContextUsesUserSuppliedValue(t *testing.T) {
 	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
 	assert.NoError(err)
-	// getSecurityContext must return the user-supplied PodSecurityContext unchanged,
-	// instead of building the default one.
-	assert.Same(customSecCtx, gotSecCtx)
+	// The user's RunAsUser wins...
+	assert.Equal(uid, *gotSecCtx.RunAsUser)
+	// ...but the operator defaults still fill every field the user left unset.
+	assert.Equal(int64(1000), *gotSecCtx.RunAsGroup)
+	assert.True(*gotSecCtx.RunAsNonRoot)
+	assert.Equal(int64(1000), *gotSecCtx.FSGroup)
+	// The input spec object itself must not be mutated by the merge.
+	assert.Nil(customSecCtx.RunAsGroup)
 }
 
+// TestGetContainerSecurityContextUsesUserSuppliedValue: same fix as above,
+// for the per-container SecurityContext. See
+// TestGetContainerSecurityContextMerge in generator_securitycontext_test.go
+// for direct coverage of getContainerSecurityContext itself.
 func TestGetContainerSecurityContextUsesUserSuppliedValue(t *testing.T) {
 	assert := assert.New(t)
 
@@ -3918,9 +3935,14 @@ func TestGetContainerSecurityContextUsesUserSuppliedValue(t *testing.T) {
 	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
 	assert.NoError(err)
-	// getContainerSecurityContext must return the user-supplied SecurityContext
-	// unchanged, instead of building the default one.
-	assert.Same(customSecCtx, gotSecCtx)
+	// The user's Privileged wins...
+	assert.True(*gotSecCtx.Privileged)
+	// ...but the operator defaults still fill every field the user left unset.
+	assert.Equal([]corev1.Capability{"ALL"}, gotSecCtx.Capabilities.Drop)
+	assert.True(*gotSecCtx.ReadOnlyRootFilesystem)
+	assert.False(*gotSecCtx.AllowPrivilegeEscalation)
+	// The input spec object itself must not be mutated by the merge.
+	assert.Nil(customSecCtx.Capabilities)
 }
 
 func TestGetTerminationGracePeriodSecondsUsesUserSuppliedValue(t *testing.T) {
