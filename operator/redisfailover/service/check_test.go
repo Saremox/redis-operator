@@ -168,7 +168,11 @@ func TestCheckAllSlavesFromMasterGetStatefulSetError(t *testing.T) {
 	assert.Error(err)
 }
 
-func TestCheckAllSlavesFromMasterGetSlaveOfError(t *testing.T) {
+// An unreachable pod (GetSlaveOf fails) must be skipped, not abort the check:
+// its label was already applied and there is nothing more the operator can do
+// for it. This is the core of the #674 fix - a downed node's stale master pod
+// used to stop the whole heal.
+func TestCheckAllSlavesFromMasterGetSlaveOfErrorIsSkipped(t *testing.T) {
 	assert := assert.New(t)
 
 	rf := generateRF()
@@ -193,7 +197,45 @@ func TestCheckAllSlavesFromMasterGetSlaveOfError(t *testing.T) {
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
 
 	err := checker.CheckAllSlavesFromMaster("", rf)
-	assert.Error(err)
+	assert.NoError(err)
+}
+
+// The #674 scenario: master is reachable, the old master pod on the downed node
+// is not. The new master must still get its master-role label (so the master
+// Service follows it) and the unreachable pod must not turn into an error.
+func TestCheckAllSlavesFromMasterLabelsMasterDespiteUnreachablePod(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-0"},
+				Status:     corev1.PodStatus{PodIP: "10.0.0.1", Phase: corev1.PodRunning},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-1"},
+				Status:     corev1.PodStatus{PodIP: "10.0.0.2", Phase: corev1.PodRunning},
+			},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	// The master pod must be labelled master; assert on that specific call.
+	ms.On("UpdatePodLabels", namespace, "rfr-test-0", map[string]string{"redisfailovers-role": "master"}).Once().Return(nil)
+	// The unreachable pod is still labelled slave before its GetSlaveOf fails.
+	ms.On("UpdatePodLabels", namespace, "rfr-test-1", map[string]string{"redisfailovers-role": "slave"}).Once().Return(nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetSlaveOf", "10.0.0.1", "0", "").Once().Return("", nil)                       // master, reachable
+	mr.On("GetSlaveOf", "10.0.0.2", "0", "").Once().Return("", errors.New("i/o timeout")) // old master, unreachable
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	err := checker.CheckAllSlavesFromMaster("10.0.0.1", rf)
+	assert.NoError(err)
+	ms.AssertExpectations(t) // proves the master-role label was applied
 }
 
 func TestCheckAllSlavesFromMasterDifferentMaster(t *testing.T) {
@@ -452,6 +494,62 @@ func TestCheckSentinelSlavesNumberInMemoryBootstrappingMatch(t *testing.T) {
 
 	err := checker.CheckSentinelSlavesNumberInMemory("1.1.1.1", rf)
 	assert.NoError(err)
+}
+
+func TestCheckSentinelSlavesNumberQuorumInMemoryGetNumberSentinelSlavesInMemoryError(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	ms := &mK8SService.Services{}
+	mr := &mRedisService.Client{}
+	mr.On("GetNumberSentinelSlavesInMemory", "1.1.1.1").Once().Return(int32(0), errors.New(""))
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	err := checker.CheckSentinelSlavesNumberQuorumInMemory("1.1.1.1", rf)
+	assert.Error(err)
+}
+
+// TestCheckSentinelSlavesNumberQuorumInMemory covers the fix for the
+// deadlock a full-strict CheckSentinelSlavesNumberInMemory gate can cause
+// before replacing a stale master: with 5 replicas (4 expected slaves,
+// quorum 3), sentinel seeing only 3 of the 4 (one permanently missing, e.g.
+// a replica whose PVC is stuck in a dead zone) must still be accepted,
+// where the exact-match check would block forever.
+func TestCheckSentinelSlavesNumberQuorumInMemory(t *testing.T) {
+	rf := generateRF()
+	rf.Spec.Redis.Replicas = 5 // 4 expected slaves, quorum = 4/2+1 = 3
+
+	tests := []struct {
+		name     string
+		nSlaves  int32
+		expError bool
+	}{
+		{"all expected slaves present", 4, false},
+		{"quorum met, one permanently missing slave", 3, false},
+		{"exactly one below quorum", 2, true},
+		{"far below quorum", 0, true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			ms := &mK8SService.Services{}
+			mr := &mRedisService.Client{}
+			mr.On("GetNumberSentinelSlavesInMemory", "1.1.1.1").Once().Return(test.nSlaves, nil)
+
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+			err := checker.CheckSentinelSlavesNumberQuorumInMemory("1.1.1.1", rf)
+			if test.expError {
+				assert.Error(err)
+			} else {
+				assert.NoError(err)
+			}
+		})
+	}
 }
 
 func TestCheckSentinelMonitorGetSentinelMonitorError(t *testing.T) {
@@ -1246,6 +1344,70 @@ func TestClusterRunning(t *testing.T) {
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(allRunning, nil)
 	assert.False(checker.IsClusterRunning(rf))
 
+}
+
+// TestIsRedisRunningQuorum covers the real RedisFailoverChecker.IsRedisRunningQuorum
+// wrapper - AreQuorumRunning itself already has direct table-driven coverage in
+// quorum_running_test.go, but that leaves the GetStatefulSetPods call and its
+// error branch untested.
+func TestIsRedisRunningQuorum(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	t.Run("quorum of pods running", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
+			Return(podsWithPhases(corev1.PodRunning, corev1.PodRunning, corev1.PodPending), nil)
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.True(checker.IsRedisRunningQuorum(rf))
+	})
+
+	t.Run("below quorum", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
+			Return(podsWithPhases(corev1.PodRunning, corev1.PodPending, corev1.PodPending), nil)
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.False(checker.IsRedisRunningQuorum(rf))
+	})
+
+	t.Run("GetStatefulSetPods errors", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
+			Return(nil, errors.New("statefulset pods unavailable"))
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.False(checker.IsRedisRunningQuorum(rf))
+	})
+}
+
+// TestIsSentinelRunningQuorum is the sentinel-side counterpart to
+// TestIsRedisRunningQuorum, covering RedisFailoverChecker.IsSentinelRunningQuorum.
+func TestIsSentinelRunningQuorum(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	t.Run("quorum of pods running", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().
+			Return(podsWithPhases(corev1.PodRunning, corev1.PodRunning, corev1.PodPending), nil)
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.True(checker.IsSentinelRunningQuorum(rf))
+	})
+
+	t.Run("below quorum", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().
+			Return(podsWithPhases(corev1.PodRunning, corev1.PodPending, corev1.PodPending), nil)
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.False(checker.IsSentinelRunningQuorum(rf))
+	})
+
+	t.Run("GetDeploymentPods errors", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().
+			Return(nil, errors.New("deployment pods unavailable"))
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.False(checker.IsSentinelRunningQuorum(rf))
+	})
 }
 
 // --- CheckMasterHealth ---

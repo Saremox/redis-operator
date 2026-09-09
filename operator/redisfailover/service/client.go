@@ -138,14 +138,10 @@ func (r *RedisFailoverKubeClient) EnsureRedisStatefulset(rf *redisfailoverv1.Red
 
 // EnsureRedisConfigMap makes sure the Redis ConfigMap exists
 func (r *RedisFailoverKubeClient) EnsureRedisConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error {
-
-	password, err := k8s.GetRedisPassword(r.K8SService, rf)
-	if err != nil {
-		return err
-	}
-
-	cm := generateRedisConfigMap(rf, labels, ownerRefs, password)
-	err = r.K8SService.CreateOrUpdateConfigMap(rf.Namespace, cm)
+	// The password is passed to redis-server via env-backed command args, not
+	// written into this ConfigMap, so it is not fetched here.
+	cm := generateRedisConfigMap(rf, labels, ownerRefs)
+	err := r.K8SService.CreateOrUpdateConfigMap(rf.Namespace, cm)
 
 	r.setEnsureOperationMetrics(cm.Namespace, cm.Name, "ConfigMap", rf.Name, err)
 	return err
