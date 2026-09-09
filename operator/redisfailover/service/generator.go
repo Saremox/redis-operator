@@ -548,8 +548,12 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 		ss.Spec.Template.Spec.Containers = append(ss.Spec.Template.Spec.Containers, extraContainers...)
 	}
 
+	// User-supplied env is placed before the operator-injected vars so that, on
+	// duplicate names (Kubernetes last-wins), the operator's REDIS_ADDR/PORT/USER/
+	// PASSWORD keep precedence and can't be silently overridden.
 	redisEnv := getRedisEnv(rf)
-	ss.Spec.Template.Spec.Containers[0].Env = append(ss.Spec.Template.Spec.Containers[0].Env, redisEnv...)
+	mainEnv := append(ss.Spec.Template.Spec.Containers[0].Env, rf.Spec.Redis.Env...)
+	ss.Spec.Template.Spec.Containers[0].Env = append(mainEnv, redisEnv...)
 
 	return ss
 }
@@ -638,6 +642,7 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 							Image:           rf.Spec.Sentinel.Image,
 							ImagePullPolicy: pullPolicy(rf.Spec.Sentinel.ImagePullPolicy),
 							SecurityContext: getContainerSecurityContext(rf.Spec.Sentinel.ContainerSecurityContext),
+							Env:             rf.Spec.Sentinel.Env,
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "sentinel",
