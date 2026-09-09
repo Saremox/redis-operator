@@ -429,8 +429,36 @@ func (_m *RedisFailoverCheck) IsRedisRunning(rFailover *v1.RedisFailover) bool {
 	return r0
 }
 
+// IsRedisRunningQuorum provides a mock function with given fields: rFailover
+func (_m *RedisFailoverCheck) IsRedisRunningQuorum(rFailover *v1.RedisFailover) bool {
+	ret := _m.Called(rFailover)
+
+	var r0 bool
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover) bool); ok {
+		r0 = rf(rFailover)
+	} else {
+		r0 = ret.Get(0).(bool)
+	}
+
+	return r0
+}
+
 // IsSentinelRunning provides a mock function with given fields: rFailover
 func (_m *RedisFailoverCheck) IsSentinelRunning(rFailover *v1.RedisFailover) bool {
+	ret := _m.Called(rFailover)
+
+	var r0 bool
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover) bool); ok {
+		r0 = rf(rFailover)
+	} else {
+		r0 = ret.Get(0).(bool)
+	}
+
+	return r0
+}
+
+// IsSentinelRunningQuorum provides a mock function with given fields: rFailover
+func (_m *RedisFailoverCheck) IsSentinelRunningQuorum(rFailover *v1.RedisFailover) bool {
 	ret := _m.Called(rFailover)
 
 	var r0 bool

@@ -200,8 +200,11 @@ func (r *RedisFailoverHealer) SetMasterOnAll(masterIP string, rf *redisfailoverv
 			}
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("Making pod %s slave of %s", pod.Name, masterIP)
 			if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, masterIP, port, password); err != nil {
+				// The pod is unreachable - typically the old master on a downed
+				// node. Skip it and keep repointing the reachable slaves instead
+				// of aborting; it will re-sync via sentinel once its node is back.
 				r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Errorf("Make slave failed, slave ip: %s, master ip: %s, error: %v", pod.Status.PodIP, masterIP, err)
-				return err
+				continue
 			}
 
 			err = r.setSlaveLabelIfNecessary(rf.Namespace, pod)

@@ -312,6 +312,10 @@ You need to set secretPath as the secret name which is created before.
 
 Rotating the password (updating the `password` key of that same Secret in place) is safe: the operator watches a checksum of the current password and rolls the Redis pods, one at a time, whenever it changes.
 
+The password is read from that Secret and passed to `redis-server` via `--requirepass`/`--masterauth`
+sourced from an environment variable; it is **not** written into the redis ConfigMap, so it never
+appears in plaintext in a ConfigMap or in the pod spec.
+
 ### Bootstrapping from pre-existing Redis Instance(s)
 If you are wanting to migrate off of a pre-existing Redis instance, you can provide a `bootstrapNode` to your `RedisFailover` resource spec.
 

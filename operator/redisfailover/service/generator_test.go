@@ -1149,6 +1149,61 @@ func TestRedisShutdownConfigMapRetries(t *testing.T) {
 	assert.Contains(script, "retries=$((retries + 1))")
 }
 
+func TestSentinelServiceExporterPort(t *testing.T) {
+	sentinelPort := corev1.ServicePort{
+		Name:       "sentinel",
+		Port:       26379,
+		TargetPort: intstr.FromInt(26379),
+		Protocol:   corev1.ProtocolTCP,
+	}
+	metricsPort := corev1.ServicePort{
+		Name:       "metrics",
+		Port:       9355,
+		TargetPort: intstr.FromInt(9355),
+		Protocol:   corev1.ProtocolTCP,
+	}
+
+	tests := []struct {
+		name            string
+		exporterEnabled bool
+		expectedPorts   []corev1.ServicePort
+	}{
+		{
+			name:            "exporter disabled exposes only the sentinel port",
+			exporterEnabled: false,
+			expectedPorts:   []corev1.ServicePort{sentinelPort},
+		},
+		{
+			name:            "exporter enabled also exposes the metrics port",
+			exporterEnabled: true,
+			expectedPorts:   []corev1.ServicePort{sentinelPort, metricsPort},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			rf := generateRF()
+			rf.Spec.Sentinel.Exporter.Enabled = test.exporterEnabled
+
+			generatedService := corev1.Service{}
+
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdateService", rf.Namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				s := args.Get(1).(*corev1.Service)
+				generatedService = *s
+			}).Return(nil)
+
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			err := client.EnsureSentinelService(rf, nil, []metav1.OwnerReference{{Name: "testing"}})
+
+			assert.NoError(err)
+			assert.Equal(test.expectedPorts, generatedService.Spec.Ports)
+		})
+	}
+}
+
 func TestRedisService(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -3108,6 +3163,17 @@ func TestEnsureRedisConfigMapNoPassword(t *testing.T) {
 	}
 }
 
+// TestEnsureRedisConfigMapWithPassword used to assert that a configured auth
+// secret's password was embedded in the redis ConfigMap as plaintext
+// masterauth/requirepass directives. That was a real credential-exposure bug
+// (ConfigMaps are not encrypted at rest and are broadly readable) - fixed by
+// passing the password to redis-server via --requirepass/--masterauth
+// command args sourced from the REDIS_PASSWORD env instead (see
+// getRedisCommand and TestRedisConfigMapExcludesPassword /
+// TestRedisCommandUsesEnvAuthWhenSecretConfigured in
+// auth_out_of_configmap_test.go). This now asserts the fixed behavior:
+// EnsureRedisConfigMap no longer needs the password at all, so it must not
+// even attempt to fetch the secret.
 func TestEnsureRedisConfigMapWithPassword(t *testing.T) {
 	assert := assert.New(t)
 	rf := generateRF()
@@ -3115,9 +3181,6 @@ func TestEnsureRedisConfigMapWithPassword(t *testing.T) {
 
 	var gotCM *corev1.ConfigMap
 	ms := &mK8SService.Services{}
-	ms.On("GetSecret", namespace, "redis-secret").Once().Return(&corev1.Secret{
-		Data: map[string][]byte{"password": []byte("s3cr3t-pw")},
-	}, nil)
 	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 		gotCM = args.Get(1).(*corev1.ConfigMap)
 	}).Return(nil)
@@ -3128,9 +3191,10 @@ func TestEnsureRedisConfigMapWithPassword(t *testing.T) {
 	assert.NoError(err)
 	if assert.NotNil(gotCM) {
 		content := gotCM.Data["redis.conf"]
-		assert.Contains(content, "masterauth s3cr3t-pw")
-		assert.Contains(content, "requirepass s3cr3t-pw")
+		assert.NotContains(content, "masterauth")
+		assert.NotContains(content, "requirepass")
 	}
+	ms.AssertNotCalled(t, "GetSecret", mock.Anything, mock.Anything)
 }
 
 func TestEnsureRedisConfigMapCustomCommandRenames(t *testing.T) {
@@ -3164,21 +3228,6 @@ func TestEnsureRedisConfigMapCustomCommandRenames(t *testing.T) {
 		assert.GreaterOrEqual(secondIdx, 0, "expected %q to be rendered on its own line", secondLine)
 		assert.Less(firstIdx, secondIdx, "rename-command lines must be rendered in declaration order")
 	}
-}
-
-func TestEnsureRedisConfigMapPasswordFetchErrorPropagates(t *testing.T) {
-	assert := assert.New(t)
-	rf := generateRF()
-	rf.Spec.Auth.SecretPath = "redis-secret"
-
-	ms := &mK8SService.Services{}
-	ms.On("GetSecret", namespace, "redis-secret").Once().Return(nil, errors.New("secret fetch failed"))
-
-	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-	err := client.EnsureRedisConfigMap(rf, nil, []metav1.OwnerReference{})
-
-	assert.Error(err)
-	ms.AssertNotCalled(t, "CreateOrUpdateConfigMap", mock.Anything, mock.Anything)
 }
 
 // ---------------------------------------------------------------------------
