@@ -1290,6 +1290,70 @@ func TestClusterRunning(t *testing.T) {
 
 }
 
+// TestIsRedisRunningQuorum covers the real RedisFailoverChecker.IsRedisRunningQuorum
+// wrapper - AreQuorumRunning itself already has direct table-driven coverage in
+// quorum_running_test.go, but that leaves the GetStatefulSetPods call and its
+// error branch untested.
+func TestIsRedisRunningQuorum(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	t.Run("quorum of pods running", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
+			Return(podsWithPhases(corev1.PodRunning, corev1.PodRunning, corev1.PodPending), nil)
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.True(checker.IsRedisRunningQuorum(rf))
+	})
+
+	t.Run("below quorum", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
+			Return(podsWithPhases(corev1.PodRunning, corev1.PodPending, corev1.PodPending), nil)
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.False(checker.IsRedisRunningQuorum(rf))
+	})
+
+	t.Run("GetStatefulSetPods errors", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
+			Return(nil, errors.New("statefulset pods unavailable"))
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.False(checker.IsRedisRunningQuorum(rf))
+	})
+}
+
+// TestIsSentinelRunningQuorum is the sentinel-side counterpart to
+// TestIsRedisRunningQuorum, covering RedisFailoverChecker.IsSentinelRunningQuorum.
+func TestIsSentinelRunningQuorum(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	t.Run("quorum of pods running", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().
+			Return(podsWithPhases(corev1.PodRunning, corev1.PodRunning, corev1.PodPending), nil)
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.True(checker.IsSentinelRunningQuorum(rf))
+	})
+
+	t.Run("below quorum", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().
+			Return(podsWithPhases(corev1.PodRunning, corev1.PodPending, corev1.PodPending), nil)
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.False(checker.IsSentinelRunningQuorum(rf))
+	})
+
+	t.Run("GetDeploymentPods errors", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().
+			Return(nil, errors.New("deployment pods unavailable"))
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.False(checker.IsSentinelRunningQuorum(rf))
+	})
+}
+
 // --- CheckMasterHealth ---
 //
 // CheckMasterHealth resolves the master via GetMasterIP (which itself calls

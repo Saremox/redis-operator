@@ -122,25 +122,29 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	// Sentinel has not death nodes
 	// Sentinel knows the correct slave number
 
-	if !r.rfChecker.IsRedisRunning(rf) {
-		errorMsg := "not all replicas running"
+	// Heal as long as a quorum (majority) of pods is running rather than requiring
+	// the full set. A single Pending pod (unschedulable affinity, AZ loss) must not
+	// block master election and sentinel reconfiguration for the survivors; the
+	// downstream heal logic already operates only on the running/reachable pods.
+	if !r.rfChecker.IsRedisRunningQuorum(rf) {
+		errorMsg := "redis quorum not running"
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: errorMsg,
 		}
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.REDIS_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
-		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of redis mismatch, waiting for redis statefulset reconcile")
+		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Redis quorum not running, waiting for redis statefulset reconcile")
 		return nil
 	}
 
-	if !r.rfChecker.IsSentinelRunning(rf) {
-		errorMsg := "not all replicas running"
+	if !r.rfChecker.IsSentinelRunningQuorum(rf) {
+		errorMsg := "sentinel quorum not running"
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: errorMsg,
 		}
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
-		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of sentinel mismatch, waiting for sentinel deployment reconcile")
+		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Sentinel quorum not running, waiting for sentinel deployment reconcile")
 		return nil
 	}
 
