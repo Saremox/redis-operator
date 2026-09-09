@@ -37,7 +37,7 @@ type Client interface {
 	MonitorRedisWithPort(ip, monitor, port, quorum, password string) error
 	MakeMaster(ip, port, password string) error
 	MakeSlaveOf(ip, masterIP, password string) error
-	MakeSlaveOfWithPort(ip, masterIP, masterPort, password string) error
+	MakeSlaveOfWithPort(ip, port, masterIP, masterPort, password string) error
 	GetSentinelMonitor(ip string) (string, string, error)
 	SetCustomSentinelConfig(ip string, configs []string) error
 	SetCustomRedisConfig(ip string, port string, configs []string, password string) error
@@ -320,12 +320,17 @@ func (c *client) MakeMaster(ip string, port string, password string) error {
 }
 
 func (c *client) MakeSlaveOf(ip, masterIP, password string) error {
-	return c.MakeSlaveOfWithPort(ip, masterIP, redisPort, password)
+	return c.MakeSlaveOfWithPort(ip, redisPort, masterIP, redisPort, password)
 }
 
-func (c *client) MakeSlaveOfWithPort(ip, masterIP, masterPort, password string) error {
+// MakeSlaveOfWithPort reconfigures the Redis instance at ip:port to become a
+// replica of masterIP:masterPort. port is the target's own listening port -
+// it must not be assumed to equal masterPort, since a target and its master
+// can be configured with different ports (e.g. Bootstrapping mode's
+// externally supplied master port).
+func (c *client) MakeSlaveOfWithPort(ip, port, masterIP, masterPort, password string) error {
 	options := &rediscli.Options{
-		Addr:     net.JoinHostPort(ip, masterPort), // this is IP and Port for the RedisFailover redis
+		Addr:     net.JoinHostPort(ip, port),
 		Password: password,
 		DB:       0,
 	}
@@ -418,6 +423,17 @@ func (c *client) SentinelCheckQuorum(ip string) error {
 	res, err := cmd.Result()
 
 	if err != nil {
+		// SENTINEL CKQUORUM's NOQUORUM outcome comes back over the wire as a
+		// genuine RESP error whose text starts with "NOQUORUM", not as a
+		// successful string reply - so it has to be classified here, before
+		// the success-path string parsing below (which can only ever see
+		// the "OK ..." success message, since res is empty whenever err is
+		// non-nil).
+		if strings.Contains(err.Error(), "NOQUORUM") {
+			log.Debugf("SentinelCheckQuorum: quorum not available: %s", err.Error())
+			c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.CHECK_SENTINEL_QUORUM, metrics.SUCCESS, "NOQUORUM")
+			return fmt.Errorf("quorum Not available")
+		}
 		log.Warnf("Unable to get result for CKQUORUM comand")
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.CHECK_SENTINEL_QUORUM, metrics.FAIL, getRedisError(err))
 		return err
@@ -425,18 +441,8 @@ func (c *client) SentinelCheckQuorum(ip string) error {
 	log.Debugf("SentinelCheckQuorum cmd result: %s", res)
 	s := strings.Split(res, " ")
 	status := s[0]
-	quorum := s[1]
 
-	if status == "" {
-		log.Errorf("quorum command result unexpected output")
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.CHECK_SENTINEL_QUORUM, metrics.FAIL, "quorum command result unexpected output")
-		return fmt.Errorf("quorum command result unexpected output")
-	}
-	if status == "(error)" && quorum == "NOQUORUM" {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.CHECK_SENTINEL_QUORUM, metrics.SUCCESS, "NOQUORUM")
-		return fmt.Errorf("quorum Not available")
-
-	} else if status == "OK" {
+	if status == "OK" {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.CHECK_SENTINEL_QUORUM, metrics.SUCCESS, "QUORUM")
 		return nil
 	} else {
