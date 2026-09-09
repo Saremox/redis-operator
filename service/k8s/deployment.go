@@ -31,15 +31,17 @@ type DeploymentService struct {
 	kubeClient      kubernetes.Interface
 	logger          log.Logger
 	metricsRecorder metrics.Recorder
+	hashingEnabled  bool
 }
 
 // NewDeploymentService returns a new Deployment KubeService.
-func NewDeploymentService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *DeploymentService {
+func NewDeploymentService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder, opts ...ServiceOption) *DeploymentService {
 	logger = logger.With("service", "k8s.deployment")
 	return &DeploymentService{
 		kubeClient:      kubeClient,
 		logger:          logger,
 		metricsRecorder: metricsRecorder,
+		hashingEnabled:  newServiceOptions(opts).hashingEnabled,
 	}
 }
 
@@ -99,6 +101,16 @@ func (d *DeploymentService) CreateOrUpdateDeployment(namespace string, deploymen
 			return d.CreateDeployment(namespace, deployment)
 		}
 		return err
+	}
+
+	if d.hashingEnabled {
+		if !shouldUpdate(deployment, storedDeployment) {
+			d.logger.WithField("namespace", namespace).WithField("deployment", deployment.Name).Debugf("deployment is already up to date, skipping update")
+			return nil
+		}
+		if err := addHashAnnotation(deployment); err != nil {
+			return err
+		}
 	}
 
 	// Already exists, need to Update.

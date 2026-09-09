@@ -37,17 +37,17 @@ type services struct {
 }
 
 // New returns a new Kubernetes service.
-func New(kubecli kubernetes.Interface, crdcli redisfailoverclientset.Interface, apiextcli apiextensionscli.Interface, logger log.Logger, metricsRecorder metrics.Recorder) Services {
+func New(kubecli kubernetes.Interface, crdcli redisfailoverclientset.Interface, apiextcli apiextensionscli.Interface, logger log.Logger, metricsRecorder metrics.Recorder, opts ...ServiceOption) Services {
 	return &services{
-		ConfigMap:           NewConfigMapService(kubecli, logger, metricsRecorder),
+		ConfigMap:           NewConfigMapService(kubecli, logger, metricsRecorder, opts...),
 		Secret:              NewSecretService(kubecli, logger, metricsRecorder),
 		Pod:                 NewPodService(kubecli, logger, metricsRecorder),
-		PodDisruptionBudget: NewPodDisruptionBudgetService(kubecli, logger, metricsRecorder),
+		PodDisruptionBudget: NewPodDisruptionBudgetService(kubecli, logger, metricsRecorder, opts...),
 		RedisFailover:       NewRedisFailoverService(crdcli, logger, metricsRecorder),
-		Service:             NewServiceService(kubecli, logger, metricsRecorder),
-		RBAC:                NewRBACService(kubecli, logger, metricsRecorder),
-		Deployment:          NewDeploymentService(kubecli, logger, metricsRecorder),
-		StatefulSet:         NewStatefulSetService(kubecli, logger, metricsRecorder),
+		Service:             NewServiceService(kubecli, logger, metricsRecorder, opts...),
+		RBAC:                NewRBACService(kubecli, logger, metricsRecorder, opts...),
+		Deployment:          NewDeploymentService(kubecli, logger, metricsRecorder, opts...),
+		StatefulSet:         NewStatefulSetService(kubecli, logger, metricsRecorder, opts...),
 		ServiceAccount:      NewServiceAccountService(kubecli, logger, metricsRecorder),
 	}
 }

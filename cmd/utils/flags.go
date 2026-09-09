@@ -23,6 +23,7 @@ type CMDFlags struct {
 	Concurrency              int
 	SyncInterval             int
 	LogLevel                 string
+	EnableObjectHashing      bool
 }
 
 // Init initializes and parse the flags
@@ -41,6 +42,9 @@ func (c *CMDFlags) Init() {
 	flag.IntVar(&c.Concurrency, "concurrency", 3, "Number of conccurent workers meant to process events")
 	flag.IntVar(&c.SyncInterval, "sync-interval", 30, "Number of seconds between checks")
 	flag.StringVar(&c.LogLevel, "log-level", "info", "set log level")
+	// Off by default: skipping unchanged writes also stops the operator from
+	// correcting resources edited by hand, so opting in is a deliberate choice.
+	flag.BoolVar(&c.EnableObjectHashing, "enable-hash", false, "Skip updating owned resources when they already match the desired state")
 	// Parse flags
 	flag.Parse()
 

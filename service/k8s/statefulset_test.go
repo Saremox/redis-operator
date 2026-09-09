@@ -417,3 +417,58 @@ func TestStatefulSetServiceListStatefulSets(t *testing.T) {
 	assertTest.NoError(err)
 	assertTest.Len(list.Items, 2)
 }
+
+// countStatefulSetVerbs tallies the verbs the fake clientset recorded.
+func countStatefulSetVerbs(actions []kubetesting.Action) map[string]int {
+	counts := map[string]int{}
+	for _, a := range actions {
+		counts[a.GetVerb()]++
+	}
+	return counts
+}
+
+// TestStatefulSetServiceObjectHashingConverges is the important guard for the
+// statefulset path, which - unlike the other resources - mutates the object
+// after the hash is stamped (it swaps in the stored VolumeClaimTemplates and
+// merges annotations). The hash is taken from the desired object the operator
+// builds, so as long as that object is stable across reconciles the second
+// identical apply must issue no further update.
+func TestStatefulSetServiceObjectHashingConverges(t *testing.T) {
+	assert := assert.New(t)
+
+	const testns = "testns"
+	desired := func() *appsv1.StatefulSet {
+		replicas := int32(3)
+		return &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "rfr-test", Namespace: testns},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: &replicas,
+				Template: v1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "rfr-test"}},
+				},
+			},
+		}
+	}
+
+	// Cluster starts with an unstamped statefulset (pre-upgrade state).
+	stored := desired()
+	stored.ResourceVersion = "1"
+	mcli := kubernetes.NewClientset(stored)
+	service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy, k8s.WithObjectHashing(true))
+
+	// First reconcile stamps and updates.
+	assert.NoError(service.CreateOrUpdateStatefulSet(testns, desired()))
+	assert.Equal(1, countStatefulSetVerbs(mcli.Actions())["update"], "first reconcile stamps and updates")
+
+	// Second reconcile with the same desired object must be a no-op, proving
+	// the post-guard mutations do not break convergence.
+	assert.NoError(service.CreateOrUpdateStatefulSet(testns, desired()))
+	assert.Equal(1, countStatefulSetVerbs(mcli.Actions())["update"], "identical reconcile must not update again")
+
+	// A real change still triggers exactly one more update.
+	changed := desired()
+	replicas := int32(5)
+	changed.Spec.Replicas = &replicas
+	assert.NoError(service.CreateOrUpdateStatefulSet(testns, changed))
+	assert.Equal(2, countStatefulSetVerbs(mcli.Actions())["update"], "a spec change must update")
+}

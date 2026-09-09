@@ -30,15 +30,17 @@ type RBACService struct {
 	kubeClient      kubernetes.Interface
 	logger          log.Logger
 	metricsRecorder metrics.Recorder
+	hashingEnabled  bool
 }
 
 // NewRBACService returns a new RBAC KubeService.
-func NewRBACService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *RBACService {
+func NewRBACService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder, opts ...ServiceOption) *RBACService {
 	logger = logger.With("service", "k8s.rbac")
 	return &RBACService{
 		kubeClient:      kubeClient,
 		logger:          logger,
 		metricsRecorder: metricsRecorder,
+		hashingEnabled:  newServiceOptions(opts).hashingEnabled,
 	}
 }
 
@@ -100,6 +102,16 @@ func (r *RBACService) CreateOrUpdateRole(namespace string, role *rbacv1.Role) er
 		return err
 	}
 
+	if r.hashingEnabled {
+		if !shouldUpdate(role, storedRole) {
+			r.logger.WithField("namespace", namespace).WithField("role", role.Name).Debugf("role is already up to date, skipping update")
+			return nil
+		}
+		if err := addHashAnnotation(role); err != nil {
+			return err
+		}
+	}
+
 	// Already exists, need to Update.
 	// Set the correct resource version to ensure we are on the latest version. This way the only valid
 	// namespace is our spec(https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#concurrency-control-and-consistency),
@@ -156,6 +168,16 @@ func (r *RBACService) CreateOrUpdateRoleBinding(namespace string, binding *rbacv
 			return err
 		}
 		return r.CreateRoleBinding(namespace, binding)
+	}
+
+	if r.hashingEnabled {
+		if !shouldUpdate(binding, storedBinding) {
+			r.logger.WithField("namespace", namespace).WithField("binding", binding.Name).Debugf("role binding is already up to date, skipping update")
+			return nil
+		}
+		if err := addHashAnnotation(binding); err != nil {
+			return err
+		}
 	}
 
 	// Already exists, need to Update.

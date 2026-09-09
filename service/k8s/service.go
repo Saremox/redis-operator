@@ -28,15 +28,17 @@ type ServiceService struct {
 	kubeClient      kubernetes.Interface
 	logger          log.Logger
 	metricsRecorder metrics.Recorder
+	hashingEnabled  bool
 }
 
 // NewServiceService returns a new Service KubeService.
-func NewServiceService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *ServiceService {
+func NewServiceService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder, opts ...ServiceOption) *ServiceService {
 	logger = logger.With("service", "k8s.service")
 	return &ServiceService{
 		kubeClient:      kubeClient,
 		logger:          logger,
 		metricsRecorder: metricsRecorder,
+		hashingEnabled:  newServiceOptions(opts).hashingEnabled,
 	}
 }
 
@@ -88,6 +90,16 @@ func (s *ServiceService) CreateOrUpdateService(namespace string, service *corev1
 		}
 		log.Errorf("Error while updating service %v in %v namespace : %v", service.GetName(), namespace, err)
 		return err
+	}
+
+	if s.hashingEnabled {
+		if !shouldUpdate(service, storedService) {
+			s.logger.WithField("namespace", namespace).WithField("service", service.Name).Debugf("service is already up to date, skipping update")
+			return nil
+		}
+		if err := addHashAnnotation(service); err != nil {
+			return err
+		}
 	}
 
 	// Already exists, need to Update.
