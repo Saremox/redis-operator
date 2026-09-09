@@ -121,6 +121,13 @@ This redis-failover will be managed by the operator, resulting in the following 
 **NOTE**: `NAME` is the named provided when creating the RedisFailover.
 **IMPORTANT**: the name of the redis-failover to be created cannot be longer than 48 characters, due to prepend of redis/sentinel identification and statefulset limitation.
 
+### Protect the master from cluster-autoscaler eviction
+
+Setting `redis.preventMasterEviction: true` makes the operator annotate the current master pod with
+`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` (and mark slaves `"true"`), so the
+cluster-autoscaler will not drain the node running the master and trigger an avoidable failover. The
+annotation follows the master as it moves. Defaults to `false` (no annotation is managed).
+
 ### Persistence
 
 The operator can add persistence to Redis data. By default, an `emptyDir` will be used, so the data is not saved.
