@@ -154,8 +154,12 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 			r.logger.Errorf("Get slave of master failed, maybe this node is not ready, pod ip: %s", rp.Status.PodIP)
 			continue
 		}
-		if slave != "" && slave != master && wrongMasterErr == nil {
-			wrongMasterErr = fmt.Errorf("slave %s don't have the master %s, has %s", rp.Status.PodIP, master, slave)
+		if slave != "" && slave != master {
+			newErr := fmt.Errorf("slave %s don't have the master %s, has %s", rp.Status.PodIP, master, slave)
+			r.logger.Errorf("%v", newErr)
+			if wrongMasterErr == nil {
+				wrongMasterErr = newErr
+			}
 		}
 	}
 	return wrongMasterErr
