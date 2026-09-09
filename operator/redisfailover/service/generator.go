@@ -55,7 +55,7 @@ func generateSentinelService(rf *redisfailoverv1.RedisFailover, labels map[strin
 	selectorLabels := generateSelectorLabels(sentinelRoleName, rf.Name)
 	labels = util.MergeLabels(labels, selectorLabels)
 
-	return &corev1.Service{
+	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            name,
 			Namespace:       namespace,
@@ -75,6 +75,19 @@ func generateSentinelService(rf *redisfailoverv1.RedisFailover, labels map[strin
 			},
 		},
 	}
+
+	// The sentinel exporter sidecar listens on sentinelExporterPort, but without
+	// a matching service port there is no way to scrape it through the service.
+	if rf.Spec.Sentinel.Exporter.Enabled {
+		svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{
+			Name:       "metrics",
+			Port:       sentinelExporterPort,
+			TargetPort: intstr.FromInt(sentinelExporterPort),
+			Protocol:   corev1.ProtocolTCP,
+		})
+	}
+
+	return svc
 }
 
 func generateRedisService(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.Service {
