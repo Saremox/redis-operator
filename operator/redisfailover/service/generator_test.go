@@ -1119,6 +1119,36 @@ func TestSentinelService(t *testing.T) {
 	}
 }
 
+func TestRedisShutdownConfigMapRetries(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	var script string
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdateConfigMap", rf.Namespace, mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		c := args.Get(1).(*corev1.ConfigMap)
+		if s, ok := c.Data["shutdown.sh"]; ok {
+			script = s
+		}
+	})
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
+	assert.NoError(err)
+
+	// Both sentinel calls are retried: a single failed query used to be enough
+	// to skip the failover and shut the master down anyway.
+	assert.Contains(script, `while [ -z "$master" ] && [ "$retries" -lt 3 ]`)
+	assert.Contains(script, `while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ]`)
+
+	// The preStop hook runs under /bin/sh, which is dash on the debian-based
+	// redis images. "let" does not exist there, so the counter would never
+	// increment and the retry loop would spin forever.
+	assert.NotContains(script, "let ")
+	assert.Contains(script, "retries=$((retries + 1))")
+}
+
 func TestSentinelServiceExporterPort(t *testing.T) {
 	sentinelPort := corev1.ServicePort{
 		Name:       "sentinel",

@@ -262,9 +262,35 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	rfName := strings.ReplaceAll(strings.ToUpper(rf.Name), "-", "_")
 
 	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
-	shutdownContent := fmt.Sprintf(`master=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+	// Runs as the preStop hook under /bin/sh, which is BusyBox ash on the
+	// alpine redis images, so this has to stay POSIX: no "let", no "[[ ]]".
+	// A single failed sentinel query used to be enough to skip the failover
+	// and shut the master down anyway, so both sentinel calls are retried.
+	shutdownContent := fmt.Sprintf(`master=""
+retries=0
+while [ -z "$master" ] && [ "$retries" -lt 3 ]; do
+	retries=$((retries + 1))
+	master=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+	if [ -z "$master" ]; then
+		sleep 3
+	fi
+done
+if [ -z "$master" ]; then
+	echo "shutdown.sh: could not resolve the master from sentinel after $retries attempts" >&2
+fi
 if [ "$master" = "$(hostname -i)" ]; then
-  redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} SENTINEL failover mymaster
+  failover=""
+  retries=0
+  while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ]; do
+  	retries=$((retries + 1))
+  	failover=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} SENTINEL failover mymaster)
+  	if [ "$failover" != "OK" ]; then
+  		sleep 3
+  	fi
+  done
+  if [ "$failover" != "OK" ]; then
+  	echo "shutdown.sh: sentinel did not accept the failover after $retries attempts: $failover" >&2
+  fi
   sleep 31
 fi
 cmd="redis-cli -p %[2]v"
