@@ -25,6 +25,7 @@ import (
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth/oidc"
 	"k8s.io/client-go/util/homedir"
+	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	redisfailoverclientset "github.com/saremox/redis-operator/client/k8s/clientset/versioned"
@@ -51,10 +52,6 @@ type clients struct {
 	rfClient    redisfailoverclientset.Interface
 	aeClient    apiextensionsclientset.Interface
 	redisClient redis.Client
-}
-
-func boolPtr(b bool) *bool {
-	return &b
 }
 
 // waitForPodsReady waits for all pods matching the label selector to be Ready
@@ -273,7 +270,7 @@ func (c *clients) testCRCreation(t *testing.T) {
 				Replicas:        sentinelSize,
 				ImagePullPolicy: corev1.PullIfNotPresent, // Use locally built image
 				// Sentinel must be explicitly enabled in v4.0.0+ (default is false)
-				Enabled: boolPtr(true),
+				Enabled: ptr.To(true),
 			},
 			Auth: redisfailoverv1.AuthSettings{
 				SecretPath: authSecretPath,
