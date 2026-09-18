@@ -120,4 +120,3 @@ func TestGetRedisPassword(t *testing.T) {
 		assertTest.Equal(`secret "redis-auth" does not have a password field`, err.Error())
 	})
 }
-

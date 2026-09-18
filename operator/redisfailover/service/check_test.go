@@ -1483,7 +1483,7 @@ func TestCheckMasterHealthIsMasterCheckError(t *testing.T) {
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
 	mr := &mRedisService.Client{}
-	mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(true, nil)                          // used by GetMasterIP
+	mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(true, nil)                         // used by GetMasterIP
 	mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(false, errors.New("ping timeout")) // used by the health check itself
 
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
