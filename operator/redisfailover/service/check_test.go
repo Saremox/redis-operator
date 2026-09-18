@@ -518,23 +518,30 @@ func TestCheckSentinelSlavesNumberQuorumInMemoryGetNumberSentinelSlavesInMemoryE
 // a replica whose PVC is stuck in a dead zone) must still be accepted,
 // where the exact-match check would block forever.
 func TestCheckSentinelSlavesNumberQuorumInMemory(t *testing.T) {
-	rf := generateRF()
-	rf.Spec.Redis.Replicas = 5 // 4 expected slaves, quorum = 4/2+1 = 3
-
 	tests := []struct {
 		name     string
+		replicas int32
 		nSlaves  int32
 		expError bool
 	}{
-		{"all expected slaves present", 4, false},
-		{"quorum met, one permanently missing slave", 3, false},
-		{"exactly one below quorum", 2, true},
-		{"far below quorum", 0, true},
+		{"all expected slaves present", 5, 4, false},
+		{"quorum met, one permanently missing slave", 5, 3, false},
+		{"exactly one below quorum", 5, 2, true},
+		{"far below quorum", 5, 0, true},
+		// Replicas: 1 means 0 expected slaves (master-only). The majority
+		// formula expected/2+1 degenerates to 1 at expected=0, which would
+		// wrongly demand a slave that was never expected to exist and
+		// permanently block master pod replacement. 0 expected must mean 0
+		// quorum.
+		{"single replica, no slaves expected", 1, 0, false},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			assert := assert.New(t)
+
+			rf := generateRF()
+			rf.Spec.Redis.Replicas = test.replicas
 
 			ms := &mK8SService.Services{}
 			mr := &mRedisService.Client{}
