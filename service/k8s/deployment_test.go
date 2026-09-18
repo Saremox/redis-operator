@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	kubernetes "k8s.io/client-go/kubernetes/fake"
 	kubetesting "k8s.io/client-go/testing"
+	"k8s.io/utils/ptr"
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
@@ -89,14 +90,27 @@ func TestDeploymentServiceGetCreateOrUpdate(t *testing.T) {
 			expErr: true,
 		},
 		{
-			name:                "An existent deployment should update the deployment.",
-			deployment:          testDeployment,
-			getDeploymentResult: testDeployment,
-			errorOnGet:          nil,
-			errorOnCreation:     nil,
+			// The stored and desired objects must actually differ here: an
+			// identical desired object is now a no-op (see
+			// TestDeploymentServiceObjectUpToDate) and would issue no Update
+			// action, defeating the point of this test.
+			name: "An existent deployment should update the deployment.",
+			deployment: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Name: "testdeployment1"},
+				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
+			},
+			getDeploymentResult: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Name: "testdeployment1", ResourceVersion: "10"},
+				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))},
+			},
+			errorOnGet:      nil,
+			errorOnCreation: nil,
 			expActions: []kubetesting.Action{
-				newDeploymentGetAction(testns, testDeployment.Name),
-				newDeploymentUpdateAction(testns, testDeployment),
+				newDeploymentGetAction(testns, "testdeployment1"),
+				newDeploymentUpdateAction(testns, &appsv1.Deployment{
+					ObjectMeta: metav1.ObjectMeta{Name: "testdeployment1", ResourceVersion: "10"},
+					Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
+				}),
 			},
 			expErr: false,
 		},
@@ -125,6 +139,143 @@ func TestDeploymentServiceGetCreateOrUpdate(t *testing.T) {
 				// Check calls to kubernetes.
 				assertTest.Equal(test.expActions, mcli.Actions())
 			}
+		})
+	}
+}
+
+// realisticDeployment returns a Deployment shaped like what
+// generateSentinelDeployment actually builds: it deliberately never sets
+// Spec.Strategy, Spec.RevisionHistoryLimit, Spec.ProgressDeadlineSeconds,
+// PodSpec.RestartPolicy/SchedulerName, or container
+// TerminationMessagePath/Policy, relying on the API server to default them.
+func realisticDeployment(replicas int32) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rfs-test",
+			Namespace: "testns",
+			Labels:    map[string]string{"app.kubernetes.io/name": "test", "app.kubernetes.io/component": "sentinel"},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr.To(replicas),
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": "test"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app.kubernetes.io/name": "test"}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "sentinel", Image: "redis:7", ImagePullPolicy: corev1.PullAlways},
+					},
+				},
+			},
+		},
+	}
+}
+
+// serverDefaulted returns a copy of d with the fields a real API server
+// fills in on write that generateSentinelDeployment never sets, simulating
+// what GET would return for an object this operator itself created and
+// nothing else touched.
+func serverDefaulted(d *appsv1.Deployment) *appsv1.Deployment {
+	d = d.DeepCopy()
+	d.Spec.Strategy = appsv1.DeploymentStrategy{
+		Type:          appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{},
+	}
+	d.Spec.RevisionHistoryLimit = ptr.To(int32(10))
+	d.Spec.ProgressDeadlineSeconds = ptr.To(int32(600))
+	d.Spec.Template.Spec.RestartPolicy = corev1.RestartPolicyAlways
+	d.Spec.Template.Spec.SchedulerName = "default-scheduler"
+	d.Spec.Template.Spec.DeprecatedServiceAccount = d.Spec.Template.Spec.ServiceAccountName
+	for i := range d.Spec.Template.Spec.Containers {
+		d.Spec.Template.Spec.Containers[i].TerminationMessagePath = "/dev/termination-log"
+		d.Spec.Template.Spec.Containers[i].TerminationMessagePolicy = corev1.TerminationMessageReadFile
+	}
+	return d
+}
+
+func TestDeploymentServiceObjectUpToDate(t *testing.T) {
+	testns := "testns"
+
+	tests := []struct {
+		name          string
+		stored        *appsv1.Deployment
+		desired       *appsv1.Deployment
+		expectUpdates int
+	}{
+		{
+			name:          "identical desired is a no-op",
+			stored:        realisticDeployment(3),
+			desired:       realisticDeployment(3),
+			expectUpdates: 0,
+		},
+		{
+			name: "server-defaulted fields the operator never sets do not trigger an update",
+			// stored is what a real API server would persist and return for
+			// exactly this desired object - if the comparison isn't
+			// normalized, this looks different on every single field the
+			// server defaults, even though nothing meaningful changed.
+			stored:        serverDefaulted(realisticDeployment(3)),
+			desired:       realisticDeployment(3),
+			expectUpdates: 0,
+		},
+		{
+			name:          "a real spec change still triggers an update",
+			stored:        realisticDeployment(3),
+			desired:       realisticDeployment(5),
+			expectUpdates: 1,
+		},
+		{
+			name:          "a label change still triggers an update",
+			stored:        realisticDeployment(3),
+			desired:       func() *appsv1.Deployment { d := realisticDeployment(3); d.Labels["extra"] = "value"; return d }(),
+			expectUpdates: 1,
+		},
+		{
+			name: "manual drift on the live object is detected and corrected, even though desired is unchanged",
+			// stored's replica count was changed by hand (kubectl scale,
+			// or any actor other than this operator) since the operator's
+			// last write; desired is exactly what the operator always
+			// builds for this RedisFailover. This is the property the old
+			// hash-annotation design (redis-operator PR #143) could not
+			// provide, since it only ever compared desired against its own
+			// previous value, never against what was actually live.
+			stored:        realisticDeployment(9),
+			desired:       realisticDeployment(3),
+			expectUpdates: 1,
+		},
+		{
+			name: "a deployment-controller-owned annotation on stored does not trigger an update",
+			// generateSentinelDeployment never sets Deployment-level
+			// annotations, but the deployment controller stamps
+			// deployment.kubernetes.io/revision on every rollout. Comparing
+			// annotations as-is would treat this as a permanent difference.
+			stored: func() *appsv1.Deployment {
+				d := realisticDeployment(3)
+				d.Annotations = map[string]string{"deployment.kubernetes.io/revision": "3"}
+				return d
+			}(),
+			desired:       realisticDeployment(3),
+			expectUpdates: 0,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			stored := test.stored.DeepCopy()
+			stored.ResourceVersion = "1"
+			mcli := kubernetes.NewClientset(stored)
+
+			service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
+			assert.NoError(service.CreateOrUpdateDeployment(testns, test.desired.DeepCopy()))
+
+			updates := 0
+			for _, a := range mcli.Actions() {
+				if a.GetVerb() == "update" {
+					updates++
+				}
+			}
+			assert.Equal(test.expectUpdates, updates)
 		})
 	}
 }

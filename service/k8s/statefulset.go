@@ -171,6 +171,12 @@ func (s *StatefulSetService) CreateOrUpdateStatefulSet(namespace string, statefu
 	// set stored.volumeClaimTemplates
 	statefulSet.Spec.VolumeClaimTemplates = storedStatefulSet.Spec.VolumeClaimTemplates
 	statefulSet.Annotations = util.MergeAnnotations(storedStatefulSet.Annotations, statefulSet.Annotations)
+
+	if statefulSetUpToDate(storedStatefulSet, statefulSet) {
+		s.logger.WithField("namespace", namespace).WithField("statefulSet", statefulSet.Name).Debugf("statefulset already up to date, skipping update")
+		return nil
+	}
+
 	return s.UpdateStatefulSet(namespace, statefulSet)
 }
 

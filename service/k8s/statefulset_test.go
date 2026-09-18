@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	kubernetes "k8s.io/client-go/kubernetes/fake"
 	kubetesting "k8s.io/client-go/testing"
+	"k8s.io/utils/ptr"
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
@@ -227,14 +228,30 @@ func TestStatefulSetServiceGetCreateOrUpdate(t *testing.T) {
 			expErr: true,
 		},
 		{
-			name:                 "An existent statefulSet should update the statefulSet.",
-			statefulSet:          testStatefulSet,
-			getStatefulSetResult: testStatefulSet,
-			errorOnGet:           nil,
-			errorOnCreation:      nil,
+			// The stored and desired objects must actually differ here: an
+			// identical desired object is now a no-op (see
+			// TestStatefulSetServiceObjectUpToDate) and would issue no
+			// Update action, defeating the point of this test.
+			name: "An existent statefulSet should update the statefulSet.",
+			statefulSet: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "teststatefulSet1"},
+				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(3))},
+			},
+			getStatefulSetResult: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "teststatefulSet1", ResourceVersion: "10"},
+				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(1))},
+			},
+			errorOnGet:      nil,
+			errorOnCreation: nil,
 			expActions: []kubetesting.Action{
-				newStatefulSetGetAction(testns, testStatefulSet.Name),
-				newStatefulSetUpdateAction(testns, testStatefulSet),
+				newStatefulSetGetAction(testns, "teststatefulSet1"),
+				newStatefulSetUpdateAction(testns, &appsv1.StatefulSet{
+					// util.MergeAnnotations always allocates a map, even
+					// merging two nils, so the applied object's Annotations
+					// is {} rather than nil.
+					ObjectMeta: metav1.ObjectMeta{Name: "teststatefulSet1", ResourceVersion: "10", Annotations: map[string]string{}},
+					Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(3))},
+				}),
 			},
 			expErr: false,
 		},
@@ -363,6 +380,134 @@ func TestStatefulSetServiceGetCreateOrUpdate(t *testing.T) {
 			service = k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
 			err = service.CreateOrUpdateStatefulSet(testns, afterSts)
 			assertTest.NoError(err)
+		})
+	}
+}
+
+// realisticStatefulSet returns a StatefulSet shaped like what
+// generateRedisStatefulSet actually builds: it explicitly sets
+// UpdateStrategy and PodManagementPolicy (unlike the sentinel Deployment),
+// but - like it - never sets Spec.RevisionHistoryLimit, PodSpec.
+// RestartPolicy/SchedulerName, or container TerminationMessagePath/Policy,
+// relying on the API server to default them.
+func realisticStatefulSet(replicas int32) *appsv1.StatefulSet {
+	return &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rfr-test",
+			Namespace: "testns",
+			Labels:    map[string]string{"app.kubernetes.io/name": "test", "app.kubernetes.io/component": "redis"},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			ServiceName: "rfr-test",
+			Replicas:    ptr.To(replicas),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type: appsv1.OnDeleteStatefulSetStrategyType,
+			},
+			PodManagementPolicy: appsv1.ParallelPodManagement,
+			Selector:            &metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": "test"}},
+			Template: v1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app.kubernetes.io/name": "test"}},
+				Spec: v1.PodSpec{
+					TerminationGracePeriodSeconds: ptr.To(int64(30)),
+					Containers: []v1.Container{
+						{Name: "redis", Image: "redis:7", ImagePullPolicy: v1.PullAlways},
+					},
+				},
+			},
+		},
+	}
+}
+
+// serverDefaultedSTS is realisticDeployment's serverDefaulted counterpart for
+// StatefulSet.
+func serverDefaultedSTS(s *appsv1.StatefulSet) *appsv1.StatefulSet {
+	s = s.DeepCopy()
+	s.Spec.RevisionHistoryLimit = ptr.To(int32(10))
+	s.Spec.Template.Spec.RestartPolicy = v1.RestartPolicyAlways
+	s.Spec.Template.Spec.SchedulerName = "default-scheduler"
+	s.Spec.Template.Spec.DeprecatedServiceAccount = s.Spec.Template.Spec.ServiceAccountName
+	for i := range s.Spec.Template.Spec.Containers {
+		s.Spec.Template.Spec.Containers[i].TerminationMessagePath = "/dev/termination-log"
+		s.Spec.Template.Spec.Containers[i].TerminationMessagePolicy = v1.TerminationMessageReadFile
+	}
+	return s
+}
+
+func TestStatefulSetServiceObjectUpToDate(t *testing.T) {
+	testns := "testns"
+
+	tests := []struct {
+		name          string
+		stored        *appsv1.StatefulSet
+		desired       *appsv1.StatefulSet
+		expectUpdates int
+	}{
+		{
+			name:          "identical desired is a no-op",
+			stored:        realisticStatefulSet(3),
+			desired:       realisticStatefulSet(3),
+			expectUpdates: 0,
+		},
+		{
+			name:          "server-defaulted fields the operator never sets do not trigger an update",
+			stored:        serverDefaultedSTS(realisticStatefulSet(3)),
+			desired:       realisticStatefulSet(3),
+			expectUpdates: 0,
+		},
+		{
+			name: "no custom RedisFailover annotations still converges to a no-op",
+			// CreateOrUpdateStatefulSet re-merges stored's annotations into
+			// desired on every reconcile; util.MergeAnnotations always
+			// allocates a map even for two nils, while a real StatefulSet
+			// with no annotations set comes back from the API server with a
+			// nil map. Both stored and desired have nil ObjectMeta.
+			// Annotations here, matching a RedisFailover with no
+			// .metadata.annotations set.
+			stored:        realisticStatefulSet(3),
+			desired:       realisticStatefulSet(3),
+			expectUpdates: 0,
+		},
+		{
+			name:          "a real spec change still triggers an update",
+			stored:        realisticStatefulSet(3),
+			desired:       realisticStatefulSet(5),
+			expectUpdates: 1,
+		},
+		{
+			name:          "a label change still triggers an update",
+			stored:        realisticStatefulSet(3),
+			desired:       func() *appsv1.StatefulSet { s := realisticStatefulSet(3); s.Labels["extra"] = "value"; return s }(),
+			expectUpdates: 1,
+		},
+		{
+			name: "manual drift on the live object is detected and corrected, even though desired is unchanged",
+			// stored's replica count was changed by hand since the
+			// operator's last write; desired is exactly what the operator
+			// always builds for this RedisFailover.
+			stored:        realisticStatefulSet(9),
+			desired:       realisticStatefulSet(3),
+			expectUpdates: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			stored := test.stored.DeepCopy()
+			stored.ResourceVersion = "1"
+			mcli := kubernetes.NewClientset(stored)
+
+			service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
+			assert.NoError(service.CreateOrUpdateStatefulSet(testns, test.desired.DeepCopy()))
+
+			updates := 0
+			for _, a := range mcli.Actions() {
+				if a.GetVerb() == "update" && a.GetResource().Resource == "statefulsets" {
+					updates++
+				}
+			}
+			assert.Equal(test.expectUpdates, updates)
 		})
 	}
 }
