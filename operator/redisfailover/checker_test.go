@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -1887,6 +1888,46 @@ func TestUpdate(t *testing.T) {
 
 		})
 	}
+}
+
+// TestUpdateRedisesPodsOperatorManagedModeSkipsSentinelGate guards the fix
+// for the operator-managed-mode outage this reproduces: once Sentinel is
+// disabled (sentinel.enabled: false, or simply left unset - disabled by
+// default since v4.0.0) and its Deployment/Service/ConfigMap/PDB are torn
+// down by EnsureNotPresentSentinelResources, a RedisFailover whose redis
+// StatefulSet needs its master pod replaced must not get stuck: before this
+// fix, UpdateRedisesPods unconditionally called GetSentinelsIPs to gate the
+// replacement on sentinel quorum, which 404'd against the now-nonexistent
+// Sentinel Deployment and left the RedisFailover permanently NotHealthy
+// ("unable to update redis pods") on every single reconcile, since the
+// stale master pod could never be deleted.
+func TestUpdateRedisesPodsOperatorManagedModeSkipsSentinelGate(t *testing.T) {
+	assertTest := assert.New(t)
+
+	rf := operatorManagedRF()
+	config := generateConfig()
+	mrfs := &mRFService.RedisFailoverClient{}
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfh := &mRFService.RedisFailoverHeal{}
+
+	mrfc.On("GetRedisesIPs", rf).Once().Return([]string{"1.1.1.1"}, nil)
+	mrfc.On("GetMasterIP", rf).Once().Return("1.1.1.1", nil)
+	mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("10", nil)
+	mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
+	mrfc.On("GetRedisesMasterPod", rf).Once().Return("master", nil)
+	mrfc.On("GetRedisRevisionHash", "master", rf).Once().Return("9", nil) // stale
+	mrfh.On("DeletePod", "master", rf).Once().Return(nil)
+
+	mk := &mK8SService.Services{}
+	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+	err := handler.UpdateRedisesPods(rf)
+
+	assertTest.NoError(err)
+	// The point of the fix: no sentinel-related call is ever made.
+	mrfc.AssertNotCalled(t, "GetSentinelsIPs", mock.Anything)
+	mrfc.AssertNotCalled(t, "CheckSentinelSlavesNumberQuorumInMemory", mock.Anything, mock.Anything)
+	mrfc.AssertExpectations(t)
+	mrfh.AssertExpectations(t)
 }
 
 // TestUpdateRedisesPodsErrorBranches exercises the remaining early-return
