@@ -87,14 +87,27 @@ func TestConfigMapServiceGetCreateOrUpdate(t *testing.T) {
 			expErr: true,
 		},
 		{
-			name:               "An existent configmap should update the configmap.",
-			configMap:          testConfigMap,
-			getConfigMapResult: testConfigMap,
-			errorOnGet:         nil,
-			errorOnCreation:    nil,
+			// The stored and desired objects must actually differ here: an
+			// identical desired object is now a no-op (see
+			// TestConfigMapServiceObjectUpToDate) and would issue no Update
+			// action, defeating the point of this test.
+			name: "An existent configmap should update the configmap.",
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "testconfigmap1"},
+				Data:       map[string]string{"key": "new-value"},
+			},
+			getConfigMapResult: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "testconfigmap1", ResourceVersion: "10"},
+				Data:       map[string]string{"key": "old-value"},
+			},
+			errorOnGet:      nil,
+			errorOnCreation: nil,
 			expActions: []kubetesting.Action{
-				newConfigMapGetAction(testns, testConfigMap.Name),
-				newConfigMapUpdateAction(testns, testConfigMap),
+				newConfigMapGetAction(testns, "testconfigmap1"),
+				newConfigMapUpdateAction(testns, &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{Name: "testconfigmap1", ResourceVersion: "10"},
+					Data:       map[string]string{"key": "new-value"},
+				}),
 			},
 			expErr: false,
 		},
@@ -123,6 +136,88 @@ func TestConfigMapServiceGetCreateOrUpdate(t *testing.T) {
 				// Check calls to kubernetes.
 				assertTest.Equal(test.expActions, mcli.Actions())
 			}
+		})
+	}
+}
+
+func TestConfigMapServiceObjectUpToDate(t *testing.T) {
+	testns := "testns"
+
+	realistic := func(value string) *corev1.ConfigMap {
+		return &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "rfr-test",
+				Namespace: "testns",
+				Labels:    map[string]string{"app.kubernetes.io/name": "test"},
+			},
+			Data: map[string]string{"redis.conf": value},
+		}
+	}
+
+	tests := []struct {
+		name          string
+		stored        *corev1.ConfigMap
+		desired       *corev1.ConfigMap
+		expectUpdates int
+	}{
+		{
+			name:          "identical desired is a no-op",
+			stored:        realistic("port 6379"),
+			desired:       realistic("port 6379"),
+			expectUpdates: 0,
+		},
+		{
+			name:          "a real data change still triggers an update",
+			stored:        realistic("port 6379"),
+			desired:       realistic("port 6380"),
+			expectUpdates: 1,
+		},
+		{
+			name:          "manual drift on the live object is detected and corrected, even though desired is unchanged",
+			stored:        realistic("hand-edited"),
+			desired:       realistic("port 6379"),
+			expectUpdates: 1,
+		},
+		{
+			name: "a label change still triggers an update",
+			stored: func() *corev1.ConfigMap {
+				cm := realistic("port 6379")
+				cm.Labels["extra"] = "value"
+				return cm
+			}(),
+			desired:       realistic("port 6379"),
+			expectUpdates: 1,
+		},
+		{
+			name: "an annotation change still triggers an update",
+			stored: func() *corev1.ConfigMap {
+				cm := realistic("port 6379")
+				cm.Annotations = map[string]string{"checksum": "abc"}
+				return cm
+			}(),
+			desired:       realistic("port 6379"),
+			expectUpdates: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			stored := test.stored.DeepCopy()
+			stored.ResourceVersion = "1"
+			mcli := kubernetes.NewClientset(stored)
+
+			service := k8s.NewConfigMapService(mcli, log.Dummy, metrics.Dummy)
+			assert.NoError(service.CreateOrUpdateConfigMap(testns, test.desired.DeepCopy()))
+
+			updates := 0
+			for _, a := range mcli.Actions() {
+				if a.GetVerb() == "update" {
+					updates++
+				}
+			}
+			assert.Equal(test.expectUpdates, updates)
 		})
 	}
 }

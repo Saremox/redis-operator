@@ -3,6 +3,7 @@ package k8s
 import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 )
 
@@ -73,6 +74,75 @@ func deploymentUpToDate(stored, desired *appsv1.Deployment) bool {
 	normalizePodSpecForComparison(&normalized.Template.Spec)
 
 	return equality.Semantic.DeepEqual(normalized, &desired.Spec)
+}
+
+// serviceUpToDate is statefulSetUpToDate's counterpart for Service. See its
+// doc comment for the general comparison strategy.
+//
+// It must be called after mergeImmutableServiceFields, which CreateOrUpdate
+// Service already runs before writing: that folds stored's ClusterIP(s),
+// IPFamilies, IPFamilyPolicy, HealthCheckNodePort and per-port NodePort into
+// desired whenever desired left them unset, the same way the
+// VolumeClaimTemplates copy in CreateOrUpdateStatefulSet does - so by the
+// time this runs, those fields already agree unless something meaningful
+// changed, and this function does not need to normalize them again.
+//
+// What it does normalize: SessionAffinity (the API server defaults it to
+// "None") and InternalTrafficPolicy (defaulted to a non-nil "Cluster"
+// pointer), neither of which any of the Service builders in generator.go
+// ever set.
+func serviceUpToDate(stored, desired *corev1.Service) bool {
+	if !mapsEqual(stored.Labels, desired.Labels) {
+		return false
+	}
+	if !mapsEqual(stored.Annotations, desired.Annotations) {
+		return false
+	}
+
+	normalized := stored.Spec.DeepCopy()
+	normalized.SessionAffinity = ""
+	normalized.SessionAffinityConfig = nil
+	normalized.InternalTrafficPolicy = nil
+
+	return equality.Semantic.DeepEqual(normalized, &desired.Spec)
+}
+
+// configMapUpToDate is statefulSetUpToDate's counterpart for ConfigMap. See
+// its doc comment for the general comparison strategy. ConfigMap has no
+// Spec, no server-side defaulting on its Data/BinaryData, and none of the
+// ConfigMap builders in generator.go set annotations, so no normalization is
+// needed beyond the nil-vs-empty-map handling mapsEqual already gives Labels
+// and Annotations.
+func configMapUpToDate(stored, desired *corev1.ConfigMap) bool {
+	if !mapsEqual(stored.Labels, desired.Labels) {
+		return false
+	}
+	if !mapsEqual(stored.Annotations, desired.Annotations) {
+		return false
+	}
+	return equality.Semantic.DeepEqual(stored.Data, desired.Data) &&
+		equality.Semantic.DeepEqual(stored.BinaryData, desired.BinaryData)
+}
+
+// podDisruptionBudgetUpToDate is statefulSetUpToDate's counterpart for
+// PodDisruptionBudget. See its doc comment for the general comparison
+// strategy. generatePodDisruptionBudget never sets MaxAvailable or
+// UnhealthyPodEvictionPolicy, and neither is known to be defaulted to a
+// non-zero value by the API server, so - unlike StatefulSet/Deployment/
+// Service - no normalization is needed here beyond mapsEqual for Labels.
+func podDisruptionBudgetUpToDate(stored, desired *policyv1.PodDisruptionBudget) bool {
+	if !mapsEqual(stored.Labels, desired.Labels) {
+		return false
+	}
+	return equality.Semantic.DeepEqual(&stored.Spec, &desired.Spec)
+}
+
+// serviceAccountUpToDate is statefulSetUpToDate's counterpart for
+// ServiceAccount. See its doc comment for the general comparison strategy.
+// generateSentinelServiceAccount sets nothing beyond ObjectMeta, so this only
+// needs to compare Labels.
+func serviceAccountUpToDate(stored, desired *corev1.ServiceAccount) bool {
+	return mapsEqual(stored.Labels, desired.Labels)
 }
 
 // normalizePodSpecForComparison clears, in place, the PodSpec and container

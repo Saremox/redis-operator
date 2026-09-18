@@ -96,6 +96,12 @@ func (s *ServiceService) CreateOrUpdateService(namespace string, service *corev1
 	// we will replace the current namespace state.
 	service.ResourceVersion = storedService.ResourceVersion
 	mergeImmutableServiceFields(storedService, service)
+
+	if serviceUpToDate(storedService, service) {
+		s.logger.WithField("namespace", namespace).WithField("serviceName", service.Name).Debugf("service already up to date, skipping update")
+		return nil
+	}
+
 	return s.UpdateService(namespace, service)
 }
 

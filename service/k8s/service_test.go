@@ -80,14 +80,26 @@ func TestServiceServiceGetCreateOrUpdate(t *testing.T) {
 			expErr: true,
 		},
 		{
-			name:             "An existent service should update the service.",
-			service:          testService,
-			getServiceResult: testService,
-			errorOnGet:       nil,
-			errorOnCreation:  nil,
+			// The stored and desired objects must actually differ here: an
+			// identical desired object is now a no-op (see
+			// TestServiceServiceObjectUpToDate) and would issue no Update
+			// action, defeating the point of this test.
+			name: "An existent service should update the service.",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "testservice1"},
+				Spec:       corev1.ServiceSpec{Selector: map[string]string{"app": "redis"}},
+			},
+			getServiceResult: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "testservice1", ResourceVersion: "10"},
+			},
+			errorOnGet:      nil,
+			errorOnCreation: nil,
 			expActions: []kubetesting.Action{
-				newServiceGetAction(testns, testService.Name),
-				newServiceUpdateAction(testns, testService),
+				newServiceGetAction(testns, "testservice1"),
+				newServiceUpdateAction(testns, &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{Name: "testservice1", ResourceVersion: "10"},
+					Spec:       corev1.ServiceSpec{Selector: map[string]string{"app": "redis"}},
+				}),
 			},
 			expErr: false,
 		},
@@ -214,6 +226,11 @@ func TestCreateOrUpdateServicePreservesHealthCheckNodePort(t *testing.T) {
 		Spec: corev1.ServiceSpec{
 			Type:                  corev1.ServiceTypeLoadBalancer,
 			ExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyLocal,
+			// A real change (new selector) so the update actually fires: an
+			// otherwise-identical desired object is now a no-op (see
+			// TestServiceServiceObjectUpToDate) and would never call Update,
+			// leaving nothing for this test's assertions to check.
+			Selector: map[string]string{"app": "redis"},
 		},
 	}
 
@@ -234,6 +251,106 @@ func TestCreateOrUpdateServicePreservesHealthCheckNodePort(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, int32(32100), updatedService.Spec.HealthCheckNodePort, "healthCheckNodePort must be preserved")
 	assert.Equal(t, "10.0.0.2", updatedService.Spec.ClusterIP, "clusterIP must be preserved")
+}
+
+// realisticService returns a Service shaped like what generateRedisService
+// builds: Type and every port's Protocol are explicit, but SessionAffinity
+// and InternalTrafficPolicy are left unset, relying on the API server to
+// default them.
+func realisticService(selectorValue string) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rfs-test",
+			Namespace: "testns",
+			Labels:    map[string]string{"app.kubernetes.io/name": "test"},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: map[string]string{"app.kubernetes.io/name": selectorValue},
+			Ports: []corev1.ServicePort{
+				{Name: "redis", Port: 6379, TargetPort: intstr.FromString("redis"), Protocol: corev1.ProtocolTCP},
+			},
+		},
+	}
+}
+
+// serverDefaultedService is realisticDeployment's serverDefaulted
+// counterpart for Service.
+func serverDefaultedService(s *corev1.Service) *corev1.Service {
+	s = s.DeepCopy()
+	s.Spec.ClusterIP = "10.0.0.5"
+	s.Spec.ClusterIPs = []string{"10.0.0.5"}
+	s.Spec.SessionAffinity = corev1.ServiceAffinityNone
+	policy := corev1.ServiceInternalTrafficPolicyCluster
+	s.Spec.InternalTrafficPolicy = &policy
+	return s
+}
+
+func TestServiceServiceObjectUpToDate(t *testing.T) {
+	testns := "testns"
+
+	tests := []struct {
+		name          string
+		stored        *corev1.Service
+		desired       *corev1.Service
+		expectUpdates int
+	}{
+		{
+			name:          "identical desired is a no-op",
+			stored:        realisticService("test"),
+			desired:       realisticService("test"),
+			expectUpdates: 0,
+		},
+		{
+			name:          "server-defaulted fields the operator never sets do not trigger an update",
+			stored:        serverDefaultedService(realisticService("test")),
+			desired:       realisticService("test"),
+			expectUpdates: 0,
+		},
+		{
+			name:          "a real spec change still triggers an update",
+			stored:        realisticService("test"),
+			desired:       realisticService("changed"),
+			expectUpdates: 1,
+		},
+		{
+			name:          "manual drift on the live object is detected and corrected, even though desired is unchanged",
+			stored:        realisticService("drifted"),
+			desired:       realisticService("test"),
+			expectUpdates: 1,
+		},
+		{
+			name: "an annotation change still triggers an update",
+			stored: func() *corev1.Service {
+				s := realisticService("test")
+				s.Annotations = map[string]string{"prometheus.io/scrape": "true"}
+				return s
+			}(),
+			desired:       realisticService("test"),
+			expectUpdates: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			stored := test.stored.DeepCopy()
+			stored.ResourceVersion = "1"
+			mcli := kubernetes.NewClientset(stored)
+
+			service := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
+			assert.NoError(service.CreateOrUpdateService(testns, test.desired.DeepCopy()))
+
+			updates := 0
+			for _, a := range mcli.Actions() {
+				if a.GetVerb() == "update" {
+					updates++
+				}
+			}
+			assert.Equal(test.expectUpdates, updates)
+		})
+	}
 }
 
 func TestServiceServiceCreateOrUpdateServiceGetError(t *testing.T) {

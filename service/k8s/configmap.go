@@ -81,6 +81,12 @@ func (p *ConfigMapService) CreateOrUpdateConfigMap(namespace string, configMap *
 	// namespace is our spec(https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#concurrency-control-and-consistency),
 	// we will replace the current namespace state.
 	configMap.ResourceVersion = storedConfigMap.ResourceVersion
+
+	if configMapUpToDate(storedConfigMap, configMap) {
+		p.logger.WithField("namespace", namespace).WithField("configMap", configMap.Name).Debugf("configmap already up to date, skipping update")
+		return nil
+	}
+
 	return p.UpdateConfigMap(namespace, configMap)
 }
 

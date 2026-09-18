@@ -171,6 +171,67 @@ func TestServiceAccountServiceList(t *testing.T) {
 // of CreateOrUpdateServiceAccount against hand-rolled reactors (matching the
 // convention used by the other CreateOrUpdate* tests in this package), including
 // propagation of a create error.
+func TestServiceAccountServiceObjectUpToDate(t *testing.T) {
+	testns := "testns"
+
+	realistic := func(labelValue string) *corev1.ServiceAccount {
+		return &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "rfs-test",
+				Namespace: "testns",
+				Labels:    map[string]string{"app.kubernetes.io/name": labelValue},
+			},
+		}
+	}
+
+	tests := []struct {
+		name          string
+		stored        *corev1.ServiceAccount
+		desired       *corev1.ServiceAccount
+		expectUpdates int
+	}{
+		{
+			name:          "identical desired is a no-op",
+			stored:        realistic("test"),
+			desired:       realistic("test"),
+			expectUpdates: 0,
+		},
+		{
+			name:          "a real label change still triggers an update",
+			stored:        realistic("test"),
+			desired:       realistic("changed"),
+			expectUpdates: 1,
+		},
+		{
+			name:          "manual drift on the live object is detected and corrected, even though desired is unchanged",
+			stored:        realistic("drifted"),
+			desired:       realistic("test"),
+			expectUpdates: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			stored := test.stored.DeepCopy()
+			stored.ResourceVersion = "1"
+			mcli := kubernetes.NewClientset(stored)
+
+			service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
+			assert.NoError(service.CreateOrUpdateServiceAccount(testns, test.desired.DeepCopy()))
+
+			updates := 0
+			for _, a := range mcli.Actions() {
+				if a.GetVerb() == "update" {
+					updates++
+				}
+			}
+			assert.Equal(test.expectUpdates, updates)
+		})
+	}
+}
+
 func TestServiceAccountServiceGetCreateOrUpdate(t *testing.T) {
 	testServiceAccount := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
@@ -215,14 +276,24 @@ func TestServiceAccountServiceGetCreateOrUpdate(t *testing.T) {
 			expErr: true,
 		},
 		{
-			name:                    "An existent ServiceAccount should update the ServiceAccount.",
-			serviceAccount:          testServiceAccount,
-			getServiceAccountResult: testServiceAccount,
-			errorOnGet:              nil,
-			errorOnCreation:         nil,
+			// The stored and desired objects must actually differ here: an
+			// identical desired object is now a no-op (see
+			// TestServiceAccountServiceObjectUpToDate) and would issue no
+			// Update action, defeating the point of this test.
+			name: "An existent ServiceAccount should update the ServiceAccount.",
+			serviceAccount: &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "testserviceaccount1", Labels: map[string]string{"app": "redis"}},
+			},
+			getServiceAccountResult: &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "testserviceaccount1", ResourceVersion: "10"},
+			},
+			errorOnGet:      nil,
+			errorOnCreation: nil,
 			expActions: []kubetesting.Action{
-				newServiceAccountGetAction(testns, testServiceAccount.Name),
-				newServiceAccountUpdateAction(testns, testServiceAccount),
+				newServiceAccountGetAction(testns, "testserviceaccount1"),
+				newServiceAccountUpdateAction(testns, &corev1.ServiceAccount{
+					ObjectMeta: metav1.ObjectMeta{Name: "testserviceaccount1", ResourceVersion: "10", Labels: map[string]string{"app": "redis"}},
+				}),
 			},
 			expErr: false,
 		},
