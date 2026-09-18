@@ -1,5 +1,6 @@
 {{- if .Values.crds.upgradeHook.enabled }}
 {{- $fullName := include "chart.fullname" . -}}
+{{- $hookName := printf "%s-crds-upgrade" $fullName -}}
 {{- $data := dict "Chart" .Chart "Release" .Release "Values" .Values -}}
 apiVersion: v1
 kind: ConfigMap
@@ -15,10 +16,83 @@ metadata:
 data:
   {{- (.Files.Glob "crds/*.yaml").AsConfig | nindent 2 }}
 ---
+# This hook Job gets its own minimal ServiceAccount/ClusterRole rather than
+# reusing the operator's own: the operator's ServiceAccount needs broad
+# namespaced permissions (pods, services, secrets, ...) to run at all, and
+# handing that same identity to a Job whose only job is `kubectl apply` on
+# one CRD - running a third-party image - would give that image the same
+# blast radius as the operator itself for no reason. This identity can only
+# read/write the one named CRD this chart ships.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $hookName }}
+  namespace: {{ include "chart.namespaceName" . }}
+  labels:
+    {{- include "chart.labels" $data | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-6"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $hookName }}
+  labels:
+    {{- include "chart.labels" $data | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-6"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  # get/update/patch are restricted to this one CRD by resourceNames. create
+  # is a separate rule because Kubernetes RBAC cannot scope create by
+  # resourceNames (the object doesn't exist yet at authorization time, so
+  # there's nothing to match against) - this identity can therefore create
+  # any CustomResourceDefinition, but can only ever read or modify the one
+  # named here afterwards. `kubectl apply` needs create for the very first
+  # install, before the CRD exists.
+  - apiGroups:
+      - apiextensions.k8s.io
+    resources:
+      - customresourcedefinitions
+    resourceNames:
+      - redisfailovers.databases.spotahome.com
+    verbs:
+      - get
+      - update
+      - patch
+  - apiGroups:
+      - apiextensions.k8s.io
+    resources:
+      - customresourcedefinitions
+    verbs:
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $hookName }}
+  labels:
+    {{- include "chart.labels" $data | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-6"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+subjects:
+  - kind: ServiceAccount
+    name: {{ $hookName }}
+    namespace: {{ include "chart.namespaceName" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $hookName }}
+---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ $fullName }}-crds-upgrade
+  name: {{ $hookName }}
   namespace: {{ include "chart.namespaceName" . }}
   labels:
     {{- include "chart.labels" $data | nindent 4 }}
@@ -33,7 +107,7 @@ spec:
       labels:
         {{- include "chart.selectorLabels" $data | nindent 8 }}
     spec:
-      serviceAccountName: {{ template "chart.serviceAccountName" . }}
+      serviceAccountName: {{ $hookName }}
       restartPolicy: Never
       enableServiceLinks: false
       {{- if (and .Values.imageCredentials.create (not .Values.imageCredentials.existsSecrets)) }}
