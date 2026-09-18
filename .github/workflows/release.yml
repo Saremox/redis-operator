@@ -3,29 +3,30 @@ name: Release
 on:
   push:
     tags:
-      # Tags without leading 'v' (e.g., 4.0.0, not v4.0.0)
+      # Matches full releases (4.0.0) and pre-releases (4.0.0-rc1).
+      # GitHub's tag-filter glob has no regex quantifiers, so the exact
+      # shape is validated in the "Determine release type" step below.
       - '[0-9]*'
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  CHART_PATH: charts/redisoperator
 
 jobs:
-  build-and-push:
+  image:
+    name: Build and push image
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       packages: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Lowercase IMAGE_NAME
-        run: |
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> $GITHUB_ENV
+        run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -45,8 +46,8 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # Image tags WITHOUT leading 'v' (git tag v4.0.0 -> image tag 4.0.0)
-          # Chart version and image tag are the same (4.0.0)
+          # Image tags WITHOUT leading 'v' (git tag 4.0.0 -> image tag 4.0.0)
+          # Chart version, appVersion and image tag are always the tag name.
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -67,35 +68,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Generate deployment manifests
-        run: |
-          mkdir -p release-artifacts
-
-          # Generate kustomize manifests with the new image
-          cd manifests/kustomize/base
-          kustomize edit set image redis-operator=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
-          cd ../../..
-
-          # Build the full manifest
-          kustomize build manifests/kustomize/base > release-artifacts/redis-operator.yaml
-
-          # Also include raw manifests
-          cp -r manifests/*.yaml release-artifacts/ 2>/dev/null || true
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v3
-        with:
-          generate_release_notes: true
-          files: |
-            release-artifacts/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  helm-release:
+  release:
+    name: Publish release
     runs-on: ubuntu-latest
-    needs: build-and-push
+    needs: image
     permissions:
       contents: write
+      packages: write
 
     steps:
       - name: Checkout
@@ -109,30 +88,123 @@ jobs:
           git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
 
       - name: Lowercase IMAGE_NAME
+        run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
+
+      - name: Determine release type
+        id: relinfo
         run: |
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> $GITHUB_ENV
+          TAG="${GITHUB_REF_NAME}"
+
+          if [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Tag '$TAG' matches neither a full release (X.Y.Z) nor a pre-release (X.Y.Z-rcN) pattern"
+            exit 1
+          fi
+
+          # Last FULL release tag before this one (rc tags never count as a
+          # baseline, so both full and rc releases changelog against the
+          # same "last full release" point of reference).
+          PREV_TAG=$(git tag --list --sort=-v:refname \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | grep -v -x "$TAG" \
+            | head -n1 || true)
+          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+          echo "Previous full release: ${PREV_TAG:-<none>}"
+
+      - name: Generate changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PREV_TAG="${{ steps.relinfo.outputs.prev_tag }}"
+
+          if [ -n "$PREV_TAG" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="$TAG" -f previous_tag_name="$PREV_TAG" \
+              --jq .body > release-notes.md
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="$TAG" \
+              --jq .body > release-notes.md
+          fi
 
       - name: Install Helm
         uses: azure/setup-helm@v5
         with:
           version: v3.14.0
 
-      - name: Update Chart version and image
+      - name: Update chart version and image
         run: |
-          # Git tag is the version directly (4.0.0, no 'v' prefix)
           VERSION="${GITHUB_REF_NAME}"
 
-          # Update Chart.yaml - version, appVersion all match tag
-          sed -i "s/^version:.*/version: $VERSION/" charts/redisoperator/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/redisoperator/Chart.yaml
+          # Chart version, appVersion and image tag all match the git tag,
+          # so the operator and its chart can never diverge.
+          sed -i "s/^version:.*/version: $VERSION/" "${CHART_PATH}/Chart.yaml"
+          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "${CHART_PATH}/Chart.yaml"
+          sed -i "s|repository:.*|repository: ${REGISTRY}/${IMAGE_NAME}|" "${CHART_PATH}/values.yaml"
+          sed -i "s/tag:.*/tag: \"$VERSION\"/" "${CHART_PATH}/values.yaml"
 
-          # Update values.yaml with new image
-          sed -i "s|repository:.*|repository: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}|" charts/redisoperator/values.yaml
-          sed -i "s/tag:.*/tag: \"$VERSION\"/" charts/redisoperator/values.yaml
+      - name: Package Helm chart
+        run: |
+          mkdir -p release-artifacts
+          helm package "${CHART_PATH}" --destination release-artifacts
+          echo "CHART_PACKAGE=$(ls release-artifacts/*.tgz)" >> "$GITHUB_ENV"
 
-      - name: Release Helm Chart
-        uses: helm/chart-releaser-action@v1.7.0
+      - name: Generate deployment manifests
+        run: |
+          cd manifests/kustomize/base
+          kustomize edit set image redis-operator=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+          cd ../../..
+
+          kustomize build manifests/kustomize/base > release-artifacts/redis-operator.yaml
+          cp -r manifests/*.yaml release-artifacts/ 2>/dev/null || true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v3
         with:
-          charts_dir: charts
+          body_path: release-notes.md
+          prerelease: ${{ steps.relinfo.outputs.prerelease }}
+          make_latest: ${{ steps.relinfo.outputs.prerelease == 'false' }}
+          files: |
+            release-artifacts/*
         env:
-          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push chart to OCI registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login "${REGISTRY}" \
+            --username "${{ github.actor }}" --password-stdin
+          helm push "${CHART_PACKAGE}" "oci://${REGISTRY}/${IMAGE_NAME}/charts"
+
+      - name: Update Helm repo index (gh-pages)
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          CHART_FILE="$(basename "${CHART_PACKAGE}")"
+
+          git fetch origin gh-pages || true
+          if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+            git worktree add gh-pages-worktree origin/gh-pages
+          else
+            git worktree add --orphan -b gh-pages gh-pages-worktree
+          fi
+
+          cp "${CHART_PACKAGE}" "gh-pages-worktree/${CHART_FILE}"
+          if [ -f gh-pages-worktree/index.yaml ]; then
+            helm repo index gh-pages-worktree \
+              --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}" \
+              --merge gh-pages-worktree/index.yaml
+          else
+            helm repo index gh-pages-worktree \
+              --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}"
+          fi
+          rm "gh-pages-worktree/${CHART_FILE}"
+
+          cd gh-pages-worktree
+          git add index.yaml
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update helm index for ${VERSION}"
+            git push origin HEAD:gh-pages
+          fi
