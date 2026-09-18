@@ -1,0 +1,67 @@
+{{- if .Values.crds.upgradeHook.enabled }}
+{{- $fullName := include "chart.fullname" . -}}
+{{- $data := dict "Chart" .Chart "Release" .Release "Values" .Values -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullName }}-crds
+  namespace: {{ include "chart.namespaceName" . }}
+  labels:
+    {{- include "chart.labels" $data | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-6"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+data:
+  {{- (.Files.Glob "crds/*.yaml").AsConfig | nindent 2 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullName }}-crds-upgrade
+  namespace: {{ include "chart.namespaceName" . }}
+  labels:
+    {{- include "chart.labels" $data | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "chart.selectorLabels" $data | nindent 8 }}
+    spec:
+      serviceAccountName: {{ template "chart.serviceAccountName" . }}
+      restartPolicy: Never
+      enableServiceLinks: false
+      {{- if (and .Values.imageCredentials.create (not .Values.imageCredentials.existsSecrets)) }}
+      imagePullSecrets:
+        - name: {{ $fullName }}-registry
+      {{- else if (and .Values.imageCredentials.create .Values.imageCredentials.existsSecrets) }}
+      {{- range .Values.imageCredentials.existsSecrets }}
+      imagePullSecrets:
+        {{ printf "- name: %s" . }}
+      {{- end }}
+      {{- end }}
+      containers:
+        - name: crds-upgrade
+          image: "{{ .Values.crds.upgradeHook.image.repository }}:{{ .Values.crds.upgradeHook.image.tag | default "v1.36.2" }}"
+          imagePullPolicy: {{ .Values.crds.upgradeHook.image.pullPolicy }}
+          command:
+            - kubectl
+            - apply
+            - -f
+            - /crds
+          volumeMounts:
+            - name: crds
+              mountPath: /crds
+              readOnly: true
+          resources:
+            {{- toYaml .Values.crds.upgradeHook.resources | nindent 12 }}
+      volumes:
+        - name: crds
+          configMap:
+            name: {{ $fullName }}-crds
+{{- end }}

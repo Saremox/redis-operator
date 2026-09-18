@@ -99,3 +99,29 @@ topologySpreadConstraints: []
 
 priorityClassName: ""
 
+# CustomResourceDefinition lifecycle.
+crds:
+  # Helm only installs the contents of a chart's crds/ directory on the first
+  # `helm install` - it never touches them again on `helm upgrade`
+  # (https://helm.sh/docs/chart_best_practices/custom_resource_definitions/).
+  # On a long-lived cluster this lets the live CRD schema silently drift
+  # behind the chart: the API server prunes spec fields it doesn't recognize
+  # (e.g. a newly added field) instead of erroring, which looks like the
+  # operator ignoring your changes rather than a stale CRD.
+  #
+  # Enabling this runs `kubectl apply` on the CRD bundled with this chart
+  # version as a pre-install/pre-upgrade Helm hook, using the operator's own
+  # ServiceAccount (which already needs customresourcedefinitions RBAC for
+  # the operator itself). Disabled by default because it grants a Helm hook
+  # Job permission to modify a cluster-scoped resource - review before
+  # enabling on a shared cluster.
+  upgradeHook:
+    enabled: false
+    image:
+      repository: rancher/kubectl
+      # Defaults to a kubectl release tracking this chart's kubeVersion.
+      tag: ""
+      pullPolicy: IfNotPresent
+    # Resource requests and limits for the hook Job's container.
+    resources: {}
+
