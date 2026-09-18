@@ -215,6 +215,38 @@ func TestSetMasterOnAllMakeMasterError(t *testing.T) {
 // aborting the heal, so the reachable slaves are still repointed at the new
 // master. The unreachable pod re-syncs via sentinel once its node recovers.
 // Part of the #674 fix.
+// TestSetMasterOnAllReturnsErrorWhenNoLongerMaster covers the case where
+// IsMaster succeeds (err == nil) but reports the IP is no longer the master
+// - e.g. sentinel or the operator made a switch mid-loop. This must be
+// treated as a genuine failure of this reconfiguration round: previously,
+// `return err` here returned the nil err from IsMaster's success return
+// value, so the caller (CheckAndHeal / checkAndHealOperatorManagedMode) saw
+// nil and treated an aborted, partially-reconfigured pod loop as complete
+// success.
+func TestSetMasterOnAllReturnsErrorWhenNoLongerMaster(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "0.0.0.0"}},
+			{Status: corev1.PodStatus{PodIP: "1.1.1.1"}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(false, nil)
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+
+	err := healer.SetMasterOnAll("0.0.0.0", rf)
+	assert.Error(err, "must not report success when the IP is no longer the master")
+	mr.AssertExpectations(t) // no MakeSlaveOfWithPort call should have happened
+}
+
 func TestSetMasterOnAllMakeSlaveOfErrorIsSkipped(t *testing.T) {
 	assert := assert.New(t)
 

@@ -208,7 +208,7 @@ func TestHandleCheckAndHealError(t *testing.T) {
 
 	// CheckAndHeal routes to checkAndHealOperatorManagedMode and fails at
 	// GetNumberMasters.
-	mrfc.On("IsRedisRunning", rf).Once().Return(true)
+	mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 	mrfc.On("GetNumberMasters", rf).Once().Return(0, checkErr)
 
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)

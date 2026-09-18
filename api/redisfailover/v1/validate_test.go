@@ -140,11 +140,13 @@ func TestValidate(t *testing.T) {
 						},
 						BootstrapNode: test.expectedBootstrapNode,
 					},
-					Status: RedisFailoverStatus{
-						State:       HealthyState,
-						LastChanged: "",
-						Message:     "",
-					},
+					// Validate() must not touch Status: CheckAndHeal (checker.go)
+					// captures rf.Status.State as "oldState" before resetting it
+					// itself, and a premature reset here would make that always
+					// read back as HealthyState regardless of what was actually
+					// persisted, corrupting status.lastChanged on every reconcile
+					// of an ongoing outage.
+					Status: RedisFailoverStatus{},
 				}
 				assert.Equal(expectedRF, rf)
 			} else {
@@ -154,4 +156,34 @@ func TestValidate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidatePreservesExistingStatus guards against Validate() reintroducing
+// a Status reset. operator/redisfailover/checker.go's CheckAndHeal captures
+// rf.Status.State as "oldState" immediately on entry, before resetting it
+// itself and later comparing against the freshly computed state to decide
+// whether to bump status.lastChanged. Handle() (operator/redisfailover/handler.go)
+// calls Validate() before CheckAndHeal, so if Validate() ever reset Status
+// again, "oldState" would always read back as whatever Validate() set it to,
+// regardless of what was actually persisted - making lastChanged bump on
+// every single reconcile of an ongoing outage instead of only at the real
+// transition.
+func TestValidatePreservesExistingStatus(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRedisFailover("test", nil)
+	rf.Status = RedisFailoverStatus{
+		State:       NotHealthyState,
+		Message:     "unable to update redis pods",
+		LastChanged: "2026-01-01T00:00:00Z",
+	}
+
+	err := rf.Validate()
+
+	assert.NoError(err)
+	assert.Equal(RedisFailoverStatus{
+		State:       NotHealthyState,
+		Message:     "unable to update redis pods",
+		LastChanged: "2026-01-01T00:00:00Z",
+	}, rf.Status)
 }

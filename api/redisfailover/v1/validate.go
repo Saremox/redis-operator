@@ -80,10 +80,6 @@ func (r *RedisFailover) Validate() error {
 		r.Spec.Sentinel.CustomConfig = defaultSentinelCustomConfig
 	}
 
-	r.Status = RedisFailoverStatus{
-		State: HealthyState,
-	}
-
 	return nil
 }
 
