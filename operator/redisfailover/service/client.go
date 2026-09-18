@@ -228,6 +228,19 @@ func (r *RedisFailoverKubeClient) EnsureNotPresentSentinelResources(rf *redisfai
 		}
 	}
 
+	// Delete the auto-provisioned Sentinel ServiceAccount, mirroring the same
+	// guard EnsureSentinelDeployment uses when creating it: a user-supplied
+	// ServiceAccountName is theirs to manage, not ours to delete.
+	if rf.Spec.Sentinel.ServiceAccountName == "" {
+		saName := GetSentinelServiceAccountName(rf)
+		if _, err := r.K8SService.GetServiceAccount(namespace, saName); err == nil {
+			r.logger.WithField("namespace", namespace).WithField("name", saName).Info("Deleting Sentinel ServiceAccount")
+			if err := r.K8SService.DeleteServiceAccount(namespace, saName); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 
