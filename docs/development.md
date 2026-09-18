@@ -40,9 +40,5 @@ You can do the following commands with make:
   `make run`
 - Access the docker instance with a shell.
   `make shell`
-- Install dependencies
-  `make get-deps`
-- Update dependencies
-  `make update-deps`
 - Build the app image.
   `make image`

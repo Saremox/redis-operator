@@ -193,7 +193,7 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 		Development: true,
 	}
 
-	k8sClient, customClient, aeClientset, err := utils.CreateKubernetesClients(flags)
+	k8sClient, customClient, err := utils.CreateKubernetesClients(flags)
 	require.NoError(err)
 
 	redisClient := redis.New(metrics.Dummy)
@@ -207,7 +207,7 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 	require.NoError(c.prepareNS())
 	time.Sleep(15 * time.Second)
 
-	k8sservice := k8s.New(k8sClient, customClient, aeClientset, log.Dummy, metrics.Dummy)
+	k8sservice := k8s.New(k8sClient, customClient, log.Dummy, metrics.Dummy)
 	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{}, k8sservice, k8sClient, ommNamespace, redisClient, metrics.Dummy, log.Dummy)
 	require.NoError(err)
 

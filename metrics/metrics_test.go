@@ -302,8 +302,6 @@ func TestDummyRecorder(t *testing.T) {
 		Dummy.SetClusterOK("ns", "name")
 		Dummy.SetClusterError("ns", "name")
 		Dummy.DeleteCluster("ns", "name")
-		Dummy.SetRedisInstance("1.2.3.4", "1.2.3.5", "master")
-		Dummy.ResetRedisInstance()
 		Dummy.RecordEnsureOperation("ns", "obj", KIND_REDIS, "res", SUCCESS)
 		Dummy.RecordRedisCheck("ns", "res", REDIS_REPLICA_MISMATCH, "inst", FAIL)
 		Dummy.RecordSentinelCheck("ns", "res", SENTINEL_NOT_READY, "inst", FAIL)

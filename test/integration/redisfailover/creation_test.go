@@ -18,7 +18,6 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
-	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
@@ -50,7 +49,6 @@ const (
 type clients struct {
 	k8sClient   kubernetes.Interface
 	rfClient    redisfailoverclientset.Interface
-	aeClient    apiextensionsclientset.Interface
 	redisClient redis.Client
 }
 
@@ -154,7 +152,7 @@ func TestRedisFailover(t *testing.T) {
 	}
 
 	// Kubernetes clients.
-	k8sClient, customClient, aeClientset, err := utils.CreateKubernetesClients(flags)
+	k8sClient, customClient, err := utils.CreateKubernetesClients(flags)
 	require.NoError(err)
 
 	// Create the redis clients
@@ -163,12 +161,11 @@ func TestRedisFailover(t *testing.T) {
 	clients := clients{
 		k8sClient:   k8sClient,
 		rfClient:    customClient,
-		aeClient:    aeClientset,
 		redisClient: redisClient,
 	}
 
 	// Create kubernetes service.
-	k8sservice := k8s.New(k8sClient, customClient, aeClientset, log.Dummy, metrics.Dummy)
+	k8sservice := k8s.New(k8sClient, customClient, log.Dummy, metrics.Dummy)
 
 	// Prepare namespace
 	prepErr := clients.prepareNS()
