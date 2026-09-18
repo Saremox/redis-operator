@@ -448,21 +448,15 @@ func (c *client) getSentinelMasterInfo(rClient *rediscli.Client) (map[string]str
 	if err := rClient.Process(context.TODO(), cmd); err != nil {
 		return nil, err
 	}
-	res, err := cmd.Result()
-	if err != nil {
-		return nil, err
-	}
+	// Process already returned cmd's own error above, so a further error from
+	// Result() here is unreachable - res is exactly what Process populated.
+	res := cmd.Val()
 	info := make(map[string]string, len(res)/2)
 	for i := 0; i+1 < len(res); i += 2 {
-		key, ok := res[i].(string)
-		if !ok {
-			continue
-		}
-		value, ok := res[i+1].(string)
-		if !ok {
-			continue
-		}
-		info[key] = value
+		// SENTINEL MASTER always returns bulk strings for both the field name
+		// and its value, same as GetSentinelMonitor's res[3]/res[5] above -
+		// asserted directly rather than defensively, to match.
+		info[res[i].(string)] = res[i+1].(string)
 	}
 	return info, nil
 }
