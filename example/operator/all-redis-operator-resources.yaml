@@ -74,6 +74,7 @@ rules:
       - endpoints
       - events
       - configmaps
+      - serviceaccounts
       - persistentvolumeclaims
       - persistentvolumeclaims/finalizers
     verbs:
