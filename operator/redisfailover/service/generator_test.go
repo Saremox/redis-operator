@@ -3564,9 +3564,15 @@ func TestRedisInitAndExtraContainersGetRedisEnvAppended(t *testing.T) {
 
 	assert.NoError(err)
 	if assert.NotNil(gotSS) {
-		if assert.Len(gotSS.Spec.Template.Spec.InitContainers, 1) {
-			initContainer := gotSS.Spec.Template.Spec.InitContainers[0]
-			assert.Equal("init-container", initContainer.Name)
+		// The operator prepends its own rdb-tempfile-cleanup init container, so
+		// look the user-supplied one up by name rather than by position.
+		var initContainer corev1.Container
+		for _, c := range gotSS.Spec.Template.Spec.InitContainers {
+			if c.Name == "init-container" {
+				initContainer = c
+			}
+		}
+		if assert.Equal("init-container", initContainer.Name) {
 			assert.Equal([]corev1.EnvVar{
 				{Name: "USER_SUPPLIED", Value: "init-value"},
 				{Name: "REDIS_ADDR", Value: "redis://127.0.0.1:6379"},
