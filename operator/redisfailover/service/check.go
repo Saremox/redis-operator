@@ -286,7 +286,10 @@ func (r *RedisFailoverChecker) CheckSentinelSlavesNumberQuorumInMemory(sentinel 
 		return err
 	}
 	expected := rf.Spec.Redis.Replicas - 1
-	quorum := expected/2 + 1
+	var quorum int32
+	if expected > 0 {
+		quorum = expected/2 + 1
+	}
 	if nSlaves < quorum {
 		return fmt.Errorf("redis slaves in sentinel memory below quorum: have %d, need at least %d of %d expected", nSlaves, quorum, expected)
 	}
