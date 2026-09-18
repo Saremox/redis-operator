@@ -388,16 +388,83 @@ func (c *client) SetCustomSentinelConfig(ip string, configs []string) error {
 		}
 	}(rClient)
 
-	for _, config := range configs {
-		param, value, err := c.getConfigParameters(config)
-		if err != nil {
-			return err
-		}
-		if err := c.applySentinelConfig(param, value, rClient); err != nil {
+	// SENTINEL SET rewrites sentinel's config file to disk even when the
+	// value given is identical to what's already set, so calling it
+	// unconditionally on every reconcile (this runs on every sync-interval)
+	// means a disk write and a config-changed log line every single pass,
+	// forever, for every RedisFailover. Reading the current values first and
+	// only setting what actually differs avoids that. A failure to read
+	// current state errs toward applying: current stays nil, and
+	// sentinelConfigsToApply returns every param as it always did.
+	current, err := c.getSentinelMasterInfo(rClient)
+	if err != nil {
+		current = nil
+	}
+
+	toApply, err := c.sentinelConfigsToApply(current, configs)
+	if err != nil {
+		return err
+	}
+	for _, p := range toApply {
+		if err := c.applySentinelConfig(p.param, p.value, rClient); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// sentinelConfigParam is a single "SENTINEL SET <param> <value>" pair.
+type sentinelConfigParam struct {
+	param string
+	value string
+}
+
+// sentinelConfigsToApply parses configs (each a "param value" string, as
+// SetCustomSentinelConfig's callers supply them) and returns only the ones
+// whose desired value differs from current. A nil current - meaning the
+// live state couldn't be read - returns every config as-is, erring toward
+// applying a change rather than silently skipping a real one.
+func (c *client) sentinelConfigsToApply(current map[string]string, configs []string) ([]sentinelConfigParam, error) {
+	var toApply []sentinelConfigParam
+	for _, config := range configs {
+		param, value, err := c.getConfigParameters(config)
+		if err != nil {
+			return nil, err
+		}
+		if current != nil && current[param] == value {
+			continue
+		}
+		toApply = append(toApply, sentinelConfigParam{param: param, value: value})
+	}
+	return toApply, nil
+}
+
+// getSentinelMasterInfo returns SENTINEL MASTER <name>'s response - a flat
+// array alternating field name and value (the same shape GetSentinelMonitor
+// reads master IP/port from) - as a map, so callers can check sentinel's
+// current view of a parameter before deciding whether to change it.
+func (c *client) getSentinelMasterInfo(rClient *rediscli.Client) (map[string]string, error) {
+	cmd := rediscli.NewSliceCmd(context.TODO(), "SENTINEL", "master", masterName)
+	if err := rClient.Process(context.TODO(), cmd); err != nil {
+		return nil, err
+	}
+	res, err := cmd.Result()
+	if err != nil {
+		return nil, err
+	}
+	info := make(map[string]string, len(res)/2)
+	for i := 0; i+1 < len(res); i += 2 {
+		key, ok := res[i].(string)
+		if !ok {
+			continue
+		}
+		value, ok := res[i+1].(string)
+		if !ok {
+			continue
+		}
+		info[key] = value
+	}
+	return info, nil
 }
 
 func (c *client) SentinelCheckQuorum(ip string) error {
