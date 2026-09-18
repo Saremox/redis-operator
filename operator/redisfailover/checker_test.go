@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
@@ -459,8 +460,7 @@ func TestCheckAndHeal(t *testing.T) {
 // into checkAndHealOperatorManagedMode.
 func operatorManagedRF() *v1.RedisFailover {
 	rf := generateRF(false, false)
-	sentinelDisabled := false
-	rf.Spec.Sentinel.Enabled = &sentinelDisabled
+	rf.Spec.Sentinel.Enabled = ptr.To(false)
 	return rf
 }
 

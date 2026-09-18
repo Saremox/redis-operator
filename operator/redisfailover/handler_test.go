@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"k8s.io/utils/ptr"
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
@@ -186,8 +187,7 @@ func TestHandleCheckAndHealError(t *testing.T) {
 	// minimal Ensure() call graph (see TestEnsure "don't use exporter" case,
 	// with sentinels also disabled).
 	rf := generateRF(false, false)
-	disabled := false
-	rf.Spec.Sentinel.Enabled = &disabled
+	rf.Spec.Sentinel.Enabled = ptr.To(false)
 
 	checkErr := errors.New("get number masters boom")
 
