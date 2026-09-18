@@ -83,6 +83,12 @@ func (s *ServiceAccountService) CreateOrUpdateServiceAccount(namespace string, s
 	// namespace is our spec(https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#concurrency-control-and-consistency),
 	// we will replace the current namespace state.
 	serviceAccount.ResourceVersion = storedServiceAccount.ResourceVersion
+
+	if serviceAccountUpToDate(storedServiceAccount, serviceAccount) {
+		s.logger.WithField("namespace", namespace).WithField("serviceAccount", serviceAccount.Name).Debugf("service account already up to date, skipping update")
+		return nil
+	}
+
 	return s.UpdateServiceAccount(namespace, serviceAccount)
 }
 

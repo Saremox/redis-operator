@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	kubernetes "k8s.io/client-go/kubernetes/fake"
 	kubetesting "k8s.io/client-go/testing"
 
@@ -81,14 +82,24 @@ func TestPodDisruptionBudgetServiceGetCreateOrUpdate(t *testing.T) {
 			expErr: true,
 		},
 		{
-			name:                         "An existent podDisruptionBudget should update the podDisruptionBudget.",
-			podDisruptionBudget:          testPodDisruptionBudget,
-			getPodDisruptionBudgetResult: testPodDisruptionBudget,
-			errorOnGet:                   nil,
-			errorOnCreation:              nil,
+			// The stored and desired objects must actually differ here: an
+			// identical desired object is now a no-op (see
+			// TestPodDisruptionBudgetServiceObjectUpToDate) and would issue
+			// no Update action, defeating the point of this test.
+			name: "An existent podDisruptionBudget should update the podDisruptionBudget.",
+			podDisruptionBudget: &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{Name: "testpodDisruptionBudget1", Labels: map[string]string{"app": "redis"}},
+			},
+			getPodDisruptionBudgetResult: &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{Name: "testpodDisruptionBudget1", ResourceVersion: "10"},
+			},
+			errorOnGet:      nil,
+			errorOnCreation: nil,
 			expActions: []kubetesting.Action{
-				newPodDisruptionBudgetGetAction(testns, testPodDisruptionBudget.Name),
-				newPodDisruptionBudgetUpdateAction(testns, testPodDisruptionBudget),
+				newPodDisruptionBudgetGetAction(testns, "testpodDisruptionBudget1"),
+				newPodDisruptionBudgetUpdateAction(testns, &policyv1.PodDisruptionBudget{
+					ObjectMeta: metav1.ObjectMeta{Name: "testpodDisruptionBudget1", ResourceVersion: "10", Labels: map[string]string{"app": "redis"}},
+				}),
 			},
 			expErr: false,
 		},
@@ -117,6 +128,72 @@ func TestPodDisruptionBudgetServiceGetCreateOrUpdate(t *testing.T) {
 				// Check calls to kubernetes.
 				assertTest.Equal(test.expActions, mcli.Actions())
 			}
+		})
+	}
+}
+
+func TestPodDisruptionBudgetServiceObjectUpToDate(t *testing.T) {
+	testns := "testns"
+
+	realistic := func(minAvailable int) *policyv1.PodDisruptionBudget {
+		v := intstr.FromInt32(int32(minAvailable))
+		return &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "rfr-test",
+				Namespace: "testns",
+				Labels:    map[string]string{"app.kubernetes.io/name": "test"},
+			},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MinAvailable: &v,
+				Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": "test"}},
+			},
+		}
+	}
+
+	tests := []struct {
+		name          string
+		stored        *policyv1.PodDisruptionBudget
+		desired       *policyv1.PodDisruptionBudget
+		expectUpdates int
+	}{
+		{
+			name:          "identical desired is a no-op",
+			stored:        realistic(1),
+			desired:       realistic(1),
+			expectUpdates: 0,
+		},
+		{
+			name:          "a real spec change still triggers an update",
+			stored:        realistic(1),
+			desired:       realistic(2),
+			expectUpdates: 1,
+		},
+		{
+			name:          "manual drift on the live object is detected and corrected, even though desired is unchanged",
+			stored:        realistic(0),
+			desired:       realistic(1),
+			expectUpdates: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			stored := test.stored.DeepCopy()
+			stored.ResourceVersion = "1"
+			mcli := kubernetes.NewClientset(stored)
+
+			service := k8s.NewPodDisruptionBudgetService(mcli, log.Dummy, metrics.Dummy)
+			assert.NoError(service.CreateOrUpdatePodDisruptionBudget(testns, test.desired.DeepCopy()))
+
+			updates := 0
+			for _, a := range mcli.Actions() {
+				if a.GetVerb() == "update" {
+					updates++
+				}
+			}
+			assert.Equal(test.expectUpdates, updates)
 		})
 	}
 }

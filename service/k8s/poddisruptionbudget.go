@@ -82,6 +82,12 @@ func (p *PodDisruptionBudgetService) CreateOrUpdatePodDisruptionBudget(namespace
 	// namespace is our spec(https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#concurrency-control-and-consistency),
 	// we will replace the current namespace state.
 	podDisruptionBudget.ResourceVersion = storedPodDisruptionBudget.ResourceVersion
+
+	if podDisruptionBudgetUpToDate(storedPodDisruptionBudget, podDisruptionBudget) {
+		p.logger.WithField("namespace", namespace).WithField("podDisruptionBudget", podDisruptionBudget.Name).Debugf("pod disruption budget already up to date, skipping update")
+		return nil
+	}
+
 	return p.UpdatePodDisruptionBudget(namespace, podDisruptionBudget)
 }
 
