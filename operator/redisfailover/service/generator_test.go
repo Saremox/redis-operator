@@ -3426,6 +3426,7 @@ func TestEnsureNotPresentSentinelResourcesDeletesAllExisting(t *testing.T) {
 	assert := assert.New(t)
 	rf := generateRF()
 	resName := rfservice.GetSentinelName(rf)
+	saName := rfservice.GetSentinelServiceAccountName(rf)
 
 	ms := &mK8SService.Services{}
 	ms.On("GetDeployment", namespace, resName).Once().Return(&appsv1.Deployment{}, nil)
@@ -3436,6 +3437,8 @@ func TestEnsureNotPresentSentinelResourcesDeletesAllExisting(t *testing.T) {
 	ms.On("DeleteConfigMap", namespace, resName).Once().Return(nil)
 	ms.On("GetPodDisruptionBudget", namespace, resName).Once().Return(&policyv1.PodDisruptionBudget{}, nil)
 	ms.On("DeletePodDisruptionBudget", namespace, resName).Once().Return(nil)
+	ms.On("GetServiceAccount", namespace, saName).Once().Return(&corev1.ServiceAccount{}, nil)
+	ms.On("DeleteServiceAccount", namespace, saName).Once().Return(nil)
 
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureNotPresentSentinelResources(rf)
@@ -3448,6 +3451,35 @@ func TestEnsureNotPresentSentinelResourcesNoopWhenAbsent(t *testing.T) {
 	assert := assert.New(t)
 	rf := generateRF()
 	resName := rfservice.GetSentinelName(rf)
+	saName := rfservice.GetSentinelServiceAccountName(rf)
+
+	ms := &mK8SService.Services{}
+	ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
+	ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
+	ms.On("GetConfigMap", namespace, resName).Once().Return(nil, errors.New("not found"))
+	ms.On("GetPodDisruptionBudget", namespace, resName).Once().Return(nil, errors.New("not found"))
+	ms.On("GetServiceAccount", namespace, saName).Once().Return(nil, errors.New("not found"))
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	err := client.EnsureNotPresentSentinelResources(rf)
+
+	assert.NoError(err)
+	ms.AssertNotCalled(t, "DeleteDeployment", mock.Anything, mock.Anything)
+	ms.AssertNotCalled(t, "DeleteService", mock.Anything, mock.Anything)
+	ms.AssertNotCalled(t, "DeleteConfigMap", mock.Anything, mock.Anything)
+	ms.AssertNotCalled(t, "DeletePodDisruptionBudget", mock.Anything, mock.Anything)
+	ms.AssertNotCalled(t, "DeleteServiceAccount", mock.Anything, mock.Anything)
+}
+
+// TestEnsureNotPresentSentinelResourcesSkipsUserProvidedServiceAccount mirrors
+// the guard EnsureSentinelDeployment uses on creation: when the user set
+// rf.Spec.Sentinel.ServiceAccountName themselves, that ServiceAccount is
+// theirs to manage, so cleanup must not even look it up, let alone delete it.
+func TestEnsureNotPresentSentinelResourcesSkipsUserProvidedServiceAccount(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+	rf.Spec.Sentinel.ServiceAccountName = "user-managed-sa"
+	resName := rfservice.GetSentinelName(rf)
 
 	ms := &mK8SService.Services{}
 	ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
@@ -3459,27 +3491,26 @@ func TestEnsureNotPresentSentinelResourcesNoopWhenAbsent(t *testing.T) {
 	err := client.EnsureNotPresentSentinelResources(rf)
 
 	assert.NoError(err)
-	ms.AssertNotCalled(t, "DeleteDeployment", mock.Anything, mock.Anything)
-	ms.AssertNotCalled(t, "DeleteService", mock.Anything, mock.Anything)
-	ms.AssertNotCalled(t, "DeleteConfigMap", mock.Anything, mock.Anything)
-	ms.AssertNotCalled(t, "DeletePodDisruptionBudget", mock.Anything, mock.Anything)
+	ms.AssertNotCalled(t, "GetServiceAccount", mock.Anything, mock.Anything)
+	ms.AssertNotCalled(t, "DeleteServiceAccount", mock.Anything, mock.Anything)
+	ms.AssertExpectations(t)
 }
 
 func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 	tests := []struct {
 		name  string
-		setup func(ms *mK8SService.Services, resName string)
+		setup func(ms *mK8SService.Services, resName string, saName string)
 	}{
 		{
 			name: "Deployment delete error stops before other deletes",
-			setup: func(ms *mK8SService.Services, resName string) {
+			setup: func(ms *mK8SService.Services, resName string, saName string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(&appsv1.Deployment{}, nil)
 				ms.On("DeleteDeployment", namespace, resName).Once().Return(errors.New("delete deployment failed"))
 			},
 		},
 		{
 			name: "Service delete error",
-			setup: func(ms *mK8SService.Services, resName string) {
+			setup: func(ms *mK8SService.Services, resName string, saName string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetService", namespace, resName).Once().Return(&corev1.Service{}, nil)
 				ms.On("DeleteService", namespace, resName).Once().Return(errors.New("delete service failed"))
@@ -3487,7 +3518,7 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 		},
 		{
 			name: "ConfigMap delete error",
-			setup: func(ms *mK8SService.Services, resName string) {
+			setup: func(ms *mK8SService.Services, resName string, saName string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetConfigMap", namespace, resName).Once().Return(&corev1.ConfigMap{}, nil)
@@ -3496,12 +3527,23 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 		},
 		{
 			name: "PodDisruptionBudget delete error",
-			setup: func(ms *mK8SService.Services, resName string) {
+			setup: func(ms *mK8SService.Services, resName string, saName string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetConfigMap", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetPodDisruptionBudget", namespace, resName).Once().Return(&policyv1.PodDisruptionBudget{}, nil)
 				ms.On("DeletePodDisruptionBudget", namespace, resName).Once().Return(errors.New("delete pdb failed"))
+			},
+		},
+		{
+			name: "ServiceAccount delete error",
+			setup: func(ms *mK8SService.Services, resName string, saName string) {
+				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
+				ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
+				ms.On("GetConfigMap", namespace, resName).Once().Return(nil, errors.New("not found"))
+				ms.On("GetPodDisruptionBudget", namespace, resName).Once().Return(nil, errors.New("not found"))
+				ms.On("GetServiceAccount", namespace, saName).Once().Return(&corev1.ServiceAccount{}, nil)
+				ms.On("DeleteServiceAccount", namespace, saName).Once().Return(errors.New("delete serviceaccount failed"))
 			},
 		},
 	}
@@ -3511,9 +3553,10 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 			assert := assert.New(t)
 			rf := generateRF()
 			resName := rfservice.GetSentinelName(rf)
+			saName := rfservice.GetSentinelServiceAccountName(rf)
 
 			ms := &mK8SService.Services{}
-			test.setup(ms, resName)
+			test.setup(ms, resName, saName)
 
 			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 			err := client.EnsureNotPresentSentinelResources(rf)
