@@ -350,7 +350,7 @@ func (r *RedisFailoverChecker) GetNumberMasters(rf *redisfailoverv1.RedisFailove
 	nMasters := 0
 	rips, err := r.GetRedisesIPs(rf)
 	if err != nil {
-		r.logger.Errorf(err.Error())
+		r.logger.Error(err.Error())
 		return nMasters, err
 	}
 
