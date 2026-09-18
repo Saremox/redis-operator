@@ -474,6 +474,12 @@ func TestStatefulSetServiceObjectUpToDate(t *testing.T) {
 			expectUpdates: 1,
 		},
 		{
+			name:          "a label change still triggers an update",
+			stored:        realisticStatefulSet(3),
+			desired:       func() *appsv1.StatefulSet { s := realisticStatefulSet(3); s.Labels["extra"] = "value"; return s }(),
+			expectUpdates: 1,
+		},
+		{
 			name: "manual drift on the live object is detected and corrected, even though desired is unchanged",
 			// stored's replica count was changed by hand since the
 			// operator's last write; desired is exactly what the operator
