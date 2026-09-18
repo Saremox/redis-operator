@@ -30,6 +30,18 @@ helm repo update
 helm install redis-operator redis-operator/redis-operator
 ```
 
+Alternatively, the chart is also published as an OCI artifact alongside the
+operator image, so it can be installed without adding a repo:
+
+```
+helm install redis-operator oci://ghcr.io/saremox/redis-operator/charts/redis-operator --version <release-tag>
+```
+
+Every release tag (e.g. `4.0.0`) publishes the operator image and the Helm
+chart together with the same version, so the two can never drift apart.
+Release candidates (e.g. `4.0.0-rc1`) are published the same way as GitHub
+pre-releases; Helm skips them by default unless you pass `--version` or `--devel`.
+
 #### Update helm chart
 
 Helm chart only manages the creation of CRD in the first installation. To update the CRD, you will need to apply it directly.
