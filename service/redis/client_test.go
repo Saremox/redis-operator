@@ -748,6 +748,119 @@ func TestSetCustomSentinelConfig(t *testing.T) {
 	assert.Equal(t, "12345", res["down-after-milliseconds"])
 }
 
+// TestSetCustomSentinelConfigIdempotent guards the property that motivated
+// skipping unchanged SENTINEL SET calls: applying the exact same config
+// repeatedly against a real sentinel must keep succeeding and keep the
+// value correct, whether or not this specific call ends up being a no-op
+// underneath.
+func TestSetCustomSentinelConfigIdempotent(t *testing.T) {
+	env := getSharedEnv(t)
+	master := startRedisProcess(t)
+	c := newTestClient()
+	t.Cleanup(func() { restoreSharedSentinel(t, env) })
+	pointSharedSentinelAt(t, env.sentinel, master.IP, master.Port, 1)
+
+	configs := []string{"down-after-milliseconds 9999", "failover-timeout 8888"}
+	for i := 0; i < 3; i++ {
+		require.NoError(t, c.SetCustomSentinelConfig(env.sentinel.IP, configs))
+	}
+
+	rc := rediscli.NewSentinelClient(&rediscli.Options{Addr: env.sentinel.Addr()})
+	defer func() { _ = rc.Close() }()
+	res, err := rc.Master(bgCtx(), masterName).Result()
+	require.NoError(t, err)
+	assert.Equal(t, "9999", res["down-after-milliseconds"])
+	assert.Equal(t, "8888", res["failover-timeout"])
+}
+
+// TestGetSentinelMasterInfo checks the SENTINEL MASTER response parsing
+// against a real sentinel: the well-known fields SetCustomSentinelConfig
+// relies on to decide whether a SET is needed must come back correctly.
+func TestGetSentinelMasterInfo(t *testing.T) {
+	env := getSharedEnv(t)
+	master := startRedisProcess(t)
+	c := newTestClientStruct()
+	t.Cleanup(func() { restoreSharedSentinel(t, env) })
+	pointSharedSentinelAt(t, env.sentinel, master.IP, master.Port, 1)
+
+	rClient := rediscli.NewClient(&rediscli.Options{Addr: env.sentinel.Addr()})
+	defer func() { _ = rClient.Close() }()
+
+	info, err := c.getSentinelMasterInfo(rClient)
+	require.NoError(t, err)
+	assert.Equal(t, master.IP, info["ip"])
+	assert.NotEmpty(t, info["down-after-milliseconds"])
+	assert.NotEmpty(t, info["failover-timeout"])
+}
+
+func TestSentinelConfigsToApply(t *testing.T) {
+	c := newTestClientStruct()
+
+	tests := []struct {
+		name    string
+		current map[string]string
+		configs []string
+		want    []sentinelConfigParam
+	}{
+		{
+			name:    "current matches desired: nothing to apply",
+			current: map[string]string{"down-after-milliseconds": "5000", "failover-timeout": "10000"},
+			configs: []string{"down-after-milliseconds 5000", "failover-timeout 10000"},
+			want:    nil,
+		},
+		{
+			name:    "current differs: only the differing param is returned",
+			current: map[string]string{"down-after-milliseconds": "5000", "failover-timeout": "10000"},
+			configs: []string{"down-after-milliseconds 5000", "failover-timeout 20000"},
+			want:    []sentinelConfigParam{{param: "failover-timeout", value: "20000"}},
+		},
+		{
+			name:    "param unknown to sentinel's current view is applied",
+			current: map[string]string{"down-after-milliseconds": "5000"},
+			configs: []string{"parallel-syncs 3"},
+			want:    []sentinelConfigParam{{param: "parallel-syncs", value: "3"}},
+		},
+		{
+			name:    "nil current (state unreadable) applies everything",
+			current: nil,
+			configs: []string{"down-after-milliseconds 5000", "failover-timeout 10000"},
+			want: []sentinelConfigParam{
+				{param: "down-after-milliseconds", value: "5000"},
+				{param: "failover-timeout", value: "10000"},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := c.sentinelConfigsToApply(test.current, test.configs)
+			require.NoError(t, err)
+			assert.Equal(t, test.want, got)
+		})
+	}
+}
+
+// TestSetCustomSentinelConfigMalformedConfig checks that SetCustomSentinelConfig
+// itself propagates a malformed config entry as an error (not just
+// sentinelConfigsToApply in isolation), against a real reachable sentinel so
+// the getSentinelMasterInfo read-before-write path runs too.
+func TestSetCustomSentinelConfigMalformedConfig(t *testing.T) {
+	env := getSharedEnv(t)
+	master := startRedisProcess(t)
+	c := newTestClient()
+	t.Cleanup(func() { restoreSharedSentinel(t, env) })
+	pointSharedSentinelAt(t, env.sentinel, master.IP, master.Port, 1)
+
+	err := c.SetCustomSentinelConfig(env.sentinel.IP, []string{"not-a-valid-config"})
+	assert.Error(t, err)
+}
+
+func TestSentinelConfigsToApplyMalformedConfig(t *testing.T) {
+	c := newTestClientStruct()
+	_, err := c.sentinelConfigsToApply(nil, []string{"not-a-valid-config"})
+	assert.Error(t, err)
+}
+
 func TestResetSentinel(t *testing.T) {
 	env := getSharedEnv(t)
 	master := startRedisProcess(t)
