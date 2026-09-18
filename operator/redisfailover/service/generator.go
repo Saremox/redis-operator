@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/operator/redisfailover/util"
@@ -427,6 +428,7 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 					ImagePullSecrets:              rf.Spec.Redis.ImagePullSecrets,
 					PriorityClassName:             rf.Spec.Redis.PriorityClassName,
 					ServiceAccountName:            rf.Spec.Redis.ServiceAccountName,
+					EnableServiceLinks:            ptr.To(false),
 					TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
 					Containers: []corev1.Container{
 						{
@@ -599,6 +601,7 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 					ImagePullSecrets:          rf.Spec.Sentinel.ImagePullSecrets,
 					PriorityClassName:         rf.Spec.Sentinel.PriorityClassName,
 					ServiceAccountName:        serviceAccountName,
+					EnableServiceLinks:        ptr.To(false),
 					InitContainers: []corev1.Container{
 						{
 							Name:            "sentinel-config-copy",
