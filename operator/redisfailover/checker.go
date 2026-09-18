@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/saremox/redis-operator/service/k8s"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
