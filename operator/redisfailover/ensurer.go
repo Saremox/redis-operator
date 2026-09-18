@@ -8,55 +8,55 @@ import (
 )
 
 // Ensure is called to ensure all of the resources associated with a RedisFailover are created
-func (w *RedisFailoverHandler) Ensure(rf *redisfailoverv1.RedisFailover, labels map[string]string, or []metav1.OwnerReference, metricsClient metrics.Recorder) error {
+func (r *RedisFailoverHandler) Ensure(rf *redisfailoverv1.RedisFailover, labels map[string]string, or []metav1.OwnerReference, metricsClient metrics.Recorder) error {
 	if rf.Spec.Redis.Exporter.Enabled {
-		if err := w.rfService.EnsureRedisService(rf, labels, or); err != nil {
+		if err := r.rfService.EnsureRedisService(rf, labels, or); err != nil {
 			return err
 		}
 	} else {
-		if err := w.rfService.EnsureNotPresentRedisService(rf); err != nil {
+		if err := r.rfService.EnsureNotPresentRedisService(rf); err != nil {
 			return err
 		}
 	}
 
 	sentinelsAllowed := rf.SentinelsAllowed()
 	if sentinelsAllowed {
-		if err := w.rfService.EnsureSentinelService(rf, labels, or); err != nil {
+		if err := r.rfService.EnsureSentinelService(rf, labels, or); err != nil {
 			return err
 		}
-		if err := w.rfService.EnsureSentinelConfigMap(rf, labels, or); err != nil {
+		if err := r.rfService.EnsureSentinelConfigMap(rf, labels, or); err != nil {
 			return err
 		}
 	} else {
 		// Clean up Sentinel resources when Sentinel is disabled
-		if err := w.rfService.EnsureNotPresentSentinelResources(rf); err != nil {
+		if err := r.rfService.EnsureNotPresentSentinelResources(rf); err != nil {
 			return err
 		}
 	}
 
-	if err := w.rfService.EnsureRedisMasterService(rf, labels, or); err != nil {
+	if err := r.rfService.EnsureRedisMasterService(rf, labels, or); err != nil {
 		return err
 	}
 
-	if err := w.rfService.EnsureRedisSlaveService(rf, labels, or); err != nil {
+	if err := r.rfService.EnsureRedisSlaveService(rf, labels, or); err != nil {
 		return err
 	}
 
-	if err := w.rfService.EnsureRedisShutdownConfigMap(rf, labels, or); err != nil {
+	if err := r.rfService.EnsureRedisShutdownConfigMap(rf, labels, or); err != nil {
 		return err
 	}
-	if err := w.rfService.EnsureRedisReadinessConfigMap(rf, labels, or); err != nil {
+	if err := r.rfService.EnsureRedisReadinessConfigMap(rf, labels, or); err != nil {
 		return err
 	}
-	if err := w.rfService.EnsureRedisConfigMap(rf, labels, or); err != nil {
+	if err := r.rfService.EnsureRedisConfigMap(rf, labels, or); err != nil {
 		return err
 	}
-	if err := w.rfService.EnsureRedisStatefulset(rf, labels, or); err != nil {
+	if err := r.rfService.EnsureRedisStatefulset(rf, labels, or); err != nil {
 		return err
 	}
 
 	if sentinelsAllowed {
-		if err := w.rfService.EnsureSentinelDeployment(rf, labels, or); err != nil {
+		if err := r.rfService.EnsureSentinelDeployment(rf, labels, or); err != nil {
 			return err
 		}
 	}

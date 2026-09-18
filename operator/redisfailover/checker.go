@@ -3,10 +3,11 @@ package redisfailover
 import (
 	"context"
 	"errors"
-	"github.com/saremox/redis-operator/service/k8s"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"strconv"
 	"time"
+
+	"github.com/saremox/redis-operator/service/k8s"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
@@ -193,7 +194,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 					State:   redisfailoverv1.NotHealthyState,
 					Message: errorMsg,
 				}
-				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Errorf(errorMsg)
+				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Error(errorMsg)
 				return err
 			}
 			return nil
@@ -227,7 +228,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 					State:   redisfailoverv1.NotHealthyState,
 					Message: errorMsg,
 				}
-				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Errorf(errorMsg)
+				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Error(errorMsg)
 				return err2
 			}
 		} else {
@@ -251,7 +252,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 						State:   redisfailoverv1.NotHealthyState,
 						Message: errorMsg,
 					}
-					r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Errorf(errorMsg)
+					r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Error(errorMsg)
 					return err3
 				}
 

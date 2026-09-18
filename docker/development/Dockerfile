@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine
+FROM golang:1.26-alpine
 
 ENV CODEGEN_VERSION="1.11.9"
 

@@ -120,7 +120,7 @@ func (r *RedisFailoverHandler) getLabels(rf *redisfailoverv1.RedisFailover) map[
 	return util.MergeLabels(defaultLabels, dynLabels, filteredCustomLabels)
 }
 
-func (w *RedisFailoverHandler) createOwnerReferences(rf *redisfailoverv1.RedisFailover) []metav1.OwnerReference {
+func (r *RedisFailoverHandler) createOwnerReferences(rf *redisfailoverv1.RedisFailover) []metav1.OwnerReference {
 	rfvk := redisfailoverv1.VersionKind(redisfailoverv1.RFKind)
 	return []metav1.OwnerReference{
 		*metav1.NewControllerRef(rf, rfvk),
