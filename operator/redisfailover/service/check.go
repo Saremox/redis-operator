@@ -17,6 +17,14 @@ import (
 	"github.com/saremox/redis-operator/service/redis"
 )
 
+// ErrAmbiguousMasterCount is returned by GetMasterIP when it finds a number
+// of masters other than exactly one - either zero, or more than one
+// (split-brain). Callers that need to tell those two cases apart (e.g. to
+// avoid promoting yet another replica on top of an existing split-brain)
+// should check for this specific error rather than treating any GetMasterIP
+// failure as "no master".
+var ErrAmbiguousMasterCount = errors.New("number of redis nodes known as master is different than 1")
+
 // ReplicaInfo holds information about a Redis replica for failover decisions
 type ReplicaInfo struct {
 	IP                string
@@ -340,7 +348,7 @@ func (r *RedisFailoverChecker) GetMasterIP(rf *redisfailoverv1.RedisFailover) (s
 	}
 
 	if len(masters) != 1 {
-		return "", errors.New("number of redis nodes known as master is different than 1")
+		return "", ErrAmbiguousMasterCount
 	}
 	return masters[0], nil
 }
@@ -564,7 +572,21 @@ func (r *RedisFailoverChecker) IsClusterRunning(rFailover *redisfailoverv1.Redis
 func (r *RedisFailoverChecker) CheckMasterHealth(rf *redisfailoverv1.RedisFailover) (bool, string, error) {
 	masterIP, err := r.GetMasterIP(rf)
 	if err != nil {
-		// No master found
+		// ErrAmbiguousMasterCount covers both "no master" and "more than one
+		// master" (split-brain); silently treating both as "no master, go
+		// promote a replica" would make an existing split-brain worse by
+		// promoting yet another one. Corroborate with a second, independent
+		// count: this isn't perfectly atomic with the scan GetMasterIP just
+		// did, but it correctly catches the common case where more than one
+		// master is already present.
+		if errors.Is(err, ErrAmbiguousMasterCount) {
+			if n, nErr := r.GetNumberMasters(rf); nErr == nil && n > 1 {
+				return false, "", fmt.Errorf("split-brain detected: %d redis nodes claim to be master, refusing to promote another replica", n)
+			}
+		}
+		// No master found (or GetMasterIP failed for an unrelated reason,
+		// e.g. listing pods failed - treated the same as "no master" here,
+		// matching this function's prior behavior for those cases).
 		return false, "", nil
 	}
 

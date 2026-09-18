@@ -1438,6 +1438,41 @@ func TestCheckMasterHealthNoMasterFound(t *testing.T) {
 	assert.Equal("", masterIP)
 }
 
+// TestCheckMasterHealthSplitBrainDetected covers the case GetMasterIP
+// returns ErrAmbiguousMasterCount because more than one pod claims to be
+// master. Before this fix, CheckMasterHealth treated any GetMasterIP error
+// identically to "no master" and returned (false, "", nil) - which the
+// caller (checkAndHealOperatorManagedMode) reads as "go promote another
+// replica", turning an existing split-brain into a 3-way conflict instead of
+// routing it to manual intervention.
+func TestCheckMasterHealthSplitBrainDetected(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF()
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{Status: corev1.PodStatus{PodIP: "0.0.0.0", Phase: corev1.PodRunning}},
+			{Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	// Once for GetMasterIP's own scan, once more for CheckMasterHealth's
+	// corroborating GetNumberMasters call.
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Twice().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("IsMaster", "0.0.0.0", "0", "").Times(2).Return(true, nil)
+	mr.On("IsMaster", "1.1.1.1", "0", "").Times(2).Return(true, nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	healthy, masterIP, err := checker.CheckMasterHealth(rf)
+	assert.Error(err, "split-brain must be reported as an error, not silently treated as no-master")
+	assert.False(healthy)
+	assert.Equal("", masterIP)
+}
+
 func TestCheckMasterHealthPasswordError(t *testing.T) {
 	assert := assert.New(t)
 

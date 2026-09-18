@@ -503,18 +503,18 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		wantMessage string
 	}{
 		{
-			name: "redis not running - waits for statefulset reconcile",
+			name: "redis quorum not running - waits for statefulset reconcile",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(false)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(false)
 			},
 			wantErr:     false,
 			wantState:   v1.NotHealthyState,
-			wantMessage: "not all replicas running",
+			wantMessage: "redis quorum not running",
 		},
 		{
 			name: "GetNumberMasters errors",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(0, errors.New("num masters err"))
 			},
 			wantErr:     true,
@@ -524,7 +524,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "no master - best replica found and promoted successfully",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
 				mrfh.On("PromoteBestReplica", promotedIP, rf).Once().Return(nil)
@@ -540,7 +540,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "no master - best replica found but promotion fails",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
 				mrfh.On("PromoteBestReplica", promotedIP, rf).Once().Return(errors.New("promote fail"))
@@ -552,7 +552,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "no master - best replica found but promotion partially fails",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
 				mrfh.On("PromoteBestReplica", promotedIP, rf).Once().Return(wrappedPartialErr)
@@ -565,7 +565,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "no master - best replica lookup fails, falls back to oldest and succeeds",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(nil, errors.New("no replica info"))
 				mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
@@ -578,7 +578,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "no master - best replica lookup fails, fallback to oldest also fails",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(nil, errors.New("no replica info"))
 				mrfh.On("SetOldestAsMaster", rf).Once().Return(errors.New("elect fail"))
@@ -590,7 +590,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "single master - health check errors",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 				mrfc.On("CheckMasterHealth", rf).Once().Return(false, "", errors.New("health check err"))
 			},
@@ -601,7 +601,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "single master - unhealthy, replica found and promoted successfully",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
@@ -615,7 +615,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "single master - unhealthy, no replica available for failover",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(nil, errors.New("no replica info"))
@@ -627,7 +627,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "single master - unhealthy, promotion fails",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
@@ -640,7 +640,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "single master - unhealthy, promotion partially fails",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
@@ -654,7 +654,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "single master - healthy, slaves already correct, config and pods updated",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 				mrfc.On("CheckMasterHealth", rf).Once().Return(true, master, nil)
 				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
@@ -666,7 +666,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "single master - healthy, slaves fixed, config and pods updated",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 				mrfc.On("CheckMasterHealth", rf).Once().Return(true, master, nil)
 				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(errors.New("wrong master"))
@@ -679,7 +679,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "single master - healthy, slaves wrong, fixing them fails",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 				mrfc.On("CheckMasterHealth", rf).Once().Return(true, master, nil)
 				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(errors.New("wrong master"))
@@ -692,7 +692,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "multiple masters detected",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(2, nil)
 			},
 			wantErr:     true,
@@ -702,7 +702,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "single master - healthy, applying custom config fails",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 				mrfc.On("CheckMasterHealth", rf).Once().Return(true, master, nil)
 				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
@@ -716,7 +716,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		{
 			name: "single master - healthy, updating redis pods fails",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 				mrfc.On("CheckMasterHealth", rf).Once().Return(true, master, nil)
 				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)

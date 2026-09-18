@@ -193,7 +193,10 @@ func (r *RedisFailoverHealer) SetMasterOnAll(masterIP string, rf *redisfailoverv
 		isMaster, err := r.redisClient.IsMaster(masterIP, port, password)
 		if err != nil || !isMaster {
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Errorf("check master failed maybe this node is not ready(ip changed), or sentinel made a switch: %s", masterIP)
-			return err
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("refusing to continue: %s is no longer the master, bailing out this round", masterIP)
 		} else {
 			if pod.Status.PodIP == masterIP {
 				continue

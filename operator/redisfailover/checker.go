@@ -387,14 +387,18 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 // checkAndHealOperatorManagedMode handles failover when Sentinel is disabled.
 // The operator directly manages master election and failover.
 func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailoverv1.RedisFailover) error {
-	if !r.rfChecker.IsRedisRunning(rf) {
-		errorMsg := "not all replicas running"
+	// Heal as long as a quorum (majority) of pods is running rather than requiring
+	// the full set, matching the Sentinel-managed path (CheckAndHeal above): a
+	// single Pending pod (unschedulable affinity, AZ loss) must not permanently
+	// block the operator's own master election in this - the default - mode.
+	if !r.rfChecker.IsRedisRunningQuorum(rf) {
+		errorMsg := "redis quorum not running"
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: errorMsg,
 		}
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.REDIS_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
-		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of redis mismatch, waiting for redis statefulset reconcile")
+		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Redis quorum not running, waiting for redis statefulset reconcile")
 		return nil
 	}
 
