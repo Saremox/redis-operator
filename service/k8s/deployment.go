@@ -106,6 +106,12 @@ func (d *DeploymentService) CreateOrUpdateDeployment(namespace string, deploymen
 	// namespace is our spec(https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#concurrency-control-and-consistency),
 	// we will replace the current namespace state.
 	deployment.ResourceVersion = storedDeployment.ResourceVersion
+
+	if deploymentUpToDate(storedDeployment, deployment) {
+		d.logger.WithField("namespace", namespace).WithField("deployment", deployment.Name).Debugf("deployment already up to date, skipping update")
+		return nil
+	}
+
 	return d.UpdateDeployment(namespace, deployment)
 }
 
