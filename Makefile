@@ -58,7 +58,12 @@ UNIT_TEST_CMD := go test `go list ./... | grep -v /vendor/` -v
 UNIT_TEST_COVERAGE_PKGS_CMD := go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v /vendor/
 UNIT_TEST_COVERAGE_CMD := go test `$(UNIT_TEST_COVERAGE_PKGS_CMD)` -v -coverprofile=coverage.out -covermode=atomic
 GO_GENERATE_CMD := go generate `go list ./... | grep -v /vendor/`
-GO_INTEGRATION_TEST_CMD := go test `go list ./... | grep test/integration` -v -tags='integration'
+# -timeout raised from go test's 10m default: this package now runs two
+# real-cluster tests back to back (sentinel-managed creation, and an
+# operator-managed creation-plus-rollout scenario), and together they can
+# comfortably exceed 10m against a minikube runner without either being slow
+# on its own.
+GO_INTEGRATION_TEST_CMD := go test `go list ./... | grep test/integration` -v -tags='integration' -timeout=30m
 GET_DEPS_CMD := dep ensure
 UPDATE_DEPS_CMD := dep ensure
 MOCKS_CMD := go generate ./mocks
