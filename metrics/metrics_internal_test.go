@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -59,4 +60,46 @@ func TestStaleCheckMetricsClearedIndependentlyOfResource(t *testing.T) {
 
 	// A second call with nothing newly stale should find nothing to report.
 	assert.Empty(t, getStaleCheckMetrics())
+}
+
+// TestRemoveStaleMetricsDeletesStaleCheckInstances exercises the background GC loop end to end
+// (like TestRemoveStaleMetrics does for the other trackers) to prove removeStaleMetrics actually
+// deletes stale per-instance redisCheck/sentinelCheck series from the live Prometheus registry -
+// for both the "redis" and "sentinel" kind branches - rather than just relying on
+// getStaleCheckMetrics finding them.
+func TestRemoveStaleMetricsDeletesStaleCheckInstances(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	rec := NewRecorder("stale_check_gc_test", reg).(recorder)
+
+	const (
+		namespace = "ns4"
+		resource  = "rf4"
+	)
+
+	rec.RecordRedisCheck(namespace, resource, REDIS_REPLICA_MISMATCH, "10.0.0.30", STATUS_UNHEALTHY)
+	rec.RecordSentinelCheck(namespace, resource, SENTINEL_NOT_READY, "10.0.0.31", STATUS_HEALTHY)
+
+	// Sanity check the metrics are present before GC runs.
+	assert.Equal(t, float64(1), testutil.ToFloat64(rec.redisCheck.WithLabelValues(namespace, resource, REDIS_REPLICA_MISMATCH, "10.0.0.30", STATUS_UNHEALTHY)))
+	assert.Equal(t, float64(1), testutil.ToFloat64(rec.sentinelCheck.WithLabelValues(namespace, resource, SENTINEL_NOT_READY, "10.0.0.31", STATUS_HEALTHY)))
+
+	old := time.Now().Add(-2 * metricsGCIntervalMinutes * time.Minute)
+	mutex.Lock()
+	for k, v := range checkMetricLastUpdated {
+		v.lastSeen = old
+		checkMetricLastUpdated[k] = v
+	}
+	// Keep the owning resource "fresh", as an actively reconciled RedisFailover would be, so the
+	// only thing that can explain the series disappearing is the dedicated per-instance sweep.
+	resourceMetricLastUpdated[namespace+"/redisfailover/"+resource] = time.Now()
+	mutex.Unlock()
+
+	go removeStaleMetrics()
+
+	assert.Eventually(t, func() bool {
+		// WithLabelValues recreates the series with value 0 if it was deleted, so a value of 0
+		// here indicates the GC pass ran and removed it.
+		return testutil.ToFloat64(rec.redisCheck.WithLabelValues(namespace, resource, REDIS_REPLICA_MISMATCH, "10.0.0.30", STATUS_UNHEALTHY)) == 0 &&
+			testutil.ToFloat64(rec.sentinelCheck.WithLabelValues(namespace, resource, SENTINEL_NOT_READY, "10.0.0.31", STATUS_HEALTHY)) == 0
+	}, 3*time.Second, 50*time.Millisecond, "expected removeStaleMetrics to delete the aged out per-instance check series")
 }
