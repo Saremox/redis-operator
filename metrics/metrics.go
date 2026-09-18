@@ -78,7 +78,21 @@ var ( // used for grabage collection of metrics
 	recorders                 = []recorder{}
 	instanceMetricLastUpdated = map[string]time.Time{}
 	resourceMetricLastUpdated = map[string]time.Time{}
+	checkMetricLastUpdated    = map[string]checkMetricInfo{}
 )
+
+// checkMetricInfo identifies a single per-instance series of the redisCheck/sentinelCheck
+// vectors (namespace/resource/indicator/instance), so it can be garbage collected on its own
+// once that instance (e.g. a Pod IP that no longer exists) stops being reported - independent
+// of whether the owning RedisFailover resource is still being actively reconciled.
+type checkMetricInfo struct {
+	kind      string // "redis" or "sentinel"
+	namespace string
+	resource  string
+	indicator string
+	instance  string
+	lastSeen  time.Time
+}
 
 // Instrumenter is the interface that will collect the metrics and has ability to send/expose those metrics.
 type Recorder interface {
@@ -209,11 +223,13 @@ func (r recorder) RecordEnsureOperation(objectNamespace string, objectName strin
 func (r recorder) RecordRedisCheck(namespace string, resource string, indicator /* aspect of redis that is unhealthy */ string, instance string, status string) {
 	r.redisCheck.WithLabelValues(namespace, resource, indicator, instance, status).Add(1)
 	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", resource)
+	updateCheckMetricLastUpdatedTracker("redis", namespace, resource, indicator, instance)
 }
 
 func (r recorder) RecordSentinelCheck(namespace string, resource string, indicator /* aspect of sentinel that is unhealthy */ string, instance string, status string) {
 	r.sentinelCheck.WithLabelValues(namespace, resource, indicator, instance, status).Add(1)
 	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", resource)
+	updateCheckMetricLastUpdatedTracker("sentinel", namespace, resource, indicator, instance)
 }
 
 func (r recorder) RecordK8sOperation(namespace string, kind string, name string, operation string, status string, err string) {
@@ -238,6 +254,20 @@ func updateInstanceMetricLastUpdatedTracker(IP string) {
 	mutex.Unlock()
 }
 
+func updateCheckMetricLastUpdatedTracker(kind string, namespace string, resource string, indicator string, instance string) {
+	key := strings.Join([]string{kind, namespace, resource, indicator, instance}, "/")
+	mutex.Lock()
+	checkMetricLastUpdated[key] = checkMetricInfo{
+		kind:      kind,
+		namespace: namespace,
+		resource:  resource,
+		indicator: indicator,
+		instance:  instance,
+		lastSeen:  time.Now(),
+	}
+	mutex.Unlock()
+}
+
 // Garbage collection
 func removeStaleMetrics() {
 	// Runs every `metricsGCIntervalMinutes`. It keeps track of recently updated metrics
@@ -245,6 +275,7 @@ func removeStaleMetrics() {
 	for {
 		metricsDeletedCount := 0
 		kubernetesResourceBasedLabels, customResourceBasedLabels, ipBasedLabels := getLabelsOfStaleMetrics()
+		staleCheckMetrics := getStaleCheckMetrics()
 		mutex.Lock()
 		currentRecorders := make([]recorder, len(recorders))
 		copy(currentRecorders, recorders)
@@ -264,6 +295,26 @@ func removeStaleMetrics() {
 			}
 			for _, label := range ipBasedLabels {
 				metricsDeletedCount += recorder.redisOperations.DeletePartialMatch(label)
+			}
+			// The per-instance (Pod IP) series of redisCheck/sentinelCheck are not covered by
+			// customResourceBasedLabels above: that only fires once the *whole* RedisFailover
+			// resource stops being reconciled, which effectively never happens for an active
+			// cluster. Pod IPs churn continuously (restarts, rollouts, rescheduling), so without
+			// this dedicated per-instance sweep every old IP's series would remain registered for
+			// the lifetime of the process, growing metric cardinality (and memory) without bound.
+			for _, entry := range staleCheckMetrics {
+				var deleted bool
+				switch entry.kind {
+				case "redis":
+					deleted = recorder.redisCheck.DeleteLabelValues(entry.namespace, entry.resource, entry.indicator, entry.instance, STATUS_HEALTHY) ||
+						recorder.redisCheck.DeleteLabelValues(entry.namespace, entry.resource, entry.indicator, entry.instance, STATUS_UNHEALTHY)
+				case "sentinel":
+					deleted = recorder.sentinelCheck.DeleteLabelValues(entry.namespace, entry.resource, entry.indicator, entry.instance, STATUS_HEALTHY) ||
+						recorder.sentinelCheck.DeleteLabelValues(entry.namespace, entry.resource, entry.indicator, entry.instance, STATUS_UNHEALTHY)
+				}
+				if deleted {
+					metricsDeletedCount++
+				}
 			}
 		}
 		log.Debugf("delete %v stale metrics", metricsDeletedCount)
@@ -322,4 +373,23 @@ func getLabelsOfStaleMetrics() (kubernetesResourceBasedLabels []prometheus.Label
 	}
 	mutex.Unlock()
 	return kubernetesResourceBasedLabels, customResourceBasedLabels, ipBasedLabels
+}
+
+// getStaleCheckMetrics returns the redisCheck/sentinelCheck per-instance series that have not
+// been reported for at least metricsGCIntervalMinutes, and removes them from the tracker. This
+// is what allows a stale Pod IP's series to be deleted even while the owning RedisFailover
+// resource keeps being reconciled (see removeStaleMetrics).
+func getStaleCheckMetrics() []checkMetricInfo {
+	stale := []checkMetricInfo{}
+	cutoff := time.Now().Add(-metricsGCIntervalMinutes * time.Minute)
+
+	mutex.Lock()
+	defer mutex.Unlock()
+	for key, entry := range checkMetricLastUpdated {
+		if entry.lastSeen.Before(cutoff) {
+			stale = append(stale, entry)
+			delete(checkMetricLastUpdated, key)
+		}
+	}
+	return stale
 }
