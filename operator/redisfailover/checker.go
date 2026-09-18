@@ -91,14 +91,25 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			// so one permanently unavailable replica (e.g. a PVC stuck in a dead
 			// zone) cannot block master replacement forever when a safe failover
 			// is available via the reachable majority.
-			sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
-			if err != nil {
-				return err
-			}
-			for _, sip := range sentinels {
-				if err := r.rfChecker.CheckSentinelSlavesNumberQuorumInMemory(sip, rf); err != nil {
-					r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("Waiting for sentinels to see a quorum of slaves before replacing the master: %s", err.Error())
-					return nil
+			//
+			// This gate only applies when Sentinel is actually managing
+			// failover. In operator-managed mode (sentinel.enabled: false)
+			// there is no Sentinel Deployment to query - GetSentinelsIPs would
+			// just 404 against it - and the operator's own election logic in
+			// checkAndHealOperatorManagedMode (the "no master" branch) already
+			// takes over on the very next reconcile once this delete leaves the
+			// RedisFailover without a master, using the same replication-offset
+			// based selection this gate exists to protect.
+			if !rf.OperatorManagedFailover() {
+				sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
+				if err != nil {
+					return err
+				}
+				for _, sip := range sentinels {
+					if err := r.rfChecker.CheckSentinelSlavesNumberQuorumInMemory(sip, rf); err != nil {
+						r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("Waiting for sentinels to see a quorum of slaves before replacing the master: %s", err.Error())
+						return nil
+					}
 				}
 			}
 
