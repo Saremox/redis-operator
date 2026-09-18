@@ -884,14 +884,13 @@ func getAffinity(affinity *corev1.Affinity, labels map[string]string) *corev1.Af
 // any field the user set on secctx taking precedence. A partial user context
 // only overrides the fields it specifies instead of dropping all the defaults.
 func getSecurityContext(secctx *corev1.PodSecurityContext) *corev1.PodSecurityContext {
-	defaultUserAndGroup := int64(1000)
-	runAsNonRoot := true
+	defaultUserAndGroup := ptr.To(int64(1000))
 
 	result := &corev1.PodSecurityContext{
-		RunAsUser:    &defaultUserAndGroup,
-		RunAsGroup:   &defaultUserAndGroup,
-		RunAsNonRoot: &runAsNonRoot,
-		FSGroup:      &defaultUserAndGroup,
+		RunAsUser:    defaultUserAndGroup,
+		RunAsGroup:   defaultUserAndGroup,
+		RunAsNonRoot: ptr.To(true),
+		FSGroup:      defaultUserAndGroup,
 		SeccompProfile: &corev1.SeccompProfile{
 			Type: corev1.SeccompProfileTypeRuntimeDefault,
 		},
@@ -929,20 +928,16 @@ func getContainerSecurityContext(secctx *corev1.SecurityContext) *corev1.Securit
 			"ALL",
 		},
 	}
-	privileged := false
-	defaultUserAndGroup := int64(1000)
-	runAsNonRoot := true
-	allowPrivilegeEscalation := false
-	readOnlyRootFilesystem := true
+	defaultUserAndGroup := ptr.To(int64(1000))
 
 	result := &corev1.SecurityContext{
 		Capabilities:             capabilities,
-		Privileged:               &privileged,
-		RunAsUser:                &defaultUserAndGroup,
-		RunAsGroup:               &defaultUserAndGroup,
-		RunAsNonRoot:             &runAsNonRoot,
-		ReadOnlyRootFilesystem:   &readOnlyRootFilesystem,
-		AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+		Privileged:               ptr.To(false),
+		RunAsUser:                defaultUserAndGroup,
+		RunAsGroup:               defaultUserAndGroup,
+		RunAsNonRoot:             ptr.To(true),
+		ReadOnlyRootFilesystem:   ptr.To(true),
+		AllowPrivilegeEscalation: ptr.To(false),
 	}
 	if secctx == nil {
 		return result

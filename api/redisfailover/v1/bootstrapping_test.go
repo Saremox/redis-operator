@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 func generateRedisFailover(name string, bootstrapNode *BootstrapSettings) *RedisFailover {
@@ -63,7 +64,6 @@ func TestBootstrapping(t *testing.T) {
 }
 
 func TestSentinelsAllowed(t *testing.T) {
-	trueVal := true
 	tests := []struct {
 		name              string
 		expectation       bool
@@ -78,12 +78,12 @@ func TestSentinelsAllowed(t *testing.T) {
 		{
 			name:            "sentinel explicitly enabled",
 			expectation:     true,
-			sentinelEnabled: &trueVal,
+			sentinelEnabled: ptr.To(true),
 		},
 		{
 			name:            "sentinel enabled with BootstrapSettings",
 			expectation:     false,
-			sentinelEnabled: &trueVal,
+			sentinelEnabled: ptr.To(true),
 			bootstrapSettings: &BootstrapSettings{
 				Host: "127.0.0.1",
 				Port: "6379",
@@ -92,7 +92,7 @@ func TestSentinelsAllowed(t *testing.T) {
 		{
 			name:            "sentinel enabled with BootstrapSettings that allows sentinels",
 			expectation:     true,
-			sentinelEnabled: &trueVal,
+			sentinelEnabled: ptr.To(true),
 			bootstrapSettings: &BootstrapSettings{
 				Host:           "127.0.0.1",
 				Port:           "6379",
@@ -121,9 +121,6 @@ func TestSentinelsAllowed(t *testing.T) {
 }
 
 func TestSentinelEnabled(t *testing.T) {
-	trueVal := true
-	falseVal := false
-
 	tests := []struct {
 		name            string
 		sentinelEnabled *bool
@@ -136,12 +133,12 @@ func TestSentinelEnabled(t *testing.T) {
 		},
 		{
 			name:            "explicitly true",
-			sentinelEnabled: &trueVal,
+			sentinelEnabled: ptr.To(true),
 			expectation:     true,
 		},
 		{
 			name:            "explicitly false",
-			sentinelEnabled: &falseVal,
+			sentinelEnabled: ptr.To(false),
 			expectation:     false,
 		},
 	}
@@ -155,9 +152,6 @@ func TestSentinelEnabled(t *testing.T) {
 }
 
 func TestOperatorManagedFailover(t *testing.T) {
-	trueVal := true
-	falseVal := false
-
 	tests := []struct {
 		name            string
 		sentinelEnabled *bool
@@ -170,12 +164,12 @@ func TestOperatorManagedFailover(t *testing.T) {
 		},
 		{
 			name:            "sentinel explicitly enabled - operator NOT managing",
-			sentinelEnabled: &trueVal,
+			sentinelEnabled: ptr.To(true),
 			expectation:     false,
 		},
 		{
 			name:            "sentinel explicitly disabled - operator IS managing",
-			sentinelEnabled: &falseVal,
+			sentinelEnabled: ptr.To(false),
 			expectation:     true,
 		},
 	}
@@ -189,9 +183,6 @@ func TestOperatorManagedFailover(t *testing.T) {
 }
 
 func TestSentinelsAllowedWithSentinelEnabled(t *testing.T) {
-	trueVal := true
-	falseVal := false
-
 	tests := []struct {
 		name              string
 		sentinelEnabled   *bool
@@ -200,7 +191,7 @@ func TestSentinelsAllowedWithSentinelEnabled(t *testing.T) {
 	}{
 		{
 			name:            "sentinel disabled explicitly - sentinels not allowed",
-			sentinelEnabled: &falseVal,
+			sentinelEnabled: ptr.To(false),
 			expectation:     false,
 		},
 		{
@@ -210,12 +201,12 @@ func TestSentinelsAllowedWithSentinelEnabled(t *testing.T) {
 		},
 		{
 			name:            "sentinel enabled explicitly - sentinels allowed",
-			sentinelEnabled: &trueVal,
+			sentinelEnabled: ptr.To(true),
 			expectation:     true,
 		},
 		{
 			name:            "sentinel enabled but bootstrapping without allow",
-			sentinelEnabled: &trueVal,
+			sentinelEnabled: ptr.To(true),
 			bootstrapSettings: &BootstrapSettings{
 				Host: "127.0.0.1",
 				Port: "6379",
@@ -224,7 +215,7 @@ func TestSentinelsAllowedWithSentinelEnabled(t *testing.T) {
 		},
 		{
 			name:            "sentinel disabled with bootstrapping",
-			sentinelEnabled: &falseVal,
+			sentinelEnabled: ptr.To(false),
 			bootstrapSettings: &BootstrapSettings{
 				Host:           "127.0.0.1",
 				Port:           "6379",

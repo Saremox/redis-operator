@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -31,7 +32,6 @@ func generateConfig() rfOperator.Config {
 func generateRF(enableExporter bool, bootstrapping bool) *redisfailoverv1.RedisFailover {
 	// Explicitly enable sentinel for tests that expect sentinel behavior
 	// (sentinel is disabled by default in v4.0.0+)
-	sentinelEnabled := true
 	return &redisfailoverv1.RedisFailover{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -45,7 +45,7 @@ func generateRF(enableExporter bool, bootstrapping bool) *redisfailoverv1.RedisF
 				},
 			},
 			Sentinel: redisfailoverv1.SentinelSettings{
-				Enabled:  &sentinelEnabled,
+				Enabled:  ptr.To(true),
 				Replicas: int32(3),
 			},
 			BootstrapNode: generateRFBootstrappingNode(bootstrapping),
@@ -222,8 +222,7 @@ func TestEnsureErrorBranches(t *testing.T) {
 
 			rf := generateRF(test.exporter, false)
 			if !test.sentinelsAllowed {
-				disabled := false
-				rf.Spec.Sentinel.Enabled = &disabled
+				rf.Spec.Sentinel.Enabled = ptr.To(false)
 			}
 
 			config := generateConfig()

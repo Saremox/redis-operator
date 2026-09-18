@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
@@ -45,8 +46,7 @@ func TestSentinelDeploymentDisablesServiceLinks(t *testing.T) {
 	assert := assert.New(t)
 
 	rf := generateRF()
-	sentinelOn := true
-	rf.Spec.Sentinel.Enabled = &sentinelOn
+	rf.Spec.Sentinel.Enabled = ptr.To(true)
 
 	var gotD *appsv1.Deployment
 	ms := &mK8SService.Services{}
