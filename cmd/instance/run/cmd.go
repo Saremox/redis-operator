@@ -136,8 +136,18 @@ func runProcessLoop(ctx context.Context, cancel context.CancelFunc) error {
 	defer signal.Stop(sigChan)
 
 	for {
-		// Start Redis as a child process
-		redisCmd := exec.CommandContext(ctx, defaultRedisCommand, redisConf)
+		// Start Redis as a child process.
+		//
+		// When REDIS_PASSWORD is set, pass requirepass/masterauth as arguments
+		// rather than writing them into redis.conf. The operator stopped baking
+		// the password into the ConfigMap (upstream Saremox/redis-operator#135);
+		// passing it here keeps the secret out of every cluster object while this
+		// manager stays PID 1 so SIGTERM still reaches redis for a clean shutdown.
+		redisArgs := []string{redisConf}
+		if pw := os.Getenv("REDIS_PASSWORD"); pw != "" {
+			redisArgs = append(redisArgs, "--requirepass", pw, "--masterauth", pw)
+		}
+		redisCmd := exec.CommandContext(ctx, defaultRedisCommand, redisArgs...)
 		redisCmd.Stdout = os.Stdout
 		redisCmd.Stderr = os.Stderr
 		redisCmd.Stdin = os.Stdin
