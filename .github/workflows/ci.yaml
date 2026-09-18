@@ -78,6 +78,11 @@ jobs:
           kubernetes-version: ${{ matrix.kubernetes }}
           minikube-version: 1.39.0
           driver: none
+          # minikube 1.39.0 defaults to containerd, which it flags as
+          # untested with driver=none and which fails here (crictl can't
+          # reach containerd's CRI socket). Pin back to docker/cri-dockerd,
+          # which this job already installs and which worked before.
+          container-runtime: docker
       - name: Add redisfailover CRD
         run: kubectl create -f manifests/databases.spotahome.com_redisfailovers.yaml
       - run: make ci-integration-test
