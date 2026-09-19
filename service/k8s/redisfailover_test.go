@@ -104,4 +104,33 @@ func TestRedisFailoverServiceUpdateRedisFailoverStatus(t *testing.T) {
 			service.UpdateRedisFailoverStatus(context.TODO(), testns, rf, metav1.PatchOptions{})
 		})
 	})
+
+	t.Run("a message containing quotes and backslashes is patched verbatim, not mangled into invalid JSON", func(t *testing.T) {
+		// The patch used to be built with fmt.Sprintf directly into a JSON
+		// string literal: a Message like this one would have produced invalid
+		// JSON and made the whole patch call fail silently (logged, not
+		// returned). json.Marshal escapes it correctly instead.
+		trickyRF := &redisfailoverv1.RedisFailover{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "rf-tricky",
+				Namespace: testns,
+			},
+			Status: redisfailoverv1.RedisFailoverStatus{
+				State:       redisfailoverv1.NotHealthyState,
+				LastChanged: "2026-08-23T00:00:00Z",
+				Message:     `error: "connection refused" on host\path`,
+			},
+		}
+
+		crdcli := redisfailoverfake.NewSimpleClientset(trickyRF)
+		service := k8s.NewRedisFailoverService(crdcli, log.Dummy, metrics.Dummy)
+
+		assert.NotPanics(t, func() {
+			service.UpdateRedisFailoverStatus(context.TODO(), testns, trickyRF, metav1.PatchOptions{})
+		})
+
+		got, err := crdcli.DatabasesV1().RedisFailovers(testns).Get(context.TODO(), "rf-tricky", metav1.GetOptions{})
+		assert.NoError(t, err)
+		assert.Equal(t, trickyRF.Status.Message, got.Status.Message)
+	})
 }

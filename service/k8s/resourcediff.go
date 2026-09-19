@@ -27,20 +27,14 @@ import (
 // desired is compared as built, so a real difference desired does specify
 // still surfaces normally.
 func statefulSetUpToDate(stored, desired *appsv1.StatefulSet) bool {
-	if !mapsEqual(stored.Labels, desired.Labels) {
+	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
 	}
 	// Annotations are compared as-is (not normalized) because
 	// CreateOrUpdateStatefulSet merges stored's annotations into desired
 	// before this check runs, so by this point desired.Annotations already
 	// equals stored.Annotations unless the merge actually changed something.
-	// mapsEqual (not equality.Semantic.DeepEqual) matters here specifically:
-	// util.MergeAnnotations always returns a non-nil map, even merging two
-	// nils, while a real object with no annotations set comes back from the
-	// API server with a nil map - a plain DeepEqual would see nil vs. {} as
-	// a permanent difference on every reconcile of any RedisFailover with no
-	// custom annotations.
-	if !mapsEqual(stored.Annotations, desired.Annotations) {
+	if !equality.Semantic.DeepEqual(stored.Annotations, desired.Annotations) {
 		return false
 	}
 
@@ -63,7 +57,7 @@ func statefulSetUpToDate(stored, desired *appsv1.StatefulSet) bool {
 // annotation-only drift. If a caller ever starts setting Deployment-level
 // annotations from the RedisFailover spec, this needs revisiting.
 func deploymentUpToDate(stored, desired *appsv1.Deployment) bool {
-	if !mapsEqual(stored.Labels, desired.Labels) {
+	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
 	}
 
@@ -92,10 +86,10 @@ func deploymentUpToDate(stored, desired *appsv1.Deployment) bool {
 // pointer), neither of which any of the Service builders in generator.go
 // ever set.
 func serviceUpToDate(stored, desired *corev1.Service) bool {
-	if !mapsEqual(stored.Labels, desired.Labels) {
+	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
 	}
-	if !mapsEqual(stored.Annotations, desired.Annotations) {
+	if !equality.Semantic.DeepEqual(stored.Annotations, desired.Annotations) {
 		return false
 	}
 
@@ -111,13 +105,13 @@ func serviceUpToDate(stored, desired *corev1.Service) bool {
 // its doc comment for the general comparison strategy. ConfigMap has no
 // Spec, no server-side defaulting on its Data/BinaryData, and none of the
 // ConfigMap builders in generator.go set annotations, so no normalization is
-// needed beyond the nil-vs-empty-map handling mapsEqual already gives Labels
-// and Annotations.
+// needed beyond the nil-vs-empty-map handling equality.Semantic.DeepEqual
+// already gives Labels and Annotations.
 func configMapUpToDate(stored, desired *corev1.ConfigMap) bool {
-	if !mapsEqual(stored.Labels, desired.Labels) {
+	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
 	}
-	if !mapsEqual(stored.Annotations, desired.Annotations) {
+	if !equality.Semantic.DeepEqual(stored.Annotations, desired.Annotations) {
 		return false
 	}
 	return equality.Semantic.DeepEqual(stored.Data, desired.Data) &&
@@ -129,9 +123,10 @@ func configMapUpToDate(stored, desired *corev1.ConfigMap) bool {
 // strategy. generatePodDisruptionBudget never sets MaxAvailable or
 // UnhealthyPodEvictionPolicy, and neither is known to be defaulted to a
 // non-zero value by the API server, so - unlike StatefulSet/Deployment/
-// Service - no normalization is needed here beyond mapsEqual for Labels.
+// Service - no normalization is needed here beyond equality.Semantic.
+// DeepEqual's nil-vs-empty-map handling for Labels.
 func podDisruptionBudgetUpToDate(stored, desired *policyv1.PodDisruptionBudget) bool {
-	if !mapsEqual(stored.Labels, desired.Labels) {
+	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
 	}
 	return equality.Semantic.DeepEqual(&stored.Spec, &desired.Spec)
@@ -142,7 +137,7 @@ func podDisruptionBudgetUpToDate(stored, desired *policyv1.PodDisruptionBudget) 
 // generateSentinelServiceAccount sets nothing beyond ObjectMeta, so this only
 // needs to compare Labels.
 func serviceAccountUpToDate(stored, desired *corev1.ServiceAccount) bool {
-	return mapsEqual(stored.Labels, desired.Labels)
+	return equality.Semantic.DeepEqual(stored.Labels, desired.Labels)
 }
 
 // normalizePodSpecForComparison clears, in place, the PodSpec and container
@@ -168,24 +163,4 @@ func normalizePodSpecForComparison(spec *corev1.PodSpec) {
 		spec.InitContainers[i].TerminationMessagePath = ""
 		spec.InitContainers[i].TerminationMessagePolicy = ""
 	}
-}
-
-// mapsEqual reports whether a and b hold the same key/value pairs, treating
-// a nil map and an empty map as equal. A plain DeepEqual does not: desired
-// objects here are built through util.MergeLabels/MergeAnnotations, which
-// always allocate a map even when merging zero or nil inputs, while an
-// object read back from the API server carries a nil map when nothing was
-// ever set on it. Without this, comparing the two would report a permanent
-// difference on every reconcile of any RedisFailover with no custom
-// annotations.
-func mapsEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if bv, ok := b[k]; !ok || bv != v {
-			return false
-		}
-	}
-	return true
 }
