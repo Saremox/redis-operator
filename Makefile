@@ -196,17 +196,21 @@ ifndef DOCKER
 	@exit 1
 endif
 
-# Generate kubernetes code for types..
+# Generate the typed clientset (client/k8s/clientset). DeepCopy used to come
+# out of this same Docker-based generator too, but that moved to
+# generate-deepcopy (controller-gen, no Docker needed) since it's the part
+# that actually goes stale in practice - client-gen output only changes when
+# the RedisFailover API's shape itself changes, which is rare.
 .PHONY: update-codegen
 update-codegen:
-	@echo ">> Generating code for Kubernetes CRD types..."
+	@echo ">> Generating client code for Kubernetes CRD types..."
 	docker run --rm -it \
 	-v $(PWD):/go/src/$(PROJECT_PACKAGE) \
 	-e PROJECT_PACKAGE=$(PROJECT_PACKAGE) \
 	-e CLIENT_GENERATOR_OUT=$(PROJECT_PACKAGE)/client/k8s \
 	-e APIS_ROOT=$(PROJECT_PACKAGE)/api \
 	-e GROUPS_VERSION="redisfailover:v1" \
-	-e GENERATION_TARGETS="deepcopy,client" \
+	-e GENERATION_TARGETS="client" \
 	$(CODEGEN_IMAGE)
 
 # Generate CRD using controller-gen (requires controller-gen v0.20.0+ for Go 1.25+)
@@ -216,3 +220,43 @@ generate-crd:
 	controller-gen crd paths=./api/... output:crd:dir=./manifests
 	cp -f manifests/databases.spotahome.com_redisfailovers.yaml manifests/kustomize/base/
 	cp -f manifests/databases.spotahome.com_redisfailovers.yaml charts/redisoperator/crds/
+
+# Generate DeepCopy methods for the API types (zz_generated.deepcopy.go).
+# Same controller-gen binary as generate-crd - no Docker required, which is
+# what makes this (unlike update-codegen) safe to run from verify-codegen and
+# the pre-commit hook in every contributor's environment.
+.PHONY: generate-deepcopy
+generate-deepcopy:
+	controller-gen object paths=./api/...
+
+# Everything controller-gen can produce without Docker. update-codegen
+# (client-gen) and mocks are separate: still Docker-based, change far less
+# often, and aren't covered by verify-codegen or the pre-commit hook.
+.PHONY: generate-api
+generate-api: generate-deepcopy generate-crd
+
+# Fails if the API types changed without regenerating DeepCopy - i.e.
+# `make generate-deepcopy`'s output doesn't match what's committed. Run by
+# CI (see .github/workflows/ci.yaml) and the pre-commit hook (see
+# .githooks/pre-commit); both call this instead of duplicating the check.
+#
+# Deliberately does NOT also verify the CRD manifest generate-crd produces:
+# that embeds the full schema of every corev1 type RedisFailover references
+# (PodSpec, Volume, ...), which shifts on any controller-gen or k8s.io/api
+# version bump regardless of whether RedisFailover's own fields changed -
+# gating commits on that would fail for reasons unrelated to the change
+# being made. generate-crd stays a manually-run step.
+.PHONY: verify-codegen
+verify-codegen: generate-deepcopy
+	@git diff --exit-code -- api/ || \
+		(echo ""; \
+		echo "Generated DeepCopy code is out of date."; \
+		echo "Run 'make generate-deepcopy' and commit the result."; \
+		exit 1)
+
+# One-time setup per clone: git hooks under .git/hooks aren't version
+# controlled, so this points git at the versioned ones in .githooks instead.
+.PHONY: install-hooks
+install-hooks:
+	git config core.hooksPath .githooks
+	@echo "Git hooks installed from .githooks/. verify-codegen now runs before each commit that touches api/."
