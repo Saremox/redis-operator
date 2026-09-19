@@ -5,7 +5,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
-	apiextensionsfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/utils/ptr"
@@ -86,8 +85,7 @@ func TestSentinelResourceLifecycleSymmetry(t *testing.T) {
 
 	kubecli := kubefake.NewClientset()
 	crdcli := redisfailoverfake.NewSimpleClientset()
-	apiextcli := apiextensionsfake.NewSimpleClientset()
-	k8sService := k8s.New(kubecli, crdcli, apiextcli, log.Dummy, metrics.Dummy)
+	k8sService := k8s.New(kubecli, crdcli, log.Dummy, metrics.Dummy)
 	client := rfservice.NewRedisFailoverKubeClient(k8sService, log.Dummy, metrics.Dummy)
 
 	// Create every Sentinel resource the way Ensure() (ensurer.go) does when
@@ -123,8 +121,7 @@ func TestSentinelResourceLifecycleSymmetryPreservesUserServiceAccount(t *testing
 
 	kubecli := kubefake.NewClientset()
 	crdcli := redisfailoverfake.NewSimpleClientset()
-	apiextcli := apiextensionsfake.NewSimpleClientset()
-	k8sService := k8s.New(kubecli, crdcli, apiextcli, log.Dummy, metrics.Dummy)
+	k8sService := k8s.New(kubecli, crdcli, log.Dummy, metrics.Dummy)
 	client := rfservice.NewRedisFailoverKubeClient(k8sService, log.Dummy, metrics.Dummy)
 
 	// The user's own ServiceAccount, pre-existing and unrelated to the

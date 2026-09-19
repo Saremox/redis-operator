@@ -3,7 +3,6 @@ package v1
 import (
 	"github.com/saremox/redis-operator/api/redisfailover"
 
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -15,10 +14,7 @@ const (
 
 // Team constants
 const (
-	RFKind       = "RedisFailover"
-	RFName       = "redisfailover"
-	RFNamePlural = "redisfailovers"
-	RFScope      = apiextensionsv1.NamespaceScoped
+	RFKind = "RedisFailover"
 )
 
 // SchemeGroupVersion is group version used to register these objects

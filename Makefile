@@ -64,8 +64,6 @@ GO_GENERATE_CMD := go generate `go list ./... | grep -v /vendor/`
 # comfortably exceed 10m against a minikube runner without either being slow
 # on its own.
 GO_INTEGRATION_TEST_CMD := go test `go list ./... | grep test/integration` -v -tags='integration' -timeout=30m
-GET_DEPS_CMD := dep ensure
-UPDATE_DEPS_CMD := dep ensure
 MOCKS_CMD := go generate ./mocks
 
 # environment dirs
@@ -186,14 +184,6 @@ go-generate: docker-build
 .PHONY: generate
 generate: go-generate
 
-.PHONY: get-deps
-get-deps: docker-build
-	docker run -ti --rm -v $(PWD):$(WORKDIR) -u $(UID):$(UID) --name $(SERVICE_NAME) $(REPOSITORY)-dev /bin/sh -c '$(GET_DEPS_CMD)'
-
-.PHONY: update-deps
-update-deps: docker-build
-	docker run -ti --rm -v $(PWD):$(WORKDIR) -u $(UID):$(UID) --name $(SERVICE_NAME) $(REPOSITORY)-dev /bin/sh -c '$(UPDATE_DEPS_CMD)'
-
 .PHONY: mocks
 mocks: docker-build
 	docker run -ti --rm -v $(PWD):$(WORKDIR) -u $(UID):$(UID) --name $(SERVICE_NAME) $(REPOSITORY)-dev /bin/sh -c '$(MOCKS_CMD)'
@@ -226,14 +216,3 @@ generate-crd:
 	controller-gen crd paths=./api/... output:crd:dir=./manifests
 	cp -f manifests/databases.spotahome.com_redisfailovers.yaml manifests/kustomize/base/
 	cp -f manifests/databases.spotahome.com_redisfailovers.yaml charts/redisoperator/crds/
-
-# Legacy CRD generation using docker (deprecated - use generate-crd instead)
-.PHONY: generate-crd-docker
-generate-crd-docker:
-	docker run -it --rm \
-	-v $(PWD):/go/src/$(PROJECT_PACKAGE) \
-	-e GO_PROJECT_ROOT=/go/src/$(PROJECT_PACKAGE) \
-	-e CRD_TYPES_PATH=/go/src/$(PROJECT_PACKAGE)/api \
-	-e CRD_OUT_PATH=/go/src/$(PROJECT_PACKAGE)/manifests \
-	$(CODEGEN_IMAGE) update-crd.sh
-	cp -f manifests/databases.spotahome.com_redisfailovers.yaml manifests/kustomize/base

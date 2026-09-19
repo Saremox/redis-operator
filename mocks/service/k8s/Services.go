@@ -13,8 +13,6 @@ import (
 
 	policyv1 "k8s.io/api/policy/v1"
 
-	rbacv1 "k8s.io/api/rbac/v1"
-
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 
 	v1 "k8s.io/api/core/v1"
@@ -55,20 +53,6 @@ func (_m *Services) CreateDeployment(namespace string, deployment *appsv1.Deploy
 	return r0
 }
 
-// CreateIfNotExistsService provides a mock function with given fields: namespace, service
-func (_m *Services) CreateIfNotExistsService(namespace string, service *v1.Service) error {
-	ret := _m.Called(namespace, service)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *v1.Service) error); ok {
-		r0 = rf(namespace, service)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
 // CreateOrUpdateConfigMap provides a mock function with given fields: namespace, np
 func (_m *Services) CreateOrUpdateConfigMap(namespace string, np *v1.ConfigMap) error {
 	ret := _m.Called(namespace, np)
@@ -97,20 +81,6 @@ func (_m *Services) CreateOrUpdateDeployment(namespace string, deployment *appsv
 	return r0
 }
 
-// CreateOrUpdatePod provides a mock function with given fields: namespace, pod
-func (_m *Services) CreateOrUpdatePod(namespace string, pod *v1.Pod) error {
-	ret := _m.Called(namespace, pod)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *v1.Pod) error); ok {
-		r0 = rf(namespace, pod)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
 // CreateOrUpdatePodDisruptionBudget provides a mock function with given fields: namespace, podDisruptionBudget
 func (_m *Services) CreateOrUpdatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
 	ret := _m.Called(namespace, podDisruptionBudget)
@@ -118,34 +88,6 @@ func (_m *Services) CreateOrUpdatePodDisruptionBudget(namespace string, podDisru
 	var r0 error
 	if rf, ok := ret.Get(0).(func(string, *policyv1.PodDisruptionBudget) error); ok {
 		r0 = rf(namespace, podDisruptionBudget)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// CreateOrUpdateRole provides a mock function with given fields: namespace, binding
-func (_m *Services) CreateOrUpdateRole(namespace string, binding *rbacv1.Role) error {
-	ret := _m.Called(namespace, binding)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *rbacv1.Role) error); ok {
-		r0 = rf(namespace, binding)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// CreateOrUpdateRoleBinding provides a mock function with given fields: namespace, binding
-func (_m *Services) CreateOrUpdateRoleBinding(namespace string, binding *rbacv1.RoleBinding) error {
-	ret := _m.Called(namespace, binding)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *rbacv1.RoleBinding) error); ok {
-		r0 = rf(namespace, binding)
 	} else {
 		r0 = ret.Error(0)
 	}
@@ -195,20 +137,6 @@ func (_m *Services) CreateOrUpdateStatefulSet(namespace string, statefulSet *app
 	return r0
 }
 
-// CreatePod provides a mock function with given fields: namespace, pod
-func (_m *Services) CreatePod(namespace string, pod *v1.Pod) error {
-	ret := _m.Called(namespace, pod)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *v1.Pod) error); ok {
-		r0 = rf(namespace, pod)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
 // CreatePodDisruptionBudget provides a mock function with given fields: namespace, podDisruptionBudget
 func (_m *Services) CreatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
 	ret := _m.Called(namespace, podDisruptionBudget)
@@ -216,34 +144,6 @@ func (_m *Services) CreatePodDisruptionBudget(namespace string, podDisruptionBud
 	var r0 error
 	if rf, ok := ret.Get(0).(func(string, *policyv1.PodDisruptionBudget) error); ok {
 		r0 = rf(namespace, podDisruptionBudget)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// CreateRole provides a mock function with given fields: namespace, role
-func (_m *Services) CreateRole(namespace string, role *rbacv1.Role) error {
-	ret := _m.Called(namespace, role)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *rbacv1.Role) error); ok {
-		r0 = rf(namespace, role)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// CreateRoleBinding provides a mock function with given fields: namespace, binding
-func (_m *Services) CreateRoleBinding(namespace string, binding *rbacv1.RoleBinding) error {
-	ret := _m.Called(namespace, binding)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *rbacv1.RoleBinding) error); ok {
-		r0 = rf(namespace, binding)
 	} else {
 		r0 = ret.Error(0)
 	}
@@ -391,32 +291,6 @@ func (_m *Services) DeleteStatefulSet(namespace string, name string) error {
 	return r0
 }
 
-// GetClusterRole provides a mock function with given fields: name
-func (_m *Services) GetClusterRole(name string) (*rbacv1.ClusterRole, error) {
-	ret := _m.Called(name)
-
-	var r0 *rbacv1.ClusterRole
-	var r1 error
-	if rf, ok := ret.Get(0).(func(string) (*rbacv1.ClusterRole, error)); ok {
-		return rf(name)
-	}
-	if rf, ok := ret.Get(0).(func(string) *rbacv1.ClusterRole); ok {
-		r0 = rf(name)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*rbacv1.ClusterRole)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(string) error); ok {
-		r1 = rf(name)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
 // GetConfigMap provides a mock function with given fields: namespace, name
 func (_m *Services) GetConfigMap(namespace string, name string) (*v1.ConfigMap, error) {
 	ret := _m.Called(namespace, name)
@@ -535,58 +409,6 @@ func (_m *Services) GetPodDisruptionBudget(namespace string, name string) (*poli
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(*policyv1.PodDisruptionBudget)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(string, string) error); ok {
-		r1 = rf(namespace, name)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// GetRole provides a mock function with given fields: namespace, name
-func (_m *Services) GetRole(namespace string, name string) (*rbacv1.Role, error) {
-	ret := _m.Called(namespace, name)
-
-	var r0 *rbacv1.Role
-	var r1 error
-	if rf, ok := ret.Get(0).(func(string, string) (*rbacv1.Role, error)); ok {
-		return rf(namespace, name)
-	}
-	if rf, ok := ret.Get(0).(func(string, string) *rbacv1.Role); ok {
-		r0 = rf(namespace, name)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*rbacv1.Role)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(string, string) error); ok {
-		r1 = rf(namespace, name)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// GetRoleBinding provides a mock function with given fields: namespace, name
-func (_m *Services) GetRoleBinding(namespace string, name string) (*rbacv1.RoleBinding, error) {
-	ret := _m.Called(namespace, name)
-
-	var r0 *rbacv1.RoleBinding
-	var r1 error
-	if rf, ok := ret.Get(0).(func(string, string) (*rbacv1.RoleBinding, error)); ok {
-		return rf(namespace, name)
-	}
-	if rf, ok := ret.Get(0).(func(string, string) *rbacv1.RoleBinding); ok {
-		r0 = rf(namespace, name)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*rbacv1.RoleBinding)
 		}
 	}
 
@@ -939,20 +761,6 @@ func (_m *Services) UpdateDeployment(namespace string, deployment *appsv1.Deploy
 	return r0
 }
 
-// UpdatePod provides a mock function with given fields: namespace, pod
-func (_m *Services) UpdatePod(namespace string, pod *v1.Pod) error {
-	ret := _m.Called(namespace, pod)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *v1.Pod) error); ok {
-		r0 = rf(namespace, pod)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
 // UpdatePodDisruptionBudget provides a mock function with given fields: namespace, podDisruptionBudget
 func (_m *Services) UpdatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
 	ret := _m.Called(namespace, podDisruptionBudget)
@@ -974,34 +782,6 @@ func (_m *Services) UpdatePodLabels(namespace string, podName string, labels map
 	var r0 error
 	if rf, ok := ret.Get(0).(func(string, string, map[string]string) error); ok {
 		r0 = rf(namespace, podName, labels)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// UpdateRole provides a mock function with given fields: namespace, role
-func (_m *Services) UpdateRole(namespace string, role *rbacv1.Role) error {
-	ret := _m.Called(namespace, role)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *rbacv1.Role) error); ok {
-		r0 = rf(namespace, role)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// UpdateRoleBinding provides a mock function with given fields: namespace, binding
-func (_m *Services) UpdateRoleBinding(namespace string, binding *rbacv1.RoleBinding) error {
-	ret := _m.Called(namespace, binding)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *rbacv1.RoleBinding) error); ok {
-		r0 = rf(namespace, binding)
 	} else {
 		r0 = ret.Error(0)
 	}
