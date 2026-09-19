@@ -39,6 +39,12 @@ func TestCheckAndHeal(t *testing.T) {
 		redisSetMasterOnAllOK          bool
 		bootstrapping                  bool
 		allowSentinels                 bool
+		// wantState overrides the default expErr-derived expected state
+		// (NotHealthy-with-error / Healthy-with-no-error) for cases where the
+		// function legitimately returns nil while still being unhealthy - e.g.
+		// checkAndHealBootstrapMode's "not all replicas running" gate, which
+		// waits for the next reconcile rather than erroring.
+		wantState string
 	}{
 		{
 			name:                           "Everything ok, no need to heal",
@@ -215,6 +221,10 @@ func TestCheckAndHeal(t *testing.T) {
 			redisSetMasterOnAllOK: true,
 			bootstrapping:         true,
 			allowSentinels:        false,
+			// checkAndHealBootstrapMode's redis-not-running gate must report
+			// NotHealthy even though it returns nil (it's waiting for the next
+			// reconcile, not failing outright).
+			wantState: v1.NotHealthyState,
 		},
 		{
 			name:                  "Bootstrapping Mode with failure to set master on all",
@@ -443,7 +453,10 @@ func TestCheckAndHeal(t *testing.T) {
 			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 			err := handler.CheckAndHeal(rf)
 
-			if expErr {
+			if test.wantState != "" {
+				assertTest.NoError(err)
+				assertTest.Equal(test.wantState, rf.Status.State)
+			} else if expErr {
 				assertTest.Error(err)
 				assertTest.Equal(v1.NotHealthyState, rf.Status.State)
 			} else {
