@@ -112,7 +112,7 @@ func (c *client) GetNumberSentinelsInMemory(ip string) (int32, error) {
 		return 0, err
 	}
 	if nSentinels > 65536 {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, metrics.SENTINEL_TOO_MANY)
+		c.recordSentinelCountOverflow(ip, metrics.GET_NUM_SENTINELS_IN_MEM)
 		return 0, err
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.SUCCESS, metrics.NOT_APPLICABLE)
@@ -153,11 +153,24 @@ func (c *client) GetNumberSentinelSlavesInMemory(ip string) (int32, error) {
 		return 0, err
 	}
 	if nSlaves > 65536 {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, metrics.SENTINEL_TOO_MANY)
+		c.recordSentinelCountOverflow(ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM)
 		return 0, err
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return int32(nSlaves), nil
+}
+
+// recordSentinelCountOverflow is the shared ">65536" guard used by
+// GetNumberSentinelsInMemory and GetNumberSentinelSlavesInMemory: a count
+// that large almost certainly means a parsing or protocol anomaly rather
+// than a real census, so it's treated as a failure rather than trusted.
+// Split out so this branch - reachable in principle but not practically
+// triggerable against a real Sentinel process, since this package
+// deliberately tests against real Redis/Sentinel subprocesses rather than a
+// mocked wire protocol (see testutil_test.go) - can still be unit tested
+// directly.
+func (c *client) recordSentinelCountOverflow(ip string, metric string) {
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metric, metrics.FAIL, metrics.SENTINEL_TOO_MANY)
 }
 
 func isSentinelReady(info string) error {
