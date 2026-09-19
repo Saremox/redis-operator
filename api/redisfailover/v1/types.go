@@ -72,6 +72,11 @@ type RedisSettings struct {
 	CustomReadinessProbe          *corev1.Probe                     `json:"customReadinessProbe,omitempty"`
 	CustomStartupProbe            *corev1.Probe                     `json:"customStartupProbe,omitempty"`
 	DisablePodDisruptionBudget    bool                              `json:"disablePodDisruptionBudget,omitempty"`
+	// PreventMasterEviction, when true, annotates the current master pod with
+	// cluster-autoscaler.kubernetes.io/safe-to-evict=false so the cluster
+	// autoscaler will not drain the node running the master. Slaves are marked
+	// evictable. Defaults to false.
+	PreventMasterEviction bool `json:"preventMasterEviction,omitempty"`
 }
 
 // SentinelSettings defines the specification of the sentinel cluster
