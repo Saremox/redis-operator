@@ -9,8 +9,10 @@ import (
 	"github.com/stretchr/testify/mock"
 	"k8s.io/utils/ptr"
 
+	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
+	mMetrics "github.com/saremox/redis-operator/mocks/metrics"
 	mRFService "github.com/saremox/redis-operator/mocks/operator/redisfailover/service"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	rfOperator "github.com/saremox/redis-operator/operator/redisfailover"
@@ -71,6 +73,9 @@ func TestHandleSkipReconcileAnnotation(t *testing.T) {
 
 			config := generateConfig()
 			mk := &mK8SService.Services{}
+			// CheckAndHeal always defers updateStatus, on every return path;
+			// only reached when reconciliation isn't skipped.
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfs := &mRFService.RedisFailoverClient{}
@@ -193,6 +198,8 @@ func TestHandleCheckAndHealError(t *testing.T) {
 
 	config := generateConfig()
 	mk := &mK8SService.Services{}
+	// CheckAndHeal always defers updateStatus, on every return path.
+	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfs := &mRFService.RedisFailoverClient{}
@@ -284,6 +291,8 @@ func TestHandleGetLabelsWhitelistFiltering(t *testing.T) {
 
 			config := generateConfig()
 			mk := &mK8SService.Services{}
+			// CheckAndHeal always defers updateStatus, on every return path.
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfs := &mRFService.RedisFailoverClient{}
@@ -323,6 +332,80 @@ func TestHandleGetLabelsWhitelistFiltering(t *testing.T) {
 
 			mrfs.AssertExpectations(t)
 			mrfc.AssertExpectations(t)
+		})
+	}
+}
+
+// TestHandleRecordsClusterMetrics verifies Handle reports the RedisFailover's
+// health via mClient.SetClusterOK/SetClusterError - the signal actually used
+// to know a failover succeeded or failed - rather than just exercising these
+// as no-ops against metrics.Dummy like every other test in this package.
+func TestHandleRecordsClusterMetrics(t *testing.T) {
+	tests := []struct {
+		name             string
+		setup            func(rf *redisfailoverv1.RedisFailover, mrfs *mRFService.RedisFailoverClient, mrfc *mRFService.RedisFailoverCheck)
+		extraMetricsStub func(mrec *mMetrics.Recorder)
+		wantMethod       string
+	}{
+		{
+			name: "successful reconcile reports cluster OK",
+			setup: func(rf *redisfailoverv1.RedisFailover, mrfs *mRFService.RedisFailoverClient, mrfc *mRFService.RedisFailoverCheck) {
+				mrfs.On("EnsureNotPresentRedisService", rf).Once().Return(nil)
+				mrfs.On("EnsureNotPresentSentinelResources", rf).Once().Return(nil)
+				mrfs.On("EnsureRedisMasterService", rf, mock.Anything, mock.Anything).Once().Return(nil)
+				mrfs.On("EnsureRedisSlaveService", rf, mock.Anything, mock.Anything).Once().Return(nil)
+				mrfs.On("EnsureRedisConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
+				mrfs.On("EnsureRedisShutdownConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
+				mrfs.On("EnsureRedisReadinessConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
+				mrfs.On("EnsureRedisStatefulset", rf, mock.Anything, mock.Anything).Once().Return(nil)
+				mrfc.On("IsRedisRunning", rf).Once().Return(false)
+			},
+			extraMetricsStub: func(mrec *mMetrics.Recorder) {
+				// checkAndHealBootstrapMode also records a redis-check metric
+				// for the "not all replicas running" branch it takes here.
+				mrec.On("RecordRedisCheck", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Once()
+			},
+			wantMethod: "SetClusterOK",
+		},
+		{
+			name: "validation failure reports cluster error",
+			setup: func(rf *redisfailoverv1.RedisFailover, mrfs *mRFService.RedisFailoverClient, mrfc *mRFService.RedisFailoverCheck) {
+				rf.Name = "this-name-is-far-too-long-to-pass-the-forty-eight-character-limit"
+			},
+			wantMethod: "SetClusterError",
+		},
+		{
+			name: "ensure failure reports cluster error",
+			setup: func(rf *redisfailoverv1.RedisFailover, mrfs *mRFService.RedisFailoverClient, mrfc *mRFService.RedisFailoverCheck) {
+				mrfs.On("EnsureNotPresentRedisService", rf).Once().Return(errors.New("ensure boom"))
+			},
+			wantMethod: "SetClusterError",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF(false, true)
+			config := generateConfig()
+			mk := &mK8SService.Services{}
+			// Reached only by the successful-reconcile case (CheckAndHeal always
+			// defers updateStatus), but harmless to configure unconditionally.
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfs := &mRFService.RedisFailoverClient{}
+			test.setup(rf, mrfs, mrfc)
+
+			mrec := &mMetrics.Recorder{}
+			mrec.On(test.wantMethod, rf.Namespace, rf.Name).Once()
+			if test.extraMetricsStub != nil {
+				test.extraMetricsStub(mrec)
+			}
+
+			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, mrec, log.Dummy)
+			_ = handler.Handle(context.Background(), rf)
+
+			mrec.AssertExpectations(t)
 		})
 	}
 }
