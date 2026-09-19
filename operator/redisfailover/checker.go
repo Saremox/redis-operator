@@ -146,14 +146,11 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		return r.checkAndHealOperatorManagedMode(rf)
 	}
 
-	// Number of redis is equal as the set on the RF spec
-	// Number of sentinel is equal as the set on the RF spec
-	// Check only one master
-	// Number of redis master is 1
-	// All redis slaves have the same master
-	// All sentinels points to the same redis master
-	// Sentinel has not death nodes
-	// Sentinel knows the correct slave number
+	// From here on, sentinel-managed mode checks and heals: a quorum of Redis
+	// and Sentinel pods running, exactly one Redis master with every slave
+	// replicating from it, and the custom Redis config applied. These are
+	// quorum-based (a majority, not an exact headcount match against the RF
+	// spec) - see the comment below on IsRedisRunningQuorum for why.
 
 	// Heal as long as a quorum (majority) of pods is running rather than requiring
 	// the full set. A single Pending pod (unschedulable affinity, AZ loss) must not

@@ -77,7 +77,8 @@ type RedisSettings struct {
 // SentinelSettings defines the specification of the sentinel cluster
 type SentinelSettings struct {
 	// Enabled controls whether Sentinel is deployed. When false, the operator
-	// manages failover instead of Sentinel. Defaults to true.
+	// manages failover instead of Sentinel. Defaults to false (operator-managed
+	// failover) since v4.0.0.
 	Enabled *bool `json:"enabled,omitempty"`
 	// FailoverTimeout is how long to wait before promoting a replica when
 	// operator-managed failover is used (sentinel.enabled=false). Defaults to 10s.
