@@ -2,13 +2,12 @@ package k8s
 
 import (
 	"context"
-	"fmt"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/saremox/redis-operator/log"
@@ -60,11 +59,7 @@ func (d *DeploymentService) GetDeploymentPods(namespace, name string) (*corev1.P
 	if err != nil {
 		return nil, err
 	}
-	labels := []string{}
-	for k, v := range deployment.Spec.Selector.MatchLabels {
-		labels = append(labels, fmt.Sprintf("%s=%s", k, v))
-	}
-	selector := strings.Join(labels, ",")
+	selector := labels.Set(deployment.Spec.Selector.MatchLabels).String()
 	return d.kubeClient.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: selector})
 }
 

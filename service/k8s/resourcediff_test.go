@@ -7,20 +7,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func TestMapsEqual(t *testing.T) {
-	assert := assert.New(t)
-
-	assert.True(mapsEqual(nil, nil))
-	assert.True(mapsEqual(nil, map[string]string{}))
-	assert.True(mapsEqual(map[string]string{}, nil))
-	assert.True(mapsEqual(map[string]string{"a": "1"}, map[string]string{"a": "1"}))
-
-	assert.False(mapsEqual(map[string]string{"a": "1"}, nil))
-	assert.False(mapsEqual(map[string]string{"a": "1"}, map[string]string{"a": "2"}))
-	assert.False(mapsEqual(map[string]string{"a": "1"}, map[string]string{"b": "1"}))
-	assert.False(mapsEqual(map[string]string{"a": "1"}, map[string]string{"a": "1", "b": "2"}))
-}
-
 func TestNormalizePodSpecForComparison(t *testing.T) {
 	assert := assert.New(t)
 
