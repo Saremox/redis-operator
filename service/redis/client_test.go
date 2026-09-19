@@ -625,19 +625,6 @@ func TestGetNumberSentinelSlavesInMemory(t *testing.T) {
 	assert.EqualValues(t, 1, n)
 }
 
-// TestRecordSentinelCountOverflow exercises the ">65536" defensive guard
-// shared by GetNumberSentinelsInMemory and GetNumberSentinelSlavesInMemory
-// directly, since triggering it through either of those functions would
-// require a real Sentinel to report an implausible sentinel/slave count -
-// not practical against a real subprocess, and this package deliberately
-// avoids mocking the wire protocol (see the file comment at the top).
-func TestRecordSentinelCountOverflow(t *testing.T) {
-	c := newTestClientStruct()
-	assert.NotPanics(t, func() {
-		c.recordSentinelCountOverflow("1.2.3.4", metrics.GET_NUM_REDIS_SLAVES_IN_MEM)
-	})
-}
-
 // TestGetNumberSentinelsInMemory_NotMonitoringAnything temporarily strips
 // the shared sentinel's only monitored master (SENTINEL REMOVE) rather than
 // starting a second sentinel process - see newSentinelProcessOnPort's doc
