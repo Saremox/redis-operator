@@ -36,6 +36,18 @@ jobs:
           version: v2.13.2
           args: --timeout=15m
 
+  verify-codegen:
+    name: Verify generated code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install controller-gen
+        run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+      - run: make verify-codegen
+
   unit-test:
     name: Unit test
     runs-on: ubuntu-latest

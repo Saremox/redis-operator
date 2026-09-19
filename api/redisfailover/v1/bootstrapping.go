@@ -11,8 +11,10 @@ func (r *RedisFailover) Bootstrapping() bool {
 	return r.Spec.BootstrapNode != nil
 }
 
-// SentinelEnabled returns true if Sentinel is enabled (the default behavior).
-// Returns false when sentinel.enabled is explicitly set to false.
+// SentinelEnabled returns true if Sentinel is enabled. Since v4.0.0 the
+// default (when sentinel.enabled is unset) is false - operator-managed
+// failover - so this only returns true when sentinel.enabled is explicitly
+// set to true.
 func (r *RedisFailover) SentinelEnabled() bool {
 	if r.Spec.Sentinel.Enabled == nil {
 		return DefaultSentinelEnabled
@@ -22,7 +24,7 @@ func (r *RedisFailover) SentinelEnabled() bool {
 
 // SentinelsAllowed returns true if sentinels should be deployed.
 // Sentinels are allowed when:
-// - sentinel.enabled is true (or not specified, defaults to true), AND
+// - sentinel.enabled is explicitly true (unset defaults to false since v4.0.0), AND
 // - either not bootstrapping, or bootstrapping with AllowSentinels=true
 func (r *RedisFailover) SentinelsAllowed() bool {
 	if !r.SentinelEnabled() {

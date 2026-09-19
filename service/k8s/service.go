@@ -16,7 +16,6 @@ import (
 type Service interface {
 	GetService(namespace string, name string) (*corev1.Service, error)
 	CreateService(namespace string, service *corev1.Service) error
-	CreateIfNotExistsService(namespace string, service *corev1.Service) error
 	UpdateService(namespace string, service *corev1.Service) error
 	CreateOrUpdateService(namespace string, service *corev1.Service) error
 	DeleteService(namespace string, name string) error
@@ -56,17 +55,6 @@ func (s *ServiceService) CreateService(namespace string, service *corev1.Service
 		return err
 	}
 	s.logger.WithField("namespace", namespace).WithField("serviceName", service.Name).Debugf("service created")
-	return nil
-}
-
-func (s *ServiceService) CreateIfNotExistsService(namespace string, service *corev1.Service) error {
-	if _, err := s.GetService(namespace, service.Name); err != nil {
-		// If no resource we need to create.
-		if errors.IsNotFound(err) {
-			return s.CreateService(namespace, service)
-		}
-		return err
-	}
 	return nil
 }
 
