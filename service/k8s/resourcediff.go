@@ -7,6 +7,16 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 )
 
+// The *UpToDate functions below all follow the same pattern: compare a live
+// stored object against a desired one built by this codebase's generator.go,
+// so CreateOrUpdate can skip a no-op write. Each normalizes away a specific
+// set of fields that the API server fills in with its own default but that
+// the relevant generator.go builder never sets - left unnormalized, those
+// fields would make stored differ from desired on every reconcile even when
+// nothing meaningful changed. Only ever normalize a copy of stored, never
+// desired: desired already leaves these fields unset, and clearing them
+// there too would silently accept a real change to one of them.
+
 // statefulSetUpToDate reports whether desired would change anything about
 // stored if applied, so the caller can skip a no-op Update call.
 //
@@ -17,15 +27,11 @@ import (
 // change would be. Comparing the live object's fields directly is what
 // controller-runtime's CreateOrUpdate does too.
 //
-// The comparison is normalized first: fields the API server fills in with a
-// default (RevisionHistoryLimit, PodSpec.RestartPolicy/SchedulerName,
-// container TerminationMessagePath/Policy, ...) are cleared on a copy of
-// stored before comparing, because generateRedisStatefulSet never sets them
-// and so desired never carries the server's default value for them. Left
-// unnormalized, those fields would differ from desired on every reconcile
-// even when nothing meaningful changed. Only the stored copy is touched -
-// desired is compared as built, so a real difference desired does specify
-// still surfaces normally.
+// Normalized here: RevisionHistoryLimit and the PodSpec/container fields
+// normalizePodSpecForComparison clears - none of them are ever set by
+// generateRedisStatefulSet. Only the stored copy is touched - desired is
+// compared as built, so a real difference desired does specify still
+// surfaces normally.
 func statefulSetUpToDate(stored, desired *appsv1.StatefulSet) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
@@ -81,10 +87,8 @@ func deploymentUpToDate(stored, desired *appsv1.Deployment) bool {
 // time this runs, those fields already agree unless something meaningful
 // changed, and this function does not need to normalize them again.
 //
-// What it does normalize: SessionAffinity (the API server defaults it to
-// "None") and InternalTrafficPolicy (defaulted to a non-nil "Cluster"
-// pointer), neither of which any of the Service builders in generator.go
-// ever set.
+// Normalized here: SessionAffinity (the API server defaults it to "None")
+// and InternalTrafficPolicy (defaulted to a non-nil "Cluster" pointer).
 func serviceUpToDate(stored, desired *corev1.Service) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
@@ -103,10 +107,8 @@ func serviceUpToDate(stored, desired *corev1.Service) bool {
 
 // configMapUpToDate is statefulSetUpToDate's counterpart for ConfigMap. See
 // its doc comment for the general comparison strategy. ConfigMap has no
-// Spec, no server-side defaulting on its Data/BinaryData, and none of the
-// ConfigMap builders in generator.go set annotations, so no normalization is
-// needed beyond the nil-vs-empty-map handling equality.Semantic.DeepEqual
-// already gives Labels and Annotations.
+// Spec and no server-side defaulting on its Data/BinaryData, so no
+// normalization is needed here at all.
 func configMapUpToDate(stored, desired *corev1.ConfigMap) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
@@ -120,11 +122,10 @@ func configMapUpToDate(stored, desired *corev1.ConfigMap) bool {
 
 // podDisruptionBudgetUpToDate is statefulSetUpToDate's counterpart for
 // PodDisruptionBudget. See its doc comment for the general comparison
-// strategy. generatePodDisruptionBudget never sets MaxAvailable or
-// UnhealthyPodEvictionPolicy, and neither is known to be defaulted to a
-// non-zero value by the API server, so - unlike StatefulSet/Deployment/
-// Service - no normalization is needed here beyond equality.Semantic.
-// DeepEqual's nil-vs-empty-map handling for Labels.
+// strategy. Unlike StatefulSet/Deployment/Service, no normalization is
+// needed here: MaxAvailable and UnhealthyPodEvictionPolicy are the only
+// fields the API server is known to default, and generatePodDisruptionBudget
+// never sets either.
 func podDisruptionBudgetUpToDate(stored, desired *policyv1.PodDisruptionBudget) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
@@ -142,14 +143,10 @@ func serviceAccountUpToDate(stored, desired *corev1.ServiceAccount) bool {
 
 // normalizePodSpecForComparison clears, in place, the PodSpec and container
 // fields that neither generateRedisStatefulSet nor generateSentinelDeployment
-// ever set and that the API server fills in with its own default
-// (PodSpec.RestartPolicy, PodSpec.SchedulerName, PodSpec.
-// DeprecatedServiceAccount mirroring ServiceAccountName, and each
-// container's TerminationMessagePath/TerminationMessagePolicy). It must only
-// ever be called on a copy of a live (stored) object, never on a desired
-// object being built for a write: desired already leaves these fields unset,
-// and clearing them there too would silently accept a real change to one of
-// them.
+// ever set and that the API server fills in with its own default:
+// PodSpec.RestartPolicy, PodSpec.SchedulerName, PodSpec.
+// DeprecatedServiceAccount (mirroring ServiceAccountName), and each
+// container's TerminationMessagePath/TerminationMessagePolicy.
 func normalizePodSpecForComparison(spec *corev1.PodSpec) {
 	spec.RestartPolicy = ""
 	spec.SchedulerName = ""
