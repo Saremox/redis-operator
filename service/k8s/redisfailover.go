@@ -22,6 +22,10 @@ type RedisFailover interface {
 	// WatchRedisFailovers watches the redisfailovers on a cluster.
 	WatchRedisFailovers(ctx context.Context, namespace string, opts metav1.ListOptions) (watch.Interface, error)
 	UpdateRedisFailoverStatus(ctx context.Context, namespace string, redisFailover *redisfailoverv1.RedisFailover, opts metav1.PatchOptions)
+	// PatchRedisFailoverFinalizers replaces a RedisFailover's finalizers list
+	// with the given one. Finalizers live under metadata, not the status
+	// subresource, so this can't go through UpdateRedisFailoverStatus.
+	PatchRedisFailoverFinalizers(ctx context.Context, namespace string, name string, finalizers []string, opts metav1.PatchOptions) error
 }
 
 // RedisFailoverService is the RedisFailover service implementation using API calls to kubernetes.
@@ -81,4 +85,29 @@ func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, na
 		recordMetrics(namespace, "RedisFailover", metrics.NOT_APPLICABLE, "PATCH", err, r.metricsRecorder)
 		r.logger.Errorf("Error while patching RedisFailover status %s/%s : %s", rf.Namespace, rf.Name, err.Error())
 	}
+}
+
+// PatchRedisFailoverFinalizers satisfies redisfailover.Service interface.
+// A JSON merge patch replaces the whole finalizers array, so the caller must
+// pass the complete list it wants the object to end up with (add/remove
+// against the finalizers it read, not just the one entry it cares about) -
+// same reasoning as UpdateRedisFailoverStatus always sending all three
+// status fields.
+func (r *RedisFailoverService) PatchRedisFailoverFinalizers(ctx context.Context, namespace string, name string, finalizers []string, opts metav1.PatchOptions) error {
+	if finalizers == nil {
+		finalizers = []string{}
+	}
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"finalizers": finalizers,
+		},
+	}
+	patchBytes, _ := json.Marshal(patch)
+
+	_, err := r.k8sCli.DatabasesV1().RedisFailovers(namespace).Patch(ctx, name, types.MergePatchType, patchBytes, opts)
+	recordMetrics(namespace, "RedisFailover", metrics.NOT_APPLICABLE, "PATCH", err, r.metricsRecorder)
+	if err != nil {
+		r.logger.Errorf("Error while patching RedisFailover finalizers %s/%s : %s", namespace, name, err.Error())
+	}
+	return err
 }
