@@ -63,6 +63,10 @@ func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, na
 	// patch treats an omitted field as "leave unchanged", not "clear it" -
 	// omitting an empty Message here would leave a stale one from a previous
 	// status on the server.
+	//
+	// The marshal error is ignored (matching pod.go's UpdatePodLabels, which
+	// does the same for its own JSON Patch payload): every value here is a
+	// plain string, and json.Marshal cannot fail on a map of strings.
 	patch := map[string]interface{}{
 		"status": map[string]interface{}{
 			"state":       rf.Status.State,
@@ -70,13 +74,9 @@ func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, na
 			"message":     rf.Status.Message,
 		},
 	}
-	patchBytes, err := json.Marshal(patch)
-	if err != nil {
-		r.logger.Errorf("Error while marshaling RedisFailover status patch %s/%s : %s", rf.Namespace, rf.Name, err.Error())
-		return
-	}
+	patchBytes, _ := json.Marshal(patch)
 
-	_, err = r.k8sCli.DatabasesV1().RedisFailovers(namespace).Patch(ctx, rf.Name, types.MergePatchType, patchBytes, opts)
+	_, err := r.k8sCli.DatabasesV1().RedisFailovers(namespace).Patch(ctx, rf.Name, types.MergePatchType, patchBytes, opts)
 	if err != nil {
 		recordMetrics(namespace, "RedisFailover", metrics.NOT_APPLICABLE, "PATCH", err, r.metricsRecorder)
 		r.logger.Errorf("Error while patching RedisFailover status %s/%s : %s", rf.Namespace, rf.Name, err.Error())
