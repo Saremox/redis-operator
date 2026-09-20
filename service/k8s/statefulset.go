@@ -64,11 +64,7 @@ func (s *StatefulSetService) GetStatefulSetPods(namespace, name string) (*corev1
 	if err != nil {
 		return nil, err
 	}
-	labels := []string{}
-	for k, v := range statefulSet.Spec.Selector.MatchLabels {
-		labels = append(labels, fmt.Sprintf("%s=%s", k, v))
-	}
-	selector := strings.Join(labels, ",")
+	selector := labels.Set(statefulSet.Spec.Selector.MatchLabels).String()
 	return s.kubeClient.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: selector})
 }
 

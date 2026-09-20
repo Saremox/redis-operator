@@ -23,3 +23,6 @@ package mocks // import "github.com/saremox/redis-operator/mocks"
 
 // RedisFailover Operator service Healer mocks
 //go:generate mockery --output operator/redisfailover/service --dir ../operator/redisfailover/service --name RedisFailoverHeal
+
+// Metrics Recorder mocks
+//go:generate mockery --output metrics --dir ../metrics --name Recorder

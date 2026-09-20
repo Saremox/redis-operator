@@ -130,12 +130,13 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) error {
 
 	oldState := rf.Status.State
+	oldLastChanged := rf.Status.LastChanged
 
 	rf.Status = redisfailoverv1.RedisFailoverStatus{
 		State: redisfailoverv1.HealthyState,
 	}
 
-	defer updateStatus(r.k8sservice, rf, oldState)
+	defer updateStatus(r.k8sservice, rf, oldState, oldLastChanged)
 
 	if rf.Bootstrapping() {
 		return r.checkAndHealBootstrapMode(rf)
@@ -146,14 +147,11 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		return r.checkAndHealOperatorManagedMode(rf)
 	}
 
-	// Number of redis is equal as the set on the RF spec
-	// Number of sentinel is equal as the set on the RF spec
-	// Check only one master
-	// Number of redis master is 1
-	// All redis slaves have the same master
-	// All sentinels points to the same redis master
-	// Sentinel has not death nodes
-	// Sentinel knows the correct slave number
+	// From here on, sentinel-managed mode checks and heals: a quorum of Redis
+	// and Sentinel pods running, exactly one Redis master with every slave
+	// replicating from it, and the custom Redis config applied. These are
+	// quorum-based (a majority, not an exact headcount match against the RF
+	// spec) - see the comment below on IsRedisRunningQuorum for why.
 
 	// Heal as long as a quorum (majority) of pods is running rather than requiring
 	// the full set. A single Pending pod (unschedulable affinity, AZ loss) must not
@@ -546,6 +544,10 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 
 	if !r.rfChecker.IsRedisRunning(rf) {
 		errorMsg := "not all replicas running"
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: errorMsg,
+		}
 		r.k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.REDIS_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of redis mismatch, waiting for redis statefulset reconcile")
@@ -709,9 +711,18 @@ func setRedisCheckerMetrics(metricsClient metrics.Recorder, mode /* redis or sen
 	}
 }
 
-func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, oldState string) {
+// updateStatus patches rf's status to the API server, stamping LastChanged
+// with the current time only when the health state actually transitioned.
+// The branches leading up to this (checkAndHeal*) each rebuild rf.Status
+// from scratch (State/Message only) without carrying LastChanged forward,
+// so oldLastChanged - captured before any of those run - is what restores
+// it on a non-transition; otherwise every steady-state reconcile would
+// patch LastChanged back to empty, erasing the last recorded transition.
+func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, oldState string, oldLastChanged string) {
 	if oldState != rf.Status.State {
 		rf.Status.LastChanged = time.Now().Format(time.RFC3339)
+	} else {
+		rf.Status.LastChanged = oldLastChanged
 	}
 	k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 }

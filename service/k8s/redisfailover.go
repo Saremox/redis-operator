@@ -2,7 +2,8 @@ package k8s
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
+
 	"k8s.io/apimachinery/pkg/types"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,8 +56,27 @@ func (r *RedisFailoverService) WatchRedisFailovers(ctx context.Context, namespac
 }
 
 func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, namespace string, rf *redisfailoverv1.RedisFailover, opts metav1.PatchOptions) {
-	status := fmt.Sprintf(`{"status":  {"state": "%s", "lastChanged": "%s", "message": "%s"}}`, rf.Status.State, rf.Status.LastChanged, rf.Status.Message)
-	_, err := r.k8sCli.DatabasesV1().RedisFailovers(namespace).Patch(ctx, rf.Name, types.MergePatchType, []byte(status), opts)
+	// Fields are nested under an explicit map (rather than marshaling
+	// redisfailoverv1.RedisFailoverStatus directly) so every field is always
+	// present in the patch, even when empty: RedisFailoverStatus's `omitempty`
+	// json tags exist for the full RedisFailover object, but a JSON merge
+	// patch treats an omitted field as "leave unchanged", not "clear it" -
+	// omitting an empty Message here would leave a stale one from a previous
+	// status on the server.
+	//
+	// The marshal error is ignored (matching pod.go's UpdatePodLabels, which
+	// does the same for its own JSON Patch payload): every value here is a
+	// plain string, and json.Marshal cannot fail on a map of strings.
+	patch := map[string]interface{}{
+		"status": map[string]interface{}{
+			"state":       rf.Status.State,
+			"lastChanged": rf.Status.LastChanged,
+			"message":     rf.Status.Message,
+		},
+	}
+	patchBytes, _ := json.Marshal(patch)
+
+	_, err := r.k8sCli.DatabasesV1().RedisFailovers(namespace).Patch(ctx, rf.Name, types.MergePatchType, patchBytes, opts)
 	if err != nil {
 		recordMetrics(namespace, "RedisFailover", metrics.NOT_APPLICABLE, "PATCH", err, r.metricsRecorder)
 		r.logger.Errorf("Error while patching RedisFailover status %s/%s : %s", rf.Namespace, rf.Name, err.Error())

@@ -7,7 +7,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -18,9 +17,6 @@ import (
 // Pod the ServiceAccount service that knows how to interact with k8s to manage them
 type Pod interface {
 	GetPod(namespace string, name string) (*corev1.Pod, error)
-	CreatePod(namespace string, pod *corev1.Pod) error
-	UpdatePod(namespace string, pod *corev1.Pod) error
-	CreateOrUpdatePod(namespace string, pod *corev1.Pod) error
 	DeletePod(namespace string, name string) error
 	ListPods(namespace string) (*corev1.PodList, error)
 	UpdatePodLabels(namespace, podName string, labels map[string]string) error
@@ -50,42 +46,6 @@ func (p *PodService) GetPod(namespace string, name string) (*corev1.Pod, error) 
 		return nil, err
 	}
 	return pod, err
-}
-
-func (p *PodService) CreatePod(namespace string, pod *corev1.Pod) error {
-	_, err := p.kubeClient.CoreV1().Pods(namespace).Create(context.TODO(), pod, metav1.CreateOptions{})
-	recordMetrics(namespace, "Pod", pod.GetName(), "CREATE", err, p.metricsRecorder)
-	if err != nil {
-		return err
-	}
-	p.logger.WithField("namespace", namespace).WithField("pod", pod.Name).Debugf("pod created")
-	return nil
-}
-func (p *PodService) UpdatePod(namespace string, pod *corev1.Pod) error {
-	_, err := p.kubeClient.CoreV1().Pods(namespace).Update(context.TODO(), pod, metav1.UpdateOptions{})
-	recordMetrics(namespace, "Pod", pod.GetName(), "UPDATE", err, p.metricsRecorder)
-	if err != nil {
-		return err
-	}
-	p.logger.WithField("namespace", namespace).WithField("pod", pod.Name).Debugf("pod updated")
-	return nil
-}
-func (p *PodService) CreateOrUpdatePod(namespace string, pod *corev1.Pod) error {
-	storedPod, err := p.GetPod(namespace, pod.Name)
-	if err != nil {
-		// If no resource we need to create.
-		if errors.IsNotFound(err) {
-			return p.CreatePod(namespace, pod)
-		}
-		return err
-	}
-
-	// Already exists, need to Update.
-	// Set the correct resource version to ensure we are on the latest version. This way the only valid
-	// namespace is our spec(https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#concurrency-control-and-consistency),
-	// we will replace the current namespace state.
-	pod.ResourceVersion = storedPod.ResourceVersion
-	return p.UpdatePod(namespace, pod)
 }
 
 func (p *PodService) DeletePod(namespace string, name string) error {

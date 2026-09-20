@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Installed via `make install-hooks` (git hooks under .git/hooks aren't
+# version controlled, so core.hooksPath points here instead).
+#
+# Only runs verify-codegen when a commit actually touches the API types -
+# every other commit exits immediately without needing controller-gen at
+# all, so this doesn't add friction to unrelated work.
+set -euo pipefail
+
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -q '^api/.*\.go$'; then
+	exit 0
+fi
+
+if ! command -v controller-gen >/dev/null 2>&1; then
+	echo "pre-commit: api/ changed, but controller-gen isn't on PATH."
+	echo "Install it with: go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest"
+	exit 1
+fi
+
+if ! make verify-codegen; then
+	echo ""
+	echo "pre-commit: generated DeepCopy code doesn't match the API types you changed."
+	echo "Review the diff above, then 'git add' the regenerated file and commit again."
+	exit 1
+fi
