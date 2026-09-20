@@ -472,6 +472,62 @@ func TestHandleDeletionWithoutFinalizerIsNoop(t *testing.T) {
 	mrfc.AssertNotCalled(t, "IsRedisRunning", mock.Anything)
 }
 
+// TestHandleFinalizerRegistrationErrorPropagates verifies that Handle stops
+// and returns the error when adding the finalizer to a fresh RedisFailover
+// fails, without going on to Validate/Ensure/CheckAndHeal.
+func TestHandleFinalizerRegistrationErrorPropagates(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF(false, true)
+	patchErr := errors.New("patch boom")
+
+	config := generateConfig()
+	mk := &mK8SService.Services{}
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfs := &mRFService.RedisFailoverClient{}
+
+	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name,
+		[]string{redisFailoverFinalizerMirror}, mock.Anything).Once().Return(patchErr)
+
+	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+	err := handler.Handle(context.Background(), rf)
+
+	assert.Equal(patchErr, err)
+	mk.AssertExpectations(t)
+	mrfs.AssertNotCalled(t, "EnsureNotPresentRedisService", mock.Anything)
+	mrfc.AssertNotCalled(t, "IsRedisRunning", mock.Anything)
+}
+
+// TestHandleDeletionFinalizerRemovalErrorPropagates verifies that Handle
+// propagates an error from removing the finalizer during deletion cleanup,
+// after DeleteCluster has already been called.
+func TestHandleDeletionFinalizerRemovalErrorPropagates(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF(false, true)
+	now := metav1.NewTime(time.Now())
+	rf.DeletionTimestamp = &now
+	rf.Finalizers = []string{redisFailoverFinalizerMirror}
+	patchErr := errors.New("patch boom")
+
+	config := generateConfig()
+	mk := &mK8SService.Services{}
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfs := &mRFService.RedisFailoverClient{}
+	mClient := &fakeRecorder{Recorder: metrics.Dummy}
+
+	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, []string{}, mock.Anything).Once().Return(patchErr)
+
+	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, mClient, log.Dummy)
+	err := handler.Handle(context.Background(), rf)
+
+	assert.Equal(patchErr, err)
+	assert.Equal([]string{rf.Namespace + "/" + rf.Name}, mClient.deleteClusterCalls)
+	mk.AssertExpectations(t)
+}
+
 // TestHandleRecordsClusterMetrics verifies Handle reports the RedisFailover's
 // health via mClient.SetClusterOK/SetClusterError - the signal actually used
 // to know a failover succeeded or failed - rather than just exercising these
