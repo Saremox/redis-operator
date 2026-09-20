@@ -40,7 +40,7 @@ import (
 const (
 	ommNamespace      = "rf-integration-tests-operator-managed"
 	ommName           = "testing-omm"
-	ommRedisSize      = int32(3)
+	ommRedisSize      = int32(2)
 	ommAuthSecretPath = "redis-auth-omm"
 	ommTestPass       = "test-pass-omm"
 )
@@ -178,6 +178,13 @@ func (c *ommClients) onlyMaster(labelSelector string) (string, error) {
 // at all, and the only one that exercises a rollout (a StatefulSet template
 // change) rather than just initial creation.
 func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
+	// Runs alongside TestRedisFailover (creation_test.go): separate
+	// namespaces, separate in-process operator instances (each with its own
+	// leader-election lease scoped to its own namespace), separate Secrets -
+	// nothing here is shared state, so there's no reason to pay for the two
+	// tests' pod-startup waits back to back instead of concurrently.
+	t.Parallel()
+
 	require := require.New(t)
 
 	stopC := make(chan struct{})
