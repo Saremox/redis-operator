@@ -135,6 +135,13 @@ func (c *clients) cleanup(stopC chan struct{}) {
 }
 
 func TestRedisFailover(t *testing.T) {
+	// Runs alongside TestRedisFailoverOperatorManagedModeRollout: separate
+	// namespaces, separate in-process operator instances (each with its own
+	// leader-election lease scoped to its own namespace), separate Secrets -
+	// nothing here is shared state, so there's no reason to pay for the two
+	// tests' pod-startup waits back to back instead of concurrently.
+	t.Parallel()
+
 	require := require.New(t)
 
 	// Create signal channels.
