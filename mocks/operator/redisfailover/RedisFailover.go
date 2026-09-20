@@ -76,6 +76,20 @@ func (_m *RedisFailover) UpdateRedisFailoverStatus(ctx context.Context, namespac
 	_m.Called(ctx, namespace, redisFailover, opts)
 }
 
+// PatchRedisFailoverFinalizers provides a mock function with given fields: ctx, namespace, name, finalizers, opts
+func (_m *RedisFailover) PatchRedisFailoverFinalizers(ctx context.Context, namespace string, name string, finalizers []string, opts v1.PatchOptions) error {
+	ret := _m.Called(ctx, namespace, name, finalizers, opts)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, []string, v1.PatchOptions) error); ok {
+		r0 = rf(ctx, namespace, name, finalizers, opts)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 type mockConstructorTestingTNewRedisFailover interface {
 	mock.TestingT
 	Cleanup(func())

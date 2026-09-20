@@ -733,6 +733,20 @@ func (_m *Services) ListStatefulSets(namespace string) (*appsv1.StatefulSetList,
 	return r0, r1
 }
 
+// PatchRedisFailoverFinalizers provides a mock function with given fields: ctx, namespace, name, finalizers, opts
+func (_m *Services) PatchRedisFailoverFinalizers(ctx context.Context, namespace string, name string, finalizers []string, opts metav1.PatchOptions) error {
+	ret := _m.Called(ctx, namespace, name, finalizers, opts)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, []string, metav1.PatchOptions) error); ok {
+		r0 = rf(ctx, namespace, name, finalizers, opts)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // UpdateConfigMap provides a mock function with given fields: namespace, configMap
 func (_m *Services) UpdateConfigMap(namespace string, configMap *v1.ConfigMap) error {
 	ret := _m.Called(namespace, configMap)

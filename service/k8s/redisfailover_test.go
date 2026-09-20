@@ -134,3 +134,48 @@ func TestRedisFailoverServiceUpdateRedisFailoverStatus(t *testing.T) {
 		assert.Equal(t, trickyRF.Status.Message, got.Status.Message)
 	})
 }
+
+func TestRedisFailoverServicePatchRedisFailoverFinalizers(t *testing.T) {
+	testns := "testns"
+
+	rf := &redisfailoverv1.RedisFailover{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "rf1",
+			Namespace:  testns,
+			Finalizers: []string{"some.other/finalizer"},
+		},
+	}
+
+	t.Run("patches the finalizers of an existing RedisFailover", func(t *testing.T) {
+		crdcli := redisfailoverfake.NewSimpleClientset(rf)
+		service := k8s.NewRedisFailoverService(crdcli, log.Dummy, metrics.Dummy)
+
+		err := service.PatchRedisFailoverFinalizers(context.TODO(), testns, rf.Name,
+			[]string{"some.other/finalizer", "redisfailovers.databases.spotahome.com/finalizer"}, metav1.PatchOptions{})
+		assert.NoError(t, err)
+
+		got, err := crdcli.DatabasesV1().RedisFailovers(testns).Get(context.TODO(), rf.Name, metav1.GetOptions{})
+		assert.NoError(t, err)
+		assert.Equal(t, []string{"some.other/finalizer", "redisfailovers.databases.spotahome.com/finalizer"}, got.Finalizers)
+	})
+
+	t.Run("a nil finalizers list patches to an empty array rather than leaving finalizers untouched", func(t *testing.T) {
+		crdcli := redisfailoverfake.NewSimpleClientset(rf)
+		service := k8s.NewRedisFailoverService(crdcli, log.Dummy, metrics.Dummy)
+
+		err := service.PatchRedisFailoverFinalizers(context.TODO(), testns, rf.Name, nil, metav1.PatchOptions{})
+		assert.NoError(t, err)
+
+		got, err := crdcli.DatabasesV1().RedisFailovers(testns).Get(context.TODO(), rf.Name, metav1.GetOptions{})
+		assert.NoError(t, err)
+		assert.Empty(t, got.Finalizers)
+	})
+
+	t.Run("returns an error when patching a non-existent RedisFailover", func(t *testing.T) {
+		crdcli := redisfailoverfake.NewSimpleClientset()
+		service := k8s.NewRedisFailoverService(crdcli, log.Dummy, metrics.Dummy)
+
+		err := service.PatchRedisFailoverFinalizers(context.TODO(), testns, "does-not-exist", []string{"some/finalizer"}, metav1.PatchOptions{})
+		assert.Error(t, err)
+	})
+}

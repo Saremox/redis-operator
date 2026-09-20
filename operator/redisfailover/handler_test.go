@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -17,6 +19,22 @@ import (
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	rfOperator "github.com/saremox/redis-operator/operator/redisfailover"
 )
+
+// redisFailoverFinalizerMirror mirrors the unexported constant of the same
+// name defined in operator/redisfailover/handler.go.
+const redisFailoverFinalizerMirror = "redisfailovers.databases.spotahome.com/finalizer"
+
+// fakeRecorder wraps metrics.Dummy (whose concrete type is unexported, so it
+// can't be embedded directly) and records DeleteCluster calls, which is the
+// one signal these tests need to observe.
+type fakeRecorder struct {
+	metrics.Recorder
+	deleteClusterCalls []string // "namespace/name" per call
+}
+
+func (f *fakeRecorder) DeleteCluster(namespace, name string) {
+	f.deleteClusterCalls = append(f.deleteClusterCalls, namespace+"/"+name)
+}
 
 // skipReconcileAnnotationKey mirrors the unexported constant of the same name
 // defined in operator/redisfailover/handler.go.
@@ -74,11 +92,16 @@ func TestHandleSkipReconcileAnnotation(t *testing.T) {
 			config := generateConfig()
 			mk := &mK8SService.Services{}
 			// CheckAndHeal always defers updateStatus, on every return path;
-			// only reached when reconciliation isn't skipped.
-			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			// only reached when reconciliation isn't skipped, hence Maybe().
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe().Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfs := &mRFService.RedisFailoverClient{}
+
+			// Finalizer registration runs before the skip-reconcile check, so
+			// every case (skipped or not) triggers it on this fixture, which
+			// starts with no finalizers.
+			mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Once().Return(nil)
 
 			if !test.expectSkip {
 				// Minimal Ensure() expectations for bootstrapping without exporter
@@ -113,6 +136,7 @@ func TestHandleSkipReconcileAnnotation(t *testing.T) {
 				mrfs.AssertExpectations(t)
 				mrfc.AssertExpectations(t)
 			}
+			mk.AssertExpectations(t)
 		})
 	}
 }
@@ -149,12 +173,17 @@ func TestHandleValidateError(t *testing.T) {
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfs := &mRFService.RedisFailoverClient{}
 
+	// Finalizer registration runs before Validate(), so it's still expected
+	// even though this RF fails validation.
+	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Once().Return(nil)
+
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 	err := handler.Handle(context.Background(), rf)
 
 	assert.Error(err)
 	mrfs.AssertNotCalled(t, "EnsureNotPresentRedisService", mock.Anything)
 	mrfc.AssertNotCalled(t, "IsRedisRunning", mock.Anything)
+	mk.AssertExpectations(t)
 }
 
 // TestHandleEnsureError verifies that Handle propagates an error from Ensure
@@ -174,6 +203,7 @@ func TestHandleEnsureError(t *testing.T) {
 	// Only the very first Ensure() call is mocked, and it fails - nothing
 	// after it (in Ensure or CheckAndHeal) should ever be invoked.
 	mrfs.On("EnsureNotPresentRedisService", rf).Once().Return(ensureErr)
+	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Once().Return(nil)
 
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 	err := handler.Handle(context.Background(), rf)
@@ -181,6 +211,7 @@ func TestHandleEnsureError(t *testing.T) {
 	assert.Equal(ensureErr, err)
 	mrfc.AssertNotCalled(t, "IsRedisRunning", mock.Anything)
 	mrfs.AssertExpectations(t)
+	mk.AssertExpectations(t)
 }
 
 // TestHandleCheckAndHealError verifies that Handle propagates an error from
@@ -212,6 +243,7 @@ func TestHandleCheckAndHealError(t *testing.T) {
 	mrfs.On("EnsureRedisReadinessConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
 	mrfs.On("EnsureRedisConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
 	mrfs.On("EnsureRedisStatefulset", rf, mock.Anything, mock.Anything).Once().Return(nil)
+	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Once().Return(nil)
 
 	// CheckAndHeal routes to checkAndHealOperatorManagedMode and fails at
 	// GetNumberMasters.
@@ -224,6 +256,7 @@ func TestHandleCheckAndHealError(t *testing.T) {
 	assert.Equal(checkErr, err)
 	mrfs.AssertExpectations(t)
 	mrfc.AssertExpectations(t)
+	mk.AssertExpectations(t)
 }
 
 // rfLabelManagedByKeyMirror, rfLabelNameKeyMirror and operatorNameMirror
@@ -311,6 +344,7 @@ func TestHandleGetLabelsWhitelistFiltering(t *testing.T) {
 			mrfs.On("EnsureRedisShutdownConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
 			mrfs.On("EnsureRedisReadinessConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
 			mrfs.On("EnsureRedisStatefulset", rf, mock.Anything, mock.Anything).Once().Return(nil)
+			mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Once().Return(nil)
 
 			mrfc.On("IsRedisRunning", rf).Once().Return(false)
 
@@ -332,8 +366,166 @@ func TestHandleGetLabelsWhitelistFiltering(t *testing.T) {
 
 			mrfs.AssertExpectations(t)
 			mrfc.AssertExpectations(t)
+			mk.AssertExpectations(t)
 		})
 	}
+}
+
+// TestHandleAddsFinalizerOnFreshRF verifies that Handle registers
+// redisFailoverFinalizer on a RedisFailover that doesn't yet have it, adding
+// it to whatever finalizers were already present rather than replacing them.
+func TestHandleAddsFinalizerOnFreshRF(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF(false, true)
+	rf.Finalizers = []string{"some.other/finalizer"}
+
+	config := generateConfig()
+	mk := &mK8SService.Services{}
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfs := &mRFService.RedisFailoverClient{}
+
+	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name,
+		[]string{"some.other/finalizer", redisFailoverFinalizerMirror}, mock.Anything).Once().Return(nil)
+	// CheckAndHeal always defers updateStatus, on every return path.
+	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+
+	mrfs.On("EnsureNotPresentRedisService", rf).Once().Return(nil)
+	mrfs.On("EnsureNotPresentSentinelResources", rf).Once().Return(nil)
+	mrfs.On("EnsureRedisMasterService", rf, mock.Anything, mock.Anything).Once().Return(nil)
+	mrfs.On("EnsureRedisSlaveService", rf, mock.Anything, mock.Anything).Once().Return(nil)
+	mrfs.On("EnsureRedisConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
+	mrfs.On("EnsureRedisShutdownConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
+	mrfs.On("EnsureRedisReadinessConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
+	mrfs.On("EnsureRedisStatefulset", rf, mock.Anything, mock.Anything).Once().Return(nil)
+	mrfc.On("IsRedisRunning", rf).Once().Return(false)
+
+	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+	err := handler.Handle(context.Background(), rf)
+
+	assert.NoError(err)
+	mk.AssertExpectations(t)
+	mrfs.AssertExpectations(t)
+	mrfc.AssertExpectations(t)
+}
+
+// TestHandleDeletionCleansUpMetricsAndRemovesFinalizer verifies that Handle,
+// when given a RedisFailover with a DeletionTimestamp and the finalizer still
+// present, cleans up its cluster_ok metrics series and removes the finalizer
+// (leaving any other finalizers intact) without ever calling Ensure or
+// CheckAndHeal.
+func TestHandleDeletionCleansUpMetricsAndRemovesFinalizer(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF(false, true)
+	now := metav1.NewTime(time.Now())
+	rf.DeletionTimestamp = &now
+	rf.Finalizers = []string{"some.other/finalizer", redisFailoverFinalizerMirror}
+
+	config := generateConfig()
+	mk := &mK8SService.Services{}
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfs := &mRFService.RedisFailoverClient{}
+	mClient := &fakeRecorder{Recorder: metrics.Dummy}
+
+	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name,
+		[]string{"some.other/finalizer"}, mock.Anything).Once().Return(nil)
+
+	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, mClient, log.Dummy)
+	err := handler.Handle(context.Background(), rf)
+
+	assert.NoError(err)
+	assert.Equal([]string{rf.Namespace + "/" + rf.Name}, mClient.deleteClusterCalls)
+	mk.AssertExpectations(t)
+	mrfs.AssertNotCalled(t, "EnsureNotPresentRedisService", mock.Anything)
+	mrfc.AssertNotCalled(t, "IsRedisRunning", mock.Anything)
+}
+
+// TestHandleDeletionWithoutFinalizerIsNoop verifies that Handle does nothing
+// (no metrics cleanup, no finalizer patch) for a RedisFailover that already
+// has its DeletionTimestamp set but no longer carries redisFailoverFinalizer -
+// i.e. cleanup already ran on a previous reconcile.
+func TestHandleDeletionWithoutFinalizerIsNoop(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF(false, true)
+	now := metav1.NewTime(time.Now())
+	rf.DeletionTimestamp = &now
+	rf.Finalizers = []string{"some.other/finalizer"}
+
+	config := generateConfig()
+	mk := &mK8SService.Services{}
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfs := &mRFService.RedisFailoverClient{}
+	mClient := &fakeRecorder{Recorder: metrics.Dummy}
+
+	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, mClient, log.Dummy)
+	err := handler.Handle(context.Background(), rf)
+
+	assert.NoError(err)
+	assert.Empty(mClient.deleteClusterCalls)
+	mk.AssertNotCalled(t, "PatchRedisFailoverFinalizers", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mrfs.AssertNotCalled(t, "EnsureNotPresentRedisService", mock.Anything)
+	mrfc.AssertNotCalled(t, "IsRedisRunning", mock.Anything)
+}
+
+// TestHandleFinalizerRegistrationErrorPropagates verifies that Handle stops
+// and returns the error when adding the finalizer to a fresh RedisFailover
+// fails, without going on to Validate/Ensure/CheckAndHeal.
+func TestHandleFinalizerRegistrationErrorPropagates(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF(false, true)
+	patchErr := errors.New("patch boom")
+
+	config := generateConfig()
+	mk := &mK8SService.Services{}
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfs := &mRFService.RedisFailoverClient{}
+
+	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name,
+		[]string{redisFailoverFinalizerMirror}, mock.Anything).Once().Return(patchErr)
+
+	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+	err := handler.Handle(context.Background(), rf)
+
+	assert.Equal(patchErr, err)
+	mk.AssertExpectations(t)
+	mrfs.AssertNotCalled(t, "EnsureNotPresentRedisService", mock.Anything)
+	mrfc.AssertNotCalled(t, "IsRedisRunning", mock.Anything)
+}
+
+// TestHandleDeletionFinalizerRemovalErrorPropagates verifies that Handle
+// propagates an error from removing the finalizer during deletion cleanup,
+// after DeleteCluster has already been called.
+func TestHandleDeletionFinalizerRemovalErrorPropagates(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF(false, true)
+	now := metav1.NewTime(time.Now())
+	rf.DeletionTimestamp = &now
+	rf.Finalizers = []string{redisFailoverFinalizerMirror}
+	patchErr := errors.New("patch boom")
+
+	config := generateConfig()
+	mk := &mK8SService.Services{}
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfs := &mRFService.RedisFailoverClient{}
+	mClient := &fakeRecorder{Recorder: metrics.Dummy}
+
+	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, []string{}, mock.Anything).Once().Return(patchErr)
+
+	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, mClient, log.Dummy)
+	err := handler.Handle(context.Background(), rf)
+
+	assert.Equal(patchErr, err)
+	assert.Equal([]string{rf.Namespace + "/" + rf.Name}, mClient.deleteClusterCalls)
+	mk.AssertExpectations(t)
 }
 
 // TestHandleRecordsClusterMetrics verifies Handle reports the RedisFailover's
@@ -395,6 +587,11 @@ func TestHandleRecordsClusterMetrics(t *testing.T) {
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfs := &mRFService.RedisFailoverClient{}
 			test.setup(rf, mrfs, mrfc)
+
+			// Finalizer registration runs before validation/Ensure/CheckAndHeal,
+			// so every case here triggers it on this fixture, which starts with
+			// no finalizers.
+			mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Once().Return(nil)
 
 			mrec := &mMetrics.Recorder{}
 			mrec.On(test.wantMethod, rf.Namespace, rf.Name).Once()
