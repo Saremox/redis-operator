@@ -40,7 +40,7 @@ import (
 const (
 	ommNamespace      = "rf-integration-tests-operator-managed"
 	ommName           = "testing-omm"
-	ommRedisSize      = int32(3)
+	ommRedisSize      = int32(2)
 	ommAuthSecretPath = "redis-auth-omm"
 	ommTestPass       = "test-pass-omm"
 )

@@ -69,7 +69,10 @@ jobs:
   integration-test:
     name: Integration test
     runs-on: ubuntu-24.04
-    needs: [check, unit-test]
+    # No `needs` gate: this matrix doesn't depend on check/unit-test's
+    # output, so gating it behind them only serializes two independent
+    # wall-clock costs. Letting it start immediately in parallel is strictly
+    # faster; a failure here fails the run exactly the same either way.
     strategy:
       matrix:
         kubernetes: [1.35.8, 1.36.4, 1.37.0]
@@ -78,6 +81,16 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: Pre-pull redis image in the background
+        # driver=none means minikube schedules pods straight onto this
+        # runner's own docker daemon, so this image is already the exact one
+        # the in-process operator will ask the cluster to run. Kicking the
+        # pull off now and only waiting on it right before the Go tests start
+        # hides its wall time behind conntrack/minikube/CRD setup below,
+        # instead of paying for it inline while waitForPodsReady polls.
+        run: |
+          docker pull redis:7.2.12-alpine &
+          echo "REDIS_PULL_PID=$!" >> "$GITHUB_ENV"
       - name: Install conntrack
         run: sudo apt-get install -y conntrack
       - name: Prepare CNI config directory
@@ -97,6 +110,13 @@ jobs:
           container-runtime: docker
       - name: Add redisfailover CRD
         run: kubectl create -f manifests/databases.spotahome.com_redisfailovers.yaml
+      - name: Wait for redis image pre-pull to finish
+        # $REDIS_PULL_PID isn't a child of this step's shell (each step is
+        # its own process), so `wait` can't be used on it - poll instead.
+        run: |
+          while kill -0 "$REDIS_PULL_PID" 2>/dev/null; do
+            sleep 1
+          done
       - run: make ci-integration-test
 
   chart-test:

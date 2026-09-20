@@ -129,9 +129,9 @@ func (c *clients) prepareNS() error {
 	return err
 }
 
-func (c *clients) cleanup(stopC chan struct{}) {
+func (c *clients) cleanup(cancel context.CancelFunc) {
 	c.k8sClient.CoreV1().Namespaces().Delete(context.Background(), namespace, metav1.DeleteOptions{})
-	close(stopC)
+	cancel()
 }
 
 func TestRedisFailover(t *testing.T) {
@@ -144,8 +144,6 @@ func TestRedisFailover(t *testing.T) {
 
 	require := require.New(t)
 
-	// Create signal channels.
-	stopC := make(chan struct{})
 	errC := make(chan error)
 
 	kubeconfig := os.Getenv("KUBECONFIG")
@@ -185,12 +183,19 @@ func TestRedisFailover(t *testing.T) {
 	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{}, k8sservice, k8sClient, namespace, redisClient, metrics.Dummy, log.Dummy)
 	require.NoError(err)
 
+	// Its own cancelable context, not context.Background(): without this,
+	// nothing ever stopped the operator goroutine below - closing the old
+	// stopC channel here was a no-op since Run() was never wired to observe
+	// it, so the controller (and its informers/leader-election) kept running
+	// for the rest of the test binary's life after this test finished.
+	runCtx, cancelRun := context.WithCancel(context.Background())
+
 	go func() {
-		errC <- redisfailoverOperator.Run(context.Background())
+		errC <- redisfailoverOperator.Run(runCtx)
 	}()
 
 	// Prepare cleanup for when the test ends
-	defer clients.cleanup(stopC)
+	defer clients.cleanup(cancelRun)
 
 	// There's no external readiness signal for "the operator started"; this
 	// just fails fast if it crashed immediately instead of silently waiting
