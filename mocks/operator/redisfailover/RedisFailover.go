@@ -71,7 +71,9 @@ func (_m *RedisFailover) WatchRedisFailovers(ctx context.Context, namespace stri
 	return r0, r1
 }
 
+// UpdateRedisFailoverStatus provides a mock function with given fields: ctx, namespace, redisFailover, opts
 func (_m *RedisFailover) UpdateRedisFailoverStatus(ctx context.Context, namespace string, redisFailover *redisfailoverv1.RedisFailover, opts v1.PatchOptions) {
+	_m.Called(ctx, namespace, redisFailover, opts)
 }
 
 // PatchRedisFailoverFinalizers provides a mock function with given fields: ctx, namespace, name, finalizers, opts

@@ -311,6 +311,8 @@ func TestCheckAndHeal(t *testing.T) {
 
 			config := generateConfig()
 			mk := &mK8SService.Services{}
+			// CheckAndHeal always defers updateStatus, on every return path.
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfs := &mRFService.RedisFailoverClient{}
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
@@ -752,6 +754,8 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 
 			config := generateConfig()
 			mk := &mK8SService.Services{}
+			// CheckAndHeal always defers updateStatus, on every return path.
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfs := &mRFService.RedisFailoverClient{}
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
@@ -778,6 +782,87 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 			mrfh.AssertExpectations(t)
 		})
 	}
+}
+
+// TestUpdateStatusLastChanged exercises updateStatus's (operator/redisfailover/checker.go)
+// LastChanged stamping: it must be refreshed to "now" only when the health
+// state actually transitions, and otherwise preserve whatever value was
+// already recorded - not the zero value checkAndHealOperatorManagedMode's
+// branches leave behind when they rebuild rf.Status without carrying it
+// forward. Routed through the exported CheckAndHeal, since updateStatus and
+// checkAndHealOperatorManagedMode are both unexported and this file lives in
+// the external redisfailover_test package.
+func TestUpdateStatusLastChanged(t *testing.T) {
+	const master = "10.0.0.1"
+
+	// setupHealthyPass wires up a full, successful single-master pass (mirrors
+	// the "slaves already correct" case in TestCheckAndHealOperatorManagedMode),
+	// so CheckAndHeal always lands on HealthyState here.
+	setupHealthyPass := func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+		mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+		mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+		mrfc.On("CheckMasterHealth", rf).Once().Return(true, master, nil)
+		mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
+		mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{master}, nil)
+		mrfh.On("SetRedisCustomConfig", master, rf).Once().Return(nil)
+		mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
+		mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("1", nil)
+		mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
+		mrfc.On("GetRedisesMasterPod", rf).Once().Return(master, nil)
+		mrfc.On("GetRedisRevisionHash", master, rf).Once().Return("1", nil)
+	}
+
+	t.Run("state transition stamps LastChanged to now", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		rf := operatorManagedRF()
+		rf.Status.State = v1.NotHealthyState
+		rf.Status.LastChanged = "2020-01-01T00:00:00Z"
+
+		config := generateConfig()
+		mk := &mK8SService.Services{}
+		mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+		mrfs := &mRFService.RedisFailoverClient{}
+		mrfc := &mRFService.RedisFailoverCheck{}
+		mrfh := &mRFService.RedisFailoverHeal{}
+
+		setupHealthyPass(mrfc, mrfh, rf)
+
+		before := time.Now()
+		handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+		err := handler.CheckAndHeal(rf)
+		assertTest.NoError(err)
+
+		assertTest.Equal(v1.HealthyState, rf.Status.State)
+		stamped, parseErr := time.Parse(time.RFC3339, rf.Status.LastChanged)
+		assertTest.NoError(parseErr)
+		assertTest.False(stamped.Before(before.Add(-time.Second)), "LastChanged should be stamped to roughly now, got %s", rf.Status.LastChanged)
+	})
+
+	t.Run("no state transition preserves the previous LastChanged", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		const previousLastChanged = "2020-01-01T00:00:00Z"
+		rf := operatorManagedRF()
+		rf.Status.State = v1.HealthyState
+		rf.Status.LastChanged = previousLastChanged
+
+		config := generateConfig()
+		mk := &mK8SService.Services{}
+		mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+		mrfs := &mRFService.RedisFailoverClient{}
+		mrfc := &mRFService.RedisFailoverCheck{}
+		mrfh := &mRFService.RedisFailoverHeal{}
+
+		setupHealthyPass(mrfc, mrfh, rf)
+
+		handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+		err := handler.CheckAndHeal(rf)
+		assertTest.NoError(err)
+
+		assertTest.Equal(v1.HealthyState, rf.Status.State)
+		assertTest.Equal(previousLastChanged, rf.Status.LastChanged, "LastChanged must not be reset to empty on a no-op reconcile")
+	})
 }
 
 // TestCheckAndHealPlainModeErrorBranches exercises early-return error
@@ -1146,6 +1231,8 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 
 			config := generateConfig()
 			mk := &mK8SService.Services{}
+			// CheckAndHeal always defers updateStatus, on every return path.
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfs := &mRFService.RedisFailoverClient{}
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
@@ -1293,6 +1380,8 @@ func TestCheckAndHealBootstrapModeErrorBranches(t *testing.T) {
 
 			config := generateConfig()
 			mk := &mK8SService.Services{}
+			// CheckAndHeal always defers updateStatus, on every return path.
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfs := &mRFService.RedisFailoverClient{}
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
