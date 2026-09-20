@@ -15,6 +15,17 @@ import (
 	"github.com/saremox/redis-operator/service/redis"
 )
 
+// ErrReconcileIncomplete is returned by UpdateRedisesPods (and propagated up
+// through CheckAndHeal/Handle) when it has just deleted one stale pod but
+// more of the rollout remains - a multi-pod change needs one Handle() call
+// per pod. It is not a failure: the caller (Handle) treats it as "keep the
+// cluster marked healthy, but ask the controller to come back immediately"
+// rather than waiting for the next incidental watch event or full resync.
+// See the PR that introduced this for why relying on kooper's error-driven
+// requeue for that "come back immediately" signal is a real caveat, not
+// just an implementation detail.
+var ErrReconcileIncomplete = errors.New("pod update in progress, requeueing immediately for the next step")
+
 // UpdateRedisesPods if the running version of pods is equal to the statefulset one
 func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailover) error {
 	redises, err := r.rfChecker.GetRedisesIPs(rf)
@@ -65,7 +76,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 				return err
 			}
 			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("revision", revision).WithField("pod", pod).Debug("deleted secondary pod")
-			return nil
+			return ErrReconcileIncomplete
 		}
 	}
 
@@ -118,7 +129,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 				return err
 			}
 			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("revision", masterRevision).WithField("pod", master).Debug("deleted primary pod")
-			return nil
+			return ErrReconcileIncomplete
 		}
 	}
 
@@ -332,6 +343,14 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 
 	err = r.UpdateRedisesPods(rf)
 	if err != nil {
+		// ErrReconcileIncomplete means a pod was just deleted as an expected
+		// rollout step, not a failure - leave rf.Status as the Healthy value
+		// set at the top of CheckAndHeal and let it propagate up so Handle
+		// can ask the controller to come back immediately instead of NOT
+		// marking the cluster unhealthy for a routine, in-progress change.
+		if errors.Is(err, ErrReconcileIncomplete) {
+			return err
+		}
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: "unable to update redis PODs",
@@ -530,6 +549,11 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 	// Update stale pods
 	err = r.UpdateRedisesPods(rf)
 	if err != nil {
+		// See the matching comment in CheckAndHeal: a routine, in-progress
+		// pod replacement isn't a failure.
+		if errors.Is(err, ErrReconcileIncomplete) {
+			return err
+		}
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: "unable to update redis pods",
@@ -556,6 +580,11 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 
 	err := r.UpdateRedisesPods(rf)
 	if err != nil {
+		// See the matching comment in CheckAndHeal: a routine, in-progress
+		// pod replacement isn't a failure.
+		if errors.Is(err, ErrReconcileIncomplete) {
+			return err
+		}
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: "unable to update Redis PODs",

@@ -2,6 +2,7 @@ package redisfailover
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -122,6 +123,18 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 	}
 
 	if err := r.CheckAndHeal(rf); err != nil {
+		// ErrReconcileIncomplete: CheckAndHeal just deleted one stale pod as
+		// an expected, in-progress rollout step - the cluster is healthy, it
+		// just isn't done yet. Returning the error (rather than nil) still
+		// asks kooper's controller to requeue this key immediately via its
+		// retry mechanism, instead of waiting for the next incidental watch
+		// event or the full resync interval - see ErrReconcileIncomplete's
+		// doc comment (checker.go) and this PR's description for the
+		// caveats that come with relying on kooper's retry queue for this.
+		if errors.Is(err, ErrReconcileIncomplete) {
+			r.mClient.SetClusterOK(rf.Namespace, rf.Name)
+			return err
+		}
 		r.mClient.SetClusterError(rf.Namespace, rf.Name)
 		return err
 	}

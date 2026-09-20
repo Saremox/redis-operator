@@ -1423,6 +1423,11 @@ func TestUpdate(t *testing.T) {
 		// sentinelSlavesShort makes the sentinels report fewer slaves than
 		// expected, so the master must not be replaced yet.
 		sentinelSlavesShort bool
+		// podDeleted marks a case where a stale pod is actually deleted, so
+		// UpdateRedisesPods is expected to return ErrReconcileIncomplete
+		// rather than plain nil - it's a "healthy, but come back
+		// immediately" signal, not a real error and not "nothing to do".
+		podDeleted bool
 	}{
 		{
 			name: "all ok, no change needed",
@@ -1582,6 +1587,7 @@ func TestUpdate(t *testing.T) {
 			ssVersion:     "1",
 			errExpected:   false,
 			bootstrapping: false,
+			podDeleted:    true,
 		},
 		{
 			name: "master version incorrect",
@@ -1635,6 +1641,7 @@ func TestUpdate(t *testing.T) {
 			ssVersion:     "10",
 			errExpected:   false,
 			bootstrapping: false,
+			podDeleted:    true,
 		},
 		{
 			// Master is stale, all slaves are redis-ready, but the sentinels have
@@ -1839,6 +1846,7 @@ func TestUpdate(t *testing.T) {
 			ssVersion:     "1",
 			errExpected:   false,
 			bootstrapping: true,
+			podDeleted:    true,
 		},
 		{
 			name: "when no master exists",
@@ -1979,9 +1987,12 @@ func TestUpdate(t *testing.T) {
 			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 			err := handler.UpdateRedisesPods(rf)
 
-			if test.errExpected {
+			switch {
+			case test.errExpected:
 				assertTest.Error(err)
-			} else {
+			case test.podDeleted:
+				assertTest.ErrorIs(err, rfOperator.ErrReconcileIncomplete)
+			default:
 				assertTest.NoError(err)
 			}
 
@@ -2024,7 +2035,7 @@ func TestUpdateRedisesPodsOperatorManagedModeSkipsSentinelGate(t *testing.T) {
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 	err := handler.UpdateRedisesPods(rf)
 
-	assertTest.NoError(err)
+	assertTest.ErrorIs(err, rfOperator.ErrReconcileIncomplete)
 	// The point of the fix: no sentinel-related call is ever made.
 	mrfc.AssertNotCalled(t, "GetSentinelsIPs", mock.Anything)
 	mrfc.AssertNotCalled(t, "CheckSentinelSlavesNumberQuorumInMemory", mock.Anything, mock.Anything)

@@ -48,14 +48,40 @@ func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, lo
 
 	// Create our controller.
 	return controller.New(&controller.Config{
-		Handler:           rfHandler,
-		Retriever:         rfRetriever,
-		LeaderElector:     leSVC,
-		MetricsRecorder:   kooperMetricsRecorder,
-		Logger:            kooperLogger,
-		Name:              "redisfailover",
-		ResyncInterval:    time.Duration(cfg.SyncInterval) * time.Second,
-		ConcurrentWorkers: cfg.Concurrency,
+		Handler:         rfHandler,
+		Retriever:       rfRetriever,
+		LeaderElector:   leSVC,
+		MetricsRecorder: kooperMetricsRecorder,
+		Logger:          kooperLogger,
+		Name:            "redisfailover",
+		ResyncInterval:  time.Duration(cfg.SyncInterval) * time.Second,
+		// ProcessingJobRetries has to be > 0 for ErrReconcileIncomplete
+		// (checker.go) to do anything at all: kooper only calls
+		// queue.Requeue on a Handle() error when a retryProcessor is wired
+		// in, which only happens when this is positive (controller.go's
+		// setDefaults). Without it, every error - ours or a genuine one -
+		// falls through unretried until the next watch event or resync,
+		// which is the exact gap this whole change exists to close.
+		//
+		// CAVEAT (read before raising this number, and before relying on
+		// this mechanism at all): kooper's queue.Requeue rejects a key once
+		// workqueue's NumRequeues(key) reaches this value, and nothing in
+		// kooper ever calls Forget() to reset that counter on a *successful*
+		// Handle() call - not here, not in the base processor. NumRequeues
+		// only resets by the process restarting. That means this is a
+		// lifetime cap, shared across every reason a given RedisFailover's
+		// key is ever requeued this way - both genuine transient errors and
+		// deliberate ErrReconcileIncomplete signals accumulate against the
+		// same counter for as long as the operator process runs. A
+		// long-lived RedisFailover that goes through enough rollouts (or
+		// enough retried errors) eventually exhausts it, at which point
+		// queue.Requeue starts returning errMaxRetriesReached and this
+		// object stops getting fast-retried at all until the operator
+		// restarts - silently regressing back to today's behavior (rely on
+		// the next incidental watch event or full resync) for exactly the
+		// objects that have been reconciled the most.
+		ProcessingJobRetries: 20,
+		ConcurrentWorkers:    cfg.Concurrency,
 	})
 }
 
