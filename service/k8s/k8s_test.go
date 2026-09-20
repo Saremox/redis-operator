@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	apiextensionsfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
 	kubernetes "k8s.io/client-go/kubernetes/fake"
 
 	redisfailoverfake "github.com/saremox/redis-operator/client/k8s/clientset/versioned/fake"
@@ -22,9 +21,8 @@ func TestNew(t *testing.T) {
 
 	kubecli := kubernetes.NewClientset()
 	crdcli := redisfailoverfake.NewSimpleClientset()
-	apiextcli := apiextensionsfake.NewSimpleClientset()
 
-	svc := k8s.New(kubecli, crdcli, apiextcli, log.Dummy, metrics.Dummy)
+	svc := k8s.New(kubecli, crdcli, log.Dummy, metrics.Dummy)
 	assertTest.NotNil(svc)
 
 	_, err := svc.ListServiceAccounts("default")

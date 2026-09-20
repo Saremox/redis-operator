@@ -21,6 +21,17 @@
 - **example**: yaml files with spec of redis-failover.
 - **hack**: scripts to generate the redis-failover api-client.
 - **scripts**: scripts used to build and run the app.
+- **.githooks**: versioned git hooks (see "Generated code" below).
+
+## Generated code
+
+Two files are generated from `api/redisfailover/v1`'s type definitions and must stay in sync with them: `api/redisfailover/v1/zz_generated.deepcopy.go` and the CRD manifest (`manifests/databases.spotahome.com_redisfailovers.yaml`, mirrored into `manifests/kustomize/base/` and `charts/redisoperator/crds/`). Both are produced by [`controller-gen`](https://github.com/kubernetes-sigs/controller-tools) (`go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest`), no Docker required.
+
+- After changing a type in `api/redisfailover/v1`, run `make generate-api` and commit the result.
+- `make verify-codegen` regenerates and fails if that produces any diff - this is what CI runs, so a PR that changed the types without regenerating fails there if nothing else catches it first.
+- Run `make install-hooks` once per clone to also run `verify-codegen` locally as a pre-commit hook (only when a commit touches `api/**/*.go`, so it adds no overhead to unrelated commits).
+
+(The typed clientset in `client/k8s/clientset` is separate: it still comes from the Docker-based `make update-codegen`, changes far less often, and isn't covered by `verify-codegen`.)
 
 ## Make development commands
 
@@ -30,8 +41,14 @@ You can do the following commands with make:
   `make docker-build`
 - Generate mocks.
   `make go-generate`
-- Generate client
+- Generate the typed clientset.
   `make update-codegen`
+- Regenerate DeepCopy methods and the CRD manifest from the API types.
+  `make generate-api`
+- Check that generated code matches the API types (what CI runs).
+  `make verify-codegen`
+- Install the pre-commit hook that runs `verify-codegen` locally (one-time per clone).
+  `make install-hooks`
 - Run tests.
   `make test`
 - Build the executable file.
@@ -40,9 +57,5 @@ You can do the following commands with make:
   `make run`
 - Access the docker instance with a shell.
   `make shell`
-- Install dependencies
-  `make get-deps`
-- Update dependencies
-  `make update-deps`
 - Build the app image.
   `make image`
