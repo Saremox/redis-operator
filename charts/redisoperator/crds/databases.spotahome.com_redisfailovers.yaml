@@ -16002,6 +16002,8 @@ spec:
             properties:
               lastChanged:
                 type: string
+              lastChecked:
+                type: string
               message:
                 type: string
               state:

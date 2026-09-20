@@ -718,11 +718,23 @@ func setRedisCheckerMetrics(metricsClient metrics.Recorder, mode /* redis or sen
 // so oldLastChanged - captured before any of those run - is what restores
 // it on a non-transition; otherwise every steady-state reconcile would
 // patch LastChanged back to empty, erasing the last recorded transition.
+//
+// LastChecked, unlike LastChanged, is stamped unconditionally on every call.
+// See its doc comment on RedisFailoverStatus for why: without a field that
+// always changes, a steady-state patch (same State, same Message) can come
+// out byte-identical to what's already stored, which the API server/etcd
+// treat as a no-op write - no new resourceVersion, no watch event. Since
+// this controller only watches the RedisFailover CR itself, that patch is
+// the only thing that re-triggers the next Handle() call; a multi-step
+// change (e.g. replacing two pods, which needs two separate Handle() calls)
+// can silently stall until the next full resync if one of its patches
+// happens to be a no-op.
 func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, oldState string, oldLastChanged string) {
 	if oldState != rf.Status.State {
 		rf.Status.LastChanged = time.Now().Format(time.RFC3339)
 	} else {
 		rf.Status.LastChanged = oldLastChanged
 	}
+	rf.Status.LastChecked = time.Now().Format(time.RFC3339)
 	k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 }

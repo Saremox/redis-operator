@@ -211,4 +211,15 @@ type RedisFailoverStatus struct {
 	State       string `json:"state,omitempty"`
 	LastChanged string `json:"lastChanged,omitempty"`
 	Message     string `json:"message,omitempty"`
+	// LastChecked is stamped on every reconcile, whether or not State or
+	// Message changed. Its purpose is entirely mechanical: it guarantees the
+	// status patch written at the end of every CheckAndHeal call is never
+	// byte-identical to what's already stored, so the API server always
+	// generates a watch event for it. Without this, a steady-state reconcile
+	// (no health-state transition) can produce a no-op status write that the
+	// API server/etcd don't turn into a watch event, silently breaking the
+	// controller's only mechanism for re-triggering itself across a
+	// multi-step change - see the linked proposal for the full analysis.
+	// +optional
+	LastChecked string `json:"lastChecked,omitempty"`
 }
