@@ -205,7 +205,8 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 	}
 
 	require.NoError(c.prepareNS())
-	time.Sleep(15 * time.Second)
+	// Wait for the namespace to be ready, rather than guessing how long that takes.
+	require.NoError(waitForNamespaceActive(k8sClient, ommNamespace, 15*time.Second))
 
 	k8sservice := k8s.New(k8sClient, customClient, log.Dummy, metrics.Dummy)
 	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{}, k8sservice, k8sClient, ommNamespace, redisClient, metrics.Dummy, log.Dummy)
@@ -216,7 +217,10 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 	}()
 	defer c.cleanup(stopC)
 
-	time.Sleep(15 * time.Second)
+	// There's no external readiness signal for "the operator started"; this
+	// just fails fast if it crashed immediately instead of silently waiting
+	// out the full window.
+	require.NoError(waitForOperatorStartup(errC, 15*time.Second))
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{

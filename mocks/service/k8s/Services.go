@@ -857,7 +857,9 @@ func (_m *Services) WatchRedisFailovers(ctx context.Context, namespace string, o
 	return r0, r1
 }
 
+// UpdateRedisFailoverStatus provides a mock function with given fields: ctx, namespace, redisFailover, opts
 func (_m *Services) UpdateRedisFailoverStatus(ctx context.Context, namespace string, redisFailover *redisfailoverv1.RedisFailover, opts metav1.PatchOptions) {
+	_m.Called(ctx, namespace, redisFailover, opts)
 }
 
 type mockConstructorTestingTNewServices interface {

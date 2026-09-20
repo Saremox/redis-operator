@@ -171,8 +171,8 @@ func TestRedisFailover(t *testing.T) {
 	prepErr := clients.prepareNS()
 	require.NoError(prepErr)
 
-	// Give time to the namespace to be ready
-	time.Sleep(15 * time.Second)
+	// Wait for the namespace to be ready, rather than guessing how long that takes.
+	require.NoError(waitForNamespaceActive(k8sClient, namespace, 15*time.Second))
 
 	// Create operator and run.
 	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{}, k8sservice, k8sClient, namespace, redisClient, metrics.Dummy, log.Dummy)
@@ -185,8 +185,10 @@ func TestRedisFailover(t *testing.T) {
 	// Prepare cleanup for when the test ends
 	defer clients.cleanup(stopC)
 
-	// Give time to the operator to start
-	time.Sleep(15 * time.Second)
+	// There's no external readiness signal for "the operator started"; this
+	// just fails fast if it crashed immediately instead of silently waiting
+	// out the full window.
+	require.NoError(waitForOperatorStartup(errC, 15*time.Second))
 
 	// Create secret
 	secret := &v1.Secret{
@@ -205,8 +207,9 @@ func TestRedisFailover(t *testing.T) {
 	ok := t.Run("Check Custom Resource Creation", clients.testCRCreation)
 	require.True(ok, "the custom resource has to be created to continue")
 
-	// Giving time to the operator to create the resources
-	time.Sleep(3 * time.Minute)
+	// No blind wait for the operator to create resources: waitForPodsReady
+	// below already polls with its own generous timeout, so it absorbs
+	// however long that actually takes instead of always paying the worst case.
 
 	// Wait for Redis pods to be Ready before running connectivity tests
 	redisLabelSelector := fmt.Sprintf("app.kubernetes.io/component=redis,redisfailovers.databases.spotahome.com/name=%s", name)

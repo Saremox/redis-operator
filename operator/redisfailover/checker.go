@@ -130,12 +130,13 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) error {
 
 	oldState := rf.Status.State
+	oldLastChanged := rf.Status.LastChanged
 
 	rf.Status = redisfailoverv1.RedisFailoverStatus{
 		State: redisfailoverv1.HealthyState,
 	}
 
-	defer updateStatus(r.k8sservice, rf, oldState)
+	defer updateStatus(r.k8sservice, rf, oldState, oldLastChanged)
 
 	if rf.Bootstrapping() {
 		return r.checkAndHealBootstrapMode(rf)
@@ -710,9 +711,18 @@ func setRedisCheckerMetrics(metricsClient metrics.Recorder, mode /* redis or sen
 	}
 }
 
-func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, oldState string) {
+// updateStatus patches rf's status to the API server, stamping LastChanged
+// with the current time only when the health state actually transitioned.
+// The branches leading up to this (checkAndHeal*) each rebuild rf.Status
+// from scratch (State/Message only) without carrying LastChanged forward,
+// so oldLastChanged - captured before any of those run - is what restores
+// it on a non-transition; otherwise every steady-state reconcile would
+// patch LastChanged back to empty, erasing the last recorded transition.
+func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, oldState string, oldLastChanged string) {
 	if oldState != rf.Status.State {
 		rf.Status.LastChanged = time.Now().Format(time.RFC3339)
+	} else {
+		rf.Status.LastChanged = oldLastChanged
 	}
 	k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 }
