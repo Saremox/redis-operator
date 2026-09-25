@@ -71,15 +71,17 @@ type RedisFailoverChecker struct {
 	redisClient   redis.Client
 	logger        log.Logger
 	metricsClient metrics.Recorder
+	opts          options
 }
 
 // NewRedisFailoverChecker creates an object of the RedisFailoverChecker struct
-func NewRedisFailoverChecker(k8sService k8s.Services, redisClient redis.Client, logger log.Logger, metricsClient metrics.Recorder) *RedisFailoverChecker {
+func NewRedisFailoverChecker(k8sService k8s.Services, redisClient redis.Client, logger log.Logger, metricsClient metrics.Recorder, opts ...Option) *RedisFailoverChecker {
 	return &RedisFailoverChecker{
 		k8sService:    k8sService,
 		redisClient:   redisClient,
 		logger:        logger,
 		metricsClient: metricsClient,
+		opts:          applyOptions(opts),
 	}
 }
 
@@ -116,13 +118,8 @@ func (r *RedisFailoverChecker) setMasterLabelIfNecessary(namespace string, pod c
 	return r.k8sService.UpdatePodLabels(namespace, pod.Name, generateRedisMasterRoleLabel())
 }
 
-func (r *RedisFailoverChecker) setSlaveLabelIfNecessary(namespace string, pod corev1.Pod) error {
-	for labelKey, labelValue := range pod.Labels {
-		if labelKey == redisRoleLabelKey && labelValue == redisRoleLabelSlave {
-			return nil
-		}
-	}
-	return r.k8sService.UpdatePodLabels(namespace, pod.Name, generateRedisSlaveRoleLabel())
+func (r *RedisFailoverChecker) setSlaveLabelIfNecessary(rf *redisfailoverv1.RedisFailover, pod corev1.Pod, port, password string) error {
+	return setSlaveLabel(r.k8sService, r.opts, rf, pod, port, password)
 }
 
 // CheckAllSlavesFromMaster controlls that all slaves have the same master (the real one)
@@ -151,7 +148,7 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 				return err
 			}
 		} else {
-			err = r.setSlaveLabelIfNecessary(rf.Namespace, rp)
+			err = r.setSlaveLabelIfNecessary(rf, rp, rport, password)
 			if err != nil {
 				return err
 			}

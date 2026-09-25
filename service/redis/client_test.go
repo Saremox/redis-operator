@@ -16,6 +16,7 @@ package redis
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -325,6 +326,128 @@ func TestMakeSlaveOfWithPort_SamePortDifferentIP(t *testing.T) {
 		return err == nil && info.MasterLinkStatus == "up"
 	})
 	assert.True(t, linkUp)
+}
+
+// dialRaw uses a raw connection: a pooled client would silently redial.
+func dialRaw(t *testing.T, addr, cmd, wantReply string) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	require.NoError(t, conn.SetDeadline(time.Now().Add(2*time.Second)))
+	_, err = conn.Write([]byte(cmd))
+	require.NoError(t, err)
+	reply := make([]byte, len(wantReply))
+	_, err = io.ReadFull(conn, reply)
+	require.NoError(t, err)
+	require.Equal(t, wantReply, string(reply))
+	return conn
+}
+
+// requireClosedByServer requires io.EOF; a read timeout means still open.
+func requireClosedByServer(t *testing.T, conn net.Conn) {
+	t.Helper()
+	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+	_, err := conn.Read(make([]byte, 1))
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		t.Fatalf("read timed out: the server never closed the connection: %v", err)
+	}
+	require.ErrorIs(t, err, io.EOF)
+}
+
+// SLAVEOF is re-issued against healthy replicas, so it must not disconnect.
+// Same port, different IPs: see TestMakeSlaveOfWithPort_MismatchedTargetPort.
+func TestMakeSlaveOfWithPort_LeavesClientConnectionsAlone(t *testing.T) {
+	requireRedisServer(t)
+	otherIP, ok := nonLoopbackIPv4()
+	if !ok {
+		t.Skip("no non-loopback IPv4 address available on this machine")
+	}
+	port, err := findFreePort()
+	require.NoError(t, err)
+
+	a := startRedisProcessOnAddr(t, testLoopbackIP, port)
+	b := startRedisProcessOnAddr(t, otherIP, port)
+	c := newTestClient()
+
+	appConn := dialRaw(t, a.Addr(), "PING\r\n", "+PONG\r\n")
+
+	require.NoError(t, c.MakeSlaveOfWithPort(a.IP, b.IP, strconv.Itoa(b.Port), ""))
+
+	require.NoError(t, appConn.SetDeadline(time.Now().Add(2*time.Second)))
+	_, err = appConn.Write([]byte("PING\r\n"))
+	require.NoError(t, err)
+	pong := make([]byte, 7)
+	_, err = io.ReadFull(appConn, pong)
+	require.NoError(t, err, "SLAVEOF must not close existing client connections")
+	assert.Equal(t, "+PONG\r\n", string(pong))
+}
+
+func replicaLinkID(t *testing.T, master *redisProc) string {
+	t.Helper()
+	rc := rediscli.NewClient(&rediscli.Options{Addr: master.Addr()})
+	defer func() { _ = rc.Close() }()
+	list, err := rc.Do(bgCtx(), "CLIENT", "LIST", "TYPE", "replica").Text()
+	require.NoError(t, err)
+	fields := strings.Fields(list)
+	require.NotEmpty(t, fields, "no replica connected to master")
+	require.True(t, strings.HasPrefix(fields[0], "id="), "unexpected CLIENT LIST output: %q", list)
+	return fields[0]
+}
+
+func TestDisconnectClients_ClosesNormalAndPubSubClientsOnly(t *testing.T) {
+	requireRedisServer(t)
+	master := startRedisProcess(t, "--repl-diskless-sync-delay", "0")
+	replica := startReplicaOf(t, master)
+	c := newTestClient()
+
+	require.True(t, waitForCondition(t, 10*time.Second, func() bool {
+		info, err := c.GetReplicationInfo(replica.IP, strconv.Itoa(replica.Port), "")
+		return err == nil && info.MasterLinkStatus == "up"
+	}), "replica never finished syncing")
+	linkBefore := replicaLinkID(t, master)
+
+	normalConn := dialRaw(t, master.Addr(), "PING\r\n", "+PONG\r\n")
+	pubsubConn := dialRaw(t, master.Addr(), "SUBSCRIBE ch\r\n",
+		"*3\r\n$9\r\nsubscribe\r\n$2\r\nch\r\n:1\r\n")
+
+	require.NoError(t, c.DisconnectClients(master.IP, strconv.Itoa(master.Port), ""))
+
+	requireClosedByServer(t, normalConn)
+	requireClosedByServer(t, pubsubConn)
+	assert.Equal(t, linkBefore, replicaLinkID(t, master),
+		"the replication link must survive: a new client ID means it was killed and redialled")
+}
+
+func TestDisconnectClients_ReturnsErrorWhenDenied(t *testing.T) {
+	requireRedisServer(t)
+	a := startRedisProcess(t, "--user", "default", "on", "nopass", "~*", "&*", "+@all", "-client|kill")
+	c := newTestClient()
+
+	err := c.DisconnectClients(a.IP, strconv.Itoa(a.Port), "")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "TYPE normal")
+	assert.ErrorContains(t, err, "TYPE pubsub")
+	assert.ErrorContains(t, err, "NOPERM")
+}
+
+// Unreachable: don't pay the dial timeout twice.
+func TestDisconnectClients_ConnectionError(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	c := newTestClient()
+
+	err = c.DisconnectClients(testLoopbackIP, strconv.Itoa(port), "")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "TYPE normal")
+	assert.NotContains(t, err.Error(), "TYPE pubsub", "the second kill should be skipped once the node is known to be unreachable")
+}
+
+func TestCloseClient_LogsCloseError(t *testing.T) {
+	rClient := rediscli.NewClient(&rediscli.Options{Addr: net.JoinHostPort(testLoopbackIP, "0")})
+	closeClient(rClient)
+	require.Error(t, rClient.Close(), "a second Close should fail")
+	assert.NotPanics(t, func() { closeClient(rClient) })
 }
 
 // TestMakeSlaveOfWithPort_MismatchedTargetPort documents a real bug found

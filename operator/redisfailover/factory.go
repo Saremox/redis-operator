@@ -25,6 +25,9 @@ import (
 const (
 	operatorName = "redis-operator"
 	lockKey      = "redis-failover-lease"
+
+	endpointRemovalTimeout = 10 * time.Second
+	kubeProxySyncGrace     = 2 * time.Second
 )
 
 // New will create an operator that is responsible for managing all the required stuff
@@ -32,8 +35,13 @@ const (
 func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, lockNamespace string, redisClient redis.Client, kooperMetricsRecorder metrics.Recorder, logger log.Logger) (controller.Controller, error) {
 	// Create internal services.
 	rfService := rfservice.NewRedisFailoverKubeClient(k8sService, logger, kooperMetricsRecorder)
-	rfChecker := rfservice.NewRedisFailoverChecker(k8sService, redisClient, logger, kooperMetricsRecorder)
-	rfHealer := rfservice.NewRedisFailoverHealer(k8sService, redisClient, logger)
+	var opts []rfservice.Option
+	if !cfg.KeepClientsOnDemotion {
+		disconnector := rfservice.NewClientDisconnector(k8sClient, redisClient, logger, endpointRemovalTimeout, kubeProxySyncGrace)
+		opts = append(opts, rfservice.WithClientDisconnector(disconnector))
+	}
+	rfChecker := rfservice.NewRedisFailoverChecker(k8sService, redisClient, logger, kooperMetricsRecorder, opts...)
+	rfHealer := rfservice.NewRedisFailoverHealer(k8sService, redisClient, logger, opts...)
 
 	// Create the handlers.
 	rfHandler := NewRedisFailoverHandler(cfg, rfService, rfChecker, rfHealer, k8sService, kooperMetricsRecorder, logger)

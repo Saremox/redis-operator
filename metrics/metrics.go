@@ -71,6 +71,7 @@ const (
 	CHECK_SENTINEL_QUORUM       = "SENTINEL_CKQUORUM"
 	SLAVE_IS_READY              = "CHECK_IF_SLAVE_IS_READY"
 	GET_REPLICATION_INFO        = "GET_REPLICATION_INFO"
+	DISCONNECT_CLIENTS          = "DISCONNECT_CLIENTS_ON_DEMOTED_INSTANCE"
 )
 
 var ( // used for grabage collection of metrics

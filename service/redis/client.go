@@ -38,6 +38,7 @@ type Client interface {
 	MakeMaster(ip, port, password string) error
 	MakeSlaveOf(ip, masterIP, password string) error
 	MakeSlaveOfWithPort(ip, masterIP, masterPort, password string) error
+	DisconnectClients(ip, port, password string) error
 	GetSentinelMonitor(ip string) (string, string, error)
 	SetCustomSentinelConfig(ip string, configs []string) error
 	SetCustomRedisConfig(ip string, port string, configs []string, password string) error
@@ -341,6 +342,40 @@ func (c *client) MakeSlaveOfWithPort(ip, masterIP, masterPort, password string) 
 		return res.Err()
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.MAKE_SLAVE_OF, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return nil
+}
+
+func closeClient(rClient *rediscli.Client) {
+	if err := rClient.Close(); err != nil {
+		log.Error(err.Error())
+	}
+}
+
+// DisconnectClients closes every normal and pub/sub client connection on the
+// given instance. Replication links are left alone.
+func (c *client) DisconnectClients(ip, port, password string) error {
+	options := &rediscli.Options{
+		Addr:     net.JoinHostPort(ip, port),
+		Password: password,
+		DB:       0,
+	}
+	rClient := rediscli.NewClient(options)
+	defer closeClient(rClient)
+
+	var errs []error
+	for _, clientType := range []string{"normal", "pubsub"} {
+		if err := rClient.ClientKillByFilter(context.TODO(), "TYPE", clientType).Err(); err != nil {
+			errs = append(errs, fmt.Errorf("CLIENT KILL TYPE %s: %w", clientType, err))
+			if IsUnreachableError(err) {
+				break
+			}
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.DISCONNECT_CLIENTS, metrics.FAIL, getRedisError(errs[0]))
+		return err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.DISCONNECT_CLIENTS, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
 }
 

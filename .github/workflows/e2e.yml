@@ -266,6 +266,45 @@ jobs:
             echo "⚠ Master service endpoint mismatch (may need more time to update)"
           fi
 
+      - name: Test clients of a demoted master move to the new master
+        run: |
+          # redis-cli -r keeps one connection open and reconnects as soon as it is closed.
+          kubectl run demotion-client --image=redis:7.2.12-alpine --image-pull-policy=IfNotPresent --restart=Never --command -- \
+            sh -c 'while true; do redis-cli -h rfrm-test-no-sentinel -r -1 -i 0.01 INCR e2e:demotion; sleep 0.01; done'
+          kubectl wait --for=condition=Ready pod/demotion-client --timeout=60s
+
+          writing() { local out; out=$(kubectl logs demotion-client --tail=5); [[ -n "$out" ]] && ! grep -qvE '^[0-9]+$' <<<"$out"; }
+          readonly_errors() { kubectl logs demotion-client | grep -c READONLY || true; }
+          for i in {1..30}; do writing && break; sleep 2; done
+          writing || { echo "✗ Client never wrote to the master"; kubectl logs demotion-client --tail=20; exit 1; }
+
+          # Both directions, since the operator relabels pods in list order.
+          for round in 1 2; do
+            for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
+              if kubectl exec $pod -- redis-cli INFO replication | grep -q "role:master"; then OLD_MASTER=$pod; else NEW_MASTER=$pod; fi
+            done
+            echo "Round $round: demoting $OLD_MASTER in favour of $NEW_MASTER"
+            ERRORS_BEFORE=$(readonly_errors)
+            kubectl exec $NEW_MASTER -- redis-cli REPLICAOF NO ONE
+            kubectl exec $OLD_MASTER -- redis-cli REPLICAOF $(kubectl get pod $NEW_MASTER -o jsonpath='{.status.podIP}') 6379
+
+            for i in {1..45}; do
+              [[ "$(kubectl get pod $OLD_MASTER -o jsonpath='{.metadata.labels.redisfailovers-role}')" == slave ]] && break
+              sleep 2
+            done
+            MOVED=false
+            for i in {1..10}; do
+              sleep 3
+              if writing && (( $(readonly_errors) > ERRORS_BEFORE )); then MOVED=true; break; fi
+            done
+            if [[ "$MOVED" != true ]]; then
+              echo "✗ Client still stuck on the demoted master"
+              kubectl logs demotion-client --tail=20
+              exit 1
+            fi
+            echo "✓ Client reconnected to the new master"
+          done
+
       - name: Collect logs on failure
         if: failure()
         run: |

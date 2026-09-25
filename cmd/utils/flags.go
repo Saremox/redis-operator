@@ -13,16 +13,17 @@ import (
 // CMDFlags are the flags used by the cmd
 // TODO: improve flags.
 type CMDFlags struct {
-	KubeConfig               string
-	SupportedNamespacesRegex string
-	Development              bool
-	ListenAddr               string
-	MetricsPath              string
-	K8sQueriesPerSecond      int
-	K8sQueriesBurstable      int
-	Concurrency              int
-	SyncInterval             int
-	LogLevel                 string
+	KubeConfig                  string
+	SupportedNamespacesRegex    string
+	Development                 bool
+	ListenAddr                  string
+	MetricsPath                 string
+	K8sQueriesPerSecond         int
+	K8sQueriesBurstable         int
+	Concurrency                 int
+	SyncInterval                int
+	LogLevel                    string
+	DisconnectClientsOnDemotion bool
 }
 
 // Init initializes and parse the flags
@@ -41,6 +42,7 @@ func (c *CMDFlags) Init() {
 	flag.IntVar(&c.Concurrency, "concurrency", 3, "Number of conccurent workers meant to process events")
 	flag.IntVar(&c.SyncInterval, "sync-interval", 30, "Number of seconds between checks")
 	flag.StringVar(&c.LogLevel, "log-level", "info", "set log level")
+	flag.BoolVar(&c.DisconnectClientsOnDemotion, "disconnect-clients-on-demotion", true, "Close a redis pod's normal and pub/sub client connections when it stops being the master, so clients reconnect to the new master instead of staying on a replica")
 	// Parse flags
 	flag.Parse()
 
@@ -57,5 +59,6 @@ func (c *CMDFlags) ToRedisOperatorConfig() redisfailover.Config {
 		Concurrency:              c.Concurrency,
 		SyncInterval:             c.SyncInterval,
 		SupportedNamespacesRegex: c.SupportedNamespacesRegex,
+		KeepClientsOnDemotion:    !c.DisconnectClientsOnDemotion,
 	}
 }
