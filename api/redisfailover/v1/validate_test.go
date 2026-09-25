@@ -187,3 +187,20 @@ func TestValidatePreservesExistingStatus(t *testing.T) {
 		LastChanged: "2026-01-01T00:00:00Z",
 	}, rf.Status)
 }
+
+func TestValidateExporterPort(t *testing.T) {
+	for _, port := range []int32{0, 1, 65535} {
+		rf := generateRedisFailover("test", nil)
+		rf.Spec.Redis.Exporter.Port = port
+		rf.Spec.Sentinel.Exporter.Port = port
+		assert.NoError(t, rf.Validate(), "port %d", port)
+	}
+
+	rf := generateRedisFailover("test", nil)
+	rf.Spec.Redis.Exporter.Port = -1
+	assert.EqualError(t, rf.Validate(), "redis.exporter.port -1 must be between 1 and 65535, or 0 for the default")
+
+	rf = generateRedisFailover("test", nil)
+	rf.Spec.Sentinel.Exporter.Port = 65536
+	assert.EqualError(t, rf.Validate(), "sentinel.exporter.port 65536 must be between 1 and 65535, or 0 for the default")
+}

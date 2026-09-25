@@ -35,6 +35,12 @@ func (r *RedisFailover) Validate() error {
 		}
 	}
 
+	for name, port := range map[string]int32{"redis": r.Spec.Redis.Exporter.Port, "sentinel": r.Spec.Sentinel.Exporter.Port} {
+		if port < 0 || port > 65535 {
+			return fmt.Errorf("%s.exporter.port %d must be between 1 and 65535, or 0 for the default", name, port)
+		}
+	}
+
 	if r.Bootstrapping() {
 		if r.Spec.BootstrapNode.Host == "" {
 			return errors.New("BootstrapNode must include a host when provided")
