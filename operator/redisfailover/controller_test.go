@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spotahome/kooper/v2/controller"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -27,16 +26,15 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-type staticRFRetriever struct {
-	items []redisfailoverv1.RedisFailover
-}
-
-func (r staticRFRetriever) List(context.Context, metav1.ListOptions) (runtime.Object, error) {
-	return &redisfailoverv1.RedisFailoverList{Items: r.items}, nil
-}
-
-func (r staticRFRetriever) Watch(context.Context, metav1.ListOptions) (watch.Interface, error) {
-	return watch.NewFake(), nil
+func staticRFs(items ...redisfailoverv1.RedisFailover) *cache.ListWatch {
+	return &cache.ListWatch{
+		ListWithContextFunc: func(context.Context, metav1.ListOptions) (runtime.Object, error) {
+			return &redisfailoverv1.RedisFailoverList{Items: items}, nil
+		},
+		WatchFuncWithContext: func(context.Context, metav1.ListOptions) (watch.Interface, error) {
+			return watch.NewFake(), nil
+		},
+	}
 }
 
 type recordingHandler struct {
@@ -74,14 +72,14 @@ func rfPod(name, rf string) *corev1.Pod {
 	}}
 }
 
-func startController(t *testing.T, h controller.Handler, kube *fakekubernetes.Clientset, rfs ...redisfailoverv1.RedisFailover) *rfController {
+func startController(t *testing.T, h Handler, kube *fakekubernetes.Clientset, rfs ...redisfailoverv1.RedisFailover) *rfController {
 	t.Helper()
 	return startControllerWith(t, h, kube, time.Hour, metrics.Dummy, rfs...)
 }
 
 // startControllerWith returns once the pod watch is registered, so pods
 // created afterwards produce events.
-func startControllerWith(t *testing.T, h controller.Handler, kube *fakekubernetes.Clientset, resync time.Duration, mrec metrics.Recorder, rfs ...redisfailoverv1.RedisFailover) *rfController {
+func startControllerWith(t *testing.T, h Handler, kube *fakekubernetes.Clientset, resync time.Duration, mrec metrics.ControllerRecorder, rfs ...redisfailoverv1.RedisFailover) *rfController {
 	t.Helper()
 	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)
 	watching := make(chan struct{})
@@ -91,7 +89,7 @@ func startControllerWith(t *testing.T, h controller.Handler, kube *fakekubernete
 		once.Do(func() { close(watching) })
 		return true, w, err
 	})
-	c, err := newRFController(h, staticRFRetriever{items: rfs}, newPodListWatch(kube), resync, 3, nil, mrec, log.Dummy)
+	c, err := newRFController(h, staticRFs(rfs...), newPodListWatch(kube), resync, 3, nil, mrec, log.Dummy)
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error)
@@ -188,7 +186,7 @@ func (failingQueueMetrics) RegisterResourceQueueLengthFunc(string, func(context.
 }
 
 func TestNewRFControllerReturnsMetricsRegistrationError(t *testing.T) {
-	_, err := newRFController(&recordingHandler{}, staticRFRetriever{}, newPodListWatch(fakekubernetes.NewClientset()), 0, 0, nil, failingQueueMetrics{metrics.Dummy}, log.Dummy)
+	_, err := newRFController(&recordingHandler{}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), 0, 0, nil, failingQueueMetrics{metrics.Dummy}, log.Dummy)
 	assert.EqualError(t, err, "already registered")
 }
 
@@ -204,23 +202,78 @@ func (m *queueLengthMetrics) RegisterResourceQueueLengthFunc(_ string, f func(co
 
 type recordingRunner struct{ ran bool }
 
-func (r *recordingRunner) Run(f func() error) error {
+func (r *recordingRunner) Run(ctx context.Context, f func(context.Context) error) error {
 	r.ran = true
-	return f()
+	return f(ctx)
 }
 
 func TestRFControllerRunsUnderLeaderElection(t *testing.T) {
 	runner := &recordingRunner{}
 	mrec := &queueLengthMetrics{Recorder: metrics.Dummy}
-	c, err := newRFController(&recordingHandler{}, staticRFRetriever{}, newPodListWatch(fakekubernetes.NewClientset()), time.Hour, 1, runner, mrec, log.Dummy)
+	c, err := newRFController(&recordingHandler{}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), time.Hour, 1, runner, mrec, log.Dummy)
 	require.NoError(t, err)
 	c.enqueue("ns/rf")
 	assert.Equal(t, 1, mrec.queueLen(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	assert.EqualError(t, c.Run(ctx), "timed out waiting for caches to sync")
+	assert.NoError(t, c.Run(ctx), "shutting down before the cache synced is not an error")
 	assert.True(t, runner.ran)
+}
+
+type blockingHandler struct {
+	once    sync.Once
+	calls   atomic.Int32
+	started chan struct{}
+	release chan struct{}
+}
+
+func (h *blockingHandler) Handle(context.Context, runtime.Object) error {
+	h.calls.Add(1)
+	h.once.Do(func() { close(h.started) })
+	<-h.release
+	return nil
+}
+
+func TestRFControllerRunWaitsForInFlightReconciles(t *testing.T) {
+	rf := redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}
+	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)
+	h := &blockingHandler{started: make(chan struct{}), release: make(chan struct{})}
+	c, err := newRFController(h, staticRFs(rf), newPodListWatch(fakekubernetes.NewClientset()), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- c.Run(ctx) }()
+
+	<-h.started
+	cancel()
+	select {
+	case <-done:
+		t.Fatal("Run returned while a reconcile was still running")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(h.release)
+	assert.NoError(t, <-done)
+}
+
+func TestRFControllerStopsTakingQueuedReconcilesOnceCancelled(t *testing.T) {
+	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)
+	var rfs []redisfailoverv1.RedisFailover
+	for _, name := range []string{"a", "b", "c", "d"} {
+		rfs = append(rfs, redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns"}})
+	}
+	h := &blockingHandler{started: make(chan struct{}), release: make(chan struct{})}
+	c, err := newRFController(h, staticRFs(rfs...), newPodListWatch(fakekubernetes.NewClientset()), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- c.Run(ctx) }()
+
+	<-h.started
+	cancel()
+	close(h.release)
+	assert.NoError(t, <-done)
+	assert.Equal(t, int32(1), h.calls.Load(), "the queued RedisFailovers are not reconciled after cancel")
 }
 
 type failingHandler struct{ calls atomic.Int32 }
@@ -280,7 +333,7 @@ func TestRFControllerReconcilesWithoutPodAccess(t *testing.T) {
 		return true, nil, apierrors.NewForbidden(corev1.Resource("pods"), "", errors.New("denied"))
 	})
 	h := &recordingHandler{}
-	c, err := newRFController(h, staticRFRetriever{items: []redisfailoverv1.RedisFailover{rf}}, newPodListWatch(kube), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	c, err := newRFController(h, staticRFs(rf), newPodListWatch(kube), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error)
@@ -292,7 +345,7 @@ func TestRFControllerReconcilesWithoutPodAccess(t *testing.T) {
 }
 
 func TestRFControllerPodOwnerIgnoresUnhandledRedisFailovers(t *testing.T) {
-	c, err := newRFController(&recordingHandler{}, staticRFRetriever{}, newPodListWatch(fakekubernetes.NewClientset()), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	c, err := newRFController(&recordingHandler{}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
 	require.NoError(t, err)
 	require.NoError(t, c.rfInformer.GetIndexer().Add(&redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}))
 
@@ -309,7 +362,7 @@ func TestRFControllerPodOwnerIgnoresUnhandledRedisFailovers(t *testing.T) {
 
 func TestRFControllerSkipsDeletedRedisFailovers(t *testing.T) {
 	h := &recordingHandler{}
-	c, err := newRFController(h, staticRFRetriever{}, newPodListWatch(fakekubernetes.NewClientset()), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	c, err := newRFController(h, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
 	require.NoError(t, err)
 
 	assert.NoError(t, c.process(context.Background(), "ns/gone"))
@@ -325,7 +378,7 @@ func TestRFControllerResyncsRedisFailovers(t *testing.T) {
 }
 
 func TestNewRFControllerDefaultsWorkers(t *testing.T) {
-	c, err := newRFController(&recordingHandler{}, staticRFRetriever{}, newPodListWatch(fakekubernetes.NewClientset()), 0, 0, nil, metrics.Dummy, log.Dummy)
+	c, err := newRFController(&recordingHandler{}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), 0, 0, nil, metrics.Dummy, log.Dummy)
 	require.NoError(t, err)
 	assert.Equal(t, 3, c.workers)
 }
@@ -409,7 +462,7 @@ func TestRFControllerRecordsMetrics(t *testing.T) {
 
 func TestRFControllerCountsOneEventPerUpdate(t *testing.T) {
 	mrec := &recordingMetrics{Recorder: metrics.Dummy}
-	c, err := newRFController(&recordingHandler{}, staticRFRetriever{}, newPodListWatch(fakekubernetes.NewClientset()), time.Hour, 1, nil, mrec, log.Dummy)
+	c, err := newRFController(&recordingHandler{}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), time.Hour, 1, nil, mrec, log.Dummy)
 	require.NoError(t, err)
 	a := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"}}
 	b := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "ns"}}
