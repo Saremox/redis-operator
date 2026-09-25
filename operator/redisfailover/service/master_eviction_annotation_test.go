@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -74,5 +75,26 @@ func TestSetSlaveLabelMarksSlavesEvictable(t *testing.T) {
 
 	err := setSlaveLabel(ms, options{}, rfWithEvictionProtection(true), pod, "0", "")
 	assert.NoError(t, err)
+	ms.AssertExpectations(t)
+}
+
+func TestSetSlaveLabelKeepsADemotedMasterPinnedUntilRelabelled(t *testing.T) {
+	pod := podNamed("p0", map[string]string{masterSafeToEvictAnnotation: "false"})
+	pod.Labels = generateRedisMasterRoleLabel()
+
+	ms := &mK8SService.Services{}
+	ms.On("UpdatePodLabels", "testns", "p0", generateRedisSlaveRoleLabel()).Once().Return(errors.New("boom"))
+	err := setSlaveLabel(ms, options{}, rfWithEvictionProtection(true), pod, "0", "")
+	assert.EqualError(t, err, "boom")
+	ms.AssertNotCalled(t, "UpdatePodAnnotations", mock.Anything, mock.Anything, mock.Anything)
+
+	var calls []string
+	ms = &mK8SService.Services{}
+	ms.On("UpdatePodLabels", "testns", "p0", generateRedisSlaveRoleLabel()).Once().
+		Run(func(mock.Arguments) { calls = append(calls, "label") }).Return(nil)
+	ms.On("UpdatePodAnnotations", "testns", "p0", map[string]string{masterSafeToEvictAnnotation: "true"}).Once().
+		Run(func(mock.Arguments) { calls = append(calls, "annotate") }).Return(nil)
+	assert.NoError(t, setSlaveLabel(ms, options{}, rfWithEvictionProtection(true), pod, "0", ""))
+	assert.Equal(t, []string{"label", "annotate"}, calls)
 	ms.AssertExpectations(t)
 }
