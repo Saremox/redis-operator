@@ -227,7 +227,7 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 	// slave, then the master), so a missed self-trigger between them can
 	// stall for the full resync interval - a short one here keeps that
 	// stall short instead of letting it hit the 3-minute fallback.
-	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{SyncInterval: 2}, k8sservice, k8sClient, ommNamespace, redisClient, metrics.Dummy, log.Dummy)
+	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{SyncInterval: 2, SupportedNamespacesRegex: "^" + ommNamespace + "$"}, k8sservice, k8sClient, ommNamespace, redisClient, metrics.Dummy, log.Dummy)
 	require.NoError(err)
 
 	go func() {

@@ -97,6 +97,12 @@ func NewRedisFailoverRetriever(cfg Config, cli k8s.Services) controller.Retrieve
 				return watcher, err
 			}
 			watcher = watch.Filter(watcher, func(event watch.Event) (watch.Event, bool) {
+				// Bookmarks and errors belong to no namespace. The informer
+				// needs them to finish its initial sync and to relist after
+				// an expired watch.
+				if event.Type == watch.Bookmark || event.Type == watch.Error {
+					return event, true
+				}
 				rf, ok := event.Object.(*redisfailoverv1.RedisFailover)
 				if !ok {
 					return event, false

@@ -190,7 +190,7 @@ func TestRedisFailover(t *testing.T) {
 	// needs two separate Handle() calls to replace two pods) can then stall
 	// for the full resync interval. A short one here keeps that stall short
 	// instead of letting it hit the 3-minute fallback.
-	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{SyncInterval: 2}, k8sservice, k8sClient, namespace, redisClient, metrics.Dummy, log.Dummy)
+	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{SyncInterval: 2, SupportedNamespacesRegex: "^" + namespace + "$"}, k8sservice, k8sClient, namespace, redisClient, metrics.Dummy, log.Dummy)
 	require.NoError(err)
 
 	// Its own cancelable context, not context.Background(): without this,

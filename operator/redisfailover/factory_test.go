@@ -3,16 +3,22 @@ package redisfailover
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
+	clientfeatures "k8s.io/client-go/features"
+	clientfeaturestesting "k8s.io/client-go/features/testing"
 	fakekubernetes "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/tools/cache"
 
 	kooperlog "github.com/spotahome/kooper/v2/log"
 
@@ -148,6 +154,54 @@ func TestNewRedisFailoverRetrieverWatchNilWatcherNoError(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Nil(t, w)
 	mk.AssertExpectations(t)
+}
+
+// rfInformer builds an informer on NewRedisFailoverRetriever the way the
+// controller does.
+func rfInformer(t *testing.T, mk *mK8SService.Services) cache.SharedIndexInformer {
+	t.Helper()
+	retriever := NewRedisFailoverRetriever(Config{SupportedNamespacesRegex: "^allowed$"}, mk)
+	lw := &cache.ListWatch{
+		ListWithContextFunc:  retriever.List,
+		WatchFuncWithContext: retriever.Watch,
+	}
+	informer := cache.NewSharedIndexInformer(lw, nil, 0, cache.Indexers{})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go informer.RunWithContext(ctx)
+	return informer
+}
+
+func TestRedisFailoverInformerSyncsFromAWatchListStream(t *testing.T) {
+	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, true)
+	mk := &mK8SService.Services{}
+	stream := watch.NewFake()
+	mk.On("WatchRedisFailovers", mock.Anything, "", mock.Anything).Return(stream, nil)
+
+	informer := rfInformer(t, mk)
+	stream.Add(&redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "allowed", ResourceVersion: "5"}})
+	stream.Action(watch.Bookmark, &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{
+		ResourceVersion: "6",
+		Annotations:     map[string]string{metav1.InitialEventsAnnotationKey: "true"},
+	}})
+
+	assert.Eventually(t, informer.HasSynced, 3*time.Second, 10*time.Millisecond, "the end-of-initial-events bookmark must reach the informer")
+}
+
+func TestRedisFailoverInformerRelistsOnAnExpiredWatch(t *testing.T) {
+	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)
+	mk := &mK8SService.Services{}
+	var lists atomic.Int32
+	mk.On("ListRedisFailovers", mock.Anything, "", mock.Anything).Run(func(mock.Arguments) { lists.Add(1) }).
+		Return(&redisfailoverv1.RedisFailoverList{ListMeta: metav1.ListMeta{ResourceVersion: "1"}}, nil)
+	stream := watch.NewFake()
+	mk.On("WatchRedisFailovers", mock.Anything, "", mock.Anything).Return(stream, nil)
+
+	informer := rfInformer(t, mk)
+	assert.Eventually(t, informer.HasSynced, 3*time.Second, 10*time.Millisecond)
+	stream.Error(&apierrors.NewResourceExpired("too old resource version").ErrStatus)
+
+	assert.Eventually(t, func() bool { return lists.Load() > 1 }, 5*time.Second, 10*time.Millisecond, "an expired watch must make the informer relist")
 }
 
 // -----------------------------------------------------------------------
