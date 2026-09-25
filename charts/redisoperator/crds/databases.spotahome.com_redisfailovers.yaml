@@ -2050,6 +2050,8 @@ spec:
                           Defaults to 9121 for the redis exporter and 9355 for the sentinel exporter
                           when left as 0.
                         format: int32
+                        maximum: 65535
+                        minimum: 0
                         type: integer
                       resources:
                         description: ResourceRequirements describes the compute resource
@@ -10356,6 +10358,8 @@ spec:
                           Defaults to 9121 for the redis exporter and 9355 for the sentinel exporter
                           when left as 0.
                         format: int32
+                        maximum: 65535
+                        minimum: 0
                         type: integer
                       resources:
                         description: ResourceRequirements describes the compute resource

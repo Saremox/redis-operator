@@ -139,6 +139,8 @@ type Exporter struct {
 	// Port the exporter sidecar listens on and the metrics service exposes.
 	// Defaults to 9121 for the redis exporter and 9355 for the sentinel exporter
 	// when left as 0.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port,omitempty"`
 }
 

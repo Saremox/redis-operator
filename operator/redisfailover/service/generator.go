@@ -840,6 +840,13 @@ func createRedisExporterContainer(rf *redisfailoverv1.RedisFailover) corev1.Cont
 
 	redisEnv := getRedisExporterEnv(rf)
 	container.Env = append(container.Env, redisEnv...)
+	// Only for a custom port, so default pod templates stay unchanged.
+	if rf.Spec.Redis.Exporter.Port != 0 {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name:  "REDIS_EXPORTER_WEB_LISTEN_ADDRESS",
+			Value: fmt.Sprintf("0.0.0.0:%d", rf.Spec.Redis.Exporter.Port),
+		})
+	}
 
 	return container
 }

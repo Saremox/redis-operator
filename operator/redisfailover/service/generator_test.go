@@ -3783,6 +3783,49 @@ func TestRedisExporterCustomResources(t *testing.T) {
 	}
 }
 
+func TestRedisExporterListensOnCustomPort(t *testing.T) {
+	tests := []struct {
+		name       string
+		port       int32
+		wantPort   int32
+		wantListen string
+	}{
+		{name: "default port leaves the listen address alone", wantPort: 9121},
+		{name: "custom port sets the listen address", port: 19121, wantPort: 19121, wantListen: "0.0.0.0:19121"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF()
+			rf.Spec.Redis.Exporter.Enabled = true
+			rf.Spec.Redis.Exporter.Port = test.port
+
+			var gotSS *appsv1.StatefulSet
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+			ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				gotSS = args.Get(1).(*appsv1.StatefulSet)
+			}).Return(nil)
+
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			assert.NoError(client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{}))
+
+			if assert.NotNil(gotSS) && assert.Len(gotSS.Spec.Template.Spec.Containers, 2) {
+				exporter := gotSS.Spec.Template.Spec.Containers[1]
+				assert.Equal(test.wantPort, exporter.Ports[0].ContainerPort)
+				var listen string
+				for _, env := range exporter.Env {
+					if env.Name == "REDIS_EXPORTER_WEB_LISTEN_ADDRESS" {
+						listen = env.Value
+					}
+				}
+				assert.Equal(test.wantListen, listen)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // getRedisExporterEnv / envExists
 // ---------------------------------------------------------------------------
