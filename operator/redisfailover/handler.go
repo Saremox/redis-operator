@@ -22,12 +22,11 @@ const (
 	rfLabelNameKey          = "redisfailovers.databases.spotahome.com/name"
 	skipReconcileAnnotation = "redisfailovers.databases.spotahome.com/skip-reconcile"
 	// redisFailoverFinalizer is what makes RedisFailover deletion visible to
-	// Handle at all. Without a finalizer, kooper's generic controller never
-	// calls Handle for a delete: by the time its DeleteFunc fires, the
-	// object is already gone from the informer's local indexer, and the
-	// processor that resolves a queued key back to an object just no-ops
-	// when the key no longer resolves (see newIndexerProcessor in
-	// kooper/v2/controller/processor.go) - Handle is never invoked with a
+	// Handle at all. Without a finalizer, the controller never calls Handle
+	// for a delete: by the time its DeleteFunc fires, the object is already
+	// gone from the informer's local indexer, and resolving a queued key
+	// back to an object just no-ops when the key no longer resolves (see
+	// rfController.process) - Handle is never invoked with a
 	// nil/absent object standing in for "this was deleted". A finalizer
 	// makes the API server hold the object (with DeletionTimestamp set)
 	// until we remove it, which turns "delete" into an ordinary object we

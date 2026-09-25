@@ -179,17 +179,9 @@ func TestRedisFailover(t *testing.T) {
 	// Wait for the namespace to be ready, rather than guessing how long that takes.
 	require.NoError(waitForNamespaceActive(k8sClient, namespace, 15*time.Second))
 
-	// Create operator and run. SyncInterval is set explicitly (production
-	// always sets one via -sync-interval, default 30) rather than left at
-	// the zero value: a zero Config.SyncInterval means kooper's own
-	// ResyncInterval falls back to *its* default of 3 minutes, and the
-	// controller's status patch after a no-op reconcile can be byte-identical
-	// to what's already stored - which the apiserver treats as a no-op write
-	// that never reaches watchers, so nothing re-triggers Handle() until the
-	// next full resync. A multi-step change (like the rollout below, which
-	// needs two separate Handle() calls to replace two pods) can then stall
-	// for the full resync interval. A short one here keeps that stall short
-	// instead of letting it hit the 3-minute fallback.
+	// Create operator and run. A short resync: waiting for the sentinels to
+	// see the new slaves before replacing the master isn't driven by any
+	// Kubernetes event.
 	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{SyncInterval: 2, SupportedNamespacesRegex: "^" + namespace + "$"}, k8sservice, k8sClient, namespace, redisClient, metrics.Dummy, log.Dummy)
 	require.NoError(err)
 

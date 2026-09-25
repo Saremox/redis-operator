@@ -220,3 +220,16 @@ func TestPodIsTerminal(t *testing.T) {
 		})
 	}
 }
+
+func TestPodIsReady(t *testing.T) {
+	withReady := func(status corev1.ConditionStatus) *corev1.Pod {
+		return &corev1.Pod{Status: corev1.PodStatus{Conditions: []corev1.PodCondition{
+			{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+			{Type: corev1.PodReady, Status: status},
+		}}}
+	}
+	assert.True(t, util.PodIsReady(withReady(corev1.ConditionTrue)))
+	assert.False(t, util.PodIsReady(withReady(corev1.ConditionFalse)))
+	assert.False(t, util.PodIsReady(withReady(corev1.ConditionUnknown)))
+	assert.False(t, util.PodIsReady(&corev1.Pod{}))
+}

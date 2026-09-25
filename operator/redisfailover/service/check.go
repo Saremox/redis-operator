@@ -109,6 +109,11 @@ func (r *RedisFailoverChecker) CheckSentinelNumber(rf *redisfailoverv1.RedisFail
 	return nil
 }
 
+// IsMasterPod reports whether the pod is labelled as the redis master.
+func IsMasterPod(pod *corev1.Pod) bool {
+	return pod.Labels[redisRoleLabelKey] == redisRoleLabelMaster
+}
+
 func (r *RedisFailoverChecker) setMasterLabelIfNecessary(namespace string, pod corev1.Pod) error {
 	for labelKey, labelValue := range pod.Labels {
 		if labelKey == redisRoleLabelKey && labelValue == redisRoleLabelMaster {
@@ -154,6 +159,11 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 			}
 		}
 
+		if rp.DeletionTimestamp != nil {
+			// A terminating pod is going away, and dialing its IP can block
+			// for the whole connection timeout.
+			continue
+		}
 		slave, err := r.redisClient.GetSlaveOf(rp.Status.PodIP, rport, password)
 		if err != nil {
 			// The pod is unreachable - typically the old master on a downed node.

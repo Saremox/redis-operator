@@ -54,17 +54,11 @@ func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, lo
 		return nil, err
 	}
 
-	// Create our controller.
-	return controller.New(&controller.Config{
-		Handler:           rfHandler,
-		Retriever:         rfRetriever,
-		LeaderElector:     leSVC,
-		MetricsRecorder:   kooperMetricsRecorder,
-		Logger:            kooperLogger,
-		Name:              "redisfailover",
-		ResyncInterval:    time.Duration(cfg.SyncInterval) * time.Second,
-		ConcurrentWorkers: cfg.Concurrency,
-	})
+	c, err := newRFController(rfHandler, rfRetriever, newPodListWatch(k8sClient), time.Duration(cfg.SyncInterval)*time.Second, cfg.Concurrency, leSVC, kooperMetricsRecorder, logger.WithField("operator", "redisfailover"))
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func NewRedisFailoverRetriever(cfg Config, cli k8s.Services) controller.Retriever {

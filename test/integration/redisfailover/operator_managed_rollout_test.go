@@ -216,18 +216,9 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 	require.NoError(waitForNamespaceActive(k8sClient, ommNamespace, 15*time.Second))
 
 	k8sservice := k8s.New(k8sClient, customClient, log.Dummy, metrics.Dummy)
-	// SyncInterval is set explicitly (production always sets one via
-	// -sync-interval, default 30) rather than left at the zero value: a zero
-	// Config.SyncInterval means kooper's own ResyncInterval falls back to
-	// *its* default of 3 minutes, and the controller's status patch after a
-	// no-op reconcile can be byte-identical to what's already stored - which
-	// the apiserver treats as a no-op write that never reaches watchers, so
-	// nothing re-triggers Handle() until the next full resync. The rollout
-	// below needs two separate Handle() calls to replace both pods (the
-	// slave, then the master), so a missed self-trigger between them can
-	// stall for the full resync interval - a short one here keeps that
-	// stall short instead of letting it hit the 3-minute fallback.
-	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{SyncInterval: 2, SupportedNamespacesRegex: "^" + ommNamespace + "$"}, k8sservice, k8sClient, ommNamespace, redisClient, metrics.Dummy, log.Dummy)
+	// The resync is far longer than the rollout's timeout, so only pod events
+	// can drive the rollout's steps.
+	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{SyncInterval: 600, SupportedNamespacesRegex: "^" + ommNamespace + "$"}, k8sservice, k8sClient, ommNamespace, redisClient, metrics.Dummy, log.Dummy)
 	require.NoError(err)
 
 	go func() {

@@ -3,15 +3,18 @@ package redisfailover
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
 	"github.com/saremox/redis-operator/service/k8s"
+	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
+	"github.com/saremox/redis-operator/operator/redisfailover/util"
 	"github.com/saremox/redis-operator/service/redis"
 )
 
@@ -59,6 +62,9 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			return err
 		}
 		if revision != ssUR {
+			if settled, err := r.redisPodsSettled(rf, ssUR); err != nil || !settled {
+				return err
+			}
 			//Delete pod and wait next round to check if the new one is synced
 			err = r.rfHealer.DeletePod(pod, rf)
 			if err != nil {
@@ -113,6 +119,9 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 				}
 			}
 
+			if settled, err := r.redisPodsSettled(rf, ssUR); err != nil || !settled {
+				return err
+			}
 			err = r.rfHealer.DeletePod(master, rf)
 			if err != nil {
 				return err
@@ -123,6 +132,53 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 	}
 
 	return nil
+}
+
+// redisPodsSettled reports whether the last redis pod replacement has
+// finished: the StatefulSet has all its pods, none is being deleted, and every
+// pod already on the update revision is ready. Pod events start the next
+// reconcile right after a delete, so without this check a rollout would delete
+// several pods at once.
+func (r *RedisFailoverHandler) redisPodsSettled(rf *redisfailoverv1.RedisFailover, updateRevision string) (bool, error) {
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return false, err
+	}
+	wait := func(reason string) (bool, error) {
+		r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).Infof("redis rollout waits: %s", reason)
+		return false, nil
+	}
+	if len(pods.Items) < int(rf.Spec.Redis.Replicas) {
+		return wait(fmt.Sprintf("%d of %d pods exist", len(pods.Items), rf.Spec.Redis.Replicas))
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.DeletionTimestamp != nil {
+			return wait("pod " + pod.Name + " is terminating")
+		}
+		if pod.Labels[appsv1.ControllerRevisionHashLabelKey] == updateRevision && !util.PodIsReady(pod) {
+			return wait("pod " + pod.Name + " is not ready")
+		}
+	}
+	return true, nil
+}
+
+// masterPodStopping reports whether the master's pod is being deleted but
+// still ready, i.e. still taking writes. A pod on a lost node is not ready,
+// so it doesn't block anything.
+func (r *RedisFailoverHandler) masterPodStopping(rf *redisfailoverv1.RedisFailover) (bool, error) {
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return false, err
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.DeletionTimestamp != nil && rfservice.IsMasterPod(pod) && util.PodIsReady(pod) {
+			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("pod", pod.Name).Info("waiting for the stopping master pod to exit before electing a master")
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // CheckAndHeal runs verifcation checks to ensure the RedisFailover is in an expected and healthy state.
@@ -411,6 +467,12 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 
 	switch nMasters {
 	case 0:
+		// A master whose pod is being deleted is no longer counted but may
+		// still take writes. Wait for it to stop so a promoted replica
+		// doesn't lose them.
+		if stopping, err := r.masterPodStopping(rf); err != nil || stopping {
+			return err
+		}
 		// No master available - elect one
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no masters detected"))
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("No master available, operator will elect one")

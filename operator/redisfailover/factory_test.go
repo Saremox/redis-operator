@@ -285,3 +285,10 @@ func TestNewPropagatesLeaderElectionError(t *testing.T) {
 	mk.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
+
+func TestNewPropagatesControllerError(t *testing.T) {
+	ctrl, err := New(Config{SupportedNamespacesRegex: ".*"}, &mK8SService.Services{}, fakekubernetes.NewClientset(), "test-namespace", &mRedisService.Client{}, failingQueueMetrics{metrics.Dummy}, log.Dummy)
+
+	assert.Error(t, err)
+	assert.Nil(t, ctrl)
+}
