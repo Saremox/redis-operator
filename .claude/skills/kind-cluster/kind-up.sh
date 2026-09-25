@@ -47,6 +47,7 @@ nodes:
     failCgroupV1: false
 EOF
 
+"$here/registry.sh" pull "kindest/node:$version"
 kind create cluster --name "$name" --image "kindest/node:$version" \
   --config "$dir/kind.yaml" --kubeconfig "$dir/kubeconfig" --wait 180s
 export KUBECONFIG=$dir/kubeconfig

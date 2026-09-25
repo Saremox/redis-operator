@@ -23,5 +23,7 @@ RUN addgroup -g 1000 rf && adduser -D -u 1000 -G rf rf
 USER rf
 ENTRYPOINT ["/usr/local/bin/redis-operator"]
 EOF
+# docker build pulls a missing base image straight from Docker Hub.
+"$here/registry.sh" pull alpine:latest
 docker build -q -t "redis-operator:$tag" "$ctx" >/dev/null
 "$here/registry.sh" push "redis-operator:$tag"
