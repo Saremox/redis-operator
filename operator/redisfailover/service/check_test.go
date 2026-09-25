@@ -235,6 +235,40 @@ func TestCheckAllSlavesFromMasterLabelsMasterDespiteUnreachablePod(t *testing.T)
 	ms.AssertExpectations(t) // proves the master-role label was applied
 }
 
+func TestCheckAllSlavesFromMasterDoesNotDialTerminatingPods(t *testing.T) {
+	rf := generateRF()
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-0", Labels: map[string]string{"redisfailovers-role": "master"}},
+				Status:     corev1.PodStatus{PodIP: "10.0.0.1", Phase: corev1.PodRunning},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-1", DeletionTimestamp: &metav1.Time{Time: time.Now()}},
+				Status:     corev1.PodStatus{PodIP: "10.0.0.2", Phase: corev1.PodRunning},
+			},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	ms.On("UpdatePodLabels", namespace, "rfr-test-1", map[string]string{"redisfailovers-role": "slave"}).Once().Return(nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetSlaveOf", "10.0.0.1", "0", "").Once().Return("", nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	assert.NoError(t, checker.CheckAllSlavesFromMaster("10.0.0.1", rf))
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t)
+}
+
+func TestIsMasterPod(t *testing.T) {
+	assert.True(t, rfservice.IsMasterPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"redisfailovers-role": "master"}}}))
+	assert.False(t, rfservice.IsMasterPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"redisfailovers-role": "slave"}}}))
+	assert.False(t, rfservice.IsMasterPod(&corev1.Pod{}))
+}
+
 func TestCheckAllSlavesFromMasterDifferentMaster(t *testing.T) {
 	assert := assert.New(t)
 
