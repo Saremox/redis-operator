@@ -11,6 +11,7 @@ import (
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
+	"github.com/saremox/redis-operator/service/k8s"
 )
 
 func rfWithEvictionProtection(enabled bool) *redisfailoverv1.RedisFailover {
@@ -97,4 +98,26 @@ func TestSetSlaveLabelKeepsADemotedMasterPinnedUntilRelabelled(t *testing.T) {
 	assert.NoError(t, setSlaveLabel(ms, options{}, rfWithEvictionProtection(true), pod, "0", ""))
 	assert.Equal(t, []string{"label", "annotate"}, calls)
 	ms.AssertExpectations(t)
+}
+
+func TestSetMasterLabelStopsWhenPinningFails(t *testing.T) {
+	setters := map[string]func(k8s.Services, *redisfailoverv1.RedisFailover, corev1.Pod) error{
+		"checker": func(ms k8s.Services, rf *redisfailoverv1.RedisFailover, pod corev1.Pod) error {
+			return (&RedisFailoverChecker{k8sService: ms}).setMasterLabelIfNecessary(rf, pod)
+		},
+		"healer": func(ms k8s.Services, rf *redisfailoverv1.RedisFailover, pod corev1.Pod) error {
+			return (&RedisFailoverHealer{k8sService: ms}).setMasterLabelIfNecessary(rf, pod)
+		},
+	}
+	for name, setMaster := range setters {
+		t.Run(name, func(t *testing.T) {
+			ms := &mK8SService.Services{}
+			ms.On("UpdatePodAnnotations", "testns", "p0", map[string]string{masterSafeToEvictAnnotation: "false"}).Once().Return(errors.New("boom"))
+
+			err := setMaster(ms, rfWithEvictionProtection(true), podNamed("p0", nil))
+
+			assert.EqualError(t, err, "boom")
+			ms.AssertNotCalled(t, "UpdatePodLabels", mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
 }
