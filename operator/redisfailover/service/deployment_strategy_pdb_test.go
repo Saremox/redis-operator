@@ -100,3 +100,40 @@ func TestPodDisruptionBudgetMinAvailableOverride(t *testing.T) {
 }
 
 func ptrIOS(v intstr.IntOrString) *intstr.IntOrString { return &v }
+
+func TestSentinelPodDisruptionBudgetMinAvailable(t *testing.T) {
+	tests := []struct {
+		name     string
+		override *intstr.IntOrString
+		expected intstr.IntOrString
+	}{
+		{name: "defaults from the sentinel replicas, not the redis ones", expected: intstr.FromInt(1)},
+		{name: "explicit override wins", override: ptrIOS(intstr.FromString("60%")), expected: intstr.FromString("60%")},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			rf := generateRF()
+			rf.Spec.Redis.Replicas = 5
+			rf.Spec.Sentinel.Replicas = 2
+			rf.Spec.Sentinel.PodDisruptionBudgetMinAvailable = test.override
+
+			var gotMinAvailable *intstr.IntOrString
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				gotMinAvailable = args.Get(1).(*policyv1.PodDisruptionBudget).Spec.MinAvailable
+			}).Return(nil)
+			ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
+			ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Return(nil)
+
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			assert.NoError(client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{}))
+
+			if assert.NotNil(gotMinAvailable) {
+				assert.Equal(test.expected, *gotMinAvailable)
+			}
+		})
+	}
+}

@@ -15515,7 +15515,7 @@ spec:
                     - type: string
                     description: |-
                       PodDisruptionBudgetMinAvailable overrides the PodDisruptionBudget
-                      minAvailable for the sentinel pods. Defaults to 2 (or 1 when redis
+                      minAvailable for the sentinel pods. Defaults to 2 (or 1 when sentinel
                       replicas <= 2).
                     x-kubernetes-int-or-string: true
                   priorityClassName:

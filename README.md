@@ -156,8 +156,8 @@ spec:
         maxUnavailable: 0
 ```
 
-The `PodDisruptionBudget` `minAvailable` for each component defaults to `2` (or `1` when redis
-`replicas <= 2`). Override it per component with `redis.podDisruptionBudgetMinAvailable` /
+The `PodDisruptionBudget` `minAvailable` for each component defaults to `2` (or `1` when that
+component's `replicas <= 2`). Override it per component with `redis.podDisruptionBudgetMinAvailable` /
 `sentinel.podDisruptionBudgetMinAvailable` (an integer or percentage string such as `"60%"`).
 
 ### Persistence

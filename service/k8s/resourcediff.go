@@ -5,6 +5,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // The *UpToDate functions below all follow the same pattern: compare a live
@@ -70,10 +71,35 @@ func deploymentUpToDate(stored, desired *appsv1.Deployment) bool {
 	normalized := stored.Spec.DeepCopy()
 	normalized.RevisionHistoryLimit = nil
 	normalized.ProgressDeadlineSeconds = nil
-	normalized.Strategy = appsv1.DeploymentStrategy{}
+	if equality.Semantic.DeepEqual(defaultedStrategy(stored.Spec.Strategy), defaultedStrategy(desired.Spec.Strategy)) {
+		normalized.Strategy = desired.Spec.Strategy
+	}
 	normalizePodSpecForComparison(&normalized.Template.Spec)
 
 	return equality.Semantic.DeepEqual(normalized, &desired.Spec)
+}
+
+// defaultedStrategy fills in what the API server defaults in a Deployment
+// strategy, so a stored strategy compares equal to the desired one it came from.
+func defaultedStrategy(s appsv1.DeploymentStrategy) appsv1.DeploymentStrategy {
+	s = *s.DeepCopy()
+	if s.Type == "" {
+		s.Type = appsv1.RollingUpdateDeploymentStrategyType
+	}
+	if s.Type != appsv1.RollingUpdateDeploymentStrategyType {
+		return s
+	}
+	if s.RollingUpdate == nil {
+		s.RollingUpdate = &appsv1.RollingUpdateDeployment{}
+	}
+	quarter := intstr.FromString("25%")
+	if s.RollingUpdate.MaxUnavailable == nil {
+		s.RollingUpdate.MaxUnavailable = &quarter
+	}
+	if s.RollingUpdate.MaxSurge == nil {
+		s.RollingUpdate.MaxSurge = &quarter
+	}
+	return s
 }
 
 // serviceUpToDate is statefulSetUpToDate's counterpart for Service. See its

@@ -128,7 +128,7 @@ type SentinelSettings struct {
 	// RollingUpdate strategy when unset.
 	Strategy appsv1.DeploymentStrategy `json:"strategy,omitempty"`
 	// PodDisruptionBudgetMinAvailable overrides the PodDisruptionBudget
-	// minAvailable for the sentinel pods. Defaults to 2 (or 1 when redis
+	// minAvailable for the sentinel pods. Defaults to 2 (or 1 when sentinel
 	// replicas <= 2).
 	PodDisruptionBudgetMinAvailable *intstr.IntOrString `json:"podDisruptionBudgetMinAvailable,omitempty"`
 }
