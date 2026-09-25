@@ -147,8 +147,8 @@ func TestSetMasterOnAllDisconnectsOnlyTheDemotedMaster(t *testing.T) {
 	ms.On("UpdatePodLabels", namespace, "old-master", slaveRoleLabel).Once().Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("IsMaster", "0.0.0.0", "0", "").Return(true, nil)
-	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0.0.0.0", "0", "").Once().Return(nil)
-	mr.On("MakeSlaveOfWithPort", "2.2.2.2", "0.0.0.0", "0", "").Once().Return(nil)
+	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(nil)
+	mr.On("MakeSlaveOfWithPort", "2.2.2.2", "0", "0.0.0.0", "0", "").Once().Return(nil)
 	var disconnects []string
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{},
@@ -173,7 +173,7 @@ func TestSetExternalMasterOnAllNeverDisconnectsClients(t *testing.T) {
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(pods, nil)
 	mr := &mRedisService.Client{}
-	mr.On("MakeSlaveOfWithPort", mock.Anything, "5.5.5.5", "6379", "").Return(nil)
+	mr.On("MakeSlaveOfWithPort", mock.Anything, "0", "5.5.5.5", "6379", "").Return(nil)
 	var disconnects []string
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{},
