@@ -63,7 +63,7 @@ make helm-test
 
 ## Kubernetes Operator Patterns
 
-- The operator uses the `kooper` framework (`github.com/spotahome/kooper/v2`) for controller/reconciler wiring
+- The controller is built directly on client-go informers and a workqueue (`operator/redisfailover/controller.go`)
 - The reconciliation loop is in `operator/redisfailover/`
 - All Kubernetes resources created by the operator carry owner references pointing to the `RedisFailover` CR
 - Redis Statefulsets use the prefix `rfr-<name>`; Sentinel Deployments use `rfs-<name>`

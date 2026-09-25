@@ -1,17 +1,13 @@
 package metrics
 
-import (
-	koopercontroller "github.com/spotahome/kooper/v2/controller"
-)
-
 // Dummy is a handy instnce of a dummy instrumenter, most of the times it will be used on tests.
 var Dummy = &dummy{
-	MetricsRecorder: koopercontroller.DummyMetricsRecorder,
+	ControllerRecorder: dummyControllerRecorder{},
 }
 
 // dummy is a dummy implementation of Instrumenter.
 type dummy struct {
-	koopercontroller.MetricsRecorder
+	ControllerRecorder
 }
 
 func (d *dummy) SetClusterOK(namespace string, name string)    {}

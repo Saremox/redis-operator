@@ -24,7 +24,9 @@ import (
 )
 
 const (
-	gracePeriod      = 5 * time.Second
+	// shutdownTimeout bounds how long SIGTERM waits for running reconciles
+	// and the lease release.
+	shutdownTimeout  = 5 * time.Second
 	metricsNamespace = "redis_operator"
 )
 
@@ -32,7 +34,6 @@ const (
 type Main struct {
 	flags  *utils.CMDFlags
 	logger log.Logger
-	stopC  chan struct{}
 }
 
 // New returns a Main object.
@@ -49,9 +50,7 @@ func New(logger log.Logger) Main {
 
 // Run execs the program.
 func (m *Main) Run() error {
-	// Create signal channels.
-	m.stopC = make(chan struct{})
-	errC := make(chan error)
+	errC := make(chan error, 1)
 
 	// Set correct logging.
 	err := m.logger.Set(log.Level(strings.ToLower(m.flags.LogLevel)))
@@ -93,37 +92,36 @@ func (m *Main) Run() error {
 		return err
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go func() {
-		errC <- redisfailoverOperator.Run(context.Background())
+		errC <- redisfailoverOperator.Run(ctx)
 	}()
 
 	// Await signals.
 	sigC := m.createSignalCapturer()
-	var finalErr error
 	select {
 	case <-sigC:
 		m.logger.Infof("Signal captured, exiting...")
+		// Let the operator finish its reconciles and release the lease.
+		cancel()
+		select {
+		case err := <-errC:
+			return err
+		case <-time.After(shutdownTimeout):
+			m.logger.Warningf("Operator did not stop within %s, exiting without releasing the leader lease", shutdownTimeout)
+			return nil
+		}
 	case err := <-errC:
 		m.logger.Errorf("Error received: %s, exiting...", err)
-		finalErr = err
+		return err
 	}
-
-	m.stop(m.stopC)
-	return finalErr
 }
 
 func (m *Main) createSignalCapturer() <-chan os.Signal {
 	sigC := make(chan os.Signal, 1)
 	signal.Notify(sigC, syscall.SIGTERM, syscall.SIGINT)
 	return sigC
-}
-
-func (m *Main) stop(stopC chan struct{}) {
-	m.logger.Infof("Stopping everything, waiting %s...", gracePeriod)
-
-	// stop everything and let them time to stop
-	close(stopC)
-	time.Sleep(gracePeriod)
 }
 
 func getNamespace() string {

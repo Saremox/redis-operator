@@ -5,9 +5,6 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/spotahome/kooper/v2/controller"
-	"github.com/spotahome/kooper/v2/controller/leaderelection"
-	kooperlog "github.com/spotahome/kooper/v2/log"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
@@ -32,43 +29,42 @@ const (
 
 // New will create an operator that is responsible for managing all the required stuff
 // to create redis failovers.
-func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, lockNamespace string, redisClient redis.Client, kooperMetricsRecorder metrics.Recorder, logger log.Logger) (controller.Controller, error) {
+func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, lockNamespace string, redisClient redis.Client, metricsRecorder metrics.Recorder, logger log.Logger) (Controller, error) {
 	// Create internal services.
-	rfService := rfservice.NewRedisFailoverKubeClient(k8sService, logger, kooperMetricsRecorder)
+	rfService := rfservice.NewRedisFailoverKubeClient(k8sService, logger, metricsRecorder)
 	var opts []rfservice.Option
 	if !cfg.KeepClientsOnDemotion {
 		disconnector := rfservice.NewClientDisconnector(k8sClient, redisClient, logger, endpointRemovalTimeout, kubeProxySyncGrace)
 		opts = append(opts, rfservice.WithClientDisconnector(disconnector))
 	}
-	rfChecker := rfservice.NewRedisFailoverChecker(k8sService, redisClient, logger, kooperMetricsRecorder, opts...)
+	rfChecker := rfservice.NewRedisFailoverChecker(k8sService, redisClient, logger, metricsRecorder, opts...)
 	rfHealer := rfservice.NewRedisFailoverHealer(k8sService, redisClient, logger, opts...)
 
 	// Create the handlers.
-	rfHandler := NewRedisFailoverHandler(cfg, rfService, rfChecker, rfHealer, k8sService, kooperMetricsRecorder, logger)
+	rfHandler := NewRedisFailoverHandler(cfg, rfService, rfChecker, rfHealer, k8sService, metricsRecorder, logger)
 	rfRetriever := NewRedisFailoverRetriever(cfg, k8sService)
 
-	kooperLogger := kooperlogger{Logger: logger.WithField("operator", "redisfailover")}
-	// Leader election service.
-	leSVC, err := leaderelection.NewDefault(lockKey, lockNamespace, k8sClient, kooperLogger)
+	logger = logger.WithField("operator", "redisfailover")
+	leRunner, err := newLeaseRunner(lockKey, lockNamespace, k8sClient, logger)
 	if err != nil {
 		return nil, err
 	}
 
-	c, err := newRFController(rfHandler, rfRetriever, newPodListWatch(k8sClient), time.Duration(cfg.SyncInterval)*time.Second, cfg.Concurrency, leSVC, kooperMetricsRecorder, logger.WithField("operator", "redisfailover"))
+	c, err := newRFController(rfHandler, rfRetriever, newPodListWatch(k8sClient), time.Duration(cfg.SyncInterval)*time.Second, cfg.Concurrency, leRunner, metricsRecorder, logger)
 	if err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-func NewRedisFailoverRetriever(cfg Config, cli k8s.Services) controller.Retriever {
+func NewRedisFailoverRetriever(cfg Config, cli k8s.Services) *cache.ListWatch {
 	isNamespaceSupported := func(rf redisfailoverv1.RedisFailover) bool {
 		match, _ := regexp.Match(cfg.SupportedNamespacesRegex, []byte(rf.Namespace))
 		return match
 	}
 	// check in the startup whether the regex compiles
 
-	return controller.MustRetrieverFromListerWatcher(&cache.ListWatch{
+	return &cache.ListWatch{
 		ListWithContextFunc: func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error) {
 			rfList, err := cli.ListRedisFailovers(ctx, "", options)
 			if err != nil {
@@ -105,13 +101,5 @@ func NewRedisFailoverRetriever(cfg Config, cli k8s.Services) controller.Retrieve
 			})
 			return watcher, err
 		},
-	})
-}
-
-type kooperlogger struct {
-	log.Logger
-}
-
-func (k kooperlogger) WithKV(kv kooperlog.KV) kooperlog.Logger {
-	return kooperlogger{Logger: k.WithFields(kv)}
+	}
 }

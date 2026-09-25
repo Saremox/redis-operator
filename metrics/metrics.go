@@ -8,8 +8,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/saremox/redis-operator/log"
-	koopercontroller "github.com/spotahome/kooper/v2/controller"
-	kooperprometheus "github.com/spotahome/kooper/v2/metrics/prometheus"
 )
 
 const (
@@ -97,7 +95,7 @@ type checkMetricInfo struct {
 
 // Instrumenter is the interface that will collect the metrics and has ability to send/expose those metrics.
 type Recorder interface {
-	koopercontroller.MetricsRecorder
+	ControllerRecorder
 
 	// ClusterOK metrics
 	SetClusterOK(namespace string, name string)
@@ -123,7 +121,7 @@ type recorder struct {
 	sentinelCheck        *prometheus.CounterVec // indicates any error encountered in managed sentinel instance(s)
 	k8sServiceOperations *prometheus.CounterVec // number of operations performed on k8s
 	redisOperations      *prometheus.CounterVec // number of operations performed on redis/sentinel instances
-	koopercontroller.MetricsRecorder
+	ControllerRecorder
 }
 
 // NewPrometheusMetrics returns a new PromMetrics object.
@@ -181,9 +179,7 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		sentinelCheck:        sentinelCheck,
 		k8sServiceOperations: k8sServiceOperations,
 		redisOperations:      redisOperations,
-		MetricsRecorder: kooperprometheus.New(kooperprometheus.Config{
-			Registerer: reg,
-		}),
+		ControllerRecorder:   newControllerRecorder(reg),
 	}
 
 	// Register metrics.

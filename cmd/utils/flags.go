@@ -37,8 +37,7 @@ func (c *CMDFlags) Init() {
 	flag.StringVar(&c.MetricsPath, "metrics-path", "/metrics", "Path to serve the metrics.")
 	flag.IntVar(&c.K8sQueriesPerSecond, "k8s-cli-qps-limit", 100, "Number of allowed queries per second by kubernetes client without client side throttling")
 	flag.IntVar(&c.K8sQueriesBurstable, "k8s-cli-burstable-limit", 100, "Number of allowed burst requests by kubernetes client without client side throttling")
-	// default is 3 for conccurency because kooper also defines 3 as default
-	// reference: https://github.com/spotahome/kooper/blob/master/controller/controller.go#L89
+	// 3 is also the controller's fallback for a concurrency of 0 or less.
 	flag.IntVar(&c.Concurrency, "concurrency", 3, "Number of conccurent workers meant to process events")
 	flag.IntVar(&c.SyncInterval, "sync-interval", 30, "Number of seconds between checks")
 	flag.StringVar(&c.LogLevel, "log-level", "info", "set log level")

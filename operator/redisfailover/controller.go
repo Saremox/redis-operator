@@ -3,12 +3,9 @@ package redisfailover
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
-	"github.com/spotahome/kooper/v2/controller"
-	"github.com/spotahome/kooper/v2/controller/leaderelection"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,22 +17,33 @@ import (
 	"k8s.io/client-go/util/workqueue"
 
 	"github.com/saremox/redis-operator/log"
+	"github.com/saremox/redis-operator/metrics"
 )
 
 const controllerName = "redisfailover"
+
+// Controller runs the operator until its context is done.
+type Controller interface {
+	Run(ctx context.Context) error
+}
+
+// Handler reconciles one object.
+type Handler interface {
+	Handle(ctx context.Context, obj runtime.Object) error
+}
 
 // rfController reconciles RedisFailovers from one queue keyed by RedisFailover.
 // Events on a RedisFailover's pods queue that RedisFailover, so a pod change
 // (deleted, recreated, ready) drives the next reconcile without waiting for
 // the resync.
 type rfController struct {
-	handler     controller.Handler
+	handler     Handler
 	rfInformer  cache.SharedIndexInformer
 	podInformer cache.SharedIndexInformer
 	queue       workqueue.TypedInterface[string]
 	workers     int
-	leRunner    leaderelection.Runner
-	metrics     controller.MetricsRecorder
+	leRunner    leaderRunner
+	metrics     metrics.ControllerRecorder
 	logger      log.Logger
 
 	// queuedAt feeds the in-queue duration metric.
@@ -43,7 +51,7 @@ type rfController struct {
 	queuedAt map[string]time.Time
 }
 
-func newRFController(handler controller.Handler, rfRetriever controller.Retriever, podLW cache.ListerWatcher, resync time.Duration, workers int, leRunner leaderelection.Runner, metrics controller.MetricsRecorder, logger log.Logger) (*rfController, error) {
+func newRFController(handler Handler, rfLW, podLW cache.ListerWatcher, resync time.Duration, workers int, leRunner leaderRunner, mrec metrics.ControllerRecorder, logger log.Logger) (*rfController, error) {
 	if resync <= 0 {
 		resync = 3 * time.Minute
 	}
@@ -52,12 +60,12 @@ func newRFController(handler controller.Handler, rfRetriever controller.Retrieve
 	}
 	c := &rfController{
 		handler:     handler,
-		rfInformer:  cache.NewSharedIndexInformer(listerWatcher(rfRetriever), nil, resync, cache.Indexers{}),
+		rfInformer:  cache.NewSharedIndexInformer(rfLW, nil, resync, cache.Indexers{}),
 		podInformer: cache.NewSharedIndexInformer(podLW, &corev1.Pod{}, 0, cache.Indexers{}),
 		queue:       workqueue.NewTyped[string](),
 		workers:     workers,
 		leRunner:    leRunner,
-		metrics:     metrics,
+		metrics:     mrec,
 		logger:      logger,
 		queuedAt:    map[string]time.Time{},
 	}
@@ -70,18 +78,11 @@ func newRFController(handler controller.Handler, rfRetriever controller.Retrieve
 		c.podInformer.SetTransform(podMetadataOnly),
 		rfErr,
 		podErr,
-		metrics.RegisterResourceQueueLengthFunc(controllerName, queueLen),
+		mrec.RegisterResourceQueueLengthFunc(controllerName, queueLen),
 	); err != nil {
 		return nil, err
 	}
 	return c, nil
-}
-
-func listerWatcher(r controller.Retriever) cache.ListerWatcher {
-	return &cache.ListWatch{
-		ListWithContextFunc:  r.List,
-		WatchFuncWithContext: r.Watch,
-	}
 }
 
 // podMetadataOnly keeps only what podOwnerKey needs in the pod cache.
@@ -163,34 +164,40 @@ func (c *rfController) enqueue(key string) {
 	c.queue.Add(key)
 }
 
-// Run satisfies controller.Controller.
+// Run satisfies Controller.
 func (c *rfController) Run(ctx context.Context) error {
 	if c.leRunner == nil {
 		return c.run(ctx)
 	}
-	return c.leRunner.Run(func() error { return c.run(ctx) })
+	return c.leRunner.Run(ctx, c.run)
 }
 
 func (c *rfController) run(ctx context.Context) error {
-	defer c.queue.ShutDown()
-
 	c.logger.Infof("starting controller")
 	go c.rfInformer.RunWithContext(ctx)
 	go c.podInformer.RunWithContext(ctx)
 	// Pod events only speed reconciles up, so a pod watch that can't sync
 	// (e.g. RBAC) must not block reconciling.
+	// The wait only fails once ctx is done, i.e. on shutdown.
 	if !cache.WaitForNamedCacheSyncWithContext(ctx, c.rfInformer.HasSynced) {
-		return fmt.Errorf("timed out waiting for caches to sync")
+		c.logger.Infof("controller stopped before its cache synced")
+		return nil
 	}
 
+	var workers sync.WaitGroup
 	for range c.workers {
-		go wait.UntilWithContext(ctx, func(ctx context.Context) {
-			for c.processNext(ctx) {
-			}
-		}, time.Second)
+		workers.Go(func() {
+			wait.UntilWithContext(ctx, func(ctx context.Context) {
+				for c.processNext(ctx) {
+				}
+			}, time.Second)
+		})
 	}
 	<-ctx.Done()
-	c.logger.Infof("stopping controller")
+	c.logger.Infof("stopping controller, waiting for running reconciles")
+	c.queue.ShutDown()
+	workers.Wait()
+	c.logger.Infof("controller stopped")
 	return nil
 }
 
@@ -200,6 +207,10 @@ func (c *rfController) processNext(ctx context.Context) bool {
 		return false
 	}
 	defer c.queue.Done(key)
+	// A shut down queue still hands out what it holds; drop it once stopping.
+	if ctx.Err() != nil {
+		return false
+	}
 
 	c.mu.Lock()
 	if queuedAt, ok := c.queuedAt[key]; ok {

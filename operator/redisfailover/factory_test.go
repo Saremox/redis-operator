@@ -20,18 +20,12 @@ import (
 	fakekubernetes "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
 
-	kooperlog "github.com/spotahome/kooper/v2/log"
-
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
 )
-
-// This file is deliberately in package redisfailover (white-box) rather than
-// redisfailover_test, because kooperlogger and its WithKV method are
-// unexported and can't be reached from outside the package.
 
 // -----------------------------------------------------------------------
 // NewRedisFailoverRetriever - List
@@ -51,7 +45,7 @@ func TestNewRedisFailoverRetrieverListFiltersByNamespace(t *testing.T) {
 	mk.On("ListRedisFailovers", mock.Anything, "", mock.Anything).Once().Return(rfList, nil)
 
 	retriever := NewRedisFailoverRetriever(cfg, mk)
-	obj, err := retriever.List(context.Background(), metav1.ListOptions{})
+	obj, err := retriever.ListWithContext(context.Background(), metav1.ListOptions{})
 	require.NoError(t, err)
 
 	got, ok := obj.(*redisfailoverv1.RedisFailoverList)
@@ -73,7 +67,7 @@ func TestNewRedisFailoverRetrieverListPropagatesError(t *testing.T) {
 	mk.On("ListRedisFailovers", mock.Anything, "", mock.Anything).Once().Return(nil, wantErr)
 
 	retriever := NewRedisFailoverRetriever(cfg, mk)
-	obj, err := retriever.List(context.Background(), metav1.ListOptions{})
+	obj, err := retriever.ListWithContext(context.Background(), metav1.ListOptions{})
 
 	assert.Equal(t, wantErr, err)
 	assert.Nil(t, obj)
@@ -92,7 +86,7 @@ func TestNewRedisFailoverRetrieverWatchFiltersByNamespace(t *testing.T) {
 	mk.On("WatchRedisFailovers", mock.Anything, "", mock.Anything).Once().Return(fakeWatcher, nil)
 
 	retriever := NewRedisFailoverRetriever(cfg, mk)
-	w, err := retriever.Watch(context.Background(), metav1.ListOptions{})
+	w, err := retriever.WatchWithContext(context.Background(), metav1.ListOptions{})
 	require.NoError(t, err)
 	require.NotNil(t, w)
 
@@ -127,7 +121,7 @@ func TestNewRedisFailoverRetrieverWatchPropagatesError(t *testing.T) {
 	mk.On("WatchRedisFailovers", mock.Anything, "", mock.Anything).Once().Return(nil, wantErr)
 
 	retriever := NewRedisFailoverRetriever(cfg, mk)
-	w, err := retriever.Watch(context.Background(), metav1.ListOptions{})
+	w, err := retriever.WatchWithContext(context.Background(), metav1.ListOptions{})
 
 	assert.Equal(t, wantErr, err)
 	assert.Nil(t, w)
@@ -149,7 +143,7 @@ func TestNewRedisFailoverRetrieverWatchNilWatcherNoError(t *testing.T) {
 	var w watch.Interface
 	var err error
 	assert.NotPanics(t, func() {
-		w, err = retriever.Watch(context.Background(), metav1.ListOptions{})
+		w, err = retriever.WatchWithContext(context.Background(), metav1.ListOptions{})
 	})
 	assert.NoError(t, err)
 	assert.Nil(t, w)
@@ -160,11 +154,7 @@ func TestNewRedisFailoverRetrieverWatchNilWatcherNoError(t *testing.T) {
 // controller does.
 func rfInformer(t *testing.T, mk *mK8SService.Services) cache.SharedIndexInformer {
 	t.Helper()
-	retriever := NewRedisFailoverRetriever(Config{SupportedNamespacesRegex: "^allowed$"}, mk)
-	lw := &cache.ListWatch{
-		ListWithContextFunc:  retriever.List,
-		WatchFuncWithContext: retriever.Watch,
-	}
+	lw := NewRedisFailoverRetriever(Config{SupportedNamespacesRegex: "^allowed$"}, mk)
 	informer := cache.NewSharedIndexInformer(lw, nil, 0, cache.Indexers{})
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -202,37 +192,6 @@ func TestRedisFailoverInformerRelistsOnAnExpiredWatch(t *testing.T) {
 	stream.Error(&apierrors.NewResourceExpired("too old resource version").ErrStatus)
 
 	assert.Eventually(t, func() bool { return lists.Load() > 1 }, 5*time.Second, 10*time.Millisecond, "an expired watch must make the informer relist")
-}
-
-// -----------------------------------------------------------------------
-// kooperlogger.WithKV
-// -----------------------------------------------------------------------
-
-// kvCapturingLogger is a minimal log.Logger test double that records the
-// values passed to WithFields so we can assert kooperlogger.WithKV forwards
-// its kooperlog.KV argument correctly.
-type kvCapturingLogger struct {
-	log.DummyLogger
-	lastKV map[string]interface{}
-}
-
-func (l *kvCapturingLogger) WithFields(values map[string]interface{}) log.Logger {
-	l.lastKV = values
-	return l
-}
-
-func TestKooperLoggerWithKV(t *testing.T) {
-	fake := &kvCapturingLogger{}
-	kl := kooperlogger{Logger: fake}
-
-	kv := kooperlog.KV{"foo": "bar", "n": 1}
-	result := kl.WithKV(kv)
-
-	wrapped, ok := result.(kooperlogger)
-	require.True(t, ok)
-
-	assert.Equal(t, map[string]interface{}{"foo": "bar", "n": 1}, fake.lastKV)
-	assert.Same(t, fake, wrapped.Logger)
 }
 
 // -----------------------------------------------------------------------
