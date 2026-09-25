@@ -7,4 +7,6 @@ type Config struct {
 	Concurrency              int
 	SyncInterval             int
 	SupportedNamespacesRegex string
+	// KeepClientsOnDemotion is negative so the zero Config disconnects.
+	KeepClientsOnDemotion bool
 }

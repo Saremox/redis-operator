@@ -13,6 +13,20 @@ type Client struct {
 	mock.Mock
 }
 
+// DisconnectClients provides a mock function with given fields: ip, port, password
+func (_m *Client) DisconnectClients(ip string, port string, password string) error {
+	ret := _m.Called(ip, port, password)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string, string) error); ok {
+		r0 = rf(ip, port, password)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // GetNumberSentinelSlavesInMemory provides a mock function with given fields: ip
 func (_m *Client) GetNumberSentinelSlavesInMemory(ip string) (int32, error) {
 	ret := _m.Called(ip)
