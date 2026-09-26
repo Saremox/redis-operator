@@ -51,19 +51,19 @@ type ClientDisconnector interface {
 }
 
 // setSlaveLabel gives pod the slave role label if it doesn't already have it,
-// and disconnects its clients if the label it replaces was master.
+// and disconnects its clients if the label it replaces was master. Only then
+// does it mark the pod evictable.
 func setSlaveLabel(k8sService k8s.Services, o options, rf *redisfailoverv1.RedisFailover, pod corev1.Pod, port, password string) error {
 	previousRole := pod.Labels[redisRoleLabelKey]
-	if previousRole == redisRoleLabelSlave {
-		return nil
+	if previousRole != redisRoleLabelSlave {
+		if err := k8sService.UpdatePodLabels(rf.Namespace, pod.Name, generateRedisSlaveRoleLabel()); err != nil {
+			return err
+		}
+		if previousRole == redisRoleLabelMaster && o.disconnector != nil {
+			o.disconnector.DisconnectDemoted(rf, pod, port, password)
+		}
 	}
-	if err := k8sService.UpdatePodLabels(rf.Namespace, pod.Name, generateRedisSlaveRoleLabel()); err != nil {
-		return err
-	}
-	if previousRole == redisRoleLabelMaster && o.disconnector != nil {
-		o.disconnector.DisconnectDemoted(rf, pod, port, password)
-	}
-	return nil
+	return applyMasterEvictionAnnotation(k8sService, rf, pod, false)
 }
 
 type endpointAwareDisconnector struct {

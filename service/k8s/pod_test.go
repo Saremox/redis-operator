@@ -231,3 +231,42 @@ func TestPodServiceList(t *testing.T) {
 		assertTest.Equal([]kubetesting.Action{newPodListAction(testns)}, mcli.Actions())
 	})
 }
+
+func TestPodServiceUpdatePodAnnotations(t *testing.T) {
+	testns := "testns"
+	tests := []struct {
+		name     string
+		existing map[string]string
+		expected map[string]string
+	}{
+		{
+			name:     "creates the annotations on a pod without any",
+			expected: map[string]string{"safe-to-evict": "false"},
+		},
+		{
+			name:     "keeps unrelated annotations and replaces the given key",
+			existing: map[string]string{"other": "kept", "safe-to-evict": "true"},
+			expected: map[string]string{"other": "kept", "safe-to-evict": "false"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "testpod", Namespace: testns, Annotations: test.existing}}
+			mcli := kubernetes.NewClientset(pod)
+			service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
+
+			assert.NoError(t, service.UpdatePodAnnotations(testns, "testpod", map[string]string{"safe-to-evict": "false"}))
+
+			got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
+			assert.NoError(t, err)
+			assert.Equal(t, test.expected, got.Annotations)
+		})
+	}
+
+	t.Run("returns not found for a missing pod", func(t *testing.T) {
+		service := k8s.NewPodService(kubernetes.NewClientset(), log.Dummy, metrics.Dummy)
+		err := service.UpdatePodAnnotations(testns, "missing", map[string]string{"safe-to-evict": "false"})
+		assert.True(t, kubeerrors.IsNotFound(err))
+	})
+}
