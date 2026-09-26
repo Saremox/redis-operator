@@ -29,6 +29,7 @@ type StatefulSet interface {
 	CreateOrUpdateStatefulSet(namespace string, statefulSet *appsv1.StatefulSet) error
 	DeleteStatefulSet(namespace string, name string) error
 	ListStatefulSets(namespace string) (*appsv1.StatefulSetList, error)
+	GetControllerRevision(namespace, name string) (*appsv1.ControllerRevision, error)
 }
 
 // StatefulSetService is the service account service implementation using API calls to kubernetes.
@@ -189,4 +190,11 @@ func (s *StatefulSetService) ListStatefulSets(namespace string) (*appsv1.Statefu
 	stsList, err := s.kubeClient.AppsV1().StatefulSets(namespace).List(context.TODO(), metav1.ListOptions{})
 	recordMetrics(namespace, "StatefulSet", metrics.NOT_APPLICABLE, "LIST", err, s.metricsRecorder)
 	return stsList, err
+}
+
+// GetControllerRevision returns the named ControllerRevision.
+func (s *StatefulSetService) GetControllerRevision(namespace, name string) (*appsv1.ControllerRevision, error) {
+	revision, err := s.kubeClient.AppsV1().ControllerRevisions(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	recordMetrics(namespace, "ControllerRevision", name, "GET", err, s.metricsRecorder)
+	return revision, err
 }

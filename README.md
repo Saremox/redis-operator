@@ -202,11 +202,17 @@ With `redis.maxMemory` the operator sets `maxmemory` and `maxmemory-policy` from
 | 128Mi | 96Mi |
 | 1Gi | 768Mi |
 
-Keys set in `customConfig` take precedence; `replica-ignore-maxmemory no` is rejected, as replicas would evict on their own, and running pods are set to `yes`. To migrate, update the CRD and the operator, add `maxMemory`, then remove `maxmemory` and `maxmemory-policy` from `customConfig`. Removing `maxMemory` leaves the running pods at their current values until they are replaced; set them in `customConfig` to keep them.
+Keys set in `customConfig` take precedence; `replica-ignore-maxmemory no` is rejected, as replicas would evict on their own, and running pods are set to `yes`. To migrate, update the CRD and the operator, add `maxMemory`, then remove `maxmemory` and `maxmemory-policy` from `customConfig`. Removing `maxMemory` leaves the running pods at their current values until they are recreated, which an in-place resize does not do; set them in `customConfig` to keep them.
 
 `maxmemory` follows the smallest redis pod, as replicas hold the whole dataset and any of them can be promoted: a raised limit applies once every pod runs with it, a lowered one before the pods are replaced. `maxmemory` is only lowered below the memory in use under an `allkeys-*` policy, as `volatile-*` could evict every key with a TTL and still not fit; otherwise it is kept and the reason is in the status message. Until the data fits, the operator does not replace pods with the smaller limit. Pods recreated for other reasons, e.g. a node drain, get the smaller limit anyway.
 
 For small instances, the default `client-output-buffer-limit` for `pubsub` (32mb) and `replica` (256mb) can exceed the free part of the limit; lower them with `customConfig`. Replicas buffer a whole `MULTI`/`EXEC` or `EVAL` before applying it, so one large batch can get a replica OOM-killed.
+
+### In-place resize
+
+On Kubernetes 1.33 or later, an update that only changes container cpu or memory resizes the redis pods in place instead of recreating them, so no data is reloaded and the master does not fail over. Pods are resized one at a time, replicas first. Lowering a memory limit in place needs Kubernetes 1.35. Set `redis.inPlaceResize: Disabled` to always recreate the pods.
+
+A pod is still recreated when the update changes anything else, adds or removes requests or limits, or changes the pod's QoS class, when the node's kubelet does not support in-place resize, and when the kubelet reports the resize as infeasible, defers it or fails it for more than 5 minutes, or does not apply it within 5 minutes without reporting why. The operator needs `patch` on `pods/resize` and `get` on `controllerrevisions`, which the chart, the kustomize and the example manifests grant; without them the pods are recreated.
 
 ### Custom shutdown script
 
