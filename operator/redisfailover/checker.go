@@ -65,6 +65,9 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			if settled, err := r.redisPodsSettled(rf, ssUR); err != nil || !settled {
 				return err
 			}
+			if recreate, err := r.resizeInPlace(rf, pod, ssUR); err != nil || !recreate {
+				return err
+			}
 			//Delete pod and wait next round to check if the new one is synced
 			err = r.rfHealer.DeletePod(pod, rf)
 			if err != nil {
@@ -87,6 +90,14 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			return err
 		}
 		if masterRevision != ssUR {
+			// Resizing in place needs no failover, so it skips the gate below.
+			if settled, err := r.redisPodsSettled(rf, ssUR); err != nil || !settled {
+				return err
+			}
+			if recreate, err := r.resizeInPlace(rf, master, ssUR); err != nil || !recreate {
+				return err
+			}
+
 			// Deleting the master makes sentinel run a failover. Only do that once
 			// every sentinel has a quorum (majority) of the freshly (re)started
 			// slaves in memory - the redis-side readiness checked above is not
@@ -119,9 +130,6 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 				}
 			}
 
-			if settled, err := r.redisPodsSettled(rf, ssUR); err != nil || !settled {
-				return err
-			}
 			err = r.rfHealer.DeletePod(master, rf)
 			if err != nil {
 				return err
@@ -132,6 +140,19 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 	}
 
 	return nil
+}
+
+// resizeInPlace tries to move a stale pod to the update revision without
+// recreating it. It reports whether the pod has to be recreated instead.
+func (r *RedisFailoverHandler) resizeInPlace(rf *redisfailoverv1.RedisFailover, pod, updateRevision string) (bool, error) {
+	result, err := r.rfHealer.ResizePodInPlace(rf, pod, updateRevision)
+	if err != nil {
+		return false, err
+	}
+	if result.Action == rfservice.ResizeWaiting && result.Message != "" {
+		rf.Status.Message = result.Message
+	}
+	return result.Action == rfservice.ResizeRecreate, nil
 }
 
 // redisPodsSettled reports whether the last redis pod replacement has
