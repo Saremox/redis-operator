@@ -14,6 +14,30 @@ type RedisFailoverHeal struct {
 	mock.Mock
 }
 
+// ApplyPassword provides a mock function with given fields: rFailover, previous
+func (_m *RedisFailoverHeal) ApplyPassword(rFailover *v1.RedisFailover, previous string) (bool, error) {
+	ret := _m.Called(rFailover, previous)
+
+	var r0 bool
+	var r1 error
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string) (bool, error)); ok {
+		return rf(rFailover, previous)
+	}
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string) bool); ok {
+		r0 = rf(rFailover, previous)
+	} else {
+		r0 = ret.Get(0).(bool)
+	}
+
+	if rf, ok := ret.Get(1).(func(*v1.RedisFailover, string) error); ok {
+		r1 = rf(rFailover, previous)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // DeletePod provides a mock function with given fields: podName, rFailover
 func (_m *RedisFailoverHeal) DeletePod(podName string, rFailover *v1.RedisFailover) error {
 	ret := _m.Called(podName, rFailover)

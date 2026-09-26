@@ -334,6 +334,13 @@ fi
 
 cmd="${cmd} info replication"
 
+# The operator changes the password of a running Redis in place, and the pod
+# restarts onto it later. Until then a refused password says nothing about
+# replication.
+if echo "${cmd}" | xargs -0 sh -c 2>&1 | grep -qE "NOAUTH|WRONGPASS"; then
+		exit 0
+fi
+
 check_master(){
 		exit 0
 }

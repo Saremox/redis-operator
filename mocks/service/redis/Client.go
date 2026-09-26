@@ -306,6 +306,20 @@ func (_m *Client) SetCustomSentinelConfig(ip string, configs []string) error {
 	return r0
 }
 
+// SetPassword provides a mock function with given fields: ip, port, password, newPassword
+func (_m *Client) SetPassword(ip string, port string, password string, newPassword string) error {
+	ret := _m.Called(ip, port, password, newPassword)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string, string, string) error); ok {
+		r0 = rf(ip, port, password, newPassword)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // SlaveIsReady provides a mock function with given fields: ip, port, password
 func (_m *Client) SlaveIsReady(ip string, port string, password string) (bool, error) {
 	ret := _m.Called(ip, port, password)

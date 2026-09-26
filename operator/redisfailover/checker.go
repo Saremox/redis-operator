@@ -202,6 +202,31 @@ func (r *RedisFailoverHandler) masterPodStopping(rf *redisfailoverv1.RedisFailov
 	return false, nil
 }
 
+// applyPassword applies a changed auth secret to the running Redis. Nothing is
+// checked while the secret matches the password the pods last accepted.
+func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) error {
+	password, err := k8s.GetRedisPassword(r.k8sservice, rf)
+	if err != nil {
+		return err
+	}
+	key := rf.Namespace + "/" + rf.Name
+	previous := password
+	if v, ok := r.passwords.Load(key); ok {
+		if v.(string) == password {
+			return nil
+		}
+		previous = v.(string)
+	}
+	complete, err := r.rfHealer.ApplyPassword(rf, previous)
+	if err != nil {
+		return err
+	}
+	if complete {
+		r.passwords.Store(key, password)
+	}
+	return nil
+}
+
 // CheckAndHeal runs verifcation checks to ensure the RedisFailover is in an expected and healthy state.
 // If the checks do not match up to expectations, an attempt will be made to "heal" the RedisFailover into a healthy state.
 func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) error {
@@ -214,6 +239,15 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	}
 
 	defer updateStatus(r.k8sservice, rf, oldState, oldLastChanged)
+
+	// Every check below authenticates, so a changed password goes first.
+	if err := r.applyPassword(rf); err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to apply the configured password",
+		}
+		return err
+	}
 
 	if rf.Bootstrapping() {
 		return r.checkAndHealBootstrapMode(rf)

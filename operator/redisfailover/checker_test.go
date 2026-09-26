@@ -316,6 +316,7 @@ func TestCheckAndHeal(t *testing.T) {
 			mrfs := &mRFService.RedisFailoverClient{}
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 
 			// Normal CheckAndHeal gates on a quorum; bootstrap mode still gates on
 			// the full set, so route the mock to whichever the code under test calls.
@@ -777,6 +778,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 			mrfs := &mRFService.RedisFailoverClient{}
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 
 			test.setup(mrfc, mrfh, rf)
 
@@ -843,6 +845,7 @@ func TestUpdateStatusLastChanged(t *testing.T) {
 		mrfs := &mRFService.RedisFailoverClient{}
 		mrfc := &mRFService.RedisFailoverCheck{}
 		mrfh := &mRFService.RedisFailoverHeal{}
+		mrfh.On("ApplyPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 
 		setupHealthyPass(mrfc, mrfh, rf)
 
@@ -871,6 +874,7 @@ func TestUpdateStatusLastChanged(t *testing.T) {
 		mrfs := &mRFService.RedisFailoverClient{}
 		mrfc := &mRFService.RedisFailoverCheck{}
 		mrfh := &mRFService.RedisFailoverHeal{}
+		mrfh.On("ApplyPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 
 		setupHealthyPass(mrfc, mrfh, rf)
 
@@ -1275,6 +1279,7 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 			mrfs := &mRFService.RedisFailoverClient{}
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 
 			test.setup(mrfc, mrfh, rf)
 
@@ -1451,6 +1456,7 @@ func TestCheckAndHealBootstrapModeErrorBranches(t *testing.T) {
 			mrfs := &mRFService.RedisFailoverClient{}
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 
 			test.setup(mrfc, mrfh, rf)
 
@@ -1992,6 +1998,7 @@ func TestUpdate(t *testing.T) {
 				}
 			}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 
 			if next {
 				replicas := []string{"slave1", "slave2"}
@@ -2080,6 +2087,7 @@ func TestUpdateRedisesPodsOperatorManagedModeSkipsSentinelGate(t *testing.T) {
 	mrfs := &mRFService.RedisFailoverClient{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 
 	mrfc.On("GetRedisesIPs", rf).Once().Return([]string{"1.1.1.1"}, nil)
 	mrfc.On("GetMasterIP", rf).Once().Return("1.1.1.1", nil)
@@ -2213,6 +2221,7 @@ func TestUpdateRedisesPodsErrorBranches(t *testing.T) {
 			mrfs := &mRFService.RedisFailoverClient{}
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 
 			test.setup(mrfc, mrfh, rf)
 
@@ -2293,6 +2302,7 @@ func TestUpdateRedisesPodsWaitsForTheLastReplacement(t *testing.T) {
 				rf.Spec.Redis.Replicas = 3
 				mrfc := &mRFService.RedisFailoverCheck{}
 				mrfh := &mRFService.RedisFailoverHeal{}
+				mrfh.On("ApplyPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 				mk := &mK8SService.Services{}
 				mrfc.On("GetRedisesIPs", rf).Once().Return([]string{"10.0.0.1"}, nil)
 				mrfc.On("GetMasterIP", rf).Once().Return("10.0.0.1", nil)
@@ -2359,6 +2369,7 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) 
 			rf := operatorManagedRF()
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mk := &mK8SService.Services{}
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
@@ -2388,6 +2399,7 @@ func TestUpdateRedisesPodsResizesInPlace(t *testing.T) {
 				rf := generateRF(false, false)
 				mrfc := &mRFService.RedisFailoverCheck{}
 				mrfh := &mRFService.RedisFailoverHeal{}
+				mrfh.On("ApplyPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 				mrfc.On("GetRedisesIPs", rf).Once().Return([]string{"10.0.0.1"}, nil)
 				mrfc.On("GetMasterIP", rf).Once().Return("10.0.0.1", nil)
 				mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("new", nil)
@@ -2417,6 +2429,7 @@ func TestUpdateRedisesPodsResizeError(t *testing.T) {
 	rf := generateRF(false, false)
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfc.On("GetRedisesIPs", rf).Once().Return([]string{"10.0.0.1"}, nil)
 	mrfc.On("GetMasterIP", rf).Once().Return("10.0.0.1", nil)
 	mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("new", nil)

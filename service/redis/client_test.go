@@ -1198,3 +1198,32 @@ func TestIsUnreachableError(t *testing.T) {
 		})
 	}
 }
+
+// Adding, changing and removing a password in place keeps replication up.
+func TestSetPassword(t *testing.T) {
+	requireRedisServer(t)
+	master := startRedisProcess(t)
+	replica := startReplicaOf(t, master)
+	c := newTestClient()
+	mport, rport := strconv.Itoa(master.Port), strconv.Itoa(replica.Port)
+
+	linkUp := func(password string) bool {
+		return waitForCondition(t, 15*time.Second, func() bool {
+			info, err := c.GetReplicationInfo(replica.IP, rport, password)
+			return err == nil && info.MasterLinkStatus == "up"
+		})
+	}
+	require.True(t, linkUp(""))
+
+	for _, step := range []struct{ from, to string }{{"", "p1"}, {"p1", "p2"}, {"p2", ""}} {
+		require.NoError(t, c.SetPassword(replica.IP, rport, step.from, step.to))
+		require.NoError(t, c.SetPassword(master.IP, mport, step.from, step.to))
+
+		_, err := c.IsMaster(master.IP, mport, step.from)
+		assert.True(t, IsAuthError(err), "old password %q: %v", step.from, err)
+		isMaster, err := c.IsMaster(master.IP, mport, step.to)
+		require.NoError(t, err)
+		assert.True(t, isMaster)
+		assert.True(t, linkUp(step.to), "replication after %q -> %q", step.from, step.to)
+	}
+}
