@@ -433,7 +433,7 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 					TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
 					Containers: []corev1.Container{
 						{
-							Name:            "redis",
+							Name:            redisContainerName,
 							Image:           rf.Spec.Redis.Image,
 							ImagePullPolicy: pullPolicy(rf.Spec.Redis.ImagePullPolicy),
 							SecurityContext: getContainerSecurityContext(rf.Spec.Redis.ContainerSecurityContext),

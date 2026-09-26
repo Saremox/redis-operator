@@ -679,6 +679,24 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 			wantState: v1.HealthyState,
 		},
 		{
+			// No UpdateRedisesPods expectations: replacing pods would panic the mock.
+			name: "single master - maxmemory holds the pod rollout",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				rf.Spec.Redis.MaxMemory = &v1.MaxMemorySettings{Percent: 75, Policy: "noeviction"}
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				mrfc.On("CheckMasterHealth", rf).Once().Return(true, master, nil)
+				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
+				mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{master}, nil)
+				mrfh.On("SetRedisCustomConfig", master, rf).Once().Return(nil)
+				mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
+				mrfh.On("EnsureRedisMaxMemory", rf, master, []string{master}).Once().Return(rfservice.MaxMemoryResult{Message: "maxmemory kept", HoldRollout: true}, nil)
+			},
+			wantErr:     false,
+			wantState:   v1.HealthyState,
+			wantMessage: "maxmemory kept",
+		},
+		{
 			name: "single master - healthy, slaves fixed, config and pods updated",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
 				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
@@ -1063,6 +1081,27 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 			wantMessage: "unable to update redis PODs",
 		},
 		{
+			// No UpdateRedisesPods expectations: replacing pods would panic the mock.
+			name: "maxmemory holds the pod rollout",
+			rfMod: func(rf *v1.RedisFailover) {
+				rf.Spec.Redis.MaxMemory = &v1.MaxMemorySettings{Percent: 75, Policy: "noeviction"}
+			},
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+				mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				mrfc.On("GetMasterIP", rf).Twice().Return(master, nil)
+				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
+				mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{master}, nil)
+				mrfh.On("SetRedisCustomConfig", master, rf).Once().Return(nil)
+				mrfh.On("EnsureRedisMaxMemory", rf, master, []string{master}).Once().Return(rfservice.MaxMemoryResult{Message: "maxmemory kept", HoldRollout: true}, nil)
+				mrfc.On("GetSentinelsIPs", rf).Once().Return(nil, errors.New("sentinels ips err"))
+			},
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "unable to get sentinels IPs",
+		},
+		{
 			name: "GetSentinelsIPs fails",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
 				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
@@ -1325,6 +1364,33 @@ func TestCheckAndHealBootstrapModeErrorBranches(t *testing.T) {
 			wantErr:     true,
 			wantState:   v1.NotHealthyState,
 			wantMessage: "unable to set Redis custom config",
+		},
+		{
+			name: "EnsureRedisMaxMemory fails",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				rf.Spec.Redis.MaxMemory = &v1.MaxMemorySettings{Percent: 75, Policy: "noeviction"}
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetRedisesIPs", rf).Once().Return([]string{bootstrapMaster}, nil)
+				mrfh.On("EnsureRedisMaxMemory", rf, "", []string{bootstrapMaster}).Once().Return(rfservice.MaxMemoryResult{}, errors.New("maxmemory err"))
+			},
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "unable to set Redis maxmemory",
+		},
+		{
+			// No UpdateRedisesPods expectations: replacing pods would panic the mock.
+			name: "maxmemory holds the pod rollout",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				rf.Spec.Redis.MaxMemory = &v1.MaxMemorySettings{Percent: 75, Policy: "noeviction"}
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{bootstrapMaster}, nil)
+				mrfh.On("EnsureRedisMaxMemory", rf, "", []string{bootstrapMaster}).Once().Return(rfservice.MaxMemoryResult{Message: "maxmemory kept", HoldRollout: true}, nil)
+				mrfh.On("SetRedisCustomConfig", bootstrapMaster, rf).Once().Return(nil)
+				mrfh.On("SetExternalMasterOnAll", bootstrapMaster, bootstrapMasterPort, rf).Once().Return(nil)
+			},
+			wantErr:     false,
+			wantState:   v1.HealthyState,
+			wantMessage: "maxmemory kept",
 		},
 		{
 			name:           "sentinels allowed but not running",

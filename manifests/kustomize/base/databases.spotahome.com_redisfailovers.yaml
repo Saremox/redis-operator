@@ -7330,6 +7330,32 @@ spec:
                       - name
                       type: object
                     type: array
+                  maxMemory:
+                    description: |-
+                      MaxMemory lets the operator set maxmemory and maxmemory-policy from the
+                      redis container's memory limit. Values set in customConfig take precedence.
+                    properties:
+                      percent:
+                        description: |-
+                          Percent of the memory limit used as maxmemory. At least 32Mi of the
+                          limit is always left free. Defaults to 75.
+                        format: int32
+                        maximum: 95
+                        minimum: 10
+                        type: integer
+                      policy:
+                        description: Policy is the maxmemory-policy. Defaults to noeviction.
+                        enum:
+                        - noeviction
+                        - allkeys-lru
+                        - allkeys-lfu
+                        - allkeys-random
+                        - volatile-lru
+                        - volatile-lfu
+                        - volatile-random
+                        - volatile-ttl
+                        type: string
+                    type: object
                   nodeSelector:
                     additionalProperties:
                       type: string
