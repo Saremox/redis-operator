@@ -45,6 +45,7 @@ type RedisSettings struct {
 	Replicas                      int32                             `json:"replicas,omitempty"`
 	Port                          int32                             `json:"port,omitempty"`
 	Resources                     corev1.ResourceRequirements       `json:"resources,omitempty"`
+	Env                           []corev1.EnvVar                   `json:"env,omitempty"`
 	CustomConfig                  []string                          `json:"customConfig,omitempty"`
 	CustomCommandRenames          []RedisCommandRename              `json:"customCommandRenames,omitempty"`
 	Command                       []string                          `json:"command,omitempty"`
@@ -97,6 +98,7 @@ type SentinelSettings struct {
 	ImagePullPolicy            corev1.PullPolicy                 `json:"imagePullPolicy,omitempty"`
 	Replicas                   int32                             `json:"replicas,omitempty"`
 	Resources                  corev1.ResourceRequirements       `json:"resources,omitempty"`
+	Env                        []corev1.EnvVar                   `json:"env,omitempty"`
 	CustomConfig               []string                          `json:"customConfig,omitempty"`
 	Command                    []string                          `json:"command,omitempty"`
 	StartupConfigMap           string                            `json:"startupConfigMap,omitempty"`

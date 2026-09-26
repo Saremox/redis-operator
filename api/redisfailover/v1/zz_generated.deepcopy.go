@@ -247,6 +247,13 @@ func (in *RedisFailoverStatus) DeepCopy() *RedisFailoverStatus {
 func (in *RedisSettings) DeepCopyInto(out *RedisSettings) {
 	*out = *in
 	in.Resources.DeepCopyInto(&out.Resources)
+	if in.Env != nil {
+		in, out := &in.Env, &out.Env
+		*out = make([]corev1.EnvVar, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
 	if in.CustomConfig != nil {
 		in, out := &in.CustomConfig, &out.CustomConfig
 		*out = make([]string, len(*in))
@@ -438,6 +445,13 @@ func (in *SentinelSettings) DeepCopyInto(out *SentinelSettings) {
 		**out = **in
 	}
 	in.Resources.DeepCopyInto(&out.Resources)
+	if in.Env != nil {
+		in, out := &in.Env, &out.Env
+		*out = make([]corev1.EnvVar, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
 	if in.CustomConfig != nil {
 		in, out := &in.CustomConfig, &out.CustomConfig
 		*out = make([]string, len(*in))
