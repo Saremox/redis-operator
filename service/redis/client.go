@@ -26,6 +26,14 @@ type ReplicationInfo struct {
 	SyncInProgress   bool   // true if slave is syncing
 }
 
+// MemoryInfo contains the memory figures of a Redis instance relevant to maxmemory
+type MemoryInfo struct {
+	MaxMemory       int64
+	MaxMemoryPolicy string
+	UsedMemory      int64 // used_memory minus mem_not_counted_for_evict, as compared against maxmemory
+	Role            string
+}
+
 // Client defines the functions neccesary to connect to redis and sentinel to get or set what we nned
 type Client interface {
 	GetNumberSentinelsInMemory(ip string) (int32, error)
@@ -45,6 +53,7 @@ type Client interface {
 	SlaveIsReady(ip, port, password string) (bool, error)
 	SentinelCheckQuorum(ip string) error
 	GetReplicationInfo(ip, port, password string) (*ReplicationInfo, error)
+	GetMemoryInfo(ip, port, password string) (*MemoryInfo, error)
 }
 
 type client struct {
@@ -735,6 +744,53 @@ func (c *client) GetReplicationInfo(ip, port, password string) (*ReplicationInfo
 
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_REPLICATION_INFO, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return replInfo, nil
+}
+
+// GetMemoryInfo returns the maxmemory settings, memory usage and role of a Redis instance.
+func (c *client) GetMemoryInfo(ip, port, password string) (*MemoryInfo, error) {
+	rClient := rediscli.NewClient(&rediscli.Options{
+		Addr:     net.JoinHostPort(ip, port),
+		Password: password,
+		DB:       0,
+	})
+	defer func(rClient *rediscli.Client) {
+		if err := rClient.Close(); err != nil {
+			log.Error(err.Error())
+		}
+	}(rClient)
+
+	mi := &MemoryInfo{}
+	var notCounted int64
+	for _, section := range []string{"memory", "replication"} {
+		info, err := rClient.Info(context.TODO(), section).Result()
+		if err != nil {
+			c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_MEMORY_INFO, metrics.FAIL, getRedisError(err))
+			return nil, err
+		}
+		for _, line := range strings.Split(info, "\n") {
+			key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+			if !ok {
+				continue
+			}
+			n, _ := strconv.ParseInt(value, 10, 64)
+			switch key {
+			case "maxmemory":
+				mi.MaxMemory = n
+			case "maxmemory_policy":
+				mi.MaxMemoryPolicy = value
+			case "role":
+				mi.Role = value
+			case "used_memory":
+				mi.UsedMemory = n
+			case "mem_not_counted_for_evict":
+				notCounted = n
+			}
+		}
+	}
+	mi.UsedMemory -= notCounted
+
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_MEMORY_INFO, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return mi, nil
 }
 
 func getRedisError(err error) string {

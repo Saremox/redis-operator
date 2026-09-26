@@ -189,6 +189,25 @@ To have the ability of this configuration to be changed "on the fly," without th
 
 **Important 2**: do **NOT** change the options used for control the redis/sentinel such as `port`, `bind`, `dir`, etc.
 
+### Managed maxmemory
+
+With `redis.maxMemory` the operator sets `maxmemory` and `maxmemory-policy` from the redis container's memory limit, see the [maxmemory example file](example/redisfailover/maxmemory.yaml). It requires a memory limit of at least 64Mi; otherwise `maxmemory` is not managed and the reason is in the status message.
+
+`maxmemory` is `percent` (default `75`) of the limit, keeping at least 32Mi free. `policy` defaults to `noeviction`.
+
+| Limit | maxmemory |
+|---|---|
+| 64Mi | 32Mi |
+| 96Mi | 64Mi |
+| 128Mi | 96Mi |
+| 1Gi | 768Mi |
+
+Keys set in `customConfig` take precedence; `replica-ignore-maxmemory no` is rejected, as replicas would evict on their own, and running pods are set to `yes`. To migrate, update the CRD and the operator, add `maxMemory`, then remove `maxmemory` and `maxmemory-policy` from `customConfig`. Removing `maxMemory` leaves the running pods at their current values until they are replaced; set them in `customConfig` to keep them.
+
+`maxmemory` follows the smallest redis pod, as replicas hold the whole dataset and any of them can be promoted: a raised limit applies once every pod runs with it, a lowered one before the pods are replaced. `maxmemory` is only lowered below the memory in use under an `allkeys-*` policy, as `volatile-*` could evict every key with a TTL and still not fit; otherwise it is kept and the reason is in the status message. Until the data fits, the operator does not replace pods with the smaller limit. Pods recreated for other reasons, e.g. a node drain, get the smaller limit anyway.
+
+For small instances, the default `client-output-buffer-limit` for `pubsub` (32mb) and `replica` (256mb) can exceed the free part of the limit; lower them with `customConfig`. Replicas buffer a whole `MULTI`/`EXEC` or `EVAL` before applying it, so one large batch can get a replica OOM-killed.
+
 ### Custom shutdown script
 
 By default, a custom shutdown file is given. This file makes redis to `SAVE` it's data, and when Sentinel is enabled and redis is master, it'll call sentinel to ask for failover.

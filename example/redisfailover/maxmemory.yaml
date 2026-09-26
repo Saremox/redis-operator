@@ -1,0 +1,15 @@
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: redisfailover
+spec:
+  redis:
+    replicas: 3
+    resources:
+      requests:
+        memory: 128Mi
+      limits:
+        memory: 128Mi
+    maxMemory:
+      percent: 75
+      policy: noeviction

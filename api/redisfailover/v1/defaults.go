@@ -13,6 +13,8 @@ const (
 	defaultExporterImage         = "quay.io/oliver006/redis_exporter:v1.80.0-alpine"
 	defaultImage                 = "redis:7.2.12-alpine"
 	defaultRedisPort             = 6379
+	defaultMaxMemoryPercent      = 75
+	defaultMaxMemoryPolicy       = "noeviction"
 	HealthyState                 = "Healthy"
 	NotHealthyState              = "NotHealthy"
 )
