@@ -83,6 +83,21 @@ type RedisSettings struct {
 	// PodDisruptionBudgetMinAvailable overrides the PodDisruptionBudget
 	// minAvailable for the redis pods. Defaults to 2 (or 1 when replicas <= 2).
 	PodDisruptionBudgetMinAvailable *intstr.IntOrString `json:"podDisruptionBudgetMinAvailable,omitempty"`
+	// MaxMemory lets the operator set maxmemory and maxmemory-policy from the
+	// redis container's memory limit. Values set in customConfig take precedence.
+	MaxMemory *MaxMemorySettings `json:"maxMemory,omitempty"`
+}
+
+// MaxMemorySettings configures the operator-managed maxmemory.
+type MaxMemorySettings struct {
+	// Percent of the memory limit used as maxmemory. At least 32Mi of the
+	// limit is always left free. Defaults to 75.
+	// +kubebuilder:validation:Minimum=10
+	// +kubebuilder:validation:Maximum=95
+	Percent int32 `json:"percent,omitempty"`
+	// Policy is the maxmemory-policy. Defaults to noeviction.
+	// +kubebuilder:validation:Enum=noeviction;allkeys-lru;allkeys-lfu;allkeys-random;volatile-lru;volatile-lfu;volatile-random;volatile-ttl
+	Policy string `json:"policy,omitempty"`
 }
 
 // SentinelSettings defines the specification of the sentinel cluster

@@ -25,6 +25,7 @@ const (
 	redisShutdownName          = "r-s"
 	redisReadinessName         = "r-readiness"
 	redisRoleName              = "redis"
+	redisContainerName         = "redis"
 	sentinelServiceAccountName = "s-sa"
 	appLabel                   = "redis-failover"
 	hostnameTopologyKey        = "kubernetes.io/hostname"
