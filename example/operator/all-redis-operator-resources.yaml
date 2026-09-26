@@ -77,6 +77,7 @@ rules:
       - serviceaccounts
       - persistentvolumeclaims
       - persistentvolumeclaims/finalizers
+      - pods/resize
     verbs:
       - "*"
   - apiGroups:
@@ -90,6 +91,7 @@ rules:
     resources:
       - deployments
       - statefulsets
+      - controllerrevisions
     verbs:
       - "*"
   - apiGroups:

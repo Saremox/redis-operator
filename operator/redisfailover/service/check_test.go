@@ -1245,6 +1245,21 @@ func TestGetRedisRevisionHash(t *testing.T) {
 			expectedError: nil,
 		},
 		{
+			name: "being resized in place",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						appsv1.ControllerRevisionHashLabelKey: "10",
+					},
+					Annotations: map[string]string{
+						"redisfailovers.databases.spotahome.com/resize-requested-at": "2026-01-01T00:00:00Z",
+					},
+				},
+			},
+			expectedHash:  "",
+			expectedError: nil,
+		},
+		{
 			name:          "no pod",
 			pod:           nil,
 			expectedHash:  "",

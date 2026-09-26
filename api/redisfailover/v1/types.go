@@ -86,6 +86,11 @@ type RedisSettings struct {
 	// MaxMemory lets the operator set maxmemory and maxmemory-policy from the
 	// redis container's memory limit. Values set in customConfig take precedence.
 	MaxMemory *MaxMemorySettings `json:"maxMemory,omitempty"`
+	// InPlaceResize controls whether redis pods whose update only changes
+	// container resources are resized in place instead of being recreated.
+	// Defaults to Enabled.
+	// +kubebuilder:validation:Enum=Enabled;Disabled
+	InPlaceResize string `json:"inPlaceResize,omitempty"`
 }
 
 // MaxMemorySettings configures the operator-managed maxmemory.

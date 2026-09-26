@@ -548,6 +548,12 @@ func (r *RedisFailoverChecker) GetRedisRevisionHash(podName string, rFailover *r
 		return "", errors.New("labels not found")
 	}
 
+	// A pod being resized in place is on no revision until the resize is
+	// applied, even when its label matches again, e.g. after a revert.
+	if pod.Annotations[resizeRequestedAnnotation] != "" {
+		return "", nil
+	}
+
 	val := pod.Labels[appsv1.ControllerRevisionHashLabelKey]
 
 	return val, nil

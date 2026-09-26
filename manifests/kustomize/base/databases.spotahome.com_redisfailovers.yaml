@@ -5799,6 +5799,15 @@ spec:
                       type: object
                       x-kubernetes-map-type: atomic
                     type: array
+                  inPlaceResize:
+                    description: |-
+                      InPlaceResize controls whether redis pods whose update only changes
+                      container resources are resized in place instead of being recreated.
+                      Defaults to Enabled.
+                    enum:
+                    - Enabled
+                    - Disabled
+                    type: string
                   initContainers:
                     items:
                       description: A single application container that you want to
