@@ -13,6 +13,8 @@ import (
 
 	policyv1 "k8s.io/api/policy/v1"
 
+	k8s "github.com/saremox/redis-operator/service/k8s"
+
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 
 	v1 "k8s.io/api/core/v1"
@@ -305,6 +307,32 @@ func (_m *Services) GetConfigMap(namespace string, name string) (*v1.ConfigMap, 
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(*v1.ConfigMap)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(string, string) error); ok {
+		r1 = rf(namespace, name)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// GetControllerRevision provides a mock function with given fields: namespace, name
+func (_m *Services) GetControllerRevision(namespace string, name string) (*appsv1.ControllerRevision, error) {
+	ret := _m.Called(namespace, name)
+
+	var r0 *appsv1.ControllerRevision
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, string) (*appsv1.ControllerRevision, error)); ok {
+		return rf(namespace, name)
+	}
+	if rf, ok := ret.Get(0).(func(string, string) *appsv1.ControllerRevision); ok {
+		r0 = rf(namespace, name)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*appsv1.ControllerRevision)
 		}
 	}
 
@@ -740,6 +768,44 @@ func (_m *Services) PatchRedisFailoverFinalizers(ctx context.Context, namespace 
 	var r0 error
 	if rf, ok := ret.Get(0).(func(context.Context, string, string, []string, metav1.PatchOptions) error); ok {
 		r0 = rf(ctx, namespace, name, finalizers, opts)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// PodResizeSupport provides a mock function with given fields:
+func (_m *Services) PodResizeSupport() (k8s.PodResizeSupport, error) {
+	ret := _m.Called()
+
+	var r0 k8s.PodResizeSupport
+	var r1 error
+	if rf, ok := ret.Get(0).(func() (k8s.PodResizeSupport, error)); ok {
+		return rf()
+	}
+	if rf, ok := ret.Get(0).(func() k8s.PodResizeSupport); ok {
+		r0 = rf()
+	} else {
+		r0 = ret.Get(0).(k8s.PodResizeSupport)
+	}
+
+	if rf, ok := ret.Get(1).(func() error); ok {
+		r1 = rf()
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// ResizePod provides a mock function with given fields: namespace, podName, resources
+func (_m *Services) ResizePod(namespace string, podName string, resources map[string]v1.ResourceRequirements) error {
+	ret := _m.Called(namespace, podName, resources)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string, map[string]v1.ResourceRequirements) error); ok {
+		r0 = rf(namespace, podName, resources)
 	} else {
 		r0 = ret.Error(0)
 	}

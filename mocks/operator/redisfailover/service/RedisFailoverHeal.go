@@ -94,6 +94,30 @@ func (_m *RedisFailoverHeal) NewSentinelMonitorWithPort(ip string, monitor strin
 	return r0
 }
 
+// ResizePodInPlace provides a mock function with given fields: rFailover, podName, updateRevision
+func (_m *RedisFailoverHeal) ResizePodInPlace(rFailover *v1.RedisFailover, podName string, updateRevision string) (service.ResizeResult, error) {
+	ret := _m.Called(rFailover, podName, updateRevision)
+
+	var r0 service.ResizeResult
+	var r1 error
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, string) (service.ResizeResult, error)); ok {
+		return rf(rFailover, podName, updateRevision)
+	}
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, string) service.ResizeResult); ok {
+		r0 = rf(rFailover, podName, updateRevision)
+	} else {
+		r0 = ret.Get(0).(service.ResizeResult)
+	}
+
+	if rf, ok := ret.Get(1).(func(*v1.RedisFailover, string, string) error); ok {
+		r1 = rf(rFailover, podName, updateRevision)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // RestoreSentinel provides a mock function with given fields: ip
 func (_m *RedisFailoverHeal) RestoreSentinel(ip string) error {
 	ret := _m.Called(ip)
