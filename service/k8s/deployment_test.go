@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	kubernetes "k8s.io/client-go/kubernetes/fake"
 	kubetesting "k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
@@ -192,6 +193,22 @@ func serverDefaulted(d *appsv1.Deployment) *appsv1.Deployment {
 	return d
 }
 
+func withStrategy(d *appsv1.Deployment, s appsv1.DeploymentStrategy) *appsv1.Deployment {
+	d.Spec.Strategy = s
+	return d
+}
+
+func recreate() appsv1.DeploymentStrategy {
+	return appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+}
+
+func rollingUpdate(maxSurge, maxUnavailable *intstr.IntOrString) appsv1.DeploymentStrategy {
+	return appsv1.DeploymentStrategy{
+		Type:          appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: maxSurge, MaxUnavailable: maxUnavailable},
+	}
+}
+
 func TestDeploymentServiceObjectUpToDate(t *testing.T) {
 	testns := "testns"
 
@@ -239,6 +256,30 @@ func TestDeploymentServiceObjectUpToDate(t *testing.T) {
 			// provide, since it only ever compared desired against its own
 			// previous value, never against what was actually live.
 			stored:        realisticDeployment(9),
+			desired:       realisticDeployment(3),
+			expectUpdates: 1,
+		},
+		{
+			name:          "a configured strategy the server stored as-is is a no-op",
+			stored:        withStrategy(realisticDeployment(3), recreate()),
+			desired:       withStrategy(realisticDeployment(3), recreate()),
+			expectUpdates: 0,
+		},
+		{
+			name:          "a partly configured strategy the server filled in is a no-op",
+			stored:        withStrategy(realisticDeployment(3), rollingUpdate(ptr.To(intstr.FromInt32(1)), ptr.To(intstr.FromString("25%")))),
+			desired:       withStrategy(realisticDeployment(3), rollingUpdate(ptr.To(intstr.FromInt32(1)), nil)),
+			expectUpdates: 0,
+		},
+		{
+			name:          "a changed strategy triggers an update",
+			stored:        withStrategy(realisticDeployment(3), rollingUpdate(ptr.To(intstr.FromInt32(1)), ptr.To(intstr.FromString("25%")))),
+			desired:       withStrategy(realisticDeployment(3), recreate()),
+			expectUpdates: 1,
+		},
+		{
+			name:          "removing a configured strategy triggers an update",
+			stored:        withStrategy(realisticDeployment(3), recreate()),
 			desired:       realisticDeployment(3),
 			expectUpdates: 1,
 		},

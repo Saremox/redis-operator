@@ -140,6 +140,26 @@ Setting `redis.preventMasterEviction: true` makes the operator annotate the curr
 cluster-autoscaler will not drain the node running the master and trigger an avoidable failover. The
 annotation follows the master as it moves. Defaults to `false` (no annotation is managed).
 
+### Sentinel update strategy and PodDisruptionBudget
+
+The sentinel `Deployment` update strategy can be overridden via `sentinel.strategy` (e.g. to set
+`rollingUpdate.maxSurge`/`maxUnavailable`). This helps when required anti-affinity plus
+`replicas == nodes` would otherwise deadlock the default rolling update:
+
+```yaml
+spec:
+  sentinel:
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 1
+        maxUnavailable: 0
+```
+
+The `PodDisruptionBudget` `minAvailable` for each component defaults to `2` (or `1` when that
+component's `replicas <= 2`). Override it per component with `redis.podDisruptionBudgetMinAvailable` /
+`sentinel.podDisruptionBudgetMinAvailable` (an integer or percentage string such as `"60%"`).
+
 ### Persistence
 
 The operator can add persistence to Redis data. By default, an `emptyDir` will be used, so the data is not saved.
