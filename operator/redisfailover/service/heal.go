@@ -32,6 +32,7 @@ type RedisFailoverHeal interface {
 	SetRedisCustomConfig(ip string, rFailover *redisfailoverv1.RedisFailover) error
 	DeletePod(podName string, rFailover *redisfailoverv1.RedisFailover) error
 	PromoteBestReplica(newMasterIP string, rFailover *redisfailoverv1.RedisFailover) error
+	EnsureRedisMaxMemory(rFailover *redisfailoverv1.RedisFailover, master string, redises []string) (MaxMemoryResult, error)
 }
 
 // RedisFailoverHealer is our implementation of RedisFailoverCheck interface
