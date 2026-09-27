@@ -383,10 +383,13 @@ func (r *RedisFailoverChecker) GetMasterIP(rf *redisfailoverv1.RedisFailover) (s
 	return masters[0], nil
 }
 
-// GetNumberMasters returns the number of redis nodes that are working as a master
+// GetNumberMasters returns the number of redis nodes that are working as a master.
+// A ready pod that does not answer may still be the master, so if no pod
+// answers as master it returns an error rather than zero, and callers don't
+// promote over it. A pod Kubernetes has marked not ready is skipped.
 func (r *RedisFailoverChecker) GetNumberMasters(rf *redisfailoverv1.RedisFailover) (int, error) {
 	nMasters := 0
-	rips, err := r.GetRedisesIPs(rf)
+	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
 		r.logger.Error(err.Error())
 		return nMasters, err
@@ -398,16 +401,27 @@ func (r *RedisFailoverChecker) GetNumberMasters(rf *redisfailoverv1.RedisFailove
 		return nMasters, err
 	}
 
+	var unanswered error
 	rport := getRedisPort(rf.Spec.Redis.Port)
-	for _, rip := range rips {
-		master, err := r.redisClient.IsMaster(rip, rport, password)
+	for i := range rps.Items {
+		rp := &rps.Items[i]
+		if rp.Status.Phase != corev1.PodRunning || rp.DeletionTimestamp != nil {
+			continue
+		}
+		master, err := r.redisClient.IsMaster(rp.Status.PodIP, rport, password)
 		if err != nil {
-			r.logger.Errorf("Get redis info failed, maybe this node is not ready, pod ip: %s", rip)
+			r.logger.Errorf("Get redis info failed, maybe this node is not ready, pod ip: %s", rp.Status.PodIP)
+			if unanswered == nil && util.PodIsReady(rp) {
+				unanswered = fmt.Errorf("ready redis pod %s did not answer: %w", rp.Name, err)
+			}
 			continue
 		}
 		if master {
 			nMasters++
 		}
+	}
+	if nMasters == 0 && unanswered != nil {
+		return nMasters, unanswered
 	}
 	return nMasters, nil
 }
