@@ -385,7 +385,11 @@ spec:
 ```
 You need to set secretPath as the secret name which is created before.
 
-Rotating the password (updating the `password` key of that same Secret in place) is safe: the operator watches a checksum of the current password and rolls the Redis pods, one at a time, whenever it changes.
+Rotating the password (updating the `password` key of that same Secret in place), adding `auth.secretPath` or removing it is safe. The operator first switches every running Redis, and the Sentinels, to the new password in place with `CONFIG SET`, which keeps replication up, and then restarts the Redis pods one at a time onto the Secret. New connections need the new password right away.
+
+Until a pod restarts, whatever reads the password from its environment keeps the old one: the exporter sidecar can't authenticate, the pre-stop `SAVE` fails, and so do custom probes using `$REDIS_PASSWORD`.
+
+The operator knows the old password only from memory. If it restarted between the change and its next check, it can't switch the pods. The RedisFailover then reports `unable to apply the configured password`. Put the previous password back in the Secret, wait for the RedisFailover to become healthy, then change it again.
 
 The password is read from that Secret and passed to `redis-server` via `--requirepass`/`--masterauth`
 sourced from an environment variable; it is **not** written into the redis ConfigMap, so it never

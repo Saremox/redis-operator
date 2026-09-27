@@ -56,6 +56,8 @@ type Client interface {
 	SentinelCheckQuorum(ip string) error
 	GetReplicationInfo(ip, port, password string) (*ReplicationInfo, error)
 	GetMemoryInfo(ip, port, password string) (*MemoryInfo, error)
+	SetPassword(ip, port, password, newPassword string) error
+	SetSentinelAuthPass(ip, password string) error
 }
 
 type client struct {
@@ -702,6 +704,43 @@ func (c *client) GetReplicationInfo(ip, port, password string) (*ReplicationInfo
 	return replInfo, nil
 }
 
+// SetPassword changes the password a running Redis requires and the one it
+// uses to authenticate to its master. Connections already authenticated,
+// including replication links, stay up.
+func (c *client) SetPassword(ip, port, password, newPassword string) error {
+	rClient := rediscli.NewClient(redisOptions(net.JoinHostPort(ip, port), password))
+	defer func(rClient *rediscli.Client) {
+		if err := rClient.Close(); err != nil {
+			log.Error(err.Error())
+		}
+	}(rClient)
+	for _, param := range []string{"masterauth", "requirepass"} {
+		if err := rClient.ConfigSet(context.TODO(), param, newPassword).Err(); err != nil {
+			c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.SET_PASSWORD, metrics.FAIL, getRedisError(err))
+			return err
+		}
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.SET_PASSWORD, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return nil
+}
+
+// SetSentinelAuthPass sets the password a Sentinel uses to authenticate to the
+// Redis it monitors.
+func (c *client) SetSentinelAuthPass(ip, password string) error {
+	rClient := rediscli.NewClient(redisOptions(net.JoinHostPort(ip, sentinelPort), ""))
+	defer func(rClient *rediscli.Client) {
+		if err := rClient.Close(); err != nil {
+			log.Error(err.Error())
+		}
+	}(rClient)
+	if err := rClient.Do(context.TODO(), "SENTINEL", "SET", masterName, "auth-pass", password).Err(); err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.SET_PASSWORD, metrics.FAIL, getRedisError(err))
+		return err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.SET_PASSWORD, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return nil
+}
+
 // GetMemoryInfo returns the maxmemory settings, memory usage and role of a Redis instance.
 func (c *client) GetMemoryInfo(ip, port, password string) (*MemoryInfo, error) {
 	rClient := rediscli.NewClient(redisOptions(net.JoinHostPort(ip, port), password))
@@ -761,6 +800,24 @@ func getRedisError(err error) string {
 	} else {
 		return "MISC"
 	}
+}
+
+// IsAuthError reports whether Redis refused the password it was given, or
+// was given one while it has none configured.
+func IsAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "WRONGPASS") ||
+		strings.Contains(msg, "NOAUTH") ||
+		IsNoPasswordError(err)
+}
+
+// IsNoPasswordError reports whether Redis was given a password while it has
+// none configured.
+func IsNoPasswordError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "without any password configured")
 }
 
 // IsUnreachableError reports whether err means the redis node could not be

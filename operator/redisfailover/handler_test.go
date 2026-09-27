@@ -96,6 +96,8 @@ func TestHandleSkipReconcileAnnotation(t *testing.T) {
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe().Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mrfs := &mRFService.RedisFailoverClient{}
 
 			// Finalizer registration runs before the skip-reconcile check, so
@@ -150,6 +152,8 @@ func TestHandleNotARedisFailover(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
 
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
@@ -171,6 +175,8 @@ func TestHandleValidateError(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
 
 	// Finalizer registration runs before Validate(), so it's still expected
@@ -198,6 +204,8 @@ func TestHandleEnsureError(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
 
 	// Only the very first Ensure() call is mocked, and it fails - nothing
@@ -233,6 +241,8 @@ func TestHandleCheckAndHealError(t *testing.T) {
 	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
 
 	mrfs.On("EnsureNotPresentRedisService", rf).Once().Return(nil)
@@ -328,6 +338,8 @@ func TestHandleGetLabelsWhitelistFiltering(t *testing.T) {
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mrfs := &mRFService.RedisFailoverClient{}
 
 			var gotLabels map[string]string
@@ -384,6 +396,8 @@ func TestHandleAddsFinalizerOnFreshRF(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
 
 	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name,
@@ -427,6 +441,8 @@ func TestHandleDeletionCleansUpMetricsAndRemovesFinalizer(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
 	mClient := &fakeRecorder{Recorder: metrics.Dummy}
 
@@ -459,6 +475,8 @@ func TestHandleDeletionWithoutFinalizerIsNoop(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
 	mClient := &fakeRecorder{Recorder: metrics.Dummy}
 
@@ -485,6 +503,8 @@ func TestHandleFinalizerRegistrationErrorPropagates(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
 
 	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name,
@@ -515,6 +535,8 @@ func TestHandleDeletionFinalizerRemovalErrorPropagates(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
 	mClient := &fakeRecorder{Recorder: metrics.Dummy}
 
@@ -585,6 +607,8 @@ func TestHandleRecordsClusterMetrics(t *testing.T) {
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mrfs := &mRFService.RedisFailoverClient{}
 			test.setup(rf, mrfs, mrfc)
 

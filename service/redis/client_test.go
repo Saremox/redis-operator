@@ -245,6 +245,14 @@ func TestSlaveIsReady_ConnectionError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestSetPassword_ConnectionError(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	c := newTestClient()
+
+	assert.Error(t, c.SetPassword(testLoopbackIP, strconv.Itoa(port), "", "p1"))
+}
+
 func TestGetReplicationInfo_ConnectionError(t *testing.T) {
 	port, err := findFreePort()
 	require.NoError(t, err)
@@ -1076,6 +1084,13 @@ func TestSentinelCheckQuorum_NoQuorum(t *testing.T) {
 	assert.Equal(t, "quorum Not available", err.Error(), "the intended NOQUORUM message should be reachable, not just the raw driver error")
 }
 
+func TestSetSentinelAuthPass(t *testing.T) {
+	env := getSharedEnv(t)
+	c := newTestClient()
+	require.NoError(t, c.SetSentinelAuthPass(env.sentinel.IP, "s3cr3t"))
+	require.NoError(t, c.SetSentinelAuthPass(env.sentinel.IP, ""))
+}
+
 // TestSentinelFunctions_SentinelUnreachable exercises the connection-error
 // branch of the various Sentinel-facing Client methods (the `if err != nil`
 // branch immediately following the Info()/Process() call to the sentinel,
@@ -1126,6 +1141,9 @@ func TestSentinelFunctions_SentinelUnreachable(t *testing.T) {
 
 	err = c.MonitorRedisWithPort(env.sentinel.IP, testLoopbackIP, redisPort, "1", "")
 	assert.Error(t, err, "MonitorRedisWithPort should fail once nothing is listening on the sentinel port")
+
+	err = c.SetSentinelAuthPass(env.sentinel.IP, "s3cr3t")
+	assert.Error(t, err, "SetSentinelAuthPass should fail once nothing is listening on the sentinel port")
 }
 
 // ---------------------------------------------------------------------
@@ -1196,5 +1214,60 @@ func TestIsUnreachableError(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			assert.Equal(t, test.expected, IsUnreachableError(test.err))
 		})
+	}
+}
+
+func TestIsAuthError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{name: "nil", err: nil, expected: false},
+		{name: "wrong password", err: errors.New("WRONGPASS invalid username-password pair or user is disabled."), expected: true},
+		{name: "no password given", err: errors.New("NOAUTH Authentication required."), expected: true},
+		{name: "password given to a redis without one", err: errors.New("ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?"), expected: true},
+		{name: "unreachable", err: errors.New("dial tcp 10.0.0.1:6379: i/o timeout"), expected: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.expected, IsAuthError(test.err))
+		})
+	}
+}
+
+func TestIsNoPasswordError(t *testing.T) {
+	assert.False(t, IsNoPasswordError(nil))
+	assert.False(t, IsNoPasswordError(errors.New("WRONGPASS invalid username-password pair or user is disabled.")))
+	assert.True(t, IsNoPasswordError(errors.New("ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?")))
+}
+
+// Adding, changing and removing a password in place keeps replication up.
+func TestSetPassword(t *testing.T) {
+	requireRedisServer(t)
+	master := startRedisProcess(t)
+	replica := startReplicaOf(t, master)
+	c := newTestClient()
+	mport, rport := strconv.Itoa(master.Port), strconv.Itoa(replica.Port)
+
+	linkUp := func(password string) bool {
+		return waitForCondition(t, 15*time.Second, func() bool {
+			info, err := c.GetReplicationInfo(replica.IP, rport, password)
+			return err == nil && info.MasterLinkStatus == "up"
+		})
+	}
+	require.True(t, linkUp(""))
+
+	for _, step := range []struct{ from, to string }{{"", "p1"}, {"p1", "p2"}, {"p2", ""}} {
+		require.NoError(t, c.SetPassword(replica.IP, rport, step.from, step.to))
+		require.NoError(t, c.SetPassword(master.IP, mport, step.from, step.to))
+
+		_, err := c.IsMaster(master.IP, mport, step.from)
+		assert.True(t, IsAuthError(err), "old password %q: %v", step.from, err)
+		isMaster, err := c.IsMaster(master.IP, mport, step.to)
+		require.NoError(t, err)
+		assert.True(t, isMaster)
+		assert.True(t, linkUp(step.to), "replication after %q -> %q", step.from, step.to)
 	}
 }

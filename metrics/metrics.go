@@ -71,6 +71,7 @@ const (
 	GET_REPLICATION_INFO        = "GET_REPLICATION_INFO"
 	GET_MEMORY_INFO             = "GET_MEMORY_INFO"
 	DISCONNECT_CLIENTS          = "DISCONNECT_CLIENTS_ON_DEMOTED_INSTANCE"
+	SET_PASSWORD                = "SET_PASSWORD"
 )
 
 var ( // used for grabage collection of metrics
