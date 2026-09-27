@@ -245,6 +245,14 @@ func TestSlaveIsReady_ConnectionError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestSetPassword_ConnectionError(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	c := newTestClient()
+
+	assert.Error(t, c.SetPassword(testLoopbackIP, strconv.Itoa(port), "", "p1"))
+}
+
 func TestGetReplicationInfo_ConnectionError(t *testing.T) {
 	port, err := findFreePort()
 	require.NoError(t, err)
@@ -1133,6 +1141,9 @@ func TestSentinelFunctions_SentinelUnreachable(t *testing.T) {
 
 	err = c.MonitorRedisWithPort(env.sentinel.IP, testLoopbackIP, redisPort, "1", "")
 	assert.Error(t, err, "MonitorRedisWithPort should fail once nothing is listening on the sentinel port")
+
+	err = c.SetSentinelAuthPass(env.sentinel.IP, "s3cr3t")
+	assert.Error(t, err, "SetSentinelAuthPass should fail once nothing is listening on the sentinel port")
 }
 
 // ---------------------------------------------------------------------
@@ -1202,6 +1213,26 @@ func TestIsUnreachableError(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			assert.Equal(t, test.expected, IsUnreachableError(test.err))
+		})
+	}
+}
+
+func TestIsAuthError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{name: "nil", err: nil, expected: false},
+		{name: "wrong password", err: errors.New("WRONGPASS invalid username-password pair or user is disabled."), expected: true},
+		{name: "no password given", err: errors.New("NOAUTH Authentication required."), expected: true},
+		{name: "password given to a redis without one", err: errors.New("ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?"), expected: true},
+		{name: "unreachable", err: errors.New("dial tcp 10.0.0.1:6379: i/o timeout"), expected: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.expected, IsAuthError(test.err))
 		})
 	}
 }

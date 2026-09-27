@@ -1,9 +1,11 @@
 package redisfailover
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -44,4 +46,37 @@ func TestApplyPasswordRemembersAcceptedPassword(t *testing.T) {
 
 	mrfh.AssertExpectations(t)
 	mrfh.AssertNumberOfCalls(t, "ApplyPassword", 3)
+}
+
+func TestCheckAndHealReportsAnUnappliedPassword(t *testing.T) {
+	boom := errors.New("boom")
+	tests := []struct {
+		name      string
+		secretErr error
+		applyErr  error
+	}{
+		{name: "unreadable secret", secretErr: boom},
+		{name: "failed apply", applyErr: boom},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := &redisfailoverv1.RedisFailover{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"},
+				Spec:       redisfailoverv1.RedisFailoverSpec{Auth: redisfailoverv1.AuthSettings{SecretPath: "redis-auth"}},
+			}
+			ms := &mK8SService.Services{}
+			ms.On("GetSecret", "testns", "redis-auth").Return(&corev1.Secret{Data: map[string][]byte{"password": []byte("v1")}}, test.secretErr)
+			ms.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", rf, "v1").Return(false, test.applyErr)
+			handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, mrfh, ms, metrics.Dummy, log.Dummy)
+
+			assert.ErrorIs(t, handler.CheckAndHeal(rf), boom)
+			assert.Equal(t, redisfailoverv1.NotHealthyState, rf.Status.State)
+			assert.Equal(t, "unable to apply the configured password", rf.Status.Message)
+			_, cached := handler.passwords.Load("testns/test")
+			assert.False(t, cached)
+		})
+	}
 }
