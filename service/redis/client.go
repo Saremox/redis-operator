@@ -708,11 +708,7 @@ func (c *client) GetReplicationInfo(ip, port, password string) (*ReplicationInfo
 // uses to authenticate to its master. Connections already authenticated,
 // including replication links, stay up.
 func (c *client) SetPassword(ip, port, password, newPassword string) error {
-	rClient := rediscli.NewClient(&rediscli.Options{
-		Addr:     net.JoinHostPort(ip, port),
-		Password: password,
-		DB:       0,
-	})
+	rClient := rediscli.NewClient(redisOptions(net.JoinHostPort(ip, port), password))
 	defer func(rClient *rediscli.Client) {
 		if err := rClient.Close(); err != nil {
 			log.Error(err.Error())
@@ -731,11 +727,7 @@ func (c *client) SetPassword(ip, port, password, newPassword string) error {
 // SetSentinelAuthPass sets the password a Sentinel uses to authenticate to the
 // Redis it monitors.
 func (c *client) SetSentinelAuthPass(ip, password string) error {
-	rClient := rediscli.NewClient(&rediscli.Options{
-		Addr:     net.JoinHostPort(ip, sentinelPort),
-		Password: "",
-		DB:       0,
-	})
+	rClient := rediscli.NewClient(redisOptions(net.JoinHostPort(ip, sentinelPort), ""))
 	defer func(rClient *rediscli.Client) {
 		if err := rClient.Close(); err != nil {
 			log.Error(err.Error())
