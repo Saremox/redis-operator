@@ -5,24 +5,19 @@ import (
 	"fmt"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
-	"github.com/saremox/redis-operator/service/k8s"
 	"github.com/saremox/redis-operator/service/redis"
 	v1 "k8s.io/api/core/v1"
 )
 
-// ApplyPassword brings every Redis onto the password in the auth
-// secret. Redis reads requirepass only at startup, and restarting the pods one
-// at a time can't apply a new one: a restarted replica can't authenticate to a
-// master still on the old password. So a Redis still on previous is changed in
-// place, and the rolling update then restarts the pods onto the secret. The
-// Sentinels are given the password too.
+// ApplyPassword brings every Redis onto password. Redis reads requirepass only
+// at startup, and restarting the pods one at a time can't apply a new one: a
+// restarted replica can't authenticate to a master still on the old password.
+// So a Redis still on previous is changed in place, and the rolling update then
+// restarts the pods onto the secret.
 //
-// It returns true once every Redis pod runs and accepts the password.
-func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, previous string) (bool, error) {
-	password, err := k8s.GetRedisPassword(r.k8sService, rf)
-	if err != nil {
-		return false, err
-	}
+// It returns an error if a running Redis refuses password and can't be
+// changed, and true once every Redis pod runs and accepts it.
+func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, password, previous string) (bool, error) {
 	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
 		return false, err
@@ -48,11 +43,15 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 			complete = false
 			continue
 		}
-		if previous == password {
-			errs = append(errs, fmt.Errorf("redis pod %s refuses the password in secret %q and the operator doesn't know the one it runs with; delete the redis pods to restart them onto it", rp.Name, rf.Spec.Auth.SecretPath))
+		current := previous
+		if redis.IsNoPasswordError(err) {
+			current = ""
+		}
+		if current == password {
+			errs = append(errs, fmt.Errorf("redis pod %s refuses the configured password and the operator doesn't know the one it runs with; put the previous password back in the secret until the RedisFailover is healthy, then change it again", rp.Name))
 			continue
 		}
-		if err := r.redisClient.SetPassword(rp.Status.PodIP, port, previous, password); err != nil {
+		if err := r.redisClient.SetPassword(rp.Status.PodIP, port, current, password); err != nil {
 			errs = append(errs, fmt.Errorf("changing the password of redis pod %s: %w", rp.Name, err))
 			continue
 		}
@@ -61,21 +60,32 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 	if err := errors.Join(errs...); err != nil {
 		return false, err
 	}
-	if !complete || !rf.SentinelsAllowed() {
-		return complete, nil
-	}
+	return complete, nil
+}
 
+// ApplySentinelPassword gives the Sentinels the password to authenticate to
+// Redis with. It returns true once every running Sentinel has it.
+func (r *RedisFailoverHealer) ApplySentinelPassword(rf *redisfailoverv1.RedisFailover, password string) (bool, error) {
+	if !rf.SentinelsAllowed() {
+		return true, nil
+	}
 	sps, err := r.k8sService.GetDeploymentPods(rf.Namespace, GetSentinelName(rf))
 	if err != nil {
 		return false, err
 	}
+	complete := true
 	for _, sp := range sps.Items {
 		if sp.Status.Phase != v1.PodRunning || sp.DeletionTimestamp != nil {
 			continue
 		}
 		if err := r.redisClient.SetSentinelAuthPass(sp.Status.PodIP, password); err != nil {
+			if redis.IsUnreachableError(err) {
+				r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Warningf("Sentinel pod %s is unreachable, its password is changed later: %v", sp.Name, err)
+				complete = false
+				continue
+			}
 			return false, fmt.Errorf("changing the password of sentinel pod %s: %w", sp.Name, err)
 		}
 	}
-	return true, nil
+	return complete, nil
 }

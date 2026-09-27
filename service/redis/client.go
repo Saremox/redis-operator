@@ -811,7 +811,13 @@ func IsAuthError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "WRONGPASS") ||
 		strings.Contains(msg, "NOAUTH") ||
-		strings.Contains(msg, "without any password configured")
+		IsNoPasswordError(err)
+}
+
+// IsNoPasswordError reports whether Redis was given a password while it has
+// none configured.
+func IsNoPasswordError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "without any password configured")
 }
 
 // IsUnreachableError reports whether err means the redis node could not be

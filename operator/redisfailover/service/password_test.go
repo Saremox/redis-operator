@@ -15,30 +15,28 @@ import (
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
+func runningPod(name, ip string) corev1.Pod {
+	return corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status:     corev1.PodStatus{PodIP: ip, Phase: corev1.PodRunning},
+	}
+}
+
 func TestApplyPassword(t *testing.T) {
 	wrongpass := errors.New("WRONGPASS invalid username-password pair or user is disabled.")
-	running := func(name, ip string) corev1.Pod {
-		return corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Status:     corev1.PodStatus{PodIP: ip, Phase: corev1.PodRunning},
-		}
-	}
-	redises := &corev1.PodList{Items: []corev1.Pod{running("rfr-0", "10.0.0.1"), running("rfr-1", "10.0.0.2")}}
-	sentinels := &corev1.PodList{Items: []corev1.Pod{running("rfs-0", "10.0.1.1")}}
+	nopass := errors.New("ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?")
+	redises := &corev1.PodList{Items: []corev1.Pod{runningPod("rfr-0", "10.0.0.1"), runningPod("rfr-1", "10.0.0.2")}}
 
 	tests := []struct {
-		name            string
-		previous        string
-		sentinel        bool
-		pending         bool
-		deleting        bool
-		stoppedSentinel bool
+		name     string
+		previous string
+		pending  bool
+		deleting bool
 		// errors IsMaster returns with the new password, per pod IP
-		refuse      map[string]error
-		setErr      error
-		sentinelErr error
-		expSet      []string
-		expSentinel bool
+		refuse map[string]error
+		setErr error
+		// the password SetPassword logs in with, per pod IP
+		expSet      map[string]string
 		expComplete bool
 		expErr      string
 	}{
@@ -51,37 +49,21 @@ func TestApplyPassword(t *testing.T) {
 			name:        "a pod on the previous password is changed in place",
 			previous:    "old",
 			refuse:      map[string]error{"10.0.0.2": wrongpass},
-			expSet:      []string{"10.0.0.2"},
+			expSet:      map[string]string{"10.0.0.2": "old"},
 			expComplete: true,
 		},
 		{
-			name:        "the sentinels get the changed password",
-			previous:    "old",
-			sentinel:    true,
-			refuse:      map[string]error{"10.0.0.1": wrongpass, "10.0.0.2": wrongpass},
-			expSet:      []string{"10.0.0.1", "10.0.0.2"},
-			expSentinel: true,
-			expComplete: true,
-		},
-		{
-			name:        "the sentinels get the password when the previous one is unknown",
+			name:        "a pod without a password is changed without knowing the previous one",
 			previous:    "new",
-			sentinel:    true,
-			expSentinel: true,
+			refuse:      map[string]error{"10.0.0.1": nopass},
+			expSet:      map[string]string{"10.0.0.1": ""},
 			expComplete: true,
 		},
 		{
 			name:        "a pod yet to start leaves it incomplete",
 			previous:    "new",
-			sentinel:    true,
 			pending:     true,
 			expComplete: false,
-		},
-		{
-			name:     "a refused password with no previous one to use",
-			previous: "new",
-			refuse:   map[string]error{"10.0.0.1": wrongpass},
-			expErr:   "delete the redis pods",
 		},
 		{
 			name:        "a pod being deleted is skipped",
@@ -90,28 +72,18 @@ func TestApplyPassword(t *testing.T) {
 			expComplete: true,
 		},
 		{
-			name:            "a sentinel that isn't running is skipped",
-			previous:        "new",
-			sentinel:        true,
-			stoppedSentinel: true,
-			expSentinel:     true,
-			expComplete:     true,
+			name:     "a refused password with no previous one to use",
+			previous: "new",
+			refuse:   map[string]error{"10.0.0.1": wrongpass},
+			expErr:   "put the previous password back in the secret",
 		},
 		{
 			name:     "a failed change is returned",
 			previous: "old",
 			refuse:   map[string]error{"10.0.0.2": wrongpass},
 			setErr:   errors.New("i/o timeout"),
-			expSet:   []string{"10.0.0.2"},
+			expSet:   map[string]string{"10.0.0.2": "old"},
 			expErr:   "changing the password of redis pod rfr-1",
-		},
-		{
-			name:        "a sentinel refusing the change is returned",
-			previous:    "new",
-			sentinel:    true,
-			sentinelErr: errors.New("i/o timeout"),
-			expSentinel: true,
-			expErr:      "changing the password of sentinel pod rfs-0",
 		},
 		{
 			name:        "an unreachable pod leaves it incomplete",
@@ -124,39 +96,28 @@ func TestApplyPassword(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			rf := generateRF()
-			rf.Spec.Auth.SecretPath = "redis-auth"
-			rf.Spec.Sentinel.Enabled = ptr.To(test.sentinel)
 
 			ms := &mK8SService.Services{}
-			ms.On("GetSecret", namespace, "redis-auth").Return(&corev1.Secret{Data: map[string][]byte{"password": []byte("new")}}, nil)
 			pods := redises.DeepCopy()
 			if test.pending {
 				pods.Items = append(pods.Items, corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfr-2"}, Status: corev1.PodStatus{Phase: corev1.PodPending}})
 			}
 			if test.deleting {
-				deleting := running("rfr-2", "10.0.0.3")
+				deleting := runningPod("rfr-2", "10.0.0.3")
 				deleting.DeletionTimestamp = &metav1.Time{}
 				pods.Items = append(pods.Items, deleting)
 			}
 			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(pods, nil)
-			sps := sentinels.DeepCopy()
-			if test.stoppedSentinel {
-				sps.Items = append(sps.Items, corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfs-1"}, Status: corev1.PodStatus{PodIP: "10.0.1.2", Phase: corev1.PodFailed}})
-			}
-			ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Return(sps, nil)
 			mr := &mRedisService.Client{}
 			for _, p := range redises.Items {
 				mr.On("IsMaster", p.Status.PodIP, "0", "new").Return(false, test.refuse[p.Status.PodIP])
 			}
-			for _, ip := range test.expSet {
-				mr.On("SetPassword", ip, "0", test.previous, "new").Once().Return(test.setErr)
-			}
-			if test.expSentinel {
-				mr.On("SetSentinelAuthPass", "10.0.1.1", "new").Once().Return(test.sentinelErr)
+			for ip, current := range test.expSet {
+				mr.On("SetPassword", ip, "0", current, "new").Once().Return(test.setErr)
 			}
 
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
-			complete, err := healer.ApplyPassword(rf, test.previous)
+			complete, err := healer.ApplyPassword(rf, "new", test.previous)
 			if test.expErr != "" {
 				assert.ErrorContains(t, err, test.expErr)
 			} else {
@@ -165,48 +126,89 @@ func TestApplyPassword(t *testing.T) {
 			assert.Equal(t, test.expComplete, complete)
 			mr.AssertExpectations(t)
 			mr.AssertNumberOfCalls(t, "SetPassword", len(test.expSet))
-			if !test.expSentinel {
-				mr.AssertNotCalled(t, "SetSentinelAuthPass", "10.0.1.1", "new")
-			}
 		})
 	}
 }
 
-func TestApplyPasswordListErrors(t *testing.T) {
+func TestApplyPasswordListError(t *testing.T) {
 	boom := errors.New("boom")
-	pods := &corev1.PodList{Items: []corev1.Pod{{
-		ObjectMeta: metav1.ObjectMeta{Name: "rfr-0"},
-		Status:     corev1.PodStatus{PodIP: "10.0.0.1", Phase: corev1.PodRunning},
-	}}}
+	rf := generateRF()
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(nil, boom)
+
+	healer := rfservice.NewRedisFailoverHealer(ms, &mRedisService.Client{}, log.DummyLogger{})
+	complete, err := healer.ApplyPassword(rf, "new", "old")
+	assert.ErrorIs(t, err, boom)
+	assert.False(t, complete)
+}
+
+func TestApplySentinelPassword(t *testing.T) {
+	stopped := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfs-2"}, Status: corev1.PodStatus{PodIP: "10.0.1.3", Phase: corev1.PodFailed}}
+	deleting := runningPod("rfs-3", "10.0.1.4")
+	deleting.DeletionTimestamp = &metav1.Time{}
+	sentinels := &corev1.PodList{Items: []corev1.Pod{runningPod("rfs-0", "10.0.1.1"), runningPod("rfs-1", "10.0.1.2"), stopped, deleting}}
 
 	tests := []struct {
-		name      string
-		secretErr error
-		podsErr   error
-		sentErr   error
+		name        string
+		sentinel    bool
+		listErr     error
+		setErr      error
+		expCalls    int
+		expComplete bool
+		expErr      string
 	}{
-		{name: "secret", secretErr: boom},
-		{name: "redis pods", podsErr: boom},
-		{name: "sentinel pods", sentErr: boom},
+		{
+			name:        "without sentinels there is nothing to do",
+			expComplete: true,
+		},
+		{
+			name:        "every running sentinel gets the password",
+			sentinel:    true,
+			expCalls:    2,
+			expComplete: true,
+		},
+		{
+			name:        "an unreachable sentinel leaves it incomplete",
+			sentinel:    true,
+			setErr:      errors.New("dial tcp 10.0.1.1:26379: i/o timeout"),
+			expCalls:    2,
+			expComplete: false,
+		},
+		{
+			name:     "a sentinel refusing the change is returned",
+			sentinel: true,
+			setErr:   errors.New("ERR No such master with that name"),
+			expCalls: 1,
+			expErr:   "changing the password of sentinel pod rfs-0",
+		},
+		{
+			name:     "a failed pod list is returned",
+			sentinel: true,
+			listErr:  errors.New("boom"),
+			expErr:   "boom",
+		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			rf := generateRF()
-			rf.Spec.Auth.SecretPath = "redis-auth"
-			rf.Spec.Sentinel.Enabled = ptr.To(true)
+			rf.Spec.Sentinel.Enabled = ptr.To(test.sentinel)
 
 			ms := &mK8SService.Services{}
-			ms.On("GetSecret", namespace, "redis-auth").Return(&corev1.Secret{Data: map[string][]byte{"password": []byte("new")}}, test.secretErr)
-			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(pods, test.podsErr)
-			ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Return(&corev1.PodList{}, test.sentErr)
+			ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Return(sentinels, test.listErr)
 			mr := &mRedisService.Client{}
-			mr.On("IsMaster", "10.0.0.1", "0", "new").Return(true, nil)
+			mr.On("SetSentinelAuthPass", "10.0.1.1", "new").Return(test.setErr)
+			mr.On("SetSentinelAuthPass", "10.0.1.2", "new").Return(nil)
 
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
-			complete, err := healer.ApplyPassword(rf, "new")
-			assert.ErrorIs(t, err, boom)
-			assert.False(t, complete)
+			complete, err := healer.ApplySentinelPassword(rf, "new")
+			if test.expErr != "" {
+				assert.ErrorContains(t, err, test.expErr)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, test.expComplete, complete)
+			mr.AssertNumberOfCalls(t, "SetSentinelAuthPass", test.expCalls)
 		})
 	}
 }

@@ -1237,6 +1237,12 @@ func TestIsAuthError(t *testing.T) {
 	}
 }
 
+func TestIsNoPasswordError(t *testing.T) {
+	assert.False(t, IsNoPasswordError(nil))
+	assert.False(t, IsNoPasswordError(errors.New("WRONGPASS invalid username-password pair or user is disabled.")))
+	assert.True(t, IsNoPasswordError(errors.New("ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?")))
+}
+
 // Adding, changing and removing a password in place keeps replication up.
 func TestSetPassword(t *testing.T) {
 	requireRedisServer(t)

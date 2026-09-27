@@ -14,23 +14,47 @@ type RedisFailoverHeal struct {
 	mock.Mock
 }
 
-// ApplyPassword provides a mock function with given fields: rFailover, previous
-func (_m *RedisFailoverHeal) ApplyPassword(rFailover *v1.RedisFailover, previous string) (bool, error) {
-	ret := _m.Called(rFailover, previous)
+// ApplyPassword provides a mock function with given fields: rFailover, password, previous
+func (_m *RedisFailoverHeal) ApplyPassword(rFailover *v1.RedisFailover, password string, previous string) (bool, error) {
+	ret := _m.Called(rFailover, password, previous)
+
+	var r0 bool
+	var r1 error
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, string) (bool, error)); ok {
+		return rf(rFailover, password, previous)
+	}
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, string) bool); ok {
+		r0 = rf(rFailover, password, previous)
+	} else {
+		r0 = ret.Get(0).(bool)
+	}
+
+	if rf, ok := ret.Get(1).(func(*v1.RedisFailover, string, string) error); ok {
+		r1 = rf(rFailover, password, previous)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// ApplySentinelPassword provides a mock function with given fields: rFailover, password
+func (_m *RedisFailoverHeal) ApplySentinelPassword(rFailover *v1.RedisFailover, password string) (bool, error) {
+	ret := _m.Called(rFailover, password)
 
 	var r0 bool
 	var r1 error
 	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string) (bool, error)); ok {
-		return rf(rFailover, previous)
+		return rf(rFailover, password)
 	}
 	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string) bool); ok {
-		r0 = rf(rFailover, previous)
+		r0 = rf(rFailover, password)
 	} else {
 		r0 = ret.Get(0).(bool)
 	}
 
 	if rf, ok := ret.Get(1).(func(*v1.RedisFailover, string) error); ok {
-		r1 = rf(rFailover, previous)
+		r1 = rf(rFailover, password)
 	} else {
 		r1 = ret.Error(1)
 	}

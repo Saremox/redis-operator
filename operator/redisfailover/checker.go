@@ -202,28 +202,59 @@ func (r *RedisFailoverHandler) masterPodStopping(rf *redisfailoverv1.RedisFailov
 	return false, nil
 }
 
-// applyPassword applies a changed auth secret to the running Redis. Nothing is
-// checked while the secret matches the password the pods last accepted.
+// passwordState is the password the Redis pods and the Sentinels were last
+// brought onto.
+type passwordState struct {
+	redis    string
+	sentinel string
+}
+
+func passwordKey(rf *redisfailoverv1.RedisFailover) string {
+	return rf.Namespace + "/" + rf.Name
+}
+
+// applyPassword applies a changed auth secret to the running Redis and the
+// Sentinels. Nothing is checked while both are on the secret.
 func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) error {
 	password, err := k8s.GetRedisPassword(r.k8sservice, rf)
 	if err != nil {
 		return err
 	}
-	key := rf.Namespace + "/" + rf.Name
-	previous := password
-	if v, ok := r.passwords.Load(key); ok {
-		if v.(string) == password {
-			return nil
+	key := passwordKey(rf)
+	v, known := r.passwords.Load(key)
+	state, _ := v.(passwordState)
+	if known && state.redis == password && state.sentinel == password {
+		return nil
+	}
+
+	if !known || state.redis != password {
+		previous := password
+		if known {
+			previous = state.redis
 		}
-		previous = v.(string)
+		complete, err := r.rfHealer.ApplyPassword(rf, password, previous)
+		if err != nil {
+			return err
+		}
+		// A pod yet to start keeps the old password in play. With none known,
+		// the one every running pod accepts is the best there is.
+		if complete || !known {
+			state.redis = password
+		}
 	}
-	complete, err := r.rfHealer.ApplyPassword(rf, previous)
-	if err != nil {
-		return err
+
+	// Every running Redis now accepts the password, so the Sentinels need it
+	// to reach them.
+	if state.sentinel != password {
+		complete, err := r.rfHealer.ApplySentinelPassword(rf, password)
+		if err != nil {
+			return err
+		}
+		if complete {
+			state.sentinel = password
+		}
 	}
-	if complete {
-		r.passwords.Store(key, password)
-	}
+	r.passwords.Store(key, state)
 	return nil
 }
 
