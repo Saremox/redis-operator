@@ -50,6 +50,29 @@ func newTestClientStruct() *client {
 // (shared read-only master+replica+sentinel environment)
 // ---------------------------------------------------------------------
 
+// A frozen node accepts connections and never replies.
+func TestIsMasterUnresponsiveTimesOut(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = l.Close() }()
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			defer func() { _ = conn.Close() }()
+		}
+	}()
+	host, port, err := net.SplitHostPort(l.Addr().String())
+	require.NoError(t, err)
+
+	start := time.Now()
+	_, err = newTestClient().IsMaster(host, port, "")
+	assert.Error(t, err)
+	assert.Less(t, time.Since(start), 6*time.Second)
+}
+
 func TestIsMaster(t *testing.T) {
 	env := getSharedEnv(t)
 	c := newTestClient()

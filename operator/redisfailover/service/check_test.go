@@ -821,6 +821,52 @@ func TestGetNumberMastersIsMasterError(t *testing.T) {
 	assert.NoError(err)
 }
 
+func TestGetNumberMastersReadyPodUnanswered(t *testing.T) {
+	ready := []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "redis-0"},
+				Status:     corev1.PodStatus{PodIP: "0.0.0.0", Phase: corev1.PodRunning, Conditions: ready},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "redis-1"},
+				Status:     corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning, Conditions: ready},
+			},
+		},
+	}
+
+	tests := []struct {
+		name          string
+		otherIsMaster bool
+		expN          int
+		expErr        bool
+	}{
+		{name: "no master answered", otherIsMaster: false, expN: 0, expErr: true},
+		{name: "another master answered", otherIsMaster: true, expN: 1, expErr: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+			mr := &mRedisService.Client{}
+			mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(false, errors.New("i/o timeout"))
+			mr.On("IsMaster", "1.1.1.1", "0", "").Once().Return(test.otherIsMaster, nil)
+
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+			n, err := checker.GetNumberMasters(rf)
+			assert.Equal(t, test.expN, n)
+			if test.expErr {
+				assert.ErrorContains(t, err, "redis-0")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestGetNumberMasters(t *testing.T) {
 	assert := assert.New(t)
 
