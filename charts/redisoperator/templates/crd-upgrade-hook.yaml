@@ -13,8 +13,11 @@ metadata:
     helm.sh/hook: pre-install,pre-upgrade
     helm.sh/hook-weight: "-6"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+# The CRD YAML is over the 1MiB a ConfigMap holds; compact JSON fits.
 data:
-  {{- (.Files.Glob "crds/*.yaml").AsConfig | nindent 2 }}
+  {{- range $path, $_ := .Files.Glob "crds/*.yaml" }}
+  {{ base $path | trimSuffix ".yaml" }}.json: {{ $.Files.Get $path | fromYaml | toJson | quote }}
+  {{- end }}
 ---
 # This hook Job gets its own minimal ServiceAccount/ClusterRole rather than
 # reusing the operator's own: the operator's ServiceAccount needs broad
@@ -123,11 +126,17 @@ spec:
         - name: crds-upgrade
           image: "{{ .Values.crds.upgradeHook.image.repository }}:{{ .Values.crds.upgradeHook.image.tag | default "v1.36.2" }}"
           imagePullPolicy: {{ .Values.crds.upgradeHook.image.pullPolicy }}
+          # Server-side, as the CRD is too large for the last-applied
+          # annotation of a client-side apply.
           command:
             - kubectl
             - apply
+            - --server-side
+            - --force-conflicts
+            {{- range $path, $_ := .Files.Glob "crds/*.yaml" }}
             - -f
-            - /crds
+            - /crds/{{ base $path | trimSuffix ".yaml" }}.json
+            {{- end }}
           volumeMounts:
             - name: crds
               mountPath: /crds
