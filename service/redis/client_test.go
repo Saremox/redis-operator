@@ -1076,6 +1076,13 @@ func TestSentinelCheckQuorum_NoQuorum(t *testing.T) {
 	assert.Equal(t, "quorum Not available", err.Error(), "the intended NOQUORUM message should be reachable, not just the raw driver error")
 }
 
+func TestSetSentinelAuthPass(t *testing.T) {
+	env := getSharedEnv(t)
+	c := newTestClient()
+	require.NoError(t, c.SetSentinelAuthPass(env.sentinel.IP, "s3cr3t"))
+	require.NoError(t, c.SetSentinelAuthPass(env.sentinel.IP, ""))
+}
+
 // TestSentinelFunctions_SentinelUnreachable exercises the connection-error
 // branch of the various Sentinel-facing Client methods (the `if err != nil`
 // branch immediately following the Info()/Process() call to the sentinel,

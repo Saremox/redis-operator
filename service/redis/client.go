@@ -57,6 +57,7 @@ type Client interface {
 	GetReplicationInfo(ip, port, password string) (*ReplicationInfo, error)
 	GetMemoryInfo(ip, port, password string) (*MemoryInfo, error)
 	SetPassword(ip, port, password, newPassword string) error
+	SetSentinelAuthPass(ip, password string) error
 }
 
 type client struct {
@@ -724,6 +725,27 @@ func (c *client) SetPassword(ip, port, password, newPassword string) error {
 		}
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.SET_PASSWORD, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return nil
+}
+
+// SetSentinelAuthPass sets the password a Sentinel uses to authenticate to the
+// Redis it monitors.
+func (c *client) SetSentinelAuthPass(ip, password string) error {
+	rClient := rediscli.NewClient(&rediscli.Options{
+		Addr:     net.JoinHostPort(ip, sentinelPort),
+		Password: "",
+		DB:       0,
+	})
+	defer func(rClient *rediscli.Client) {
+		if err := rClient.Close(); err != nil {
+			log.Error(err.Error())
+		}
+	}(rClient)
+	if err := rClient.Do(context.TODO(), "SENTINEL", "SET", masterName, "auth-pass", password).Err(); err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.SET_PASSWORD, metrics.FAIL, getRedisError(err))
+		return err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.SET_PASSWORD, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
 }
 

@@ -320,6 +320,20 @@ func (_m *Client) SetPassword(ip string, port string, password string, newPasswo
 	return r0
 }
 
+// SetSentinelAuthPass provides a mock function with given fields: ip, password
+func (_m *Client) SetSentinelAuthPass(ip string, password string) error {
+	ret := _m.Called(ip, password)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string) error); ok {
+		r0 = rf(ip, password)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // SlaveIsReady provides a mock function with given fields: ip, port, password
 func (_m *Client) SlaveIsReady(ip string, port string, password string) (bool, error) {
 	ret := _m.Called(ip, port, password)

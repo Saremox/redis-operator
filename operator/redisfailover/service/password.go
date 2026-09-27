@@ -10,14 +10,14 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-// ApplyPassword brings every running Redis onto the password in the auth
+// ApplyPassword brings every Redis onto the password in the auth
 // secret. Redis reads requirepass only at startup, and restarting the pods one
 // at a time can't apply a new one: a restarted replica can't authenticate to a
 // master still on the old password. So a Redis still on previous is changed in
 // place, and the rolling update then restarts the pods onto the secret. The
-// Sentinels are given the new password too.
+// Sentinels are given the password too.
 //
-// It returns true once every running Redis accepts the password.
+// It returns true once every Redis pod runs and accepts the password.
 func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, previous string) (bool, error) {
 	password, err := k8s.GetRedisPassword(r.k8sService, rf)
 	if err != nil {
@@ -32,7 +32,12 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 	complete := true
 	var errs []error
 	for _, rp := range rps.Items {
-		if rp.Status.Phase != v1.PodRunning || rp.DeletionTimestamp != nil {
+		if rp.DeletionTimestamp != nil {
+			continue
+		}
+		// A pod yet to start may still come up on the old pod template.
+		if rp.Status.Phase != v1.PodRunning {
+			complete = false
 			continue
 		}
 		_, err := r.redisClient.IsMaster(rp.Status.PodIP, port, password)
@@ -56,7 +61,7 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 	if err := errors.Join(errs...); err != nil {
 		return false, err
 	}
-	if !complete || previous == password || !rf.SentinelsAllowed() {
+	if !complete || !rf.SentinelsAllowed() {
 		return complete, nil
 	}
 
@@ -68,7 +73,7 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 		if sp.Status.Phase != v1.PodRunning || sp.DeletionTimestamp != nil {
 			continue
 		}
-		if err := r.redisClient.SetCustomSentinelConfig(sp.Status.PodIP, []string{"auth-pass " + password}); err != nil {
+		if err := r.redisClient.SetSentinelAuthPass(sp.Status.PodIP, password); err != nil {
 			return false, fmt.Errorf("changing the password of sentinel pod %s: %w", sp.Name, err)
 		}
 	}

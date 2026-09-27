@@ -30,6 +30,7 @@ func TestApplyPassword(t *testing.T) {
 		name     string
 		previous string
 		sentinel bool
+		pending  bool
 		// errors IsMaster returns with the new password, per pod IP
 		refuse      map[string]error
 		expSet      []string
@@ -59,6 +60,20 @@ func TestApplyPassword(t *testing.T) {
 			expComplete: true,
 		},
 		{
+			name:        "the sentinels get the password when the previous one is unknown",
+			previous:    "new",
+			sentinel:    true,
+			expSentinel: true,
+			expComplete: true,
+		},
+		{
+			name:        "a pod yet to start leaves it incomplete",
+			previous:    "new",
+			sentinel:    true,
+			pending:     true,
+			expComplete: false,
+		},
+		{
 			name:     "a refused password with no previous one to use",
 			previous: "new",
 			refuse:   map[string]error{"10.0.0.1": wrongpass},
@@ -80,7 +95,11 @@ func TestApplyPassword(t *testing.T) {
 
 			ms := &mK8SService.Services{}
 			ms.On("GetSecret", namespace, "redis-auth").Return(&corev1.Secret{Data: map[string][]byte{"password": []byte("new")}}, nil)
-			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(redises, nil)
+			pods := redises.DeepCopy()
+			if test.pending {
+				pods.Items = append(pods.Items, corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfr-2"}, Status: corev1.PodStatus{Phase: corev1.PodPending}})
+			}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(pods, nil)
 			ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Return(sentinels, nil)
 			mr := &mRedisService.Client{}
 			for _, p := range redises.Items {
@@ -90,7 +109,7 @@ func TestApplyPassword(t *testing.T) {
 				mr.On("SetPassword", ip, "0", test.previous, "new").Once().Return(nil)
 			}
 			if test.expSentinel {
-				mr.On("SetCustomSentinelConfig", "10.0.1.1", []string{"auth-pass new"}).Once().Return(nil)
+				mr.On("SetSentinelAuthPass", "10.0.1.1", "new").Once().Return(nil)
 			}
 
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
@@ -104,7 +123,7 @@ func TestApplyPassword(t *testing.T) {
 			mr.AssertExpectations(t)
 			mr.AssertNumberOfCalls(t, "SetPassword", len(test.expSet))
 			if !test.expSentinel {
-				mr.AssertNotCalled(t, "SetCustomSentinelConfig", "10.0.1.1", []string{"auth-pass new"})
+				mr.AssertNotCalled(t, "SetSentinelAuthPass", "10.0.1.1", "new")
 			}
 		})
 	}
