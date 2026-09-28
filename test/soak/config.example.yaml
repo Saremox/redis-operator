@@ -1,0 +1,22 @@
+# Example soak tester configuration. Every field except the instance list
+# has a default, shown here.
+
+# The operator Deployment whose image tag is exported as
+# redis_soak_build_info{operator_version}.
+operator:
+  namespace: redis-operator
+  deployment: redis-operator
+
+probe:
+  interval: 1s
+  # Per command, including the dial of a fresh connection.
+  timeout: 1s
+
+# Each instance is a RedisFailover the tester probes through rfrm-<name>.
+instances:
+  - name: op-basic
+    namespace: op-basic
+    # operator (sentinel.enabled: false) or sentinel.
+    mode: operator
+    # spec.redis.port
+    port: 6379

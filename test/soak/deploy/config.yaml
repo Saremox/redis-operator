@@ -1,0 +1,7 @@
+operator:
+  namespace: redis-operator
+  deployment: redis-operator
+instances:
+  - name: op-basic
+    namespace: op-basic
+    mode: operator
