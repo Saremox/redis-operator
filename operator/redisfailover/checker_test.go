@@ -489,6 +489,8 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 	const (
 		master     = "10.0.0.1"
 		promotedIP = "10.0.0.2"
+		replicaA   = "10.0.0.2"
+		replicaB   = "10.0.0.3"
 	)
 
 	// wrappedPartialErr simulates PromoteBestReplica returning an error that
@@ -498,11 +500,19 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 
 	// setupSharedSuccess wires up the calls made by applyRedisCustomConfig and
 	// UpdateRedisesPods (shared helpers, already covered elsewhere) so that both
-	// succeed cleanly with a single redis IP that is also the master.
+	// succeed cleanly. The RedisFailover asks for 3 replicas, so the cluster is
+	// modelled as the master plus its two ready replicas: in operator-managed
+	// mode UpdateRedisesPods requires a quorum of ready replicas before it will
+	// replace any pod, and a fixture reporting only the master describes a
+	// cluster with nothing left to promote.
 	setupSharedSuccess := func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-		mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{master}, nil)
+		mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{master, replicaA, replicaB}, nil)
 		mrfh.On("SetRedisCustomConfig", master, rf).Once().Return(nil)
+		mrfh.On("SetRedisCustomConfig", replicaA, rf).Once().Return(nil)
+		mrfh.On("SetRedisCustomConfig", replicaB, rf).Once().Return(nil)
 		mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
+		mrfc.On("CheckRedisSlavesReady", replicaA, rf).Once().Return(true, nil)
+		mrfc.On("CheckRedisSlavesReady", replicaB, rf).Once().Return(true, nil)
 		mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("1", nil)
 		mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
 		mrfc.On("GetRedisesMasterPod", rf).Once().Return(master, nil)
@@ -735,9 +745,13 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 				mrfc.On("CheckMasterHealth", rf).Once().Return(true, master, nil)
 				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
-				mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{master}, nil)
+				mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{master, replicaA, replicaB}, nil)
 				mrfh.On("SetRedisCustomConfig", master, rf).Once().Return(nil)
+				mrfh.On("SetRedisCustomConfig", replicaA, rf).Once().Return(nil)
+				mrfh.On("SetRedisCustomConfig", replicaB, rf).Once().Return(nil)
 				mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
+				mrfc.On("CheckRedisSlavesReady", replicaA, rf).Once().Return(true, nil)
+				mrfc.On("CheckRedisSlavesReady", replicaB, rf).Once().Return(true, nil)
 				mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("", errors.New("ssur err"))
 			},
 			wantErr:     true,
@@ -2012,8 +2026,14 @@ func TestUpdateRedisesPodsOperatorManagedModeSkipsSentinelGate(t *testing.T) {
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
 
-	mrfc.On("GetRedisesIPs", rf).Once().Return([]string{"1.1.1.1"}, nil)
+	// rf asks for 3 replicas, so the master is reported alongside its two ready
+	// replicas: operator-managed mode requires a quorum of ready replicas before
+	// replacing any pod, so a fixture reporting the master alone would describe a
+	// cluster with nothing left to promote and would (correctly) never delete it.
+	mrfc.On("GetRedisesIPs", rf).Once().Return([]string{"1.1.1.1", "1.1.1.2", "1.1.1.3"}, nil)
 	mrfc.On("GetMasterIP", rf).Once().Return("1.1.1.1", nil)
+	mrfc.On("CheckRedisSlavesReady", "1.1.1.2", rf).Once().Return(true, nil)
+	mrfc.On("CheckRedisSlavesReady", "1.1.1.3", rf).Once().Return(true, nil)
 	mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("10", nil)
 	mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
 	mrfc.On("GetRedisesMasterPod", rf).Once().Return("master", nil)
@@ -2030,6 +2050,131 @@ func TestUpdateRedisesPodsOperatorManagedModeSkipsSentinelGate(t *testing.T) {
 	mrfc.AssertNotCalled(t, "CheckSentinelSlavesNumberQuorumInMemory", mock.Anything, mock.Anything)
 	mrfc.AssertExpectations(t)
 	mrfh.AssertExpectations(t)
+}
+
+// TestUpdateRedisesPodsWaitsForReplicaQuorum covers #23: a rolling update must
+// not replace the master while the replacement replica is still coming back.
+//
+// GetRedisesIPs only reports pods whose Status.Phase is Running, so a replica
+// that is terminating or being recreated is missing from the list entirely.
+// The readiness loop in UpdateRedisesPods then has nothing to iterate, and
+// "no replica reported unready" is trivially true. Before the fix that empty
+// set satisfied the gate and the master pod was deleted straight after, which
+// left the RedisFailover with no master (and no synced replica to promote)
+// until a later reconcile elected one - a short full outage on every routine
+// pod-spec change.
+//
+// Sentinel deployments never saw this: CheckSentinelSlavesNumberQuorumInMemory
+// gates the master delete on sentinel's own view of the replicas, which lags
+// pod creation and so does block. Operator-managed failover skips that gate,
+// so the replica count has to be checked here instead.
+func TestUpdateRedisesPodsWaitsForReplicaQuorum(t *testing.T) {
+	// rf asks for 3 replicas, so a healthy cluster is the master plus two
+	// replicas and the quorum required before replacing a pod is 2/2+1 = 2.
+	tests := []struct {
+		name          string
+		operatorMode  bool
+		redisesIPs    []string
+		readyReplicas map[string]bool
+		wantDelete    bool
+	}{
+		{
+			// The regression: both replicas absent from GetRedisesIPs because
+			// their pods are not Running yet. Nothing to iterate, so nothing
+			// reports unready - and the master must still be left alone.
+			name:         "operator-managed: replicas missing entirely - master is not replaced",
+			operatorMode: true,
+			redisesIPs:   []string{"10.0.0.1"},
+			wantDelete:   false,
+		},
+		{
+			// One replica back but below quorum (1 of the 2 expected).
+			name:          "operator-managed: replicas below quorum - master is not replaced",
+			operatorMode:  true,
+			redisesIPs:    []string{"10.0.0.1", "10.0.0.2"},
+			readyReplicas: map[string]bool{"10.0.0.2": true},
+			wantDelete:    false,
+		},
+		{
+			name:          "operator-managed: quorum of ready replicas - master is replaced",
+			operatorMode:  true,
+			redisesIPs:    []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"},
+			readyReplicas: map[string]bool{"10.0.0.2": true, "10.0.0.3": true},
+			wantDelete:    true,
+		},
+		{
+			// The no-op proof: identical fixture to the first case, but with
+			// Sentinel enabled. Sentinel mode keeps its existing behaviour and
+			// reaches its own sentinel-quorum gate, so the new count must not
+			// change anything for it.
+			name:         "sentinel: replicas missing entirely - behaviour unchanged",
+			operatorMode: false,
+			redisesIPs:   []string{"10.0.0.1"},
+			wantDelete:   true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assertTest := assert.New(t)
+
+			rf := generateRF(false, false)
+			if test.operatorMode {
+				rf.Spec.Sentinel.Enabled = ptr.To(false)
+			}
+
+			config := generateConfig()
+			mrfs := &mRFService.RedisFailoverClient{}
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+
+			mrfc.On("GetRedisesIPs", rf).Once().Return(test.redisesIPs, nil)
+			mrfc.On("GetMasterIP", rf).Once().Return("10.0.0.1", nil)
+			for ip, ready := range test.readyReplicas {
+				mrfc.On("CheckRedisSlavesReady", ip, rf).Once().Return(ready, nil)
+			}
+
+			if test.wantDelete {
+				mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("10", nil)
+				mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
+				mrfc.On("GetRedisesMasterPod", rf).Once().Return("master", nil)
+				mrfc.On("GetRedisRevisionHash", "master", rf).Once().Return("9", nil) // stale
+				mrfh.On("DeletePod", "master", rf).Once().Return(nil)
+				if !test.operatorMode {
+					// Sentinel mode still consults its own quorum gate.
+					mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{"11.0.0.1"}, nil)
+					mrfc.On("CheckSentinelSlavesNumberQuorumInMemory", "11.0.0.1", rf).Once().Return(nil)
+				}
+			} else {
+				// Permit, but do not require, everything past the gate. Without
+				// the fix the code runs straight on and deletes the master, and
+				// a permitted-but-unexpected call gives a readable assertion
+				// failure below instead of a mock panic that would abort the
+				// sibling subtests along with this one.
+				mrfc.On("GetStatefulSetUpdateRevision", rf).Maybe().Return("10", nil)
+				mrfc.On("GetRedisesSlavesPods", rf).Maybe().Return([]string{}, nil)
+				mrfc.On("GetRedisesMasterPod", rf).Maybe().Return("master", nil)
+				mrfc.On("GetRedisRevisionHash", "master", rf).Maybe().Return("9", nil) // stale
+				mrfh.On("DeletePod", "master", rf).Maybe().Return(nil)
+			}
+
+			mk := &mK8SService.Services{}
+			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+			err := handler.UpdateRedisesPods(rf)
+
+			assertTest.NoError(err)
+			if test.wantDelete {
+				mrfh.AssertCalled(t, "DeletePod", "master", rf)
+			} else {
+				// The master survives, and the operator never even looks at the
+				// StatefulSet revision: it returned before getting that far.
+				mrfh.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+				mrfc.AssertNotCalled(t, "GetStatefulSetUpdateRevision", mock.Anything)
+			}
+			mrfc.AssertExpectations(t)
+			mrfh.AssertExpectations(t)
+		})
+	}
 }
 
 // TestUpdateRedisesPodsErrorBranches exercises the remaining early-return
