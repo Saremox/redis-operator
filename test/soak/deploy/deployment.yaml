@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: soak
+  namespace: redis-soak
+  labels:
+    app.kubernetes.io/name: redis-soak
+spec:
+  replicas: 1
+  # Two testers would write the same probe keys.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis-soak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis-soak
+    spec:
+      serviceAccountName: soak
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: soak
+          image: ghcr.io/saremox/redis-operator-soak
+          imagePullPolicy: IfNotPresent
+          args:
+            - -config=/etc/soak/config.yaml
+          ports:
+            - name: metrics
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/soak
+      volumes:
+        - name: config
+          configMap:
+            name: soak-config
