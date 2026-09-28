@@ -2038,7 +2038,11 @@ func TestUpdateRedisesPodsOperatorManagedModeSkipsSentinelGate(t *testing.T) {
 	mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
 	mrfc.On("GetRedisesMasterPod", rf).Once().Return("master", nil)
 	mrfc.On("GetRedisRevisionHash", "master", rf).Once().Return("9", nil) // stale
-	mrfh.On("DeletePod", "master", rf).Once().Return(nil)
+	// The stale master is handed over rather than deleted: operator-managed mode
+	// promotes a replica first, and the old master is replaced on a later
+	// reconcile as an ordinary stale replica.
+	mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: "1.1.1.2"}, nil)
+	mrfh.On("PromoteBestReplica", "1.1.1.2", rf).Once().Return(nil)
 
 	mk := &mK8SService.Services{}
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
@@ -2048,6 +2052,8 @@ func TestUpdateRedisesPodsOperatorManagedModeSkipsSentinelGate(t *testing.T) {
 	// The point of the fix: no sentinel-related call is ever made.
 	mrfc.AssertNotCalled(t, "GetSentinelsIPs", mock.Anything)
 	mrfc.AssertNotCalled(t, "CheckSentinelSlavesNumberQuorumInMemory", mock.Anything, mock.Anything)
+	// And the live master is never deleted out from under clients.
+	mrfh.AssertNotCalled(t, "DeletePod", "master", mock.Anything)
 	mrfc.AssertExpectations(t)
 	mrfh.AssertExpectations(t)
 }
@@ -2076,7 +2082,8 @@ func TestUpdateRedisesPodsWaitsForReplicaQuorum(t *testing.T) {
 		operatorMode  bool
 		redisesIPs    []string
 		readyReplicas map[string]bool
-		wantDelete    bool
+		wantDelete    bool // sentinel mode: the master pod is deleted so sentinel fails over
+		wantPromote   bool // operator-managed: a replica is promoted, master pod left alone
 	}{
 		{
 			// The regression: both replicas absent from GetRedisesIPs because
@@ -2096,11 +2103,13 @@ func TestUpdateRedisesPodsWaitsForReplicaQuorum(t *testing.T) {
 			wantDelete:    false,
 		},
 		{
-			name:          "operator-managed: quorum of ready replicas - master is replaced",
+			// With a quorum ready the rollout proceeds - but by handing the
+			// master role to a replica, not by deleting the live master.
+			name:          "operator-managed: quorum of ready replicas - master is handed over, not deleted",
 			operatorMode:  true,
 			redisesIPs:    []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"},
 			readyReplicas: map[string]bool{"10.0.0.2": true, "10.0.0.3": true},
-			wantDelete:    true,
+			wantPromote:   true,
 		},
 		{
 			// The no-op proof: identical fixture to the first case, but with
@@ -2134,18 +2143,26 @@ func TestUpdateRedisesPodsWaitsForReplicaQuorum(t *testing.T) {
 				mrfc.On("CheckRedisSlavesReady", ip, rf).Once().Return(ready, nil)
 			}
 
-			if test.wantDelete {
+			if test.wantDelete || test.wantPromote {
 				mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("10", nil)
 				mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
 				mrfc.On("GetRedisesMasterPod", rf).Once().Return("master", nil)
 				mrfc.On("GetRedisRevisionHash", "master", rf).Once().Return("9", nil) // stale
+			}
+			if test.wantDelete {
 				mrfh.On("DeletePod", "master", rf).Once().Return(nil)
 				if !test.operatorMode {
-					// Sentinel mode still consults its own quorum gate.
+					// Sentinel mode still consults its own quorum gate, then
+					// deletes the master so sentinel runs the failover.
 					mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{"11.0.0.1"}, nil)
 					mrfc.On("CheckSentinelSlavesNumberQuorumInMemory", "11.0.0.1", rf).Once().Return(nil)
 				}
-			} else {
+			}
+			if test.wantPromote {
+				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: "10.0.0.2"}, nil)
+				mrfh.On("PromoteBestReplica", "10.0.0.2", rf).Once().Return(nil)
+			}
+			if !test.wantDelete && !test.wantPromote {
 				// Permit, but do not require, everything past the gate. Without
 				// the fix the code runs straight on and deletes the master, and
 				// a permitted-but-unexpected call gives a readable assertion
@@ -2163,12 +2180,19 @@ func TestUpdateRedisesPodsWaitsForReplicaQuorum(t *testing.T) {
 			err := handler.UpdateRedisesPods(rf)
 
 			assertTest.NoError(err)
-			if test.wantDelete {
+			switch {
+			case test.wantDelete:
 				mrfh.AssertCalled(t, "DeletePod", "master", rf)
-			} else {
+			case test.wantPromote:
+				// The role moves first; the old master pod is left running and
+				// is replaced later as an ordinary stale replica.
+				mrfh.AssertCalled(t, "PromoteBestReplica", "10.0.0.2", rf)
+				mrfh.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+			default:
 				// The master survives, and the operator never even looks at the
 				// StatefulSet revision: it returned before getting that far.
 				mrfh.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+				mrfh.AssertNotCalled(t, "PromoteBestReplica", mock.Anything, mock.Anything)
 				mrfc.AssertNotCalled(t, "GetStatefulSetUpdateRevision", mock.Anything)
 			}
 			mrfc.AssertExpectations(t)

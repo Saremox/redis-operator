@@ -382,19 +382,20 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 			t.Logf("master availability during rollout: %d samples, %d masterless, longest masterless run %d samples (%s)",
 				avail.samples, avail.masterless, avail.longestOutage, avail.outage())
 
-			// A couple of consecutive zeros are tolerated: the promotion itself
-			// is not atomic, so samples can land while the old master has
-			// already been demoted and the chosen replica has not finished
-			// being promoted. A sustained run is the outage #23 describes.
+			// The master role is handed to a replica before the old master pod
+			// is touched, so there should be a master at every instant and this
+			// should be 0. One sample of slack is left for a reading taken in
+			// the middle of applying the promotion itself.
 			//
-			// The threshold does not need to be tight to be useful. The
-			// regression measured 118 consecutive masterless samples (59s) on
-			// k8s 1.37.0; with the ordering restored the same rollout measures
-			// 0 to 2 (0-1s). 10 samples sits an order of magnitude below the
-			// bug and well above the promotion blip.
-			assert.LessOrEqual(avail.longestOutage, 10,
+			// History, for anyone tempted to loosen this: deleting the master
+			// and electing afterwards measured 118 consecutive masterless
+			// samples (59s). Requiring a ready replica before the delete cut
+			// that to 0-23 samples (0-11.5s) but left the detection-and-
+			// promotion gap. Promoting first is what closes it. A number
+			// creeping up here means that ordering has regressed.
+			assert.LessOrEqual(avail.longestOutage, 1,
 				"cluster was left without a master for %s (%d consecutive samples) during the rollout; "+
-					"the master must not be replaced until a quorum of replicas is ready to be promoted",
+					"the master role must be handed over before the master pod is replaced",
 				avail.outage(), avail.longestOutage)
 		}()
 
