@@ -144,6 +144,70 @@ func (c *ommClients) waitForAllPodsRecreated(labelSelector string, before map[st
 	return fmt.Errorf("timed out waiting for all pods matching %q to be recreated", labelSelector)
 }
 
+// mastersNow reports how many pods currently answer as master. Unlike
+// onlyMaster it never returns an error: mid-rollout the honest answer can be 0,
+// and #23 is precisely about recording that rather than treating it as a failed
+// lookup.
+func (c *ommClients) mastersNow(labelSelector string) int {
+	pods, err := c.k8sClient.CoreV1().Pods(ommNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: labelSelector})
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, pod := range pods.Items {
+		if pod.Status.PodIP == "" {
+			continue
+		}
+		if ok, _ := c.redisClient.IsMaster(pod.Status.PodIP, "6379", ommTestPass); ok {
+			n++
+		}
+	}
+	return n
+}
+
+// masterAvailability is what sampleMasterAvailability collects. longestOutage
+// is the measure that matters for #23: an isolated zero can be a failover
+// caught in flight, but a sustained run of them means clients had nowhere to
+// write for that long.
+type masterAvailability struct {
+	samples       int
+	masterless    int
+	longestOutage int
+	interval      time.Duration
+}
+
+// outage returns how long the longest masterless run lasted.
+func (m masterAvailability) outage() time.Duration {
+	return time.Duration(m.longestOutage) * m.interval
+}
+
+// sampleMasterAvailability polls until stop is closed, then sends its tally.
+// Run it around a rollout to measure whether the cluster ever lost its master.
+func (c *ommClients) sampleMasterAvailability(labelSelector string, interval time.Duration, stop <-chan struct{}, done chan<- masterAvailability) {
+	result := masterAvailability{interval: interval}
+	run := 0
+	for {
+		select {
+		case <-stop:
+			done <- result
+			return
+		default:
+		}
+
+		result.samples++
+		if c.mastersNow(labelSelector) == 0 {
+			result.masterless++
+			run++
+			if run > result.longestOutage {
+				result.longestOutage = run
+			}
+		} else {
+			run = 0
+		}
+		time.Sleep(interval)
+	}
+}
+
 func (c *ommClients) onlyMaster(labelSelector string) (string, error) {
 	pods, err := c.k8sClient.CoreV1().Pods(ommNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
@@ -287,6 +351,33 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 		before, err := c.podUIDs(redisLabelSelector)
 		require.NoError(err)
 		require.Len(before, int(ommRedisSize))
+
+		// #23: measure master availability for the whole rollout, not just the
+		// end state. The old code replaced the master as soon as the readiness
+		// loop found nothing to wait for, which it does while the replacement
+		// replica is still being recreated and therefore absent from
+		// GetRedisesIPs. That left a real window with no master at all, which
+		// only a sampler running *during* the rollout can see - the assertions
+		// below on pod UIDs and "exactly one master" all pass either way,
+		// because the cluster does converge afterwards.
+		availStop := make(chan struct{})
+		availDone := make(chan masterAvailability, 1)
+		go c.sampleMasterAvailability(redisLabelSelector, 500*time.Millisecond, availStop, availDone)
+		defer func() {
+			close(availStop)
+			avail := <-availDone
+			t.Logf("master availability during rollout: %d samples, %d masterless, longest masterless run %d samples (%s)",
+				avail.samples, avail.masterless, avail.longestOutage, avail.outage())
+
+			// One stray zero is tolerated: a sample can land in the instant a
+			// promotion is being applied. A sustained run cannot - that is the
+			// outage #23 describes, and with replica-first/master-last ordering
+			// restored there is always a synced replica ready to take over.
+			assert.LessOrEqual(avail.longestOutage, 1,
+				"cluster was left without a master for %s (%d consecutive samples) during the rollout; "+
+					"the master must not be replaced until a quorum of replicas is ready to be promoted",
+				avail.outage(), avail.longestOutage)
+		}()
 
 		// Trigger a StatefulSet template change: PodAnnotations is copied
 		// straight into the pod template (generateRedisStatefulSet), so this
