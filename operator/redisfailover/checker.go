@@ -28,6 +28,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 		r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("masterIP", masterIP).Debug("got master IP")
 	}
 	// No performed updates when nodes are syncing, still not connected, etc.
+	readyReplicas := int32(0)
 	for _, rip := range redises {
 		if rip != masterIP {
 			ready, err := r.rfChecker.CheckRedisSlavesReady(rip, rf)
@@ -38,6 +39,43 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			if !ready {
 				return nil
 			}
+			readyReplicas++
+		}
+	}
+
+	// The loop above only sees pods that are already Running: GetRedisesIPs
+	// filters on Status.Phase, so a replica that is still terminating or being
+	// recreated is absent from the list entirely. "No replica reported unready"
+	// is therefore also true when there is no replica at all, and the gate
+	// passes on an empty set. The code then falls through to replacing the
+	// master while the replacement replica has not synced, leaving the failover
+	// with nothing to promote until the next reconcile elects one.
+	//
+	// In sentinel mode that is masked by the second gate further down
+	// (CheckSentinelSlavesNumberQuorumInMemory), which reads sentinel's own
+	// in-memory view of the replicas and does block. Operator-managed failover
+	// skips that gate, so it needs the count here instead. Scoped to
+	// OperatorManagedFailover so sentinel behaviour is unchanged.
+	//
+	// A quorum rather than the full expected count, mirroring the sentinel gate,
+	// so that one permanently unavailable replica (e.g. a PVC stuck in a dead
+	// zone) cannot block pod replacement forever while a safe failover is still
+	// available through the reachable majority.
+	if rf.OperatorManagedFailover() {
+		expectedReplicas := rf.Spec.Redis.Replicas - 1
+		if rf.Bootstrapping() {
+			// Every redis pod replicates from the external bootstrap node, so
+			// none of them is the master and all count towards the quorum.
+			expectedReplicas = rf.Spec.Redis.Replicas
+		}
+		var quorum int32
+		if expectedReplicas > 0 {
+			quorum = expectedReplicas/2 + 1
+		}
+		if readyReplicas < quorum {
+			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).
+				Infof("waiting for a quorum of ready replicas before replacing pods: have %d, need at least %d of %d expected", readyReplicas, quorum, expectedReplicas)
+			return nil
 		}
 	}
 
