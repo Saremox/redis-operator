@@ -1,0 +1,255 @@
+package mutator
+
+import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"maps"
+	"math/rand/v2"
+	"slices"
+	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/saremox/redis-operator/test/soak/internal/config"
+)
+
+const (
+	roleLabel     = "redisfailovers-role"
+	roleMaster    = "master"
+	roleReplica   = "slave"
+	redisName     = "redis"
+	resizeRequest = "redisfailovers.databases.spotahome.com/resize-requested-at"
+	mi            = 1 << 20
+)
+
+// stepRand returns the random source of one seed step. Each instance and
+// step gets its own, so a logged step can be replayed on its own.
+func stepRand(seed int64, in config.Instance, step int) *rand.Rand {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(in.Namespace + "/" + in.Name))
+	return rand.New(rand.NewPCG(uint64(seed)^h.Sum64(), uint64(step)))
+}
+
+func pickKind(r *rand.Rand, m config.Mutations) config.Kind {
+	kinds := m.Sorted()
+	total := 0
+	for _, k := range kinds {
+		total += m.Kinds[k]
+	}
+	n := r.IntN(total)
+	for _, k := range kinds {
+		if n < m.Kinds[k] {
+			return k
+		}
+		n -= m.Kinds[k]
+	}
+	panic("unreachable")
+}
+
+// pickOther returns a value of rg other than current.
+func pickOther(r *rand.Rand, rg config.Range, current int64) int64 {
+	if current < rg.Min || current > rg.Max {
+		return rg.Min + r.Int64N(rg.Max-rg.Min+1)
+	}
+	v := rg.Min + r.Int64N(rg.Max-rg.Min)
+	if v >= current {
+		v++
+	}
+	return v
+}
+
+// plan is one picked mutation.
+type plan struct {
+	kind config.Kind
+	// skip is why the mutation can't be applied now.
+	skip   string
+	params string
+	// patch is a JSON merge patch of the RedisFailover.
+	patch []byte
+	// pod is the pod to delete, with its UID.
+	pod   string
+	uid   types.UID
+	force bool
+	// converged is the mutation's own convergence signal: nil once the
+	// change is complete.
+	converged func(state) error
+}
+
+func skipped(kind config.Kind, format string, a ...any) plan {
+	return plan{kind: kind, skip: fmt.Sprintf(format, a...)}
+}
+
+func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master string) plan {
+	switch kind {
+	case config.RedisReplicas:
+		want := int32(pickOther(r, m.RedisReplicas, int64(s.rf.Spec.Redis.Replicas)))
+		return plan{
+			kind:      kind,
+			params:    fmt.Sprintf("redis.replicas %d -> %d", s.rf.Spec.Redis.Replicas, want),
+			patch:     mergePatch(map[string]any{"redis": map[string]any{"replicas": want}}),
+			converged: redisReplicasConverged(want),
+		}
+	case config.SentinelReplicas:
+		want := int32(pickOther(r, m.SentinelReplicas, int64(s.rf.Spec.Sentinel.Replicas)))
+		return plan{
+			kind:      kind,
+			params:    fmt.Sprintf("sentinel.replicas %d -> %d", s.rf.Spec.Sentinel.Replicas, want),
+			patch:     mergePatch(map[string]any{"sentinel": map[string]any{"replicas": want}}),
+			converged: sentinelReplicasConverged(want),
+		}
+	case config.RedisResources:
+		return planResources(r, m.Resources, s)
+	case config.KillMaster:
+		masters := withRole(s.redis, roleMaster)
+		if len(masters) != 1 {
+			return skipped(kind, "%d pods are labelled master", len(masters))
+		}
+		if masters[0].Name != master {
+			return skipped(kind, "%s is labelled master, the observer saw %q", masters[0].Name, master)
+		}
+		return planKill(r, kind, m, masters, 0, redisPodReplaced)
+	case config.KillReplica:
+		replicas := withRole(s.redis, roleReplica)
+		if len(replicas) == 0 {
+			return skipped(kind, "no replica")
+		}
+		return planKill(r, kind, m, replicas, r.IntN(len(replicas)), redisPodReplaced)
+	case config.KillSentinel:
+		if len(s.sentinels) == 0 {
+			return skipped(kind, "no sentinel pod")
+		}
+		want := s.rf.Spec.Sentinel.Replicas
+		return planKill(r, kind, m, s.sentinels, r.IntN(len(s.sentinels)), func(name string, uid types.UID) func(state) error {
+			return sentinelPodReplaced(uid, want)
+		})
+	}
+	return skipped(kind, "unknown kind")
+}
+
+func planKill(r *rand.Rand, kind config.Kind, m config.Mutations, pods []corev1.Pod, i int, converged func(string, types.UID) func(state) error) plan {
+	p := pods[i]
+	force := r.Float64() < m.ForceDeleteProbability
+	how := "graceful"
+	if force {
+		how = "force"
+	}
+	return plan{
+		kind:      kind,
+		params:    fmt.Sprintf("delete pod %s (%s)", p.Name, how),
+		pod:       p.Name,
+		uid:       p.UID,
+		force:     force,
+		converged: converged(p.Name, p.UID),
+	}
+}
+
+func withRole(pods []corev1.Pod, role string) []corev1.Pod {
+	var out []corev1.Pod
+	for _, p := range pods {
+		if p.Labels[roleLabel] == role {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func mergePatch(spec map[string]any) []byte {
+	b, _ := json.Marshal(map[string]any{"spec": spec})
+	return b
+}
+
+// planResources changes cpu, memory or both: every request and limit of
+// them that the RedisFailover sets and the config bounds.
+func planResources(r *rand.Rand, b config.Resources, s state) plan {
+	const kind = config.RedisResources
+	cur := s.rf.Spec.Redis.Resources
+	type entry struct {
+		list  string
+		name  corev1.ResourceName
+		rg    config.Range
+		quant corev1.ResourceList
+	}
+	entries := map[corev1.ResourceName][]entry{}
+	for _, e := range []entry{
+		{"requests", corev1.ResourceCPU, b.Requests.CPU, cur.Requests},
+		{"limits", corev1.ResourceCPU, b.Limits.CPU, cur.Limits},
+		{"requests", corev1.ResourceMemory, b.Requests.Memory, cur.Requests},
+		{"limits", corev1.ResourceMemory, b.Limits.Memory, cur.Limits},
+	} {
+		if _, ok := e.quant[e.name]; ok && e.rg.Set() {
+			entries[e.name] = append(entries[e.name], e)
+		}
+	}
+	names := slices.Sorted(maps.Keys(entries))
+	switch len(names) {
+	case 0:
+		return skipped(kind, "the RedisFailover sets none of the configured requests and limits")
+	case 2:
+		// cpu, memory or both.
+		if i := r.IntN(3); i < 2 {
+			names = names[i : i+1]
+		}
+	}
+
+	next := *cur.DeepCopy()
+	patch := map[string]map[string]string{}
+	var params []string
+	for _, n := range names {
+		for _, e := range entries[n] {
+			q := e.quant[e.name]
+			var nq *resource.Quantity
+			if n == corev1.ResourceCPU {
+				nq = resource.NewMilliQuantity(pickOther(r, e.rg, q.MilliValue()), resource.DecimalSI)
+			} else {
+				nq = resource.NewQuantity(pickOther(r, e.rg, q.Value()/mi)*mi, resource.BinarySI)
+			}
+			list := next.Requests
+			if e.list == "limits" {
+				list = next.Limits
+			}
+			list[e.name] = *nq
+			if patch[e.list] == nil {
+				patch[e.list] = map[string]string{}
+			}
+			patch[e.list][string(e.name)] = nq.String()
+			params = append(params, fmt.Sprintf("%s.%s %s -> %s", e.list, e.name, q.String(), nq.String()))
+		}
+	}
+	for _, n := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+		req, okr := next.Requests[n]
+		lim, okl := next.Limits[n]
+		if okr && okl && req.Cmp(lim) > 0 {
+			return skipped(kind, "requests.%s %s would exceed limits.%s %s", n, req.String(), n, lim.String())
+		}
+	}
+	if from, to := qosClass(cur), qosClass(next); from != to {
+		return skipped(kind, "%s would change the QoS class from %s to %s", strings.Join(params, ", "), from, to)
+	}
+	return plan{
+		kind:      kind,
+		params:    strings.Join(params, ", "),
+		patch:     mergePatch(map[string]any{"redis": map[string]any{"resources": patch}}),
+		converged: resourcesConverged(next, s.rf.Spec.Redis.Replicas),
+	}
+}
+
+// qosClass is the QoS class of a pod with only this container.
+func qosClass(r corev1.ResourceRequirements) corev1.PodQOSClass {
+	if len(r.Requests) == 0 && len(r.Limits) == 0 {
+		return corev1.PodQOSBestEffort
+	}
+	for _, n := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+		lim, ok := r.Limits[n]
+		if !ok {
+			return corev1.PodQOSBurstable
+		}
+		// An unset request defaults to the limit.
+		if req, ok := r.Requests[n]; ok && !req.Equal(lim) {
+			return corev1.PodQOSBurstable
+		}
+	}
+	return corev1.PodQOSGuaranteed
+}

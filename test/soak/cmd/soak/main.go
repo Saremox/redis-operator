@@ -22,6 +22,7 @@ import (
 	"github.com/saremox/redis-operator/client/k8s/clientset/versioned"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
+	"github.com/saremox/redis-operator/test/soak/internal/mutator"
 	"github.com/saremox/redis-operator/test/soak/internal/observer"
 	"github.com/saremox/redis-operator/test/soak/internal/operator"
 	"github.com/saremox/redis-operator/test/soak/internal/prober"
@@ -83,13 +84,18 @@ func run(configPath, listen string, log *slog.Logger) error {
 		}
 		o := observer.New(in, cfg, kube, rfs, m, log)
 		wg.Go(func() { o.Run(ctx) })
+		if cfg.Mutation.On() && len(in.Mutations.Kinds) > 0 {
+			mu := mutator.New(in, cfg, kube, rfs, o, m, log)
+			wg.Go(func() { mu.Run(ctx) })
+		}
 	}
 	wg.Go(func() {
 		<-ctx.Done()
 		_ = srv.Shutdown(context.Background())
 	})
 
-	log.Info("starting", "version", version, "instances", len(cfg.Instances), "listen", listen)
+	log.Info("starting", "version", version, "instances", len(cfg.Instances), "listen", listen,
+		"mutation", cfg.Mutation.On(), "seed", cfg.Mutation.Seed)
 	err = srv.ListenAndServe()
 	stop()
 	wg.Wait()
