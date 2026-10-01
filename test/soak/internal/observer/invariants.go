@@ -61,8 +61,10 @@ type snapshot struct {
 	rf  *redisfailoverv1.RedisFailover
 	uid string
 	// bootstrap is the node every pod replicates from, if any; then
-	// sourceOffset is that node's replication offset.
+	// sourceReplID and sourceOffset are where the source's master's
+	// replication stream is.
 	bootstrap        *redisfailoverv1.BootstrapSettings
+	sourceReplID     string
 	sourceOffset     int64
 	sourceErr        error
 	pvc              bool
@@ -205,7 +207,7 @@ func (s snapshot) checkReplication(master *redisPod) error {
 }
 
 // checkBootstrap checks that every pod replicates from the bootstrap node
-// with its link up.
+// with its link up, and follows the stream of the source's current master.
 func (s snapshot) checkBootstrap() error {
 	var errs []error
 	for _, r := range s.redis {
@@ -219,6 +221,9 @@ func (s snapshot) checkBootstrap() error {
 				r.Name, r.info["master_host"], r.info["master_port"], s.bootstrap.Host, s.bootstrap.Port))
 		case r.info["master_link_status"] != "up":
 			errs = append(errs, fmt.Errorf("%s: master_link_status %s", r.Name, r.info["master_link_status"]))
+		case s.sourceErr == nil && r.info["master_replid"] != s.sourceReplID:
+			errs = append(errs, fmt.Errorf("%s replicates stream %s, the source's master is on %s",
+				r.Name, r.info["master_replid"], s.sourceReplID))
 		}
 	}
 	return errors.Join(errs...)
@@ -232,11 +237,11 @@ func (s snapshot) checkNoMasterService() error {
 }
 
 // bootstrapLags returns each pod's replication offset behind the bootstrap
-// node's.
+// node's, for the pods on its stream.
 func (s snapshot) bootstrapLags() map[string]int64 {
 	lags := map[string]int64{}
 	for _, r := range s.redis {
-		if r.info.role() == roleReplica && r.info["master_host"] == s.bootstrap.Host {
+		if r.info.role() == roleReplica && r.info["master_host"] == s.bootstrap.Host && r.info["master_replid"] == s.sourceReplID {
 			lags[r.Name] = max(0, s.sourceOffset-r.info.int("slave_repl_offset"))
 		}
 	}

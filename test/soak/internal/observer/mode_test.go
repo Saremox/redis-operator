@@ -17,15 +17,16 @@ import (
 const bootstrapHost = "10.96.0.5"
 
 // bootstrapped is a converged three-pod instance that replicates from
-// bootstrapHost, which is at offset 1000.
+// bootstrapHost, whose stream a is at offset 1000.
 func bootstrapped() snapshot {
 	s := healthy(false)
 	s.bootstrap = &redisfailoverv1.BootstrapSettings{Host: bootstrapHost, Port: "6379"}
 	s.endpoints = nil
 	for i, offset := range []string{"1000", "990", "400"} {
 		s.redis[i].info = replicationInfo("slave", bootstrapHost, "up", offset)
+		s.redis[i].info["master_replid"] = "a"
 	}
-	s.sourceOffset = 1000
+	s.sourceReplID, s.sourceOffset = "a", 1000
 	return s
 }
 
@@ -48,6 +49,16 @@ func TestEvaluateBootstrap(t *testing.T) {
 		{"wrong port", func(s *snapshot) {
 			s.redis[2].info["master_port"] = "6380"
 		}, []string{invOneMaster}},
+		// The source's master was replaced and a pod hasn't reached the
+		// new one yet.
+		{"old stream", func(s *snapshot) {
+			s.sourceReplID = "b"
+			s.redis[0].info["master_replid"] = "b"
+			s.redis[1].info["master_replid"] = "b"
+		}, []string{invOneMaster}},
+		{"source unreachable", func(s *snapshot) {
+			s.sourceReplID, s.sourceErr = "", errNoMaster
+		}, nil},
 		{"unreachable", func(s *snapshot) {
 			s.redis[0].info, s.redis[0].err = nil, errors.New("connection refused")
 		}, []string{invOneMaster}},
@@ -77,6 +88,12 @@ func TestEvaluateBootstrap(t *testing.T) {
 	lags := bootstrapped().bootstrapLags()
 	if want := map[string]int64{"rfr-x-0": 0, "rfr-x-1": 10, "rfr-x-2": 600}; !mapsEqual(lags, want) {
 		t.Errorf("lags %v, want %v", lags, want)
+	}
+	// Offsets of another stream can't be compared.
+	s := bootstrapped()
+	s.redis[2].info["master_replid"] = "old"
+	if want := map[string]int64{"rfr-x-0": 0, "rfr-x-1": 10}; !mapsEqual(s.bootstrapLags(), want) {
+		t.Errorf("lags %v, want %v", s.bootstrapLags(), want)
 	}
 }
 
@@ -150,8 +167,43 @@ func TestSourceWindow(t *testing.T) {
 	if !o.Quiet() {
 		t.Error("not quiet after recovering")
 	}
-	// Without the source converging, the same is a finding.
-	o.apply(at(20), down, 1, false)
+	if v := testutil.ToFloat64(o.findings.WithLabelValues(invOneMaster)); v != 0 {
+		t.Errorf("findings = %v after the source failed over", v)
+	}
+
+	// The source's master is replaced and the source converges at once,
+	// but the pods' link to the old master only breaks after, and they
+	// reach the new one later still.
+	moved := healthy(false)
+	moved.redis[0].info = replicationInfo("slave", "10.0.0.11", "up", "2000")
+	moved.redis[1].info = replicationInfo("master", "", "", "2000")
+	moved.redis[2].info["master_host"] = "10.0.0.11"
+	moved.endpoints = []string{"10.0.0.11"}
+	src.apply(at(20), moved, 1, false)
+	src.apply(at(25), moved, 1, false)
+	if src.view.Load().windowOpen {
+		t.Fatal("the source is still converging")
+	}
+	newStream := func(s snapshot) snapshot {
+		s.sourceReplID = "b"
+		return s
+	}
+	o.apply(at(25), newStream(bootstrapped()), 1, false)
+	o.apply(at(30), newStream(down), 1, false)
+	if v := testutil.ToFloat64(o.findings.WithLabelValues(invOneMaster)); v != 0 {
+		t.Errorf("findings = %v while the pods move to the new master", v)
+	}
+	synced := newStream(bootstrapped())
+	for i := range synced.redis {
+		synced.redis[i].info["master_replid"] = "b"
+	}
+	o.apply(at(90), synced, 1, false)
+	if !o.Quiet() {
+		t.Error("not quiet after the pods reached the new master")
+	}
+
+	// Without the source changing, the same is a finding.
+	o.apply(at(95), newStream(down), 1, false)
 	if v := testutil.ToFloat64(o.findings.WithLabelValues(invOneMaster)); v != 1 {
 		t.Errorf("findings = %v, want 1", v)
 	}

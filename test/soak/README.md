@@ -141,7 +141,7 @@ to every redis pod by its IP, and asks every Sentinel pod for
 | Invariant | Holds when |
 |---|---|
 | `pods` | There are `spec.redis.replicas` redis pods and all are Ready. With Sentinel, there are also `spec.sentinel.replicas` Sentinel pods, all Ready. |
-| `one_master` | Exactly one redis pod reports the master role in `INFO replication`. Bootstrapping: every pod replicates from `bootstrapNode` with `master_link_status:up`. |
+| `one_master` | Exactly one redis pod reports the master role in `INFO replication`. Bootstrapping: every pod replicates from `bootstrapNode` with `master_link_status:up`, on the stream (`master_replid`) of the source's current master. |
 | `master_service` | The `rfrm-<name>` EndpointSlices hold exactly one ready address, the master's. Bootstrapping: none, as the operator labels no pod master. |
 | `replication` | Every other redis pod is a replica of the master's IP and port, with `master_link_status:up`. Not while bootstrapping. |
 | `sentinel_agreement` | (With Sentinel only) every Sentinel reports the master's IP and port. |
@@ -300,7 +300,10 @@ A violation is expected while the instance converges after a change, and a
   the operator (every instance), or a bootstrapping instance's source is
   in a window or has no single master, as its replication link breaks
   when the source fails over. The window then closes once every invariant
-  holds.
+  holds. A bootstrapping instance's window also opens when the source's
+  master changes: its pods' link to the old master may only break after
+  the source converged, and `one_master` holds again once they all
+  replicate the new master's stream.
 
 Then:
 
@@ -493,7 +496,8 @@ that is replaced by a new pod with the same name counts too).
 `replication_lag_bytes` is the master's `master_repl_offset` minus each
 replica's `slave_repl_offset`, for the replicas of the current master; the
 two `INFO` replies are a few milliseconds apart, so it is floored at 0. A
-bootstrapping instance's pods lag behind the source's master.
+bootstrapping instance's pods lag behind the source's master, while they
+are on its stream.
 `server_info` comes from `INFO server` (`valkey_version`, `server_name` and
 `redis_version`) and shows pods running different servers or versions.
 The per-pod series exist only while the pod answers `INFO`, and disappear

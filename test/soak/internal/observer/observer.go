@@ -67,9 +67,12 @@ type Observer struct {
 	failoverCh chan string
 	// evaluated are the invariants of the last round.
 	evaluated []string
-	// external is why a window is held open from outside the instance.
-	external   string
-	sentinelUp bool
+	// external is why a window is held open from outside the instance;
+	// sourceMaster is the source's master a bootstrapping instance last
+	// saw.
+	external     string
+	sourceMaster string
+	sentinelUp   bool
 
 	ok         *prometheus.GaugeVec
 	violation  prometheus.ObserverVec
@@ -300,7 +303,7 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 		wg.Go(func() { o.sentinelInfo(ctx, p) })
 	}
 	if s.bootstrap != nil && o.source != nil {
-		wg.Go(func() { s.sourceOffset, s.sourceErr = o.source.masterOffset(ctx) })
+		wg.Go(func() { s.sourceReplID, s.sourceOffset, s.sourceErr = o.source.masterPosition(ctx) })
 	}
 	wg.Wait()
 	return s, rf.Generation, nil
@@ -400,11 +403,11 @@ func SentinelMaster(ctx context.Context, c *redis.Client) (map[string]string, er
 	return cmd.Result()
 }
 
-// masterOffset returns the master's replication offset.
-func (o *Observer) masterOffset(ctx context.Context) (int64, error) {
+// masterPosition returns the master's replication ID and offset.
+func (o *Observer) masterPosition(ctx context.Context) (string, int64, error) {
 	v := o.view.Load()
 	if v == nil || v.masterIP == "" {
-		return 0, errNoMaster
+		return "", 0, errNoMaster
 	}
 	c := o.client(v.masterIP, o.in.Port, o.auth)
 	defer func() { _ = c.Close() }()
@@ -412,9 +415,10 @@ func (o *Observer) masterOffset(ctx context.Context) (int64, error) {
 	defer cancel()
 	s, err := c.Info(ctx, "replication").Result()
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
-	return parseInfo(s).int("master_repl_offset"), nil
+	i := parseInfo(s)
+	return i["master_replid"], i.int("master_repl_offset"), nil
 }
 
 func (o *Observer) takeHold() {
@@ -484,14 +488,26 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 // externalWindow holds a window open while something outside the instance
 // is expected to disturb it: a mutation stopped the operator, or, for a
 // bootstrapping instance, the source is converging or without a master.
+// A bootstrapping instance's window also opens when the source's master
+// changes, as its pods only reach the new one after their link to the old
+// one broke, which may be after the source converged; it then closes once
+// they all replicate the new master's stream.
 func (o *Observer) externalWindow(now time.Time) {
 	reason := ""
 	switch {
 	case o.lock.OperatorDown():
 		reason = "operator stopped"
 	case o.source != nil:
-		if v := o.source.view.Load(); v == nil || v.windowOpen || v.masterIP == "" {
+		v := o.source.view.Load()
+		switch {
+		case v == nil || v.windowOpen || v.masterIP == "":
 			reason = "source converging"
+		case v.masterIP != o.sourceMaster:
+			if o.sourceMaster != "" {
+				o.tracker.openWindow(now)
+				o.log.Info("convergence window opened", "by", "source failover")
+			}
+			o.sourceMaster = v.masterIP
 		}
 	}
 	if reason != "" {
