@@ -43,6 +43,32 @@ mutation:
   # Stop starting mutations this long after startup, for runs of a fixed
   # length. 0s never stops.
   stopAfter: 0s
+  # Convergence timeouts of kinds that take longer than
+  # observer.convergenceTimeout, counted from applying the mutation: base
+  # (default observer.convergenceTimeout) plus perPod for every redis pod.
+  # These are the defaults.
+  timeouts:
+    image_upgrade: {perPod: 2m}
+    sentinel_image_upgrade: {perPod: 1m}
+    reset: {perPod: 1m}
+
+# The server versions in the rotation, by names that label the metrics,
+# each pinned to an exact patch tag. server and release, what INFO server
+# reports, default to the image's repository name and the tag up to its
+# first '-'.
+versions:
+  - {name: redis-7.2, image: "redis:7.2.16-alpine"}
+  - {name: valkey-7.2, image: "valkey/valkey:7.2.14-alpine"}
+  - {name: valkey-8, image: "valkey/valkey:8.1.10-alpine"}
+# The transition graph. expect is ok, fail or unknown; a change along an
+# edge that isn't ok is observed until it converges, for at most timeout
+# (default the kind's), or for a minute after a pod on the new version
+# couldn't load the data, and then judged. Downgrades are no edges: a
+# chain goes back by a reset.
+edges:
+  - {from: redis-7.2, to: valkey-7.2, expect: ok}
+  - {from: redis-7.2, to: valkey-8, expect: ok}
+  - {from: valkey-7.2, to: valkey-8, expect: ok}
 
 # Each instance is a RedisFailover the tester probes and observes.
 instances:
@@ -206,3 +232,28 @@ instances:
         redis_replicas: 1
         kill_replica: 1
       redisReplicas: {min: 1, max: 3}
+  # Made by the tester from a RedisFailover manifest next to this file,
+  # which it creates the instance from if it doesn't exist, and resets it
+  # from. Its namespace must exist.
+  - name: migrate
+    namespace: migrate
+    mode: sentinel
+    template: rf-migrate.yaml
+    # The part of the graph image_upgrade moves the instance through:
+    # starts (in turn per reset), the versions it may run, optionally only
+    # edges of some expectations, and sentinel: follow (the Sentinel image
+    # changes with the redis image), separate (sentinel_image_upgrade moves
+    # it towards the redis image's version) or empty (the template's).
+    # Without a chain, version and sentinelVersion set the images.
+    chain:
+      start: [redis-7.2]
+      versions: [redis-7.2, valkey-7.2, valkey-8]
+      sentinel: separate
+    mutations:
+      kinds:
+        # Follow an edge of the chain; at its end, reset.
+        image_upgrade: 2
+        sentinel_image_upgrade: 1
+        # Recreate the instance from its template on the chain's next
+        # start, its volumes and auth Secret too.
+        reset: 1

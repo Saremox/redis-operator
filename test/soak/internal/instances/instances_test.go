@@ -47,6 +47,29 @@ func TestLoadTemplate(t *testing.T) {
 	}
 }
 
+// Every template the shipped configs name loads.
+func TestShippedTemplates(t *testing.T) {
+	for _, path := range []string{"../../deploy/config.yaml", "../../e2e/config-versions.yaml"} {
+		cfg, err := config.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, in := range cfg.Instances {
+			if in.Template == "" {
+				continue
+			}
+			n++
+			if _, err := LoadTemplate(in.Template); err != nil {
+				t.Error(err)
+			}
+		}
+		if n == 0 {
+			t.Errorf("%s: no templates", path)
+		}
+	}
+}
+
 func TestBuild(t *testing.T) {
 	i, err := New(config.Instance{Name: "chain", Namespace: "ns", Template: "testdata/chain.yaml"}, nil, nil, slog.New(slog.DiscardHandler))
 	if err != nil {

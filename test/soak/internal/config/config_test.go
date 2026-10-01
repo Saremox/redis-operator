@@ -13,13 +13,14 @@ func TestLoadExample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Instances) != 5 || c.Instances[0].Name != "op-basic" || c.Instances[1].Mode != ModeSentinel || c.Instances[4].Bootstrap == nil {
+	if len(c.Instances) != 6 || c.Instances[0].Name != "op-basic" || c.Instances[1].Mode != ModeSentinel || c.Instances[4].Bootstrap == nil ||
+		c.Instances[5].Chain == nil || len(c.Versions) != 3 || len(c.Edges) != 3 {
 		t.Fatalf("unexpected instances: %+v", c.Instances)
 	}
 }
 
 func TestShippedConfigsParse(t *testing.T) {
-	for _, path := range []string{"../../deploy/config.yaml", "../../e2e/config.yaml"} {
+	for _, path := range []string{"../../deploy/config.yaml", "../../e2e/config.yaml", "../../e2e/config-versions.yaml"} {
 		b, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)

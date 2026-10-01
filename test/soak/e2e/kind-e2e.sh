@@ -15,53 +15,107 @@
 # the bootstrap's lag, the pods each kind recreated, the lost writes per
 # instance and event, and any findings.
 #
+# With E2E_PROFILE=versions it runs only the server version and fork
+# instances of e2e/config-versions.yaml instead, which the tester creates
+# from their templates, and asserts that every ok edge ends ok, that no
+# version change failed unsafely, and that the chains completed and reset;
+# it reports every edge with its mixed window, outages and losses, how the
+# unknown edges failed, the Valkey compatibility checks and the resets.
+#
 # Environment: CLUSTER, KIND_NODE, OPERATOR_VERSION (empty: build the
-# operator from this checkout), DURATION (seconds the mutator starts
-# mutations, default 2100).
+# operator from this checkout), E2E_PROFILE (full or versions), DURATION
+# (seconds the mutator starts mutations, default 2100, 3000 for versions).
 set -euo pipefail
 
 cluster=${CLUSTER:-soak}
 node=${KIND_NODE:-v1.35.0}
-duration=${DURATION:-2100}
+profile=${E2E_PROFILE:-full}
 soak=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$soak/../.." && pwd)
 skill=$repo/.claude/skills/kind-cluster
 export KUBECONFIG=/tmp/kind-$cluster/kubeconfig
 artifacts=$soak/bin/kind-e2e-artifacts
 
-instances=(op-basic sent-basic op-maxmem op-noevict op-full sent-full toggle bootstrap)
 operator_invariants="pods one_master master_service replication config healthy oom_killed"
 sentinel_invariants="pods one_master master_service replication sentinel_agreement config healthy oom_killed"
-# toggle's follow its mode at the end, see mode_of.
-declare -A paths=([op-basic]="rfrm" [sent-basic]="sentinel rfrm" [op-maxmem]="rfrm" [op-noevict]="rfrm"
-  [op-full]="rfrm" [sent-full]="sentinel rfrm" [bootstrap]="rfrs")
-declare -A invariants=(
-  [op-basic]=$operator_invariants [sent-basic]=$sentinel_invariants
-  [op-maxmem]=$operator_invariants [op-noevict]=$operator_invariants
-  [op-full]=$operator_invariants [sent-full]=$sentinel_invariants
-  [bootstrap]="pods one_master master_service config healthy oom_killed"
-)
-# The kinds e2e/config.yaml enables.
-declare -A kinds=(
-  [op-basic]="redis_replicas redis_resources kill_master kill_master_force kill_replica"
-  [sent-basic]="redis_replicas sentinel_replicas kill_master kill_master_force kill_replica kill_sentinel"
-  [op-maxmem]="redis_memory maxmemory_policy maxmemory_percent kill_replica"
-  [op-noevict]="redis_memory maxmemory_policy maxmemory_percent fill_burst"
-  [op-full]="password_rotate auth_remove auth_add password_rotate_offline kill_master kill_master_force redis_replicas"
-  [sent-full]="password_rotate kill_master kill_sentinel sentinel_replicas"
-  [toggle]="sentinel_toggle kill_master"
-  [bootstrap]="redis_replicas kill_replica"
-)
 clients="pooled retrying fresh follower"
-# Changes that must lose no write, and the instances with volumes, whose
-# graceful kills and scale-downs must lose none either.
-lossless_kinds="password_rotate auth_add auth_remove sentinel_toggle password_rotate_offline"
-pvc_instances="op-full"
-# e2e/config.yaml's observer.convergenceTimeout, plus the longest interval
-# and a data verification; scenario C pauses every mutator for up to
-# another convergence timeout.
-convergence=480
-interval=80
+# Every instance of both profiles, whose namespaces a run starts afresh.
+all_instances=(op-basic sent-basic op-maxmem op-noevict op-full sent-full toggle bootstrap
+  redis-chain redis-chain-sent migrate migrate-sent edge valkey-op valkey-sent mixed-sent)
+case $profile in
+full)
+  config=$soak/e2e/config.yaml
+  duration=${DURATION:-2100}
+  instances=(op-basic sent-basic op-maxmem op-noevict op-full sent-full toggle bootstrap)
+  # toggle's follow its mode at the end, see mode_of.
+  declare -A paths=([op-basic]="rfrm" [sent-basic]="sentinel rfrm" [op-maxmem]="rfrm" [op-noevict]="rfrm"
+    [op-full]="rfrm" [sent-full]="sentinel rfrm" [bootstrap]="rfrs")
+  declare -A invariants=(
+    [op-basic]=$operator_invariants [sent-basic]=$sentinel_invariants
+    [op-maxmem]=$operator_invariants [op-noevict]=$operator_invariants
+    [op-full]=$operator_invariants [sent-full]=$sentinel_invariants
+    [bootstrap]="pods one_master master_service config healthy oom_killed"
+  )
+  # The kinds e2e/config.yaml enables.
+  declare -A kinds=(
+    [op-basic]="redis_replicas redis_resources kill_master kill_master_force kill_replica"
+    [sent-basic]="redis_replicas sentinel_replicas kill_master kill_master_force kill_replica kill_sentinel"
+    [op-maxmem]="redis_memory maxmemory_policy maxmemory_percent kill_replica"
+    [op-noevict]="redis_memory maxmemory_policy maxmemory_percent fill_burst"
+    [op-full]="password_rotate auth_remove auth_add password_rotate_offline kill_master kill_master_force redis_replicas"
+    [sent-full]="password_rotate kill_master kill_sentinel sentinel_replicas"
+    [toggle]="sentinel_toggle kill_master"
+    [bootstrap]="redis_replicas kill_replica"
+  )
+  # Changes that must lose no write, and the instances with volumes, whose
+  # graceful kills and scale-downs must lose none either.
+  lossless_kinds="password_rotate auth_add auth_remove sentinel_toggle password_rotate_offline"
+  pvc_instances="op-full"
+  # e2e/config.yaml's observer.convergenceTimeout, plus the longest
+  # interval and a data verification; scenario C pauses every mutator for
+  # up to another convergence timeout.
+  convergence=480
+  interval=80
+  ;;
+versions)
+  config=$soak/e2e/config-versions.yaml
+  duration=${DURATION:-3000}
+  instances=(redis-chain redis-chain-sent migrate migrate-sent edge valkey-op valkey-sent mixed-sent)
+  declare -A paths=([redis-chain]="rfrm" [redis-chain-sent]="sentinel rfrm" [migrate]="rfrm" [migrate-sent]="sentinel rfrm"
+    [edge]="rfrm" [valkey-op]="rfrm" [valkey-sent]="sentinel rfrm" [mixed-sent]="sentinel rfrm")
+  declare -A invariants=(
+    [redis-chain]=$operator_invariants [redis-chain-sent]=$sentinel_invariants
+    [migrate]=$operator_invariants [migrate-sent]=$sentinel_invariants
+    [edge]=$operator_invariants [valkey-op]=$operator_invariants
+    [valkey-sent]=$sentinel_invariants [mixed-sent]=$sentinel_invariants
+  )
+  # The kinds e2e/config-versions.yaml enables, which must converge;
+  # image_upgrade resets at the end of a chain. edge's image changes don't
+  # converge and are judged by their edges instead.
+  declare -A kinds=(
+    [redis-chain]="image_upgrade reset redis_replicas redis_resources"
+    [redis-chain-sent]="image_upgrade reset"
+    [migrate]="image_upgrade reset"
+    [migrate-sent]="image_upgrade sentinel_image_upgrade reset"
+    [edge]="reset"
+    [valkey-op]="redis_replicas redis_resources redis_memory kill_master kill_master_force kill_replica"
+    [valkey-sent]="password_rotate kill_master kill_sentinel sentinel_replicas"
+    [mixed-sent]="kill_master kill_replica kill_sentinel"
+  )
+  # The chains, and the instances with volumes, whose rollovers along ok
+  # edges must lose no write.
+  chains="redis-chain redis-chain-sent migrate migrate-sent edge"
+  pvc_instances="redis-chain migrate migrate-sent"
+  # Its image_upgrade timeout for 2 pods and a reset, plus the longest
+  # interval and a data verification.
+  convergence=720
+  interval=80
+  ;;
+*)
+  echo "E2E_PROFILE must be full or versions" >&2
+  exit 1
+  ;;
+esac
 
 if ! kind get clusters 2>/dev/null | grep -qx "$cluster"; then
   "$skill/kind-up.sh" "$cluster" "$node"
@@ -79,10 +133,23 @@ else
 fi
 
 echo "--- instances"
-# An earlier run's mutations leave the instances changed: start afresh.
+# An earlier run's mutations leave the instances changed: start afresh,
+# and without the other profile's, which the node has no room for.
 kubectl -n redis-soak delete deployment soak --ignore-not-found --wait
-kubectl delete namespace "${instances[@]}" --ignore-not-found --wait
+kubectl delete namespace "${all_instances[@]}" --ignore-not-found --wait
+if [[ $profile == versions ]]; then
+  # The tester creates the instances from their templates; the node pulls
+  # every version's image from the local registry.
+  for img in $(grep -oE 'image: "[^"]+"' "$config" | cut -d'"' -f2 | sort -u); do
+    "$skill/registry.sh" push "$img"
+  done
+fi
+# The tester's RoleBindings need every namespace, the other profile's too.
+for ns in "${all_instances[@]}"; do
+  kubectl create namespace "$ns"
+done
 for rf in "${instances[@]}"; do
+  [[ $profile == versions ]] && break
   if [[ $rf == bootstrap ]]; then
     # It replicates from op-basic's master through its Service.
     until kubectl -n op-basic get service rfrm-op-basic >/dev/null 2>&1; do sleep 2; done
@@ -92,18 +159,24 @@ for rf in "${instances[@]}"; do
   fi
   kubectl apply -f "$soak/e2e/$rf.yaml"
 done
-for rf in "${instances[@]}"; do
-  until kubectl -n "$rf" get statefulset "rfr-$rf" >/dev/null 2>&1; do sleep 2; done
-  replicas=$(kubectl -n "$rf" get redisfailover "$rf" -o jsonpath='{.spec.redis.replicas}')
-  kubectl -n "$rf" wait --for=jsonpath='{.status.readyReplicas}'="$replicas" "statefulset/rfr-$rf" --timeout=300s
-done
-for rf in sent-basic sent-full; do
-  until kubectl -n "$rf" get deployment "rfs-$rf" >/dev/null 2>&1; do sleep 2; done
-  kubectl -n "$rf" wait --for=jsonpath='{.status.readyReplicas}'=3 "deployment/rfs-$rf" --timeout=300s
-done
-for rf in "${instances[@]}"; do
-  kubectl -n "$rf" wait --for=jsonpath='{.status.state}'=Healthy "redisfailover/$rf" --timeout=300s
-done
+# wait_instances waits until every instance runs and is Healthy.
+wait_instances() {
+  local rf replicas
+  for rf in "${instances[@]}"; do
+    until kubectl -n "$rf" get statefulset "rfr-$rf" >/dev/null 2>&1; do sleep 2; done
+    replicas=$(kubectl -n "$rf" get redisfailover "$rf" -o jsonpath='{.spec.redis.replicas}')
+    kubectl -n "$rf" wait --for=jsonpath='{.status.readyReplicas}'="$replicas" "statefulset/rfr-$rf" --timeout=300s
+  done
+  for rf in "${instances[@]}"; do
+    [[ ${paths[$rf]} == *sentinel* ]] || continue
+    until kubectl -n "$rf" get deployment "rfs-$rf" >/dev/null 2>&1; do sleep 2; done
+    kubectl -n "$rf" wait --for=jsonpath='{.status.readyReplicas}'=3 "deployment/rfs-$rf" --timeout=300s
+  done
+  for rf in "${instances[@]}"; do
+    kubectl -n "$rf" wait --for=jsonpath='{.status.state}'=Healthy "redisfailover/$rf" --timeout=300s
+  done
+}
+[[ $profile == full ]] && wait_instances
 
 echo "--- tester"
 # The image reuses the Dockerfile's final stage with the binary `make build`
@@ -121,8 +194,15 @@ docker build -q -f "$soak/Dockerfile" --build-context build="$ctx" -t "redis-ope
 
 # kustomize only accepts a relative base, and files below the overlay.
 overlay=$soak/bin/kind-e2e
+rm -rf "$overlay"
 mkdir -p "$overlay"
-sed "s/^  stopAfter: .*/  stopAfter: ${duration}s/" "$soak/e2e/config.yaml" >"$overlay/config.yaml"
+sed "s/^  stopAfter: .*/  stopAfter: ${duration}s/" "$config" >"$overlay/config.yaml"
+templates=()
+for t in "$(dirname "$config")"/rf-*.yaml; do
+  [[ $profile == versions ]] || break
+  cp "$t" "$overlay/"
+  templates+=("$(basename "$t")")
+done
 cat >"$overlay/kustomization.yaml" <<YAML
 resources:
   - ../../deploy
@@ -136,10 +216,12 @@ configMapGenerator:
     behavior: replace
     files:
       - config.yaml
+$(printf '      - %s\n' "${templates[@]}")
 YAML
 kubectl apply -k "$overlay"
 kubectl -n redis-soak rollout status deployment/soak --timeout=180s
 started=$(date +%s)
+[[ $profile == versions ]] && wait_instances
 
 scrape() {
   metrics=$(kubectl get --raw /api/v1/namespaces/redis-soak/services/soak:metrics/proxy/metrics)
@@ -225,7 +307,9 @@ done
 echo "$metrics" >"$artifacts/metrics.txt"
 
 # toggle's paths and invariants follow the mode it ended in.
-if [[ $(kubectl -n toggle get redisfailover toggle -o jsonpath='{.spec.sentinel.enabled}') == true ]]; then
+if [[ $profile != full ]]; then
+  :
+elif [[ $(kubectl -n toggle get redisfailover toggle -o jsonpath='{.spec.sentinel.enabled}') == true ]]; then
   paths[toggle]="sentinel rfrm"
   invariants[toggle]=$sentinel_invariants
 else
@@ -420,6 +504,89 @@ jq -rs '[.[] | select(.invariant == "config" and .msg == "invariant violated")] 
   | [.[0].rf, length, (map(select(.finding)) | length)] | @tsv' "$artifacts/soak.jsonl" | table rf violations findings
 grep -oE 'maxmemory (kept at|lowered to) [^"]*' "$artifacts/operator.log" | sort | uniq -c | sort -rn | head -20 || true
 
+if [[ $profile == versions ]]; then
+  echo "--- version transitions (seconds; outages and their longest per path, of any client style)"
+  # Each version change with its mixed window (until the reset deleted the
+  # instance for one that didn't converge), its losses and the outages that
+  # started while it ran.
+  jq -rs '
+    def ts: capture("^(?<s>[^.Z]+)(?<f>\\.[0-9]+)?") | ((.s + "Z") | fromdateiso8601) + ((.f // "0") | tonumber);
+    (map(select(.msg == "mutating"))) as $starts
+    | (map(select(.msg == "mutation done"))) as $dones
+    | (map(select(.msg == "mixed versions"))) as $mixed
+    | (map(select(.msg == "outage ended") | . + {s: ((.time | ts) - .duration_seconds)})) as $oe
+    | .[] | select(.msg == "version transition") | . as $v
+    | ([$starts[] | select(.rf == $v.rf and .step == $v.step)] | first) as $m
+    | ([$dones[] | select(.rf == $v.rf and .step == $v.step)] | first) as $d
+    | ($m.time | ts) as $from | ($v.time | ts) as $to
+    | ([$mixed[] | select(.rf == $v.rf and .from == $v.from and .to == $v.to and (.time | ts) >= $from)] | first) as $mx
+    | [$oe[] | select(.rf == $v.rf and .s >= $from and .s <= $to)] as $outs
+    | [$v.rf, $v.step, $v.kind, "\($v.from) -> \($v.to)", $v.expect, $v.result, ($d.duration_seconds | round),
+       (if $mx == null then "-" else ($mx.duration_seconds | round) end), $v.lost, ($outs | length),
+       ($outs | group_by(.path) | map("\(.[0].path)=\(map(.duration_seconds) | max | . * 10 | round / 10)") | join(" ") | if . == "" then "-" else . end)]
+    | @tsv' "$artifacts/soak.jsonl" | table rf step kind edge expect result seconds mixed lost outages longest >"$artifacts/transitions.txt"
+  cat "$artifacts/transitions.txt"
+  grep -E '^redis_soak_(version_transition_total|version_mixed_seconds_(sum|count))' <<<"$metrics" | sed 's/^redis_soak_//'
+
+  echo "--- version changes that didn't converge: what they left behind"
+  jq -c 'select(.msg == "version transition" and .result != "ok")
+    | {rf, step, edge: "\(.from) -> \(.to)", expect, result, lost, master, master_version, master_writable, reasons, pods}' \
+    "$artifacts/soak.jsonl"
+
+  echo "--- resets (seconds)"
+  jq -r 'select(.msg == "mutation done" and .kind == "reset")
+    | [.rf, .step, .result, (.duration_seconds | round), .params] | @tsv' "$artifacts/soak.jsonl" |
+    table rf step result seconds params
+  jq -r 'select(.msg == "reset phase done") | [.rf, .time, .phase, (.duration_seconds | round)] | @tsv' "$artifacts/soak.jsonl" |
+    table rf time phase seconds
+
+  echo "--- Valkey compatibility"
+  # The operator execs redis-server and redis-cli by name in the pod
+  # commands, probes and scripts; the Valkey images ship them as links.
+  for rf in "${instances[@]}"; do
+    kubectl -n "$rf" get pods -l app.kubernetes.io/part-of=redis-failover \
+      -o jsonpath='{range .items[*]}{.metadata.name} {.metadata.labels.app\.kubernetes\.io/component} {.spec.containers[0].image}{"\n"}{end}' |
+      while read -r pod component image; do
+        [[ $image == *valkey* ]] || continue
+        container=redis
+        [[ $component == sentinel ]] && container=sentinel
+        printf '%s/%s %s: ' "$rf" "$pod" "$image"
+        kubectl -n "$rf" exec "$pod" -c "$container" -- sh -c \
+          'printf "redis-server -> %s, redis-cli -> %s, pid 1: %s\n" "$(readlink -f "$(command -v redis-server)")" "$(readlink -f "$(command -v redis-cli)")" "$(tr "\0" " " </proc/1/cmdline)"' 2>&1 |
+          sed -E 's/--requirepass [^ ]+|--masterauth [^ ]+/<auth>/g'
+      done
+  done
+  grep -E '^redis_soak_server_info' <<<"$metrics" | sed 's/^redis_soak_//'
+  echo "probe results other than ok on Valkey instances:"
+  grep -E '^redis_soak_probe_total\{[^}]*rf="(valkey-op|valkey-sent|mixed-sent)"' <<<"$metrics" | grep -v 'result="ok"' | sed 's/^redis_soak_//' || echo "  none"
+  echo "probe and container events on Valkey instances:"
+  for rf in valkey-op valkey-sent mixed-sent; do
+    grep -E 'Unhealthy|BackOff|Failed' "$artifacts/events-$rf.txt" | sed "s/^/  $rf: /" | tail -10 || true
+  done
+  grep -iE 'level=error.*(valkey-op|valkey-sent|mixed-sent)|(valkey-op|valkey-sent|mixed-sent).*level=error' "$artifacts/operator.log" | tail -10 || true
+
+  echo "--- known operator issues seen"
+  # In operator mode, a graceful master rollover can promote the restarted
+  # old master (the same pod name, a new UID) instead of a Ready replica:
+  # GetBestReplicaForPromotion falls back to the highest offset without
+  # checking readiness.
+  jq -rs '
+    def ts: capture("^(?<s>[^.Z]+)(?<f>\\.[0-9]+)?") | ((.s + "Z") | fromdateiso8601) + ((.f // "0") | tonumber);
+    (map(select(.msg == "mutating"))) as $starts
+    | .[] | select(.msg == "failover" and .from == .to) | . as $f | ($f.time | ts) as $t
+    | ([$starts[] | select(.rf == $f.rf and (.time | ts) <= $t)] | last) as $m
+    | "old master promoted: \($f.rf) \($f.from) at \($f.time), during step \($m.step // "-") \($m.kind // "-") \($m.params // "")"' \
+    "$artifacts/soak.jsonl"
+  grep -E 'Selected replica .* for promotion' "$artifacts/operator.log" | tail -10 || true
+  # A scale-down that removes the master can promote a replica too early:
+  # checker.go's case 1 of checkAndHealOperatorManagedMode skips
+  # masterPodStopping.
+  jq -rs '
+    (map(select(.msg == "mutation done")) | map({key: "\(.rf)/\(.step)", value: .}) | from_entries) as $m
+    | .[] | select(.msg == "data verified" and .failover and .event == "redis_replicas") | . as $v | ($m["\(.rf)/\(.step)"] // {}) as $d
+    | "scale-down removed the master: \(.rf) step \(.step) \($d.params // "") lost \(.lost)"' "$artifacts/soak.jsonl"
+fi
+
 # verified_after_mutations prints the mutations the data wasn't verified
 # after, as their kind or as a reset.
 verified_after_mutations() {
@@ -490,15 +657,34 @@ for rf in "${instances[@]}"; do
   check "server_info{rf=$rf} has $n series, want $replicas" eq "$n" "$replicas"
 done
 check "build_info" grep -q '^redis_soak_build_info{operator_version=' <<<"$metrics"
-check "oom_rejections_total{rf=op-noevict} = 0" gt "$(value redis_soak_oom_rejections_total 'rf="op-noevict"')" 0
-check "the bootstrap was never verified" gt "$(series redis_soak_ledger_verified_total 'rf="bootstrap"' | awk '{ s += $1 } END { print s + 0 }')" 0
-n=$(series redis_soak_lost_writes_total 'rf="bootstrap"' | awk '{ s += $1 } END { print s + 0 }')
-check "op-basic's writes missing on the bootstrap: $n" eq "$n" 0
-lossy=$(lossy_events | xargs)
-check "writes lost by lossless events: $lossy" eq "$lossy" ""
-race=$(race_losses | xargs)
-[[ -z $race ]] || echo "KNOWN RACE (excluded): a scale-down removed the master and lost writes: $race"
-check "evicted_keys_total{rf=op-maxmem} = 0" gt "$(value redis_soak_evicted_keys_total 'rf="op-maxmem"')" 0
+if [[ $profile == full ]]; then
+  check "oom_rejections_total{rf=op-noevict} = 0" gt "$(value redis_soak_oom_rejections_total 'rf="op-noevict"')" 0
+  check "the bootstrap was never verified" gt "$(series redis_soak_ledger_verified_total 'rf="bootstrap"' | awk '{ s += $1 } END { print s + 0 }')" 0
+  n=$(series redis_soak_lost_writes_total 'rf="bootstrap"' | awk '{ s += $1 } END { print s + 0 }')
+  check "op-basic's writes missing on the bootstrap: $n" eq "$n" 0
+  lossy=$(lossy_events | xargs)
+  check "writes lost by lossless events: $lossy" eq "$lossy" ""
+  race=$(race_losses | xargs)
+  [[ -z $race ]] || echo "KNOWN RACE (excluded): a scale-down removed the master and lost writes: $race"
+  check "evicted_keys_total{rf=op-maxmem} = 0" gt "$(value redis_soak_evicted_keys_total 'rf="op-maxmem"')" 0
+else
+  # Every edge was taken; every ok edge ended ok; none failed unsafely.
+  while read -r from to expect; do
+    l=("from=\"$from\"" "to=\"$to\"")
+    n=$(series redis_soak_version_transition_total "${l[@]}" | awk '{ s += $1 } END { print s + 0 }')
+    check "edge $from -> $to was never taken" gt "$n" 0
+    [[ $expect == ok ]] || continue
+    n=$(series redis_soak_version_transition_total "${l[@]}" | wc -l)
+    m=$(series redis_soak_version_transition_total "${l[@]}" 'result="ok"' | wc -l)
+    check "ok edge $from -> $to ended other than ok" eq "$n" "$m"
+  done < <(yq -r '.edges[] | [.from, .to, .expect] | join(" ")' "$config")
+  n=$(series redis_soak_version_transition_total 'result="failed_unsafe"' | awk '{ s += $1 } END { print s + 0 }')
+  check "version changes failed unsafely: $n" eq "$n" 0
+  # Rollovers along ok edges on volumes are graceful and must lose nothing.
+  lossy=$(jq -r --arg pvc "$pvc_instances" 'select(.msg == "version transition" and .expect == "ok" and .lost > 0) | . as $v
+    | select($pvc | split(" ") | index($v.rf)) | "\(.rf)/\(.step)/\(.from)->\(.to)=\(.lost)"' "$artifacts/soak.jsonl" | xargs)
+  check "writes lost along ok edges on volumes: $lossy" eq "$lossy" ""
+fi
 unverified=$(verified_after_mutations | xargs)
 check "data not verified after mutations: $unverified" eq "$unverified" ""
 unverified=$(verified_after_failovers | xargs)
@@ -513,5 +699,9 @@ if [[ $fail != 0 ]]; then
   done
   kubectl -n redis-operator get events --sort-by=.lastTimestamp | tail -20 || true
   exit 1
+fi
+if [[ $profile == versions ]]; then
+  echo "PASS: every edge was taken, every ok edge ended ok, none failed unsafely, every chain reset and every kind converged, without findings, every probe succeeds, and no rollover along an ok edge on volumes lost writes"
+  exit 0
 fi
 echo "PASS: every kind converged on every instance, without findings, every probe succeeds, the data was verified after every mutation and failover, and no lossless event lost writes"

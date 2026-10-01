@@ -1,0 +1,28 @@
+# The redis-chain instance's RedisFailover; the tester sets its name, namespace
+# and images, and creates or resets it from this template.
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: redis-chain
+spec:
+  sentinel:
+    enabled: false
+  auth:
+    secretPath: redis-chain-auth
+  redis:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 192Mi
+    storage:
+      persistentVolumeClaim:
+        metadata:
+          name: redis-data
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 128Mi

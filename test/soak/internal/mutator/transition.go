@@ -29,7 +29,7 @@ func (m *Mutator) judge(ctx context.Context, t *transition, converged bool, lost
 		if o.writable != nil {
 			writable = prober.Classify(o.writable)
 		}
-		log = log.With("master", o.master, "master_version", o.masterOn, "master_writable", writable, "reasons", reasons, "pods", o.pods)
+		log = log.With("master", o.master, "master_version", o.masterOn, "master_writable", writable, "pods", o.pods)
 	}
 	switch result {
 	case transitionOK:
@@ -38,7 +38,7 @@ func (m *Mutator) judge(ctx context.Context, t *transition, converged bool, lost
 		log.Warn("version transition")
 	default:
 		m.findings.WithLabelValues(invVersionTransition).Inc()
-		log.Warn("version transition", "finding", true)
+		log.Warn("version transition", "finding", true, "reasons", reasons)
 	}
 	return result
 }

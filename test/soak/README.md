@@ -220,6 +220,9 @@ instance one mutation at a time:
 | `auth_add` | (Without auth) Creates or updates the Secret `authSecret` (default `<name>-auth`) with a new random password, then merge-patches `spec.auth.secretPath` to it. | As for `password_rotate`. |
 | `auth_remove` | (With auth) Merge-patches `spec.auth.secretPath` away. | As for `password_rotate`, with every pod needing no password. |
 | `password_rotate_offline` | (With auth; scenario C) Scales the operator to 0 and waits until its pod is gone, rotates the password, scales the operator to 1, expects `NotHealthy` with `unable to apply the configured password`, puts the previous password back, expects `Healthy` with every pod on it, and rotates again. Each expectation waits up to `observer.convergenceTimeout`. | As for `password_rotate`, for the last password. |
+| `image_upgrade` | (Chain instances) Merge-patches `spec.redis.image`, and `spec.sentinel.image` where the chain's Sentinels follow, along one of the chain's edges from the current version, picked by the step's random source. At the end of the chain it is a `sentinel_image_upgrade` instead while separate Sentinels lag behind, and then a `reset`. | Every redis pod (and changed Sentinel pod) runs the new image and reports its server and version in `INFO server`; the StatefulSet (and Deployment) is converged; the RedisFailover is `Healthy`. See Versions for edges that may fail. |
+| `sentinel_image_upgrade` | (Chains with `sentinel: separate`) Merge-patches `spec.sentinel.image` along an edge from the Sentinels' version that leads to the redis image's version; once they run it, an `image_upgrade` instead. | As for `image_upgrade`, for the Sentinel pods. |
+| `reset` | (Instances with a template) Deletes the RedisFailover, waits until it, its StatefulSet, Sentinel Deployment and pods are gone, deletes its PersistentVolumeClaims and the auth Secret its template names, and creates both again, the Secret with a new password, on the chain's next start version. | The RedisFailover has a new UID, every pod runs the start version as for `image_upgrade`, it is `Healthy`, and the filler reached its target again. |
 | `sentinel_toggle` | Merge-patches `spec.sentinel.enabled` to the other value. | Switched on: the Sentinel Deployment is converged as for `sentinel_replicas`, and the `rfs-<name>` Service and ConfigMap exist. Switched off: the Deployment, Service, ConfigMap and every Sentinel pod are gone. Either way all redis pods are Ready and the RedisFailover is `Healthy`. |
 
 `redis_memory`, `maxmemory_policy`, `maxmemory_percent` and `fill_burst`
@@ -275,12 +278,79 @@ Each mutation is logged as `mutating` and then `mutation done` (or
 `result` is one of:
 
 - `converged`: the window closed.
-- `timeout`: the window timed out after `observer.convergenceTimeout`.
+- `timeout`: the window timed out: `observer.convergenceTimeout`, or the
+  kind's `mutation.timeouts`, after the mutation was applied; for a
+  version change along an edge that may fail, the edge's `timeout`, or
+  when it got stuck (see Versions). Its `version transition` judges it.
 - `rejected`: the API refused the patch, the delete or the Secret change.
   Its window closes once the invariants hold.
 - `skipped`: the mutation couldn't be applied, e.g. a replica kill on an
   instance with one redis pod, or a resource change that would alter
   the QoS class. Nothing was changed and no window was opened.
+
+### Instances from templates
+
+An instance with a `template` is owned by the tester: the template is a
+RedisFailover manifest next to the config file (in the same ConfigMap),
+and the tester creates the instance from it at startup if it doesn't
+exist, with its auth Secret and a random password if the template names
+one and it is missing. `version` and `sentinelVersion` set its redis and
+Sentinel images by version name; a chain instance starts on its first
+start version. A `reset` recreates it from scratch; the namespace must
+exist.
+
+### Versions
+
+`versions` names every server version in the rotation, pinned to an
+exact patch tag (`redis:7.2.16-alpine`, `valkey/valkey:9.1.2-alpine`);
+labels carry these names, never tags. `edges` is the transition graph:
+`from`, `to` and `expect` (`ok`, `fail` or `unknown`). Downgrades aren't
+edges: a newer RDB can't be loaded by an older server, so a chain goes
+back to its start by a `reset`. Config validation rejects unknown
+versions, floating tags, self-edges, downgrades within a server and
+duplicates.
+
+An instance's `chain` is the part of the graph it moves through: its
+`start` versions (taken in turn, one per reset), the `versions` it may
+run, the `expect`ations of the edges it takes (all by default), and
+`sentinel`: `follow` changes the Sentinel image with the data image,
+`separate` leaves it to `sentinel_image_upgrade`, which follows the
+data image, and empty keeps the template's. Every start must have an
+edge to take and every version must be reachable from a start.
+
+A version change along an `ok` edge converges as in Mutations, within
+the kind's timeout. One along an `unknown` or `fail` edge is observed
+until it converges, for at most the edge's `timeout` (the kind's by
+default), or for another minute once a pod on the new version logged
+that it couldn't load the data (`rollout stuck`), and judged then,
+while its window stays held; if it didn't converge, the instance is reset at
+once, and the reset takes the window over, so the stuck pods aren't
+findings. Every change is judged:
+
+- `ok`: it converged.
+- `failed_safe`: it didn't, but the single master still runs the old
+  version and takes a write (to its pod), its log has no line saying it
+  couldn't load the data, the data was verified and lost no acknowledged
+  write: the rollout stopped instead of wiping data.
+- `failed_unsafe`: anything else. It is a finding of
+  `version_transition`.
+
+The judgement is logged as `version transition` with `from`, `to`,
+`expect`, `result` and `lost`, and for a change that didn't converge
+the master, its version and writability (`master_writable`, a probe
+result), the `reasons` and, for every pod of the changed image, its
+version, readiness, restarts, waiting reason, replication link and the
+log line about loading the data (e.g. `Can't handle RDB format version
+12`), from its current or previous container.
+
+The mixed window runs from the first pod that runs the new image and
+reports the new version in `INFO server`, until no pod runs the old
+image, or until a reset deleted the instance; it is sampled every
+`observer.interval` and logged as `mixed versions`. Outages and lost
+writes during a change are those of the mutation: the outages that
+started between its `mutating` and its `version transition`, and
+`lost_writes_total{event="image_upgrade"}` (or
+`sentinel_image_upgrade`, and `reset` for the reset after it).
 
 ### Findings
 
@@ -290,16 +360,21 @@ A violation is expected while the instance converges after a change, and a
 - **A mutation** opens a window before it is applied. The window stays open
   until the mutation's own convergence signal holds (see Mutations), every
   invariant holds (`healthy` included) and `mutation.minDwell` (default
-  15s) has passed, or until `observer.convergenceTimeout` (default 10m).
-  The dwell keeps a change the operator hasn't picked up yet from being
-  taken as converged.
-- **A change of the RedisFailover's `metadata.generation`** that the
-  tester didn't make, e.g. a spec change by hand, opens a window that
-  closes as soon as every invariant holds, or after the convergence
-  timeout. The operator itself bumps the generation at times, too.
+  15s) has passed since the mutation was applied, or until its timeout
+  after it was applied: `observer.convergenceTimeout` (default 10m), or
+  the kind's `mutation.timeouts` entry, `base` plus `perPod` for every
+  redis pod. The dwell keeps a change the operator hasn't picked up yet
+  from being taken as converged. A change of `metadata.generation` inside
+  the window neither extends nor restarts it: the CRD has no status
+  subresource, so every operator status update bumps the generation.
+- **A change of the RedisFailover's `metadata.generation`** outside a
+  mutation's window, e.g. a spec change by hand or an operator status
+  update, opens a window that closes as soon as every invariant holds,
+  or after the convergence timeout; a later change restarts it.
 - **Something outside the instance** holds a window open, restarted on
-  every check, for as long as it lasts: `password_rotate_offline` stopped
-  the operator (every instance), or a bootstrapping instance's source is
+  every check (a mutation's window: its timeout), for as long as it
+  lasts: `password_rotate_offline` stopped the operator (every
+  instance), or a bootstrapping instance's source is
   in a window or has no single master, as its replication link breaks
   when the source fails over. The window then closes once every invariant
   holds. A bootstrapping instance's window also opens when the source's
@@ -343,6 +418,7 @@ that timed out also logs why the mutation hadn't converged.
 make build test lint      # binary in bin/soak
 make image                # ghcr.io/saremox/redis-operator-soak:<git describe>
 make kind-e2e             # kind cluster, operator, instances, mutating tester, assertions
+make kind-e2e E2E_PROFILE=versions   # the server version and fork instances only
 ```
 
 `kind-e2e` reuses `.claude/skills/kind-cluster/`, installs the operator from
@@ -414,11 +490,52 @@ bootstrap's lag samples and the last scrape are kept in
 `bin/kind-e2e-artifacts/`. Set `OPERATOR_VERSION=4.2.0-rc1` to install a
 released chart and image instead.
 
+### The versions profile
+
+`E2E_PROFILE=versions` runs only the version and fork instances of
+[`e2e/config-versions.yaml`](e2e/config-versions.yaml), which the node
+can hold at once next to nothing else (4 CPUs, 16GiB): the other
+profile's namespaces are deleted first. The tester creates them from
+the `rf-*.yaml` templates next to the config, each with 2 redis pods,
+8Mi of data and a ledger at 10 writes/s, and the script pushes every
+version's image into the local registry first, since the node can't
+pull and the operator pulls `Always`.
+
+| Instance | Mode | Storage, auth | Versions | Mutations |
+|---|---|---|---|---|
+| `redis-chain` | operator | PVC, auth | Redis 7.2 -> 7.4 -> 8, reset | `image_upgrade`, `redis_replicas` (1-2), `redis_resources` (cpu) |
+| `redis-chain-sent` | Sentinel | emptyDir, auth | the same, Sentinels follow | `image_upgrade` |
+| `migrate` | operator | PVC, auth | Redis 7.2 -> Valkey 7.2, 8 or 9 -> ... -> Valkey 9, reset | `image_upgrade` |
+| `migrate-sent` | Sentinel | PVC, auth | the same; data first, then the Sentinels | `image_upgrade`, `sentinel_image_upgrade` |
+| `edge` | operator | emptyDir | Redis 7.4 or 8 in turn, the unknown edges into Valkey, reset | `image_upgrade` |
+| `valkey-op` | operator | PVC, auth; exporter, `allkeys-lfu` 50% filled | Valkey 9 | `redis_replicas`, `redis_resources` (cpu), `redis_memory`, `kill_master`, `kill_master_force`, `kill_replica` |
+| `valkey-sent` | Sentinel | emptyDir, auth | Valkey 8 data and Sentinels | `password_rotate`, `kill_master`, `kill_sentinel`, `sentinel_replicas` |
+| `mixed-sent` | Sentinel | emptyDir | Redis 7.2 data, Valkey 9 Sentinels | `kill_master`, `kill_replica`, `kill_sentinel` |
+
+`image_upgrade` takes 3m plus 90s per redis pod, a reset 3m plus 1m per
+pod; a change along an unknown edge is judged a minute after the first
+replaced pod couldn't load the data. Seed 9 takes every edge of the graph
+within `edge`'s first 14 steps, and every chain completes and resets
+early. The script asserts that every edge was taken, every ok edge
+ended `ok`, none failed unsafely, every chain reset, every other kind
+converged without timeouts, there were no findings, every invariant
+holds and every probe path and client style works, and that no rollover
+along an ok edge lost writes on the instances with volumes. It reports
+every edge with its convergence time, mixed window, losses and outages
+(`transitions.txt` in the artifacts), what the changes that didn't
+converge left behind, the resets with their delete phase, the Valkey
+pods' `redis-server`/`redis-cli` links and pid 1, `server_info`, the
+probe results other than `ok` and the probe events on the Valkey
+instances, and the known operator issues it saw.
+
 ### Pointing it at an RC
 
 1. Install the RC:
    `helm install redis-operator oci://ghcr.io/saremox/redis-operator/charts/redis-operator --version <tag> -n redis-operator --create-namespace`.
-2. Create the instances listed in the config.
+2. Create the namespaces of every instance in the config, and the
+   instances without a `template`; the tester creates the others from
+   their templates, which `deploy/kustomization.yaml` puts into the
+   config's ConfigMap.
 3. Set the tester image to the same tag and apply the manifests:
 
    ```sh
@@ -431,10 +548,11 @@ its Deployment, matching `operator` in `deploy/config.yaml`. A ClusterRole
 lets the observer read pods, EndpointSlices and RedisFailovers in the
 instances' namespaces.
 
-The mutator's rights (patch RedisFailovers, delete pods, read StatefulSets,
-Deployments, Services and ConfigMaps, and read, watch, create and update
-Secrets, which every client's password comes from) are granted only in
-the instances' namespaces: the `redis-soak-mutator` ClusterRole holds the
+The mutator's rights (patch, create and delete RedisFailovers, delete
+pods and read their logs, list and delete PersistentVolumeClaims, read
+StatefulSets, Deployments, Services and ConfigMaps, and read, watch,
+create, update and delete Secrets, which every client's password comes
+from) are granted only in the instances' namespaces: the `redis-soak-mutator` ClusterRole holds the
 rules once, and `deploy/rbac-instances.yaml` binds it with a RoleBinding
 in every instance namespace. Keep that file in step with the instances in
 `config.yaml`, and create the namespaces before applying the manifests.
@@ -462,7 +580,7 @@ configured one, so an instance's series stay the same when
 | `redis_soak_outage_duration_seconds` | histogram | `path`, `client` |
 | `redis_soak_invariant_ok` | gauge (0/1) | `invariant` |
 | `redis_soak_invariant_violation_seconds` | histogram | `invariant` |
-| `redis_soak_findings_total` | counter | `invariant` |
+| `redis_soak_findings_total` | counter | `invariant` (also `oom_killed` and `version_transition`) |
 | `redis_soak_masters` | gauge | |
 | `redis_soak_failovers_total` | counter | |
 | `redis_soak_replication_lag_bytes` | gauge | `pod` |
@@ -480,6 +598,8 @@ configured one, so an instance's series stay the same when
 | `redis_soak_evicted_keys_total` | counter | |
 | `redis_soak_lost_writes_total` | counter | `event` (a mutation kind, `failover`, `reset` or `periodic`) |
 | `redis_soak_ledger_verified_total` | counter | `event` |
+| `redis_soak_version_transition_total` | counter | `from`, `to` (version names), `expect`, `result` (`ok`/`failed_safe`/`failed_unsafe`) |
+| `redis_soak_version_mixed_seconds` | histogram | `from`, `to` |
 
 `result` is one of `ok`, `timeout`, `refused`, `readonly`, `loading`, `auth`,
 `oom`, `masterdown`, `noreplicas`, `dns`, `closed` and `other`. Server errors
