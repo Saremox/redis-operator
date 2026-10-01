@@ -118,7 +118,8 @@ func TestFindingIsCountedOnce(t *testing.T) {
 func TestHeldWindow(t *testing.T) {
 	tr := newTracker(time.Minute, 15*time.Second)
 	expect(t, tr.update(at(0), checksFor(), false))
-	tr.hold(at(1))
+	tr.hold(at(1), time.Minute)
+	tr.apply(at(1))
 	// Converged before the operator picked the change up.
 	expect(t, tr.update(at(5), checksFor(), true))
 	expect(t, tr.update(at(10), checksFor(invPods), false),
@@ -141,7 +142,8 @@ func TestHeldWindow(t *testing.T) {
 
 func TestHeldWindowDwell(t *testing.T) {
 	tr := newTracker(time.Minute, 15*time.Second)
-	tr.hold(at(0))
+	tr.hold(at(0), time.Minute)
+	tr.apply(at(0))
 	expect(t, tr.update(at(5), checksFor(), true))
 	expect(t, tr.update(at(10), checksFor(), true))
 	expect(t, tr.update(at(15), checksFor(), true),
@@ -150,7 +152,8 @@ func TestHeldWindowDwell(t *testing.T) {
 
 func TestHeldWindowTimeout(t *testing.T) {
 	tr := newTracker(time.Minute, 15*time.Second)
-	tr.hold(at(0))
+	tr.hold(at(0), time.Minute)
+	tr.apply(at(0))
 	expect(t, tr.update(at(5), checksFor(invPods), false),
 		event{kind: evViolated, invariant: invPods})
 	expect(t, tr.update(at(30), checksFor(), false),
@@ -163,12 +166,63 @@ func TestHeldWindowTimeout(t *testing.T) {
 	}
 }
 
-// A generation change while held restarts the timeout but keeps the hold.
+// A held window times out its own timeout after the mutation was applied,
+// however long applying it took, not after the window opened.
+func TestHeldTimeoutCountsFromApplied(t *testing.T) {
+	tr := newTracker(time.Minute, 15*time.Second)
+	tr.hold(at(0), 3*time.Minute)
+	expect(t, tr.update(at(5), checksFor(invPods), false),
+		event{kind: evViolated, invariant: invPods})
+	// Still being applied: no timeout yet.
+	expect(t, tr.update(at(600), checksFor(invPods), false))
+	tr.apply(at(600))
+	expect(t, tr.update(at(779), checksFor(invPods), false))
+	expect(t, tr.update(at(780), checksFor(invPods), false),
+		event{kind: evWindowTimedOut, duration: 780 * time.Second},
+		event{kind: evFinding, invariant: invPods, duration: 775 * time.Second, finding: true})
+}
+
+// A generation change inside a held window, like the operator's every
+// status update, neither extends nor restarts it.
 func TestGenerationWhileHeld(t *testing.T) {
 	tr := newTracker(time.Minute, 15*time.Second)
-	tr.hold(at(0))
+	tr.hold(at(0), 2*time.Minute)
+	tr.apply(at(0))
+	for s := 10; s < 120; s += 10 {
+		tr.openWindow(at(s))
+		expect(t, tr.update(at(s), checksFor(invPods), false), func() []event {
+			if s == 10 {
+				return []event{{kind: evViolated, invariant: invPods}}
+			}
+			return nil
+		}()...)
+	}
+	expect(t, tr.update(at(120), checksFor(invPods), false),
+		event{kind: evWindowTimedOut, duration: 2 * time.Minute},
+		event{kind: evFinding, invariant: invPods, duration: 110 * time.Second, finding: true})
+}
+
+// Outside a hold, a generation change opens a window, and a later one
+// restarts it, as before.
+func TestGenerationOutsideHold(t *testing.T) {
+	tr := newTracker(time.Minute, 15*time.Second)
+	tr.openWindow(at(0))
+	expect(t, tr.update(at(0), checksFor(invPods), false),
+		event{kind: evViolated, invariant: invPods})
 	tr.openWindow(at(40))
-	expect(t, tr.update(at(70), checksFor(), false))
-	expect(t, tr.update(at(75), checksFor(), true),
-		event{kind: evWindowClosed, duration: 35 * time.Second})
+	expect(t, tr.update(at(90), checksFor(invPods), false))
+	expect(t, tr.update(at(100), checksFor(invPods), false),
+		event{kind: evWindowTimedOut, duration: time.Minute},
+		event{kind: evFinding, invariant: invPods, duration: 100 * time.Second, finding: true})
+}
+
+// Something outside the instance restarts a held window's timeout.
+func TestExtendWhileHeld(t *testing.T) {
+	tr := newTracker(time.Minute, 15*time.Second)
+	tr.hold(at(0), time.Minute)
+	tr.apply(at(0))
+	tr.extend(at(50))
+	expect(t, tr.update(at(100), checksFor(), false))
+	expect(t, tr.update(at(110), checksFor(), false),
+		event{kind: evWindowTimedOut, duration: 110 * time.Second})
 }

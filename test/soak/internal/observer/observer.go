@@ -50,8 +50,8 @@ type Observer struct {
 	log    *slog.Logger
 
 	tracker    *tracker
-	holds      chan *hold
-	hold       *hold
+	holds      chan *Hold
+	hold       *Hold
 	holdErr    error
 	view       atomic.Pointer[view]
 	generation int64
@@ -101,7 +101,7 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		lock:       lock,
 		log:        log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
 		tracker:    newTracker(cfg.Observer.ConvergenceTimeout.Duration, cfg.Mutation.MinDwell.Duration),
-		holds:      make(chan *hold, 1),
+		holds:      make(chan *Hold, 1),
 		lagPods:    map[string]bool{},
 		servers:    map[string][2]string{},
 		failoverCh: make(chan string, 1),
@@ -121,11 +121,30 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 	}
 }
 
-// hold is a convergence window a mutation holds open.
-type hold struct {
+// Hold is a convergence window a mutation holds open.
+type Hold struct {
 	since     time.Time
+	timeout   time.Duration
 	converged func(context.Context) error
 	done      chan bool
+	applied   atomic.Int64
+}
+
+// Applied starts the window's timeout: the mutation was applied now.
+func (h *Hold) Applied() {
+	h.applied.Store(time.Now().UnixNano())
+}
+
+// Done receives true when the window closed and false when it timed out.
+func (h *Hold) Done() <-chan bool {
+	return h.done
+}
+
+func (h *Hold) appliedAt() time.Time {
+	if n := h.applied.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Time{}
 }
 
 // SetSource makes a bootstrapping instance's observer follow the instance
@@ -155,13 +174,14 @@ type PodAddr struct {
 
 // Hold opens a convergence window for a mutation that is about to be
 // applied. The window stays open until converged returns nil, every
-// invariant holds and the minimum dwell has passed, or until the
-// convergence timeout. The channel receives true when it closed and false
-// when it timed out. Only one hold may be pending at a time.
-func (o *Observer) Hold(converged func(context.Context) error) <-chan bool {
-	h := &hold{since: time.Now(), converged: converged, done: make(chan bool, 1)}
+// invariant holds and the minimum dwell has passed since the mutation was
+// applied, or until timeout after that. Only one hold may be pending at a
+// time; a new one takes over the window of the previous one, which is then
+// never done.
+func (o *Observer) Hold(timeout time.Duration, converged func(context.Context) error) *Hold {
+	h := &Hold{since: time.Now(), timeout: timeout, converged: converged, done: make(chan bool, 1)}
 	o.holds <- h
-	return h.done
+	return h
 }
 
 // Quiet reports whether, at the last check, no convergence window was open
@@ -425,9 +445,14 @@ func (o *Observer) takeHold() {
 	select {
 	case h := <-o.holds:
 		o.hold, o.holdErr = h, nil
-		o.tracker.hold(h.since)
-		o.log.Info("convergence window opened", "by", "mutation")
+		o.tracker.hold(h.since, h.timeout)
+		o.log.Info("convergence window opened", "by", "mutation", "timeout_seconds", h.timeout.Seconds())
 	default:
+	}
+	if o.hold != nil {
+		if at := o.hold.appliedAt(); !at.IsZero() {
+			o.tracker.apply(at)
+		}
 	}
 }
 
@@ -504,7 +529,7 @@ func (o *Observer) externalWindow(now time.Time) {
 			reason = "source converging"
 		case v.masterIP != o.sourceMaster:
 			if o.sourceMaster != "" {
-				o.tracker.openWindow(now)
+				o.tracker.extend(now)
 				o.log.Info("convergence window opened", "by", "source failover")
 			}
 			o.sourceMaster = v.masterIP
@@ -514,7 +539,7 @@ func (o *Observer) externalWindow(now time.Time) {
 		if reason != o.external {
 			o.log.Info("convergence window opened", "by", reason)
 		}
-		o.tracker.openWindow(now)
+		o.tracker.extend(now)
 	}
 	o.external = reason
 }

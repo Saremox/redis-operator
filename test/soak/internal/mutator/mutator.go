@@ -201,7 +201,7 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 	// A rejected mutation changed nothing, so its window only waits for
 	// the invariants.
 	var applied, rejected atomic.Bool
-	done := m.observer.Hold(func(ctx context.Context) error {
+	h := m.observer.Hold(m.convergeTimeout, func(ctx context.Context) error {
 		switch {
 		case rejected.Load():
 			return nil
@@ -229,12 +229,13 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 		rejected.Store(true)
 	}
 	applied.Store(true)
+	h.Applied()
 	appliedAt := time.Now()
 	var converged bool
 	select {
 	case <-ctx.Done():
 		return
-	case converged = <-done:
+	case converged = <-h.Done():
 	}
 	d := time.Since(start)
 

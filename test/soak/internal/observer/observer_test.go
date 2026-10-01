@@ -164,16 +164,14 @@ func TestHold(t *testing.T) {
 	}
 
 	var converged atomic.Bool
-	done := make(chan (<-chan bool))
-	go func() {
-		done <- o.Hold(func(context.Context) error {
-			if converged.Load() {
-				return nil
-			}
-			return errors.New("not yet")
-		})
-	}()
-	result := <-done
+	h := o.Hold(time.Minute, func(context.Context) error {
+		if converged.Load() {
+			return nil
+		}
+		return errors.New("not yet")
+	})
+	h.Applied()
+	result := h.Done()
 	// The killed master's replacement isn't there yet.
 	s := healthy(true)
 	s.redis = s.redis[1:]
