@@ -1,7 +1,9 @@
 # kind-e2e's config: deploy/config.yaml with a short mutation interval and a
-# fixed seed. Seed 6517 picks every enabled kind within the first six steps
-# of every instance, fill_burst twice under noeviction on op-noevict, and
-# both a graceful and a forced kill_master. kind-e2e sets stopAfter to
+# fixed seed. Seed 24080 picks every enabled kind within the first eight
+# steps of every instance and twelve of op-full, where it rotates the
+# password with three pods, runs scenario C on step 5 and restarts the
+# single pod gracefully on step 8; it also kills op-basic's only pod (a
+# reset), and the toggle's master in both modes. kind-e2e sets stopAfter to
 # DURATION.
 operator:
   namespace: redis-operator
@@ -13,7 +15,7 @@ mutation:
   interval: 10s
   jitter: 10s
   minDwell: 15s
-  seed: 6517
+  seed: 24080
   stopAfter: 900s
 instances:
   - name: op-basic
@@ -26,7 +28,8 @@ instances:
       kinds:
         redis_replicas: 2
         redis_resources: 2
-        kill_master: 2
+        kill_master: 1
+        kill_master_force: 1
         kill_replica: 1
       redisReplicas: {min: 1, max: 5}
       # The memory limit stays above twice the data plus the reserve.
@@ -47,7 +50,8 @@ instances:
       kinds:
         redis_replicas: 2
         sentinel_replicas: 1
-        kill_master: 2
+        kill_master: 1
+        kill_master_force: 1
         kill_replica: 1
         kill_sentinel: 1
       redisReplicas: {min: 1, max: 5}
@@ -90,3 +94,59 @@ instances:
       maxMemoryPolicies: [noeviction, volatile-lru, volatile-ttl]
       maxMemoryPercent: {min: 10, max: 95}
       fillBurstHold: 10s
+  # PVCs and auth: the password is rotated, removed and added, and changed
+  # while the operator is stopped (scenario C).
+  - name: op-full
+    namespace: op-full
+    mode: operator
+    data:
+      fill: {sizeMi: 16, keysPerSecond: 2000, batch: 100}
+      ledger: {writesPerSecond: 20}
+    mutations:
+      kinds:
+        password_rotate: 2
+        auth_remove: 1
+        auth_add: 1
+        password_rotate_offline: 1
+        kill_master: 2
+        kill_master_force: 1
+        redis_replicas: 2
+      # A single pod's graceful restart must lose nothing with a volume.
+      redisReplicas: {min: 1, max: 2}
+  - name: sent-full
+    namespace: sent-full
+    mode: sentinel
+    port: 6380
+    data:
+      fill: {sizeMi: 16, keysPerSecond: 2000, batch: 100}
+      ledger: {writesPerSecond: 20}
+    mutations:
+      kinds:
+        password_rotate: 2
+        kill_master: 1
+        kill_sentinel: 1
+        sentinel_replicas: 1
+      sentinelReplicas: {min: 3, max: 4}
+      forceDeleteProbability: 0.5
+  # Created without Sentinel; its probe paths follow the mode.
+  - name: toggle
+    namespace: toggle
+    mode: operator
+    data:
+      fill: {sizeMi: 16, keysPerSecond: 2000, batch: 100}
+      ledger: {writesPerSecond: 20}
+    mutations:
+      kinds:
+        sentinel_toggle: 2
+        kill_master: 1
+  # Replicates from op-basic's master through rfrm-op-basic; read-only.
+  - name: bootstrap
+    namespace: bootstrap
+    mode: operator
+    bootstrap: {source: op-basic, verifyInterval: 1m}
+    mutations:
+      kinds:
+        redis_replicas: 1
+        kill_replica: 1
+      redisReplicas: {min: 1, max: 3}
+      forceDeleteProbability: 0.5
