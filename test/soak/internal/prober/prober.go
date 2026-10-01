@@ -35,10 +35,13 @@ type Prober struct {
 	client   Client
 	interval time.Duration
 	timeout  time.Duration
-	key      string
-	seq      int64
-	outage   outage
-	log      *slog.Logger
+	// Every waitEvery-th SET is followed by WAIT 1 waitTimeout.
+	waitEvery   int64
+	waitTimeout time.Duration
+	key         string
+	seq         int64
+	outage      outage
+	log         *slog.Logger
 
 	total          *prometheus.CounterVec
 	duration       prometheus.ObserverVec
@@ -46,6 +49,7 @@ type Prober struct {
 	writable       prometheus.Gauge
 	readable       prometheus.Gauge
 	outageDuration prometheus.Observer
+	waitAcked      prometheus.Gauge
 }
 
 func New(in config.Instance, path Path, client Client, probe config.Probe, m *metrics.Metrics, log *slog.Logger) *Prober {
@@ -57,11 +61,13 @@ func New(in config.Instance, path Path, client Client, probe config.Probe, m *me
 		"client":    string(client),
 	}
 	return &Prober{
-		path:     path,
-		client:   client,
-		interval: probe.Interval.Duration,
-		timeout:  probe.Timeout.Duration,
-		key:      fmt.Sprintf("soak:%s:%s:%s:seq", in.Name, path.Name, client),
+		path:        path,
+		client:      client,
+		interval:    probe.Interval.Duration,
+		timeout:     probe.Timeout.Duration,
+		waitEvery:   int64(probe.WaitEvery),
+		waitTimeout: probe.WaitTimeout.Duration,
+		key:         fmt.Sprintf("soak:%s:%s:%s:seq", in.Name, path.Name, client),
 		log: log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode,
 			"path", path.Name, "client", client),
 		total:          m.ProbeTotal.MustCurryWith(labels),
@@ -70,6 +76,7 @@ func New(in config.Instance, path Path, client Client, probe config.Probe, m *me
 		writable:       m.Writable.With(labels),
 		readable:       m.Readable.With(labels),
 		outageDuration: m.OutageDuration.With(labels),
+		waitAcked:      m.WaitAckedReplicas.WithLabelValues(in.Name, in.Namespace, string(in.Mode)),
 	}
 }
 
@@ -104,6 +111,15 @@ func (p *Prober) probe(ctx context.Context, c *redis.Client) {
 	setErr := p.do(ctx, "set", func(ctx context.Context) error {
 		return c.Set(ctx, p.key, p.seq, 0).Err()
 	})
+	if setErr == nil && p.seq%p.waitEvery == 0 {
+		_ = p.do(ctx, "wait", func(ctx context.Context) error {
+			n, err := c.Wait(ctx, 1, p.waitTimeout).Result()
+			if err == nil {
+				p.waitAcked.Set(float64(n))
+			}
+			return err
+		})
+	}
 	getErr := p.do(ctx, "get", func(ctx context.Context) error {
 		err := c.Get(ctx, p.key).Err()
 		if errors.Is(err, redis.Nil) {

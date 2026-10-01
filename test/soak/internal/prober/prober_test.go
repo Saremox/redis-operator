@@ -27,7 +27,8 @@ func TestProbe(t *testing.T) {
 	path := Path{Name: PathRFRM, NewClient: func(Client) *redis.Client {
 		return redis.NewClient(&redis.Options{Addr: s.Addr(), MaxRetries: -1})
 	}}
-	probe := config.Probe{Interval: metav1.Duration{Duration: time.Second}, Timeout: metav1.Duration{Duration: time.Second}}
+	probe := config.Probe{Interval: metav1.Duration{Duration: time.Second}, Timeout: metav1.Duration{Duration: time.Second},
+		WaitEvery: 2, WaitTimeout: metav1.Duration{Duration: 100 * time.Millisecond}}
 	p := New(in, path, Fresh, probe, m, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx := context.Background()
 	run := func() {
@@ -65,6 +66,13 @@ redis_soak_writable` + labels + ` 1
 		if got := testutil.ToFloat64(c); got != 2 {
 			t.Errorf("%s readonly = %v, want 2", op, got)
 		}
+	}
+	// WAIT after the 2nd and 4th SET; the 4th failed.
+	if got := testutil.ToFloat64(m.ProbeTotal.WithLabelValues("op-basic", "op-basic", "operator", "rfrm", "fresh", "wait", "ok")); got != 1 {
+		t.Errorf("wait ok = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.WaitAckedReplicas.WithLabelValues("op-basic", "op-basic", "operator")); got != 0 {
+		t.Errorf("wait_acked_replicas = %v, want 0", got)
 	}
 	mfs, err := reg.Gather()
 	if err != nil {
