@@ -8,7 +8,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 CLUSTER ?= soak
 KIND_NODE ?= v1.35.0
 OPERATOR_VERSION ?=
-DURATION ?= 600
+DURATION ?= 900
 
 .PHONY: build test lint image kind-up kind-e2e
 

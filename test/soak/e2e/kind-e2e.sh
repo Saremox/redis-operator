@@ -1,43 +1,51 @@
 #!/usr/bin/env bash
-# Runs the soak tester with the mutator against op-basic and sent-basic on
-# kind. After DURATION seconds the mutator stops starting mutations; once
-# the last ones have converged, the script asserts from the tester's
-# metrics that every enabled kind converged at least once on every
-# instance, that no mutation timed out or was rejected, that there were no
-# findings, that every invariant holds and that every probe path and client
-# style succeeds again. It then reports the convergence time per kind, the
-# outages each kill kind caused per path and client style, the pods each
-# kind recreated, and any findings.
+# Runs the soak tester with the mutator, the filler and the ledger against
+# op-basic, sent-basic, op-maxmem and op-noevict on kind. After DURATION
+# seconds the mutator stops starting mutations; once the last ones have
+# converged, the script asserts from the tester's metrics and logs that
+# every enabled kind converged at least once on every instance, that no
+# mutation timed out or was rejected, that there were no findings (OOM
+# kills included), that every invariant holds, that every probe path and
+# client style succeeds again, that op-noevict rejected writes with OOM
+# and op-maxmem evicted keys, and that the data was verified after every
+# mutation and failover. It then reports the convergence time per kind,
+# the outages per mutation, path and client style, the pods each kind
+# recreated, the lost writes per instance and event, and any findings.
 #
 # Environment: CLUSTER, KIND_NODE, OPERATOR_VERSION (empty: build the
 # operator from this checkout), DURATION (seconds the mutator starts
-# mutations).
+# mutations, default 900).
 set -euo pipefail
 
 cluster=${CLUSTER:-soak}
 node=${KIND_NODE:-v1.35.0}
-duration=${DURATION:-600}
+duration=${DURATION:-900}
 soak=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$soak/../.." && pwd)
 skill=$repo/.claude/skills/kind-cluster
 export KUBECONFIG=/tmp/kind-$cluster/kubeconfig
 artifacts=$soak/bin/kind-e2e-artifacts
 
-instances=(op-basic sent-basic)
-declare -A paths=([op-basic]="rfrm" [sent-basic]="sentinel rfrm")
+instances=(op-basic sent-basic op-maxmem op-noevict)
+declare -A paths=([op-basic]="rfrm" [sent-basic]="sentinel rfrm" [op-maxmem]="rfrm" [op-noevict]="rfrm")
 declare -A invariants=(
-  [op-basic]="pods one_master master_service replication healthy"
-  [sent-basic]="pods one_master master_service replication sentinel_agreement healthy"
+  [op-basic]="pods one_master master_service replication healthy oom_killed"
+  [sent-basic]="pods one_master master_service replication sentinel_agreement healthy oom_killed"
+  [op-maxmem]="pods one_master master_service replication config healthy oom_killed"
+  [op-noevict]="pods one_master master_service replication config healthy oom_killed"
 )
 # The kinds e2e/config.yaml enables.
 declare -A kinds=(
   [op-basic]="redis_replicas redis_resources kill_master kill_replica"
   [sent-basic]="redis_replicas sentinel_replicas kill_master kill_replica kill_sentinel"
+  [op-maxmem]="redis_memory maxmemory_policy maxmemory_percent kill_replica"
+  [op-noevict]="redis_memory maxmemory_policy maxmemory_percent fill_burst"
 )
 clients="pooled retrying fresh"
-# e2e/config.yaml's observer.convergenceTimeout, plus the longest interval.
+# e2e/config.yaml's observer.convergenceTimeout, plus the longest interval
+# and a data verification.
 convergence=300
-interval=20
+interval=80
 
 if ! kind get clusters 2>/dev/null | grep -qx "$cluster"; then
   "$skill/kind-up.sh" "$cluster" "$node"
@@ -197,6 +205,8 @@ probes_ok() {
           gt "$last" $((now - 10)) ||
             { echo "FAIL: last_success{rf=$rf,path=$path,client=$client,op=$op} is stale: $last"; ok=1; }
         done
+        gt "$(value redis_soak_probe_total "${l[@]}" 'op="wait"' 'result="ok"')" 0 ||
+          { echo "FAIL: no WAIT succeeded on rf=$rf,path=$path,client=$client"; ok=1; }
       done
     done
   done
@@ -250,6 +260,71 @@ echo "--- findings"
 jq -c 'select(.finding == true or (.msg | test("timed out"))) | del(.level, .namespace, .mode)' "$artifacts/soak.jsonl"
 grep -E '^redis_soak_findings_total' <<<"$metrics" || echo "none"
 
+echo "--- data verifications"
+# Each verification with the mutation it followed: its params (graceful or
+# force for kills), the redis replicas then, and whether the master changed.
+jq -rs '
+  (map(select(.msg == "mutation done")) | map({key: "\(.rf)/\(.step)", value: .}) | from_entries) as $m
+  | .[] | select(.msg == "data verified") | ($m["\(.rf)/\(.step)"] // {}) as $d
+  | [.rf, .event, (if .step > 0 then .step else "-" end), .failover, .recent, .older, .fill, .lost,
+     ($d.redis_replicas // "-"), ($d.params // "-")] | @tsv' "$artifacts/soak.jsonl" |
+  table rf event step failover recent older fill lost replicas params
+jq -c 'select(.msg == "lost writes") | del(.level, .namespace, .mode)' "$artifacts/soak.jsonl"
+
+echo "--- lost writes by instance and event"
+# Kills apart by how the pod was deleted, and whether it was the only
+# pod; scale-downs apart by whether they removed the master.
+jq -rs '
+  (map(select(.msg == "mutation done")) | map({key: "\(.rf)/\(.step)", value: .}) | from_entries) as $m
+  | [.[] | select(.msg == "data verified") | ($m["\(.rf)/\(.step)"] // {}) as $d
+     | {rf, lost, event: (.event
+         + (if $d.kind == "kill_master" or $d.kind == "kill_replica" then " " + ($d.params | capture("\\((?<h>[a-z]+)\\)").h) else "" end)
+         + (if ($d.kind == "kill_master" or $d.kind == "kill_replica") and $d.redis_replicas == 1 then ", only pod" else "" end)
+         + (if $d.kind == "redis_replicas" and .failover then ", master removed" else "" end))}]
+  | group_by([.rf, .event])[] | [.[0].rf, .[0].event, length, (map(.lost) | add)] | @tsv' "$artifacts/soak.jsonl" |
+  table rf event verifications lost >"$artifacts/lost-writes.txt"
+cat "$artifacts/lost-writes.txt"
+# Redis 7 waits for its replicas on SIGTERM: a graceful kill, or a
+# scale-down that removes the master, should lose nothing.
+awk '$NF > 0 && (/graceful/ && !/only pod/ || /master removed/) { print "NOTABLE: writes lost on a graceful path: " $0 }' \
+  "$artifacts/lost-writes.txt"
+grep -E '^redis_soak_(lost_writes_total|ledger_verified_total)' <<<"$metrics" | sed 's/^redis_soak_//'
+
+echo "--- memory, OOM and evictions"
+grep -E '^redis_soak_(dataset_keys|used_memory_bytes|maxmemory_bytes|oom_rejections_total|evicted_keys_total|wait_acked_replicas)' <<<"$metrics" |
+  sed 's/^redis_soak_//'
+jq -c 'select(.msg == "burst rejected" or .msg == "burst done" or .msg == "data filled") | del(.level, .namespace, .mode)' "$artifacts/soak.jsonl"
+grep -F 'op="wait"' <<<"$metrics" | grep -E '^redis_soak_probe_total' | grep -v 'result="ok"' | sed 's/^redis_soak_//' || true
+
+echo "--- config invariant"
+grep -E '^redis_soak_invariant_ok.*invariant="(config|oom_killed)"' <<<"$metrics" | sed 's/^redis_soak_//'
+jq -rs '[.[] | select(.invariant == "config" and .msg == "invariant violated")] | group_by(.rf)[]
+  | [.[0].rf, length, (map(select(.finding)) | length)] | @tsv' "$artifacts/soak.jsonl" | table rf violations findings
+grep -oE 'maxmemory (kept at|lowered to) [^"]*' "$artifacts/operator.log" | sort | uniq -c | sort -rn | head -20 || true
+
+# verified_after_mutations prints the mutations the data wasn't verified
+# after.
+verified_after_mutations() {
+  jq -rs '(map(select(.msg == "data verified")) | map("\(.rf)/\(.step)/\(.event)")) as $v
+    | .[] | select(.msg == "mutation done") | "\(.rf)/\(.step)/\(.kind)" | select(. as $k | $v | index($k) | not)' \
+    "$artifacts/soak.jsonl"
+}
+# verified_after_failovers prints the failovers outside a mutation the data
+# wasn't verified after.
+verified_after_failovers() {
+  jq -rs '
+    def ts: capture("^(?<s>[^.Z]+)(?<f>\\.[0-9]+)?") | ((.s + "Z") | fromdateiso8601) + ((.f // "0") | tonumber);
+    (map(select(.msg == "data verified" and .event == "failover"))) as $fv
+    | (map(select(.msg == "mutating"))) as $starts
+    | (map(select(.msg == "mutation done"))) as $dones
+    | .[] | select(.msg == "failover") | . as $f | ($f.time | ts) as $t
+    | ([$starts[] | select(.rf == $f.rf and (.time | ts) <= $t)] | last) as $m
+    | ([$dones[] | select($m != null and .rf == $f.rf and .step == $m.step)] | first) as $d
+    | select(($m != null and ($d == null or ($d.time | ts) >= $t)) | not)
+    | select([$fv[] | select(.rf == $f.rf and (.time | ts) >= $t)] | length == 0)
+    | "\($f.rf)@\($f.time)"' "$artifacts/soak.jsonl"
+}
+
 echo "--- assertions"
 check "probes" probes_ok
 check "invariants" invariants_ok
@@ -275,6 +350,12 @@ for rf in "${instances[@]}"; do
   check "server_info{rf=$rf} has $n series, want $replicas" eq "$n" "$replicas"
 done
 check "build_info" grep -q '^redis_soak_build_info{operator_version=' <<<"$metrics"
+check "oom_rejections_total{rf=op-noevict} = 0" gt "$(value redis_soak_oom_rejections_total 'rf="op-noevict"')" 0
+check "evicted_keys_total{rf=op-maxmem} = 0" gt "$(value redis_soak_evicted_keys_total 'rf="op-maxmem"')" 0
+unverified=$(verified_after_mutations | xargs)
+check "data not verified after mutations: $unverified" eq "$unverified" ""
+unverified=$(verified_after_failovers | xargs)
+check "data not verified after failovers: $unverified" eq "$unverified" ""
 
 if [[ $fail != 0 ]]; then
   echo "--- evidence (all of it in $artifacts)"
@@ -285,4 +366,4 @@ if [[ $fail != 0 ]]; then
   done
   exit 1
 fi
-echo "PASS: every kind converged on every instance, without findings, and every probe succeeds"
+echo "PASS: every kind converged on every instance, without findings, every probe succeeds, and the data was verified after every mutation and failover"

@@ -1,6 +1,8 @@
 # kind-e2e's config: deploy/config.yaml with a short mutation interval and a
-# fixed seed. Seed 629 picks every enabled kind within the first five steps
-# of both instances. kind-e2e sets stopAfter to DURATION.
+# fixed seed. Seed 6517 picks every enabled kind within the first six steps
+# of every instance, fill_burst twice under noeviction on op-noevict, and
+# both a graceful and a forced kill_master. kind-e2e sets stopAfter to
+# DURATION.
 operator:
   namespace: redis-operator
   deployment: redis-operator
@@ -11,12 +13,15 @@ mutation:
   interval: 10s
   jitter: 10s
   minDwell: 15s
-  seed: 629
-  stopAfter: 600s
+  seed: 6517
+  stopAfter: 900s
 instances:
   - name: op-basic
     namespace: op-basic
     mode: operator
+    data:
+      fill: {sizeMi: 32, keysPerSecond: 2000, batch: 100}
+      ledger: {writesPerSecond: 20}
     mutations:
       kinds:
         redis_replicas: 2
@@ -24,6 +29,7 @@ instances:
         kill_master: 2
         kill_replica: 1
       redisReplicas: {min: 1, max: 5}
+      # The memory limit stays above twice the data plus the reserve.
       resources:
         requests:
           cpu: {min: 25, max: 200}
@@ -34,6 +40,9 @@ instances:
   - name: sent-basic
     namespace: sent-basic
     mode: sentinel
+    data:
+      fill: {sizeMi: 32, keysPerSecond: 2000, batch: 100}
+      ledger: {writesPerSecond: 20}
     mutations:
       kinds:
         redis_replicas: 2
@@ -44,3 +53,40 @@ instances:
       redisReplicas: {min: 1, max: 5}
       sentinelReplicas: {min: 3, max: 5}
       forceDeleteProbability: 0.5
+  # allkeys-lru at 75% of 256Mi, filled to 90% of maxmemory: the filler
+  # only, as the ledger's keys could be evicted.
+  - name: op-maxmem
+    namespace: op-maxmem
+    mode: operator
+    maxMemoryPolicy: allkeys-lru
+    data:
+      fill: {percent: 90, keysPerSecond: 3000, batch: 100}
+    mutations:
+      kinds:
+        redis_memory: 2
+        maxmemory_policy: 1
+        maxmemory_percent: 2
+        kill_replica: 1
+      redisMemory: {min: 160, max: 320}
+      maxMemoryPolicies: [allkeys-lru, allkeys-lfu, allkeys-random]
+      maxMemoryPercent: {min: 10, max: 95}
+      forceDeleteProbability: 0.5
+  # noeviction at 75% of 192Mi, filled to 70% of maxmemory, with the
+  # ledger. Fill keys carry a TTL, so volatile-* evicts only them.
+  - name: op-noevict
+    namespace: op-noevict
+    mode: operator
+    maxMemoryPolicy: noeviction
+    data:
+      fill: {percent: 70, keysPerSecond: 3000, batch: 100, ttl: 1h}
+      ledger: {writesPerSecond: 20}
+    mutations:
+      kinds:
+        redis_memory: 2
+        maxmemory_policy: 1
+        maxmemory_percent: 2
+        fill_burst: 2
+      redisMemory: {min: 128, max: 256}
+      maxMemoryPolicies: [noeviction, volatile-lru, volatile-ttl]
+      maxMemoryPercent: {min: 10, max: 95}
+      fillBurstHold: 10s
