@@ -1,10 +1,12 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# No global namespace: the Role lives in the operator's namespace.
+# No global namespace: the Role lives in the operator's namespace and the
+# mutator's RoleBindings in the instances'.
 resources:
   - namespace.yaml
   - serviceaccount.yaml
   - rbac.yaml
+  - rbac-instances.yaml
   - deployment.yaml
   - service.yaml
 configMapGenerator:
