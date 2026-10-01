@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -23,10 +24,14 @@ const (
 const maxNameLength = 48
 
 type Config struct {
-	Operator  Operator   `json:"operator"`
-	Probe     Probe      `json:"probe"`
-	Observer  Observer   `json:"observer"`
-	Mutation  Mutation   `json:"mutation"`
+	Operator Operator `json:"operator"`
+	Probe    Probe    `json:"probe"`
+	Observer Observer `json:"observer"`
+	Mutation Mutation `json:"mutation"`
+	// Versions and Edges are the server versions in the rotation and the
+	// transition graph between them.
+	Versions  []Version  `json:"versions"`
+	Edges     []Edge     `json:"edges"`
 	Instances []Instance `json:"instances"`
 }
 
@@ -71,6 +76,16 @@ type Mutation struct {
 	// StopAfter stops starting mutations this long after startup, for
 	// runs of a fixed length. 0 never stops.
 	StopAfter metav1.Duration `json:"stopAfter"`
+	// Timeouts are the convergence timeouts of kinds that take longer than
+	// observer.convergenceTimeout.
+	Timeouts map[Kind]Timeout `json:"timeouts"`
+}
+
+// Timeout is a kind's convergence timeout, counted from applying the
+// mutation: base plus perPod for every redis pod.
+type Timeout struct {
+	Base   metav1.Duration `json:"base"`
+	PerPod metav1.Duration `json:"perPod"`
 }
 
 func (m Mutation) On() bool {
@@ -87,10 +102,20 @@ type Instance struct {
 	MaxMemoryPolicy string `json:"maxMemoryPolicy"`
 	// AuthSecret is the Secret auth_add creates or updates and names in
 	// spec.auth.secretPath.
-	AuthSecret string     `json:"authSecret"`
-	Bootstrap  *Bootstrap `json:"bootstrap"`
-	Data       *Data      `json:"data"`
-	Mutations  Mutations  `json:"mutations"`
+	AuthSecret string `json:"authSecret"`
+	// Template is a RedisFailover manifest, relative to the config file,
+	// that the tester creates the instance from if it doesn't exist, and
+	// recreates it from on a reset.
+	Template string `json:"template"`
+	// Version and SentinelVersion set the redis and Sentinel image of an
+	// instance made from its template, by version name. A chain starts on
+	// its first start version.
+	Version         string     `json:"version"`
+	SentinelVersion string     `json:"sentinelVersion"`
+	Chain           *Chain     `json:"chain"`
+	Bootstrap       *Bootstrap `json:"bootstrap"`
+	Data            *Data      `json:"data"`
+	Mutations       Mutations  `json:"mutations"`
 }
 
 // Bootstrap configures an instance whose spec.bootstrapNode reaches
@@ -106,12 +131,22 @@ type Bootstrap struct {
 	VerifyInterval metav1.Duration `json:"verifyInterval"`
 }
 
+// Load reads the config file; instance templates are relative to it.
 func Load(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return Parse(b)
+	c, err := Parse(b)
+	if err != nil {
+		return nil, err
+	}
+	for i := range c.Instances {
+		if t := c.Instances[i].Template; t != "" && !filepath.IsAbs(t) {
+			c.Instances[i].Template = filepath.Join(filepath.Dir(path), t)
+		}
+	}
+	return c, nil
 }
 
 func Parse(b []byte) (*Config, error) {
@@ -160,6 +195,25 @@ func (c *Config) setDefaults() {
 	if c.Mutation.Seed == 0 {
 		c.Mutation.Seed = time.Now().UnixNano()
 	}
+	// A pod's start and sync per redis pod: image changes and resets
+	// replace every pod, one at a time.
+	for k, perPod := range map[Kind]time.Duration{ImageUpgrade: 2 * time.Minute, SentinelImageUpgrade: time.Minute, Reset: time.Minute} {
+		if _, ok := c.Mutation.Timeouts[k]; !ok {
+			if c.Mutation.Timeouts == nil {
+				c.Mutation.Timeouts = map[Kind]Timeout{}
+			}
+			c.Mutation.Timeouts[k] = Timeout{PerPod: metav1.Duration{Duration: perPod}}
+		}
+	}
+	for k, t := range c.Mutation.Timeouts {
+		if t.Base.Duration == 0 {
+			t.Base = c.Observer.ConvergenceTimeout
+			c.Mutation.Timeouts[k] = t
+		}
+	}
+	for i := range c.Versions {
+		c.Versions[i].setDefaults()
+	}
 	for i := range c.Instances {
 		if c.Instances[i].Mode == "" {
 			c.Instances[i].Mode = ModeOperator
@@ -184,6 +238,14 @@ func (c *Config) setDefaults() {
 		if c.Instances[i].Mutations.FillBurstHold.Duration == 0 {
 			c.Instances[i].Mutations.FillBurstHold.Duration = 10 * time.Second
 		}
+		if ch := c.Instances[i].Chain; ch != nil {
+			if c.Instances[i].Version == "" && len(ch.Start) > 0 {
+				c.Instances[i].Version = ch.Start[0]
+			}
+			if c.Instances[i].SentinelVersion == "" && ch.Sentinel != "" {
+				c.Instances[i].SentinelVersion = c.Instances[i].Version
+			}
+		}
 	}
 }
 
@@ -199,6 +261,14 @@ func (c *Config) validate() error {
 	}
 	if c.Mutation.MinDwell.Duration >= c.Observer.ConvergenceTimeout.Duration {
 		return fmt.Errorf("mutation: minDwell must be shorter than observer.convergenceTimeout")
+	}
+	for k, t := range c.Mutation.Timeouts {
+		if !slices.Contains(kinds, k) || t.Base.Duration <= c.Mutation.MinDwell.Duration || t.PerPod.Duration < 0 {
+			return fmt.Errorf("mutation.timeouts: %s: a known kind, base longer than minDwell, perPod not negative", k)
+		}
+	}
+	if err := c.validateVersions(); err != nil {
+		return err
 	}
 	seen := map[string]bool{}
 	for _, in := range c.Instances {
@@ -220,6 +290,9 @@ func (c *Config) validate() error {
 		if err := c.validateBootstrap(in); err != nil {
 			return fmt.Errorf("instance %q: bootstrap: %w", in.Name, err)
 		}
+		if err := c.validateTemplate(in); err != nil {
+			return fmt.Errorf("instance %q: %w", in.Name, err)
+		}
 		if err := in.Mutations.validate(in); err != nil {
 			return fmt.Errorf("instance %q: mutations: %w", in.Name, err)
 		}
@@ -230,6 +303,59 @@ func (c *Config) validate() error {
 		seen[key] = true
 	}
 	return nil
+}
+
+// validateTemplate checks what needs a template: its versions, its chain,
+// and a reset.
+func (c *Config) validateTemplate(in Instance) error {
+	_, reset := in.Mutations.Kinds[Reset]
+	if in.Template == "" {
+		if in.Chain != nil || in.Version != "" || in.SentinelVersion != "" || reset {
+			return errors.New("chain, version, sentinelVersion and reset need a template")
+		}
+		return nil
+	}
+	if in.Bootstrap != nil {
+		return errors.New("a bootstrapping instance can't be made from a template: its bootstrapNode is another instance's ClusterIP")
+	}
+	for _, v := range []string{in.Version, in.SentinelVersion} {
+		if _, ok := c.VersionNamed(v); v != "" && !ok {
+			return fmt.Errorf("unknown version %s", v)
+		}
+	}
+	if in.SentinelVersion != "" && in.Mode != ModeSentinel {
+		return errors.New("sentinelVersion needs a sentinel instance")
+	}
+	if in.Chain == nil {
+		return nil
+	}
+	if err := c.validateChain(in); err != nil {
+		return fmt.Errorf("chain: %w", err)
+	}
+	if in.Version != in.Chain.Start[0] {
+		return errors.New("the version of a chain instance is its first start")
+	}
+	return nil
+}
+
+// Timeout returns a kind's convergence timeout for an instance with that
+// many redis pods.
+func (m Mutation) Timeout(kind Kind, observer Observer, redisPods int32) time.Duration {
+	t, ok := m.Timeouts[kind]
+	if !ok {
+		return observer.ConvergenceTimeout.Duration
+	}
+	return t.Base.Duration + time.Duration(redisPods)*t.PerPod.Duration
+}
+
+// LongestTimeout bounds every convergence timeout for up to maxPods redis
+// pods.
+func (c *Config) LongestTimeout(maxPods int32) time.Duration {
+	d := c.Observer.ConvergenceTimeout.Duration
+	for k := range c.Mutation.Timeouts {
+		d = max(d, c.Mutation.Timeout(k, c.Observer, maxPods))
+	}
+	return d
 }
 
 func (c *Config) validateBootstrap(in Instance) error {

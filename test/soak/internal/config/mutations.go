@@ -32,12 +32,23 @@ const (
 	// PasswordRotateOffline is scenario C: the password changes while the
 	// operator is stopped.
 	PasswordRotateOffline Kind = "password_rotate_offline"
+	// ImageUpgrade follows an edge of the transition graph with the redis
+	// image, and the Sentinel image where it follows; at the end of the
+	// chain it resets instead.
+	ImageUpgrade Kind = "image_upgrade"
+	// SentinelImageUpgrade follows an edge with the Sentinel image, towards
+	// the redis image's version.
+	SentinelImageUpgrade Kind = "sentinel_image_upgrade"
+	// Reset deletes the RedisFailover and its volumes, recreates it from
+	// its template on the chain's start, and refills it.
+	Reset Kind = "reset"
 )
 
 var kinds = []Kind{
 	RedisReplicas, SentinelReplicas, RedisResources, KillMaster, KillMasterForce, KillReplica, KillSentinel,
 	RedisMemory, MaxMemoryPolicy, MaxMemoryPercent, FillBurst,
 	PasswordRotate, AuthAdd, AuthRemove, SentinelToggle, PasswordRotateOffline,
+	ImageUpgrade, SentinelImageUpgrade, Reset,
 }
 
 // bootstrapKinds are the kinds of a bootstrapping instance, which has no
@@ -123,6 +134,12 @@ func (m Mutations) validate(in Instance) error {
 		}
 		if in.Bootstrap != nil && !slices.Contains(bootstrapKinds, k) {
 			return fmt.Errorf("%s can't run on a bootstrapping instance", k)
+		}
+		if k == ImageUpgrade && in.Chain == nil {
+			return fmt.Errorf("%s needs a chain", k)
+		}
+		if k == SentinelImageUpgrade && (in.Chain == nil || in.Chain.Sentinel != SentinelSeparate) {
+			return fmt.Errorf("%s needs a chain whose sentinel is %s", k, SentinelSeparate)
 		}
 	}
 	if m.ForceDeleteProbability < 0 || m.ForceDeleteProbability > 1 {
