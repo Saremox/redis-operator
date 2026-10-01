@@ -73,7 +73,7 @@ func TestPlanIsDeterministic(t *testing.T) {
 		var out []string
 		for step := 1; step <= 50; step++ {
 			r := stepRand(7, testInstance, step)
-			p := newPlan(r, pickKind(r, mutations()), mutations(), testState(), "rfr-x-0")
+			p := newPlan(r, pickKind(r, mutations()), mutations(), testState(), "rfr-x-0", nil)
 			out = append(out, string(p.kind)+" "+p.params+" "+p.skip)
 		}
 		return out
@@ -159,7 +159,7 @@ func planFor(t *testing.T, kind config.Kind, m config.Mutations, s state, master
 	t.Helper()
 	m.Kinds = map[config.Kind]int{kind: 1}
 	r := stepRand(1, testInstance, 1)
-	p := newPlan(r, pickKind(r, m), m, s, master)
+	p := newPlan(r, pickKind(r, m), m, s, master, nil)
 	if p.kind != kind {
 		t.Fatalf("picked %s", p.kind)
 	}

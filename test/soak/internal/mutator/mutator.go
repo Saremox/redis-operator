@@ -4,14 +4,18 @@ package mutator
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/redis/go-redis/v9"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,6 +24,7 @@ import (
 
 	"github.com/saremox/redis-operator/client/k8s/clientset/versioned"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
+	"github.com/saremox/redis-operator/test/soak/internal/maxmem"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 	"github.com/saremox/redis-operator/test/soak/internal/observer"
 )
@@ -32,12 +37,25 @@ const (
 	resultSkipped   = "skipped"
 )
 
+// Data is what the mutator needs of an instance's data.
+type Data interface {
+	Filled() bool
+	// Begin and Verify bracket a mutation: Verify checks the data after
+	// it.
+	Begin()
+	Verify(ctx context.Context, kind config.Kind, step int)
+	Burst(ctx context.Context, hold time.Duration) (string, error)
+	Writable(ctx context.Context) error
+}
+
 type Mutator struct {
 	in       config.Instance
 	cfg      config.Mutation
+	timeout  time.Duration
 	kube     kubernetes.Interface
 	rfs      versioned.Interface
 	observer *observer.Observer
+	data     Data
 	log      *slog.Logger
 
 	total      *prometheus.CounterVec
@@ -46,14 +64,18 @@ type Mutator struct {
 	inProgress *prometheus.GaugeVec
 }
 
-func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs versioned.Interface, o *observer.Observer, m *metrics.Metrics, log *slog.Logger) *Mutator {
+// New returns the mutator of an instance; data is nil for an instance
+// without data.
+func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs versioned.Interface, o *observer.Observer, data Data, m *metrics.Metrics, log *slog.Logger) *Mutator {
 	labels := prometheus.Labels{"rf": in.Name, "namespace": in.Namespace, "mode": string(in.Mode)}
 	mu := &Mutator{
 		in:         in,
 		cfg:        cfg.Mutation,
+		timeout:    cfg.Probe.Timeout.Duration,
 		kube:       kube,
 		rfs:        rfs,
 		observer:   o,
+		data:       data,
 		log:        log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode, "seed", cfg.Mutation.Seed),
 		total:      m.MutationTotal.MustCurryWith(labels),
 		converge:   m.MutationConverge.MustCurryWith(labels),
@@ -68,6 +90,9 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 
 func (m *Mutator) Run(ctx context.Context) {
 	stop := time.Now().Add(m.cfg.StopAfter.Duration)
+	if !m.waitFilled(ctx) {
+		return
+	}
 	for step := 1; ; step++ {
 		if !m.waitQuiet(ctx) {
 			return
@@ -85,6 +110,25 @@ func (m *Mutator) Run(ctx context.Context) {
 		case <-time.After(d):
 		}
 	}
+}
+
+// waitFilled waits until the data reached its target once, so mutations
+// act on a filled instance.
+func (m *Mutator) waitFilled(ctx context.Context) bool {
+	if m.data == nil {
+		return true
+	}
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for !m.data.Filled() {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-t.C:
+		}
+	}
+	m.log.Info("data filled, mutating")
+	return true
 }
 
 // waitQuiet waits until no convergence window is open and every invariant
@@ -111,14 +155,14 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand) {
 		return
 	}
 	kind := pickKind(r, m.in.Mutations)
-	p := newPlan(r, kind, m.in.Mutations, s, m.observer.Master())
+	p := newPlan(r, kind, m.in.Mutations, s, m.observer.Master(), m.data)
 	log := m.log.With("kind", kind, "step", step)
 	if p.skip != "" {
 		m.total.WithLabelValues(string(kind), resultSkipped).Inc()
 		log.Info("mutation skipped", "result", resultSkipped, "reason", p.skip)
 		return
 	}
-	log = log.With("params", p.params)
+	log = log.With("params", p.params, "redis_replicas", s.rf.Spec.Redis.Replicas)
 	before := uids(s.redis)
 
 	inProgress := m.inProgress.WithLabelValues(string(kind))
@@ -126,10 +170,18 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand) {
 	defer inProgress.Set(0)
 	// A rejected mutation changed nothing, so its window only waits for
 	// the invariants.
-	var rejected atomic.Bool
+	var applied, rejected atomic.Bool
 	done := m.observer.Hold(func(ctx context.Context) error {
-		if rejected.Load() {
+		switch {
+		case rejected.Load():
 			return nil
+		case !applied.Load():
+			return errors.New("still being applied")
+		}
+		if p.probe != nil {
+			if err := p.probe(ctx); err != nil {
+				return err
+			}
 		}
 		s, err := m.fetch(ctx)
 		if err != nil {
@@ -137,12 +189,16 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand) {
 		}
 		return p.converged(s)
 	})
+	if m.data != nil {
+		m.data.Begin()
+	}
 	log.Info("mutating")
 	start := time.Now()
 	applyErr := m.apply(ctx, p)
 	if applyErr != nil {
 		rejected.Store(true)
 	}
+	applied.Store(true)
 	var converged bool
 	select {
 	case <-ctx.Done():
@@ -172,9 +228,15 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand) {
 		level = slog.LevelWarn
 	}
 	log.Log(ctx, level, "mutation done", "result", result, "duration_seconds", d.Seconds(), "pods_recreated", recreated)
+	if m.data != nil {
+		m.data.Verify(ctx, kind, step)
+	}
 }
 
 func (m *Mutator) apply(ctx context.Context, p plan) error {
+	if p.action != nil {
+		return p.action(ctx)
+	}
 	if p.patch != nil {
 		_, err := m.rfs.DatabasesV1().RedisFailovers(m.in.Namespace).Patch(ctx, m.in.Name, types.MergePatchType, p.patch, metav1.PatchOptions{})
 		return err
@@ -209,6 +271,9 @@ func (m *Mutator) fetch(ctx context.Context) (state, error) {
 			s.sentinels = append(s.sentinels, p)
 		}
 	}
+	if rf.Spec.Redis.MaxMemory != nil {
+		s.config = m.redisConfig(ctx, s.redis, int(rf.Spec.Redis.Port))
+	}
 	s.sts, err = m.kube.AppsV1().StatefulSets(m.in.Namespace).Get(ctx, "rfr-"+m.in.Name, metav1.GetOptions{})
 	if err != nil {
 		return state{}, err
@@ -223,6 +288,38 @@ func (m *Mutator) fetch(ctx context.Context) (state, error) {
 		}
 	}
 	return s, nil
+}
+
+// redisConfig reads maxmemory and maxmemory-policy from every redis pod
+// with an IP, the pods the operator configures.
+func (m *Mutator) redisConfig(ctx context.Context, pods []corev1.Pod, port int) []maxmem.Pod {
+	out := make([]maxmem.Pod, 0, len(pods))
+	for i := range pods {
+		p := &pods[i]
+		if p.Status.PodIP == "" {
+			continue
+		}
+		mp := maxmem.Pod{Name: p.Name, Limit: maxmem.RedisLimit(p)}
+		c := redis.NewClient(&redis.Options{
+			Addr:                  net.JoinHostPort(p.Status.PodIP, strconv.Itoa(port)),
+			DialTimeout:           m.timeout,
+			ReadTimeout:           m.timeout,
+			WriteTimeout:          m.timeout,
+			ContextTimeoutEnabled: true,
+			MaxRetries:            -1,
+		})
+		cctx, cancel := context.WithTimeout(ctx, m.timeout)
+		cfg, err := c.ConfigGet(cctx, "maxmemory*").Result()
+		cancel()
+		_ = c.Close()
+		if err == nil {
+			mp.MaxMemory, err = strconv.ParseInt(cfg["maxmemory"], 10, 64)
+			mp.Policy = cfg["maxmemory-policy"]
+		}
+		mp.Err = err
+		out = append(out, mp)
+	}
+	return out
 }
 
 func uids(pods []corev1.Pod) map[string]types.UID {

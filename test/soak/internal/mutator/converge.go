@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/test/soak/internal/maxmem"
 )
 
 // state is what planning a mutation and judging its convergence look at.
@@ -19,6 +20,9 @@ type state struct {
 	sentinel  *appsv1.Deployment
 	redis     []corev1.Pod
 	sentinels []corev1.Pod
+	// config is every redis pod's maxmemory settings, for instances with
+	// maxMemory.
+	config []maxmem.Pod
 }
 
 // redisReplicasConverged holds once the StatefulSet runs want ready pods on
@@ -96,6 +100,50 @@ func resourcesConverged(want corev1.ResourceRequirements, replicas int32) func(s
 			}
 		}
 		return errors.Join(errs...)
+	}
+}
+
+// memoryConverged holds once every redis pod runs the new memory and
+// maxmemory is applied. Without an allkeys-* policy, the operator may
+// instead keep maxmemory above a target below the data: then the status
+// says so and no pod shrinks.
+func memoryConverged(want corev1.ResourceRequirements, replicas int32, before map[string]int64, target int64, evicts bool) func(state) error {
+	applied := resourcesConverged(want, replicas)
+	return func(s state) error {
+		if err := maxmem.Check(s.rf, s.rf.Status.Message, s.config); err != nil {
+			return err
+		}
+		err := applied(s)
+		if err == nil || evicts {
+			return err
+		}
+		if !maxmem.KeptBelowData(s.rf.Status.Message, target) {
+			return fmt.Errorf("%w, and the status doesn't keep maxmemory above %s: %q", err, maxmem.FormatBytes(target), s.rf.Status.Message)
+		}
+		if err := podsReady("redis", s.redis, replicas); err != nil {
+			return err
+		}
+		for i := range s.redis {
+			p := &s.redis[i]
+			if l := maxmem.RedisLimit(p); l < before[p.Name] {
+				return fmt.Errorf("%s shrunk to %s while maxmemory is kept", p.Name, maxmem.FormatBytes(l))
+			}
+		}
+		return nil
+	}
+}
+
+// maxMemoryConverged holds once the spec has the change and every redis pod
+// runs with the maxmemory settings the operator sets for it.
+func maxMemoryConverged(replicas int32, changed func(*redisfailoverv1.MaxMemorySettings) bool) func(state) error {
+	return func(s state) error {
+		if mm := s.rf.Spec.Redis.MaxMemory; mm == nil || !changed(mm) {
+			return errors.New("the RedisFailover doesn't have the change")
+		}
+		if err := podsReady("redis", s.redis, replicas); err != nil {
+			return err
+		}
+		return maxmem.Check(s.rf, s.rf.Status.Message, s.config)
 	}
 }
 

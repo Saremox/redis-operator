@@ -21,6 +21,7 @@ import (
 
 	"github.com/saremox/redis-operator/client/k8s/clientset/versioned"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
+	"github.com/saremox/redis-operator/test/soak/internal/data"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 	"github.com/saremox/redis-operator/test/soak/internal/mutator"
 	"github.com/saremox/redis-operator/test/soak/internal/observer"
@@ -84,8 +85,14 @@ func run(configPath, listen string, log *slog.Logger) error {
 		}
 		o := observer.New(in, cfg, kube, rfs, m, log)
 		wg.Go(func() { o.Run(ctx) })
+		var d mutator.Data
+		if in.Data != nil {
+			dd := data.New(in, cfg, o, m, log)
+			wg.Go(func() { dd.Run(ctx) })
+			d = dd
+		}
 		if cfg.Mutation.On() && len(in.Mutations.Kinds) > 0 {
-			mu := mutator.New(in, cfg, kube, rfs, o, m, log)
+			mu := mutator.New(in, cfg, kube, rfs, o, d, m, log)
 			wg.Go(func() { mu.Run(ctx) })
 		}
 	}

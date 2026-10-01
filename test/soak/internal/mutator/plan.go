@@ -1,6 +1,7 @@
 package mutator
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -13,7 +14,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 
+	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
+	"github.com/saremox/redis-operator/test/soak/internal/maxmem"
 )
 
 const (
@@ -73,16 +76,19 @@ type plan struct {
 	pod   string
 	uid   types.UID
 	force bool
+	// action applies a mutation that is neither a patch nor a delete.
+	action func(context.Context) error
 	// converged is the mutation's own convergence signal: nil once the
-	// change is complete.
+	// change is complete. probe, if set, must also return nil.
 	converged func(state) error
+	probe     func(context.Context) error
 }
 
 func skipped(kind config.Kind, format string, a ...any) plan {
 	return plan{kind: kind, skip: fmt.Sprintf(format, a...)}
 }
 
-func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master string) plan {
+func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master string, d Data) plan {
 	switch kind {
 	case config.RedisReplicas:
 		want := int32(pickOther(r, m.RedisReplicas, int64(s.rf.Spec.Redis.Replicas)))
@@ -126,7 +132,103 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 			return sentinelPodReplaced(uid, want)
 		})
 	}
+	mm := s.rf.Spec.Redis.MaxMemory
+	if mm == nil {
+		return skipped(kind, "the RedisFailover has no maxMemory")
+	}
+	switch kind {
+	case config.RedisMemory:
+		return planMemory(r, m.RedisMemory, s)
+	case config.MaxMemoryPolicy:
+		var choices []string
+		for _, p := range m.MaxMemoryPolicies {
+			if p != mm.Policy {
+				choices = append(choices, p)
+			}
+		}
+		want := choices[r.IntN(len(choices))]
+		return plan{
+			kind:   kind,
+			params: fmt.Sprintf("redis.maxMemory.policy %s -> %s", mm.Policy, want),
+			patch:  mergePatch(map[string]any{"redis": map[string]any{"maxMemory": map[string]any{"policy": want}}}),
+			converged: maxMemoryConverged(s.rf.Spec.Redis.Replicas, func(mm *redisfailoverv1.MaxMemorySettings) bool {
+				return mm.Policy == want
+			}),
+		}
+	case config.MaxMemoryPercent:
+		want := int32(pickOther(r, m.MaxMemoryPercent, int64(mm.Percent)))
+		return plan{
+			kind:   kind,
+			params: fmt.Sprintf("redis.maxMemory.percent %d -> %d", mm.Percent, want),
+			patch:  mergePatch(map[string]any{"redis": map[string]any{"maxMemory": map[string]any{"percent": want}}}),
+			converged: maxMemoryConverged(s.rf.Spec.Redis.Replicas, func(mm *redisfailoverv1.MaxMemorySettings) bool {
+				return mm.Percent == want
+			}),
+		}
+	case config.FillBurst:
+		if mm.Policy != "noeviction" {
+			return skipped(kind, "policy %s", mm.Policy)
+		}
+		hold := m.FillBurstHold.Duration
+		replicas := s.rf.Spec.Redis.Replicas
+		return plan{
+			kind:   kind,
+			params: fmt.Sprintf("write past maxmemory, hold %s", hold),
+			action: func(ctx context.Context) error {
+				skip, err := d.Burst(ctx, hold)
+				if skip != "" {
+					return fmt.Errorf("burst not started: %s", skip)
+				}
+				return err
+			},
+			probe: d.Writable,
+			converged: func(s state) error {
+				return podsReady("redis", s.redis, replicas)
+			},
+		}
+	}
 	return skipped(kind, "unknown kind")
+}
+
+// planMemory changes the memory limit within rg, and a memory request in
+// proportion, so the QoS class stays the same.
+func planMemory(r *rand.Rand, rg config.Range, s state) plan {
+	const kind = config.RedisMemory
+	cur := s.rf.Spec.Redis.Resources
+	lim, ok := cur.Limits[corev1.ResourceMemory]
+	if !ok {
+		return skipped(kind, "no memory limit")
+	}
+	want := resource.NewQuantity(pickOther(r, rg, lim.Value()/mi)*mi, resource.BinarySI)
+	next := *cur.DeepCopy()
+	next.Limits[corev1.ResourceMemory] = *want
+	limits := map[string]string{"memory": want.String()}
+	patch := map[string]any{"limits": limits}
+	params := []string{fmt.Sprintf("limits.memory %s -> %s", lim.String(), want.String())}
+	if req, ok := cur.Requests[corev1.ResourceMemory]; ok {
+		nreq := want
+		if !req.Equal(lim) {
+			nreq = resource.NewQuantity(max(1, req.Value()*want.Value()/lim.Value()/mi)*mi, resource.BinarySI)
+		}
+		next.Requests[corev1.ResourceMemory] = *nreq
+		patch["requests"] = map[string]string{"memory": nreq.String()}
+		params = append(params, fmt.Sprintf("requests.memory %s -> %s", req.String(), nreq.String()))
+	}
+	if from, to := qosClass(cur), qosClass(next); from != to {
+		return skipped(kind, "%s would change the QoS class from %s to %s", strings.Join(params, ", "), from, to)
+	}
+	before := map[string]int64{}
+	for i := range s.redis {
+		before[s.redis[i].Name] = maxmem.RedisLimit(&s.redis[i])
+	}
+	target := s.rf.MaxMemoryFor(want.Value())
+	evicts := strings.HasPrefix(s.rf.Spec.Redis.MaxMemory.Policy, "allkeys-")
+	return plan{
+		kind:      kind,
+		params:    fmt.Sprintf("%s (maxmemory %s)", strings.Join(params, ", "), maxmem.FormatBytes(target)),
+		patch:     mergePatch(map[string]any{"redis": map[string]any{"resources": patch}}),
+		converged: memoryConverged(next, s.rf.Spec.Redis.Replicas, before, target, evicts),
+	}
 }
 
 func planKill(r *rand.Rand, kind config.Kind, m config.Mutations, pods []corev1.Pod, i int, converged func(string, types.UID) func(state) error) plan {

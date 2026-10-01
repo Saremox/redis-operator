@@ -15,9 +15,14 @@ type predicateCase struct {
 
 func runPredicate(t *testing.T, converged func(state) error, cases []predicateCase) {
 	t.Helper()
+	runPredicateOn(t, testState, converged, cases)
+}
+
+func runPredicateOn(t *testing.T, base func() state, converged func(state) error, cases []predicateCase) {
+	t.Helper()
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			s := testState()
+			s := base()
 			c.change(&s)
 			err := converged(s)
 			if (err == nil) != c.ok {
