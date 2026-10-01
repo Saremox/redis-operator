@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/redis/go-redis/v9"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -32,6 +34,7 @@ func main() {
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	redis.SetLogger(redisLogger{log.With("component", "go-redis")})
 	if err := run(*configPath, *listen, log); err != nil {
 		log.Error("exiting", "error", err.Error())
 		os.Exit(1)
@@ -63,10 +66,11 @@ func run(configPath, listen string, log *slog.Logger) error {
 	var wg sync.WaitGroup
 	wg.Go(func() { reportBuildInfo(ctx, kube, cfg.Operator, m, log) })
 	for _, in := range cfg.Instances {
-		path := prober.MasterService(in, cfg.Probe.Timeout.Duration)
-		for _, client := range []prober.Client{prober.Pooled, prober.Retrying, prober.Fresh} {
-			p := prober.New(in, path, client, cfg.Probe, m, log)
-			wg.Go(func() { p.Run(ctx) })
+		for _, path := range prober.Paths(in, cfg.Probe.Timeout.Duration) {
+			for _, client := range []prober.Client{prober.Pooled, prober.Retrying, prober.Fresh} {
+				p := prober.New(in, path, client, cfg.Probe, m, log)
+				wg.Go(func() { p.Run(ctx) })
+			}
 		}
 	}
 	wg.Go(func() {
@@ -108,4 +112,13 @@ func reportBuildInfo(ctx context.Context, kube kubernetes.Interface, op config.O
 		case <-t.C:
 		}
 	}
+}
+
+// redisLogger sends go-redis's own logging to debug level: its Sentinel
+// client logs every Sentinel it discovers, which a fresh client per probe
+// would repeat every second.
+type redisLogger struct{ log *slog.Logger }
+
+func (l redisLogger) Printf(ctx context.Context, format string, v ...any) {
+	l.log.DebugContext(ctx, fmt.Sprintf(format, v...))
 }

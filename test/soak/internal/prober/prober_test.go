@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -75,5 +76,21 @@ redis_soak_writable` + labels + ` 1
 				t.Errorf("outages = %d, want 1", n)
 			}
 		}
+	}
+}
+
+func TestPaths(t *testing.T) {
+	names := func(mode config.Mode) []string {
+		var n []string
+		for _, p := range Paths(config.Instance{Name: "x", Namespace: "ns", Mode: mode, Port: 6379}, time.Second) {
+			n = append(n, p.Name)
+		}
+		return n
+	}
+	if got := names(config.ModeOperator); !slices.Equal(got, []string{PathRFRM}) {
+		t.Errorf("operator paths = %v", got)
+	}
+	if got := names(config.ModeSentinel); !slices.Equal(got, []string{PathSentinel, PathRFRM}) {
+		t.Errorf("sentinel paths = %v", got)
 	}
 }
