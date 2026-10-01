@@ -16,12 +16,16 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/saremox/redis-operator/client/k8s/clientset/versioned"
+	"github.com/saremox/redis-operator/test/soak/internal/auth"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/data"
+	"github.com/saremox/redis-operator/test/soak/internal/global"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 	"github.com/saremox/redis-operator/test/soak/internal/mutator"
 	"github.com/saremox/redis-operator/test/soak/internal/observer"
@@ -74,25 +78,41 @@ func run(configPath, listen string, log *slog.Logger) error {
 	m := metrics.New(reg, cfg.Observer.ConvergenceTimeout.Duration)
 	srv := &http.Server{Addr: listen, Handler: metrics.Handler(reg), ReadHeaderTimeout: 10 * time.Second}
 
+	sources, err := authSources(ctx, kube, rfs, cfg.Instances)
+	if err != nil {
+		return err
+	}
+	lock := &global.Lock{}
+	observers := map[string]*observer.Observer{}
+	datas := map[string]*data.Data{}
+	for _, in := range cfg.Instances {
+		o := observer.New(in, cfg, kube, rfs, sources[in.Name], lock, m, log)
+		observers[in.Name] = o
+		if in.Data != nil {
+			datas[in.Name] = data.New(in, cfg, o, sources[in.Name], m, log)
+		}
+	}
+
 	var wg sync.WaitGroup
 	wg.Go(func() { reportBuildInfo(ctx, kube, cfg.Operator, m, log) })
 	for _, in := range cfg.Instances {
-		for _, path := range prober.Paths(in, cfg.Probe.Timeout.Duration) {
-			for _, client := range []prober.Client{prober.Pooled, prober.Retrying, prober.Fresh} {
-				p := prober.New(in, path, client, cfg.Probe, m, log)
-				wg.Go(func() { p.Run(ctx) })
-			}
-		}
-		o := observer.New(in, cfg, kube, rfs, m, log)
-		wg.Go(func() { o.Run(ctx) })
+		o, a := observers[in.Name], sources[in.Name]
+		r := prober.NewRunner(in, cfg.Probe, a, m, log)
+		wg.Go(func() { r.Run(ctx, func() []string { return prober.Names(in, o.SentinelPath()) }) })
 		var d mutator.Data
-		if in.Data != nil {
-			dd := data.New(in, cfg, o, m, log)
+		if dd := datas[in.Name]; dd != nil {
 			wg.Go(func() { dd.Run(ctx) })
 			d = dd
 		}
+		if b := in.Bootstrap; b != nil {
+			o.SetSource(observers[b.Source])
+			rd := data.NewReplica(in, cfg, datas[b.Source], o, a, m, log)
+			wg.Go(func() { rd.Run(ctx) })
+			d = rd
+		}
+		wg.Go(func() { o.Run(ctx) })
 		if cfg.Mutation.On() && len(in.Mutations.Kinds) > 0 {
-			mu := mutator.New(in, cfg, kube, rfs, o, d, m, log)
+			mu := mutator.New(in, cfg, kube, rfs, o, d, a, lock, m, log)
 			wg.Go(func() { mu.Run(ctx) })
 		}
 	}
@@ -110,6 +130,37 @@ func run(configPath, listen string, log *slog.Logger) error {
 		return nil
 	}
 	return err
+}
+
+// authSources follows every instance's auth Secret, through an informer
+// on the Secrets of each instance namespace. The observers and mutators
+// keep them on the RedisFailovers' secretPath; they start on the current
+// one, so the first probes authenticate.
+func authSources(ctx context.Context, kube kubernetes.Interface, rfs versioned.Interface, instances []config.Instance) (map[string]*auth.Source, error) {
+	factories := map[string]informers.SharedInformerFactory{}
+	sources := map[string]*auth.Source{}
+	for _, in := range instances {
+		f, ok := factories[in.Namespace]
+		if !ok {
+			f = informers.NewSharedInformerFactoryWithOptions(kube, 0, informers.WithNamespace(in.Namespace))
+			factories[in.Namespace] = f
+		}
+		sources[in.Name] = auth.New(f.Core().V1().Secrets().Lister().Secrets(in.Namespace).Get)
+	}
+	for ns, f := range factories {
+		f.Start(ctx.Done())
+		for informer, synced := range f.WaitForCacheSync(ctx.Done()) {
+			if !synced {
+				return nil, fmt.Errorf("syncing the Secrets of namespace %s: %v not synced", ns, informer)
+			}
+		}
+	}
+	for _, in := range instances {
+		if rf, err := rfs.DatabasesV1().RedisFailovers(in.Namespace).Get(ctx, in.Name, metav1.GetOptions{}); err == nil {
+			sources[in.Name].Update(rf)
+		}
+	}
+	return sources, nil
 }
 
 // reportBuildInfo follows the operator's version, which changes when a

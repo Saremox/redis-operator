@@ -23,7 +23,10 @@ import (
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/client/k8s/clientset/versioned"
+	"github.com/saremox/redis-operator/test/soak/internal/auth"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
+	"github.com/saremox/redis-operator/test/soak/internal/customconfig"
+	"github.com/saremox/redis-operator/test/soak/internal/global"
 	"github.com/saremox/redis-operator/test/soak/internal/maxmem"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 )
@@ -39,7 +42,12 @@ type Observer struct {
 	timeout  time.Duration
 	kube     kubernetes.Interface
 	rfs      versioned.Interface
-	log      *slog.Logger
+	auth     *auth.Source
+	lock     *global.Lock
+	// source is the observer of the instance a bootstrapping one
+	// replicates from.
+	source *Observer
+	log    *slog.Logger
 
 	tracker    *tracker
 	holds      chan *hold
@@ -47,12 +55,21 @@ type Observer struct {
 	holdErr    error
 	view       atomic.Pointer[view]
 	generation int64
+	rfUID      string
+	// recreated is set when the RedisFailover was recreated, until the
+	// failover that follows.
+	recreated  bool
 	master     pod
 	lagPods    map[string]bool
 	servers    map[string][2]string
 	oomSeen    map[string]bool
 	evictions  evictions
-	failoverCh chan struct{}
+	failoverCh chan string
+	// evaluated are the invariants of the last round.
+	evaluated []string
+	// external is why a window is held open from outside the instance.
+	external   string
+	sentinelUp bool
 
 	ok         *prometheus.GaugeVec
 	violation  prometheus.ObserverVec
@@ -69,7 +86,7 @@ type Observer struct {
 	evicted     prometheus.Counter
 }
 
-func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs versioned.Interface, m *metrics.Metrics, log *slog.Logger) *Observer {
+func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs versioned.Interface, a *auth.Source, lock *global.Lock, m *metrics.Metrics, log *slog.Logger) *Observer {
 	labels := prometheus.Labels{"rf": in.Name, "namespace": in.Namespace, "mode": string(in.Mode)}
 	return &Observer{
 		in:         in,
@@ -77,12 +94,14 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		timeout:    cfg.Probe.Timeout.Duration,
 		kube:       kube,
 		rfs:        rfs,
+		auth:       a,
+		lock:       lock,
 		log:        log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
 		tracker:    newTracker(cfg.Observer.ConvergenceTimeout.Duration, cfg.Mutation.MinDwell.Duration),
 		holds:      make(chan *hold, 1),
 		lagPods:    map[string]bool{},
 		servers:    map[string][2]string{},
-		failoverCh: make(chan struct{}, 1),
+		failoverCh: make(chan string, 1),
 		ok:         m.InvariantOK.MustCurryWith(labels),
 		violation:  m.InvariantViolation.MustCurryWith(labels),
 		findings:   m.Findings.MustCurryWith(labels),
@@ -106,11 +125,29 @@ type hold struct {
 	done      chan bool
 }
 
+// SetSource makes a bootstrapping instance's observer follow the instance
+// it replicates from: the source's master offset is what its pods lag
+// behind, and the source's convergence windows are its own.
+func (o *Observer) SetSource(source *Observer) {
+	o.source = source
+}
+
 // view is what a mutator reads of the observer's last round.
 type view struct {
-	quiet    bool
-	master   string
-	masterIP string
+	quiet      bool
+	windowOpen bool
+	master     string
+	masterIP   string
+	// sentinelPath is whether the instance runs Sentinels that agree on the
+	// master, so it can be probed through them.
+	sentinelPath bool
+	redis        []PodAddr
+}
+
+// PodAddr is a redis pod's address.
+type PodAddr struct {
+	Name string
+	Addr string
 }
 
 // Hold opens a convergence window for a mutation that is about to be
@@ -148,8 +185,25 @@ func (o *Observer) MasterAddr() string {
 	return ""
 }
 
-// Failovers receives after the master's identity changed.
-func (o *Observer) Failovers() <-chan struct{} {
+// SentinelPath reports whether the instance runs Sentinels that agreed on
+// the master since its mode last changed to Sentinel.
+func (o *Observer) SentinelPath() bool {
+	v := o.view.Load()
+	return v != nil && v.sentinelPath
+}
+
+// RedisAddrs returns the address of every redis pod with an IP.
+func (o *Observer) RedisAddrs() []PodAddr {
+	if v := o.view.Load(); v != nil {
+		return v.redis
+	}
+	return nil
+}
+
+// Failovers receives an event after the master's identity changed:
+// config.EventFailover, or config.EventReset where the change lost the data
+// by design.
+func (o *Observer) Failovers() <-chan string {
 	return o.failoverCh
 }
 
@@ -179,11 +233,15 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 	if err != nil {
 		return snapshot{}, 0, err
 	}
+	o.auth.Update(rf)
 	// Validate fills in the operator's defaults.
 	spec := rf.DeepCopy()
 	_ = spec.Validate()
 	s := snapshot{
 		rf:               spec,
+		uid:              string(rf.UID),
+		bootstrap:        spec.Spec.BootstrapNode,
+		pvc:              spec.Spec.Redis.Storage.PersistentVolumeClaim != nil,
 		sentinel:         spec.SentinelEnabled(),
 		redisReplicas:    spec.Spec.Redis.Replicas,
 		sentinelReplicas: spec.Spec.Sentinel.Replicas,
@@ -229,14 +287,20 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 	}
 
 	var wg sync.WaitGroup
-	withConfig := spec.Spec.Redis.MaxMemory != nil
+	keys := customconfig.RedisKeys(spec)
+	if spec.Spec.Redis.MaxMemory != nil {
+		keys = append(keys, "maxmemory", "maxmemory-policy")
+	}
 	for i := range s.redis {
 		p := &s.redis[i]
-		wg.Go(func() { o.redisInfo(ctx, p, s.port, withConfig) })
+		wg.Go(func() { o.redisInfo(ctx, p, s.port, keys) })
 	}
 	for i := range s.sentinels {
 		p := &s.sentinels[i]
-		wg.Go(func() { p.master, p.err = o.sentinelMaster(ctx, p.IP) })
+		wg.Go(func() { o.sentinelInfo(ctx, p) })
+	}
+	if s.bootstrap != nil && o.source != nil {
+		wg.Go(func() { s.sourceOffset, s.sourceErr = o.source.masterOffset(ctx) })
 	}
 	wg.Wait()
 	return s, rf.Generation, nil
@@ -260,9 +324,11 @@ func newPod(p *corev1.Pod) pod {
 
 var errNoIP = errors.New("no pod IP")
 
-func (o *Observer) client(ip string, port int) *redis.Client {
+// client connects to a pod; a with the Secret's current password.
+func (o *Observer) client(ip string, port int, a *auth.Source) *redis.Client {
 	return redis.NewClient(&redis.Options{
 		Addr:                  net.JoinHostPort(ip, strconv.Itoa(port)),
+		CredentialsProvider:   a.Provider(),
 		DialTimeout:           o.timeout,
 		ReadTimeout:           o.timeout,
 		WriteTimeout:          o.timeout,
@@ -271,14 +337,13 @@ func (o *Observer) client(ip string, port int) *redis.Client {
 	})
 }
 
-// redisInfo sends INFO to the pod, and with withConfig CONFIG GET
-// maxmemory*.
-func (o *Observer) redisInfo(ctx context.Context, p *redisPod, port int, withConfig bool) {
+// redisInfo sends INFO to the pod, and CONFIG GET keys.
+func (o *Observer) redisInfo(ctx context.Context, p *redisPod, port int, keys []string) {
 	if p.IP == "" {
 		p.err, p.configErr = errNoIP, errNoIP
 		return
 	}
-	c := o.client(p.IP, port)
+	c := o.client(p.IP, port, o.auth)
 	defer func() { _ = c.Close() }()
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
@@ -287,27 +352,68 @@ func (o *Observer) redisInfo(ctx context.Context, p *redisPod, port int, withCon
 		p.info = parseInfo(s)
 	}
 	p.err = err
-	if withConfig {
-		p.config, p.configErr = c.ConfigGet(ctx, "maxmemory*").Result()
+	if len(keys) > 0 {
+		p.config, p.configErr = ConfigGet(ctx, c, keys)
 	}
 }
 
-func (o *Observer) sentinelMaster(ctx context.Context, ip string) (string, error) {
-	if ip == "" {
-		return "", errNoIP
+// ConfigGet reads several keys with one CONFIG GET, which Redis and Valkey
+// accept from 7.0 on.
+func ConfigGet(ctx context.Context, c *redis.Client, keys []string) (map[string]string, error) {
+	args := []any{"config", "get"}
+	for _, k := range keys {
+		args = append(args, k)
 	}
-	c := o.client(ip, sentinelPort)
+	cmd := redis.NewMapStringStringCmd(ctx, args...)
+	_ = c.Process(ctx, cmd)
+	return cmd.Result()
+}
+
+// sentinelInfo asks a Sentinel for the master's address, as clients do,
+// and for SENTINEL MASTER mymaster's fields.
+func (o *Observer) sentinelInfo(ctx context.Context, p *sentinelPod) {
+	if p.IP == "" {
+		p.err = errNoIP
+		return
+	}
+	c := o.client(p.IP, sentinelPort, nil)
 	defer func() { _ = c.Close() }()
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 	addr, err := c.Do(ctx, "SENTINEL", "get-master-addr-by-name", sentinelMasterName).StringSlice()
+	if err == nil && len(addr) != 2 {
+		err = errors.New("no master known")
+	}
 	if err != nil {
-		return "", err
+		p.err = err
+		return
 	}
-	if len(addr) != 2 {
-		return "", errors.New("no master known")
+	p.master = net.JoinHostPort(addr[0], addr[1])
+	p.fields, p.err = SentinelMaster(ctx, c)
+}
+
+// SentinelMaster returns SENTINEL MASTER mymaster's fields.
+func SentinelMaster(ctx context.Context, c *redis.Client) (map[string]string, error) {
+	cmd := redis.NewMapStringStringCmd(ctx, "SENTINEL", "MASTER", sentinelMasterName)
+	_ = c.Process(ctx, cmd)
+	return cmd.Result()
+}
+
+// masterOffset returns the master's replication offset.
+func (o *Observer) masterOffset(ctx context.Context) (int64, error) {
+	v := o.view.Load()
+	if v == nil || v.masterIP == "" {
+		return 0, errNoMaster
 	}
-	return net.JoinHostPort(addr[0], addr[1]), nil
+	c := o.client(v.masterIP, o.in.Port, o.auth)
+	defer func() { _ = c.Close() }()
+	ctx, cancel := context.WithTimeout(ctx, o.timeout)
+	defer cancel()
+	s, err := c.Info(ctx, "replication").Result()
+	if err != nil {
+		return 0, err
+	}
+	return parseInfo(s).int("master_repl_offset"), nil
 }
 
 func (o *Observer) takeHold() {
@@ -335,12 +441,20 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 		o.log.Info("convergence window opened", "generation", generation, "previous_generation", o.generation)
 		o.generation = generation
 	}
+	o.externalWindow(now)
 	checks := evaluate(s)
+	o.dropInvariants(checks)
 	allOK := true
 	for _, c := range checks {
 		o.ok.WithLabelValues(c.invariant).Set(gauge(c.err == nil))
 		allOK = allOK && c.err == nil
+		// The Sentinel Service routes to Ready pods only.
+		if c.invariant == invSentinelAgreement && c.err == nil &&
+			podsReady("sentinel", sentinelPods(s), s.sentinelReplicas) == nil {
+			o.sentinelUp = true
+		}
 	}
+	o.sentinelUp = o.sentinelUp && s.sentinel
 	for _, e := range o.tracker.update(now, checks, converged) {
 		o.record(e)
 	}
@@ -349,11 +463,62 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 	o.observeServers(s)
 	o.observeOOMKills(s)
 	o.observeData(s)
-	v := &view{quiet: allOK && !o.tracker.windowOpen(), master: o.master.Name}
+	v := &view{
+		quiet:        allOK && !o.tracker.windowOpen(),
+		windowOpen:   o.tracker.windowOpen(),
+		master:       o.master.Name,
+		sentinelPath: o.sentinelUp,
+	}
 	if _, err := s.master(); err == nil {
 		v.masterIP = o.master.IP
 	}
+	for _, p := range s.redis {
+		if p.IP != "" {
+			v.redis = append(v.redis, PodAddr{Name: p.Name, Addr: net.JoinHostPort(p.IP, strconv.Itoa(s.port))})
+		}
+	}
 	o.view.Store(v)
+}
+
+// externalWindow holds a window open while something outside the instance
+// is expected to disturb it: a mutation stopped the operator, or, for a
+// bootstrapping instance, the source is converging or without a master.
+func (o *Observer) externalWindow(now time.Time) {
+	reason := ""
+	switch {
+	case o.lock.OperatorDown():
+		reason = "operator stopped"
+	case o.source != nil:
+		if v := o.source.view.Load(); v == nil || v.windowOpen || v.masterIP == "" {
+			reason = "source converging"
+		}
+	}
+	if reason != "" {
+		if reason != o.external {
+			o.log.Info("convergence window opened", "by", reason)
+		}
+		o.tracker.openWindow(now)
+	}
+	o.external = reason
+}
+
+// dropInvariants forgets the invariants no longer evaluated, like
+// sentinel_agreement after Sentinel was switched off.
+func (o *Observer) dropInvariants(checks []check) {
+	names := make([]string, len(checks))
+	for i, c := range checks {
+		names[i] = c.invariant
+	}
+	for _, name := range o.evaluated {
+		if slices.Contains(names, name) {
+			continue
+		}
+		o.ok.DeleteLabelValues(name)
+		if o.tracker.drop(name) {
+			o.log.Info("invariant dropped while violated", "invariant", name)
+		}
+	}
+	o.evaluated = names
 }
 
 func (o *Observer) record(e event) {
@@ -392,14 +557,30 @@ func (o *Observer) release(converged bool) {
 
 func (o *Observer) observeMaster(s snapshot) {
 	o.masters.Set(float64(len(s.masters())))
+	if o.rfUID != "" && o.rfUID != s.uid {
+		o.recreated = true
+	}
+	o.rfUID = s.uid
 	master, err := s.master()
 	lags := map[string]int64{}
-	if err == nil {
+	switch {
+	case s.bootstrap != nil:
+		if s.sourceErr == nil {
+			lags = s.bootstrapLags()
+		}
+	case err == nil:
 		if o.master.UID != "" && o.master.UID != master.UID {
 			o.failovers.Inc()
-			o.log.Warn("failover", "from", o.master.Name, "to", master.Name)
+			event := config.EventFailover
+			// The only pod without a volume, or a new RedisFailover, starts
+			// empty.
+			if o.recreated || s.redisReplicas == 1 && !s.pvc {
+				event = config.EventReset
+			}
+			o.recreated = false
+			o.log.Warn("failover", "from", o.master.Name, "to", master.Name, "event", event)
 			select {
-			case o.failoverCh <- struct{}{}:
+			case o.failoverCh <- event:
 			default:
 			}
 		}

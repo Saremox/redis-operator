@@ -89,7 +89,7 @@ func TestEvaluateConfig(t *testing.T) {
 		_ = s.rf.Validate()
 		for i := range s.redis {
 			s.redis[i].limit = 192 << 20
-			s.redis[i].config = map[string]string{"maxmemory": "150994944", "maxmemory-policy": policy}
+			s.redis[i].config = map[string]string{"maxmemory": "150994944", "maxmemory-policy": policy, "replica-priority": "100"}
 		}
 		return s
 	}

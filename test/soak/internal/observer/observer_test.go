@@ -24,7 +24,7 @@ func newTestObserver(t *testing.T) (*Observer, *prometheus.Registry) {
 		t.Fatal(err)
 	}
 	reg := prometheus.NewRegistry()
-	o := New(cfg.Instances[0], cfg, nil, nil, metrics.New(reg, time.Minute), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	o := New(cfg.Instances[0], cfg, nil, nil, nil, nil, metrics.New(reg, time.Minute), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return o, reg
 }
 

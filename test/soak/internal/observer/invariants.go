@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/test/soak/internal/customconfig"
 	"github.com/saremox/redis-operator/test/soak/internal/maxmem"
 )
 
@@ -39,22 +40,32 @@ type redisPod struct {
 	err  error
 	// limit is the redis container's memory limit.
 	limit int64
-	// config holds the maxmemory* settings of instances with maxMemory.
+	// config holds the customConfig keys, and maxmemory and
+	// maxmemory-policy with maxMemory.
 	config    map[string]string
 	configErr error
 }
 
 type sentinelPod struct {
 	pod
-	// master is the address the Sentinel reports for mymaster.
+	// master is the address the Sentinel reports for mymaster, fields
+	// SENTINEL MASTER mymaster.
 	master string
+	fields map[string]string
 	err    error
 }
 
 // snapshot is everything one round of checks looks at.
 type snapshot struct {
 	// rf has the operator's defaults applied.
-	rf               *redisfailoverv1.RedisFailover
+	rf  *redisfailoverv1.RedisFailover
+	uid string
+	// bootstrap is the node every pod replicates from, if any; then
+	// sourceOffset is that node's replication offset.
+	bootstrap        *redisfailoverv1.BootstrapSettings
+	sourceOffset     int64
+	sourceErr        error
+	pvc              bool
 	sentinel         bool
 	redisReplicas    int32
 	sentinelReplicas int32
@@ -73,17 +84,28 @@ type check struct {
 }
 
 func evaluate(s snapshot) []check {
-	master, err := s.master()
-	checks := []check{
-		{invPods, s.checkPods()},
-		{invOneMaster, err},
-		{invMasterService, s.checkMasterService(master)},
-		{invReplication, s.checkReplication(master)},
+	var checks []check
+	if s.bootstrap != nil {
+		// No pod is the master: each replicates from the bootstrap node,
+		// and the operator labels none master.
+		checks = []check{
+			{invPods, s.checkPods()},
+			{invOneMaster, s.checkBootstrap()},
+			{invMasterService, s.checkNoMasterService()},
+		}
+	} else {
+		master, err := s.master()
+		checks = []check{
+			{invPods, s.checkPods()},
+			{invOneMaster, err},
+			{invMasterService, s.checkMasterService(master)},
+			{invReplication, s.checkReplication(master)},
+		}
+		if s.sentinel {
+			checks = append(checks, check{invSentinelAgreement, s.checkSentinels(master)})
+		}
 	}
-	if s.sentinel {
-		checks = append(checks, check{invSentinelAgreement, s.checkSentinels(master)})
-	}
-	if s.rf != nil && s.rf.Spec.Redis.MaxMemory != nil {
+	if s.rf != nil {
 		checks = append(checks, check{invConfig, s.checkConfig()})
 	}
 	return append(checks, check{invHealthy, s.checkHealthy()})
@@ -114,18 +136,23 @@ func (s snapshot) master() (*redisPod, error) {
 }
 
 func (s snapshot) checkPods() error {
-	var redis, sentinels []pod
+	var redis []pod
 	for _, p := range s.redis {
 		redis = append(redis, p.pod)
 	}
-	for _, p := range s.sentinels {
-		sentinels = append(sentinels, p.pod)
-	}
 	err := podsReady("redis", redis, s.redisReplicas)
 	if s.sentinel {
-		err = errors.Join(err, podsReady("sentinel", sentinels, s.sentinelReplicas))
+		err = errors.Join(err, podsReady("sentinel", sentinelPods(s), s.sentinelReplicas))
 	}
 	return err
+}
+
+func sentinelPods(s snapshot) []pod {
+	var pods []pod
+	for _, p := range s.sentinels {
+		pods = append(pods, p.pod)
+	}
+	return pods
 }
 
 func podsReady(kind string, pods []pod, want int32) error {
@@ -177,6 +204,45 @@ func (s snapshot) checkReplication(master *redisPod) error {
 	return errors.Join(errs...)
 }
 
+// checkBootstrap checks that every pod replicates from the bootstrap node
+// with its link up.
+func (s snapshot) checkBootstrap() error {
+	var errs []error
+	for _, r := range s.redis {
+		switch {
+		case r.info == nil:
+			errs = append(errs, fmt.Errorf("%s: %w", r.Name, r.err))
+		case r.info.role() != roleReplica:
+			errs = append(errs, fmt.Errorf("%s: role %q", r.Name, r.info["role"]))
+		case r.info["master_host"] != s.bootstrap.Host || r.info["master_port"] != s.bootstrap.Port:
+			errs = append(errs, fmt.Errorf("%s replicates from %s:%s, the bootstrap node is %s:%s",
+				r.Name, r.info["master_host"], r.info["master_port"], s.bootstrap.Host, s.bootstrap.Port))
+		case r.info["master_link_status"] != "up":
+			errs = append(errs, fmt.Errorf("%s: master_link_status %s", r.Name, r.info["master_link_status"]))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (s snapshot) checkNoMasterService() error {
+	if len(s.endpoints) != 0 {
+		return fmt.Errorf("%d ready endpoints %v, want none: no pod is the master", len(s.endpoints), s.endpoints)
+	}
+	return nil
+}
+
+// bootstrapLags returns each pod's replication offset behind the bootstrap
+// node's.
+func (s snapshot) bootstrapLags() map[string]int64 {
+	lags := map[string]int64{}
+	for _, r := range s.redis {
+		if r.info.role() == roleReplica && r.info["master_host"] == s.bootstrap.Host {
+			lags[r.Name] = max(0, s.sourceOffset-r.info.int("slave_repl_offset"))
+		}
+	}
+	return lags
+}
+
 // lags returns each replica's replication offset behind the master, for
 // the replicas that replicate from it.
 func (s snapshot) lags(master *redisPod) map[string]int64 {
@@ -209,22 +275,42 @@ func (s snapshot) checkSentinels(master *redisPod) error {
 	return errors.Join(errs...)
 }
 
-// checkConfig checks maxmemory and maxmemory-policy on every redis pod with
-// an IP, the pods the operator configures.
+// checkConfig checks every redis pod with an IP, the pods the operator
+// configures, against customConfig and the managed maxmemory settings, and
+// with Sentinel every Sentinel against Sentinel's customConfig.
 func (s snapshot) checkConfig() error {
+	var errs []error
 	var pods []maxmem.Pod
 	for _, p := range s.redis {
 		if p.IP == "" {
 			continue
 		}
-		mp := maxmem.Pod{Name: p.Name, Limit: p.limit, Err: p.configErr}
-		if p.configErr == nil {
-			mp.MaxMemory, mp.Err = strconv.ParseInt(p.config["maxmemory"], 10, 64)
-			mp.Policy = p.config["maxmemory-policy"]
+		if p.configErr != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", p.Name, p.configErr))
+			continue
 		}
+		if err := customconfig.Redis(s.rf, p.config); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", p.Name, err))
+		}
+		mp := maxmem.Pod{Name: p.Name, Limit: p.limit}
+		mp.MaxMemory, mp.Err = strconv.ParseInt(p.config["maxmemory"], 10, 64)
+		mp.Policy = p.config["maxmemory-policy"]
 		pods = append(pods, mp)
 	}
-	return maxmem.Check(s.rf, s.message, pods)
+	if s.rf.Spec.Redis.MaxMemory != nil {
+		errs = append(errs, maxmem.Check(s.rf, s.message, pods))
+	}
+	if s.sentinel {
+		for _, p := range s.sentinels {
+			if p.err != nil {
+				continue
+			}
+			if err := customconfig.Sentinel(s.rf, p.fields); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", p.Name, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (s snapshot) checkHealthy() error {

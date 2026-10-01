@@ -217,6 +217,16 @@ func convergeBuckets(timeout time.Duration) []float64 {
 	return append(buckets, timeout.Seconds())
 }
 
+// DeletePath deletes the probe series of an instance's path.
+func (m *Metrics) DeletePath(rf, namespace, path string) {
+	labels := prometheus.Labels{"rf": rf, "namespace": namespace, "path": path}
+	for _, v := range []interface{ DeletePartialMatch(prometheus.Labels) int }{
+		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration,
+	} {
+		v.DeletePartialMatch(labels)
+	}
+}
+
 // Handler serves /metrics and /healthz.
 func Handler(g prometheus.Gatherer) http.Handler {
 	mux := http.NewServeMux()

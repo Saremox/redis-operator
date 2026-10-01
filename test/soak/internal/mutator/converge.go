@@ -3,6 +3,9 @@ package mutator
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -23,6 +26,23 @@ type state struct {
 	// config is every redis pod's maxmemory settings, for instances with
 	// maxMemory.
 	config []maxmem.Pod
+	// password is the Secret's current password, and authSecret the Secret
+	// auth_add creates.
+	password   string
+	authSecret string
+	// auth is whether each redis pod accepts the password fetchOpts
+	// names.
+	auth map[string]error
+	// sentinelMasters is every Sentinel's SENTINEL MASTER mymaster.
+	sentinelMasters map[string]sentinelMaster
+	// sentinelService and sentinelConfigMap tell whether they exist.
+	sentinelService   bool
+	sentinelConfigMap bool
+}
+
+type sentinelMaster struct {
+	fields map[string]string
+	err    error
 }
 
 // redisReplicasConverged holds once the StatefulSet runs want ready pods on
@@ -246,4 +266,106 @@ func ready(p *corev1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// passwordAccepted holds once every redis pod accepts the password fetched
+// for.
+func passwordAccepted(s state) error {
+	if s.auth == nil {
+		return errors.New("the password wasn't checked")
+	}
+	var errs []error
+	for _, p := range s.redis {
+		if err, ok := s.auth[p.Name]; !ok || err != nil {
+			errs = append(errs, fmt.Errorf("%s refuses the password: %v", p.Name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// authConverged holds once every redis pod accepts the new password, the
+// pods rolled onto the changed Secret, every Sentinel monitors the master
+// without trouble, and the RedisFailover is Healthy. before is the pod
+// template's secret checksum before the change.
+func authConverged(before string, replicas int32) func(state) error {
+	return func(s state) error {
+		if err := passwordAccepted(s); err != nil {
+			return err
+		}
+		sum := templateChecksum(s)
+		if sum == before {
+			return errors.New("the redis pod template's secret checksum hasn't changed yet")
+		}
+		if err := statefulSetConverged(s.sts, replicas); err != nil {
+			return err
+		}
+		if err := podsReady("redis", s.redis, replicas); err != nil {
+			return err
+		}
+		for _, p := range s.redis {
+			if p.Annotations[secretChecksum] != sum {
+				return fmt.Errorf("%s hasn't rolled onto the secret yet", p.Name)
+			}
+		}
+		if s.rf.SentinelEnabled() {
+			if err := sentinelsMonitor(s, replicas); err != nil {
+				return err
+			}
+		}
+		return healthy(s.rf)
+	}
+}
+
+// sentinelsMonitor holds once every Sentinel sees the master up and all its
+// replicas, which it can't without the password.
+func sentinelsMonitor(s state, replicas int32) error {
+	var errs []error
+	for _, p := range s.sentinels {
+		m, ok := s.sentinelMasters[p.Name]
+		switch {
+		case !ok:
+			errs = append(errs, fmt.Errorf("%s: SENTINEL MASTER not read", p.Name))
+		case m.err != nil:
+			errs = append(errs, fmt.Errorf("%s: %w", p.Name, m.err))
+		default:
+			flags := strings.Split(m.fields["flags"], ",")
+			for _, f := range []string{"s_down", "o_down", "disconnected"} {
+				if slices.Contains(flags, f) {
+					errs = append(errs, fmt.Errorf("%s flags the master %s", p.Name, m.fields["flags"]))
+					break
+				}
+			}
+			if n := m.fields["num-slaves"]; n != strconv.Itoa(int(replicas-1)) {
+				errs = append(errs, fmt.Errorf("%s knows %s replicas, want %d", p.Name, n, replicas-1))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// toggleConverged holds once the Sentinel Deployment, Service and ConfigMap
+// exist and run, or are gone, as the mode asks, and the RedisFailover is
+// Healthy.
+func toggleConverged(sentinel bool, sentinels, replicas int32) func(state) error {
+	running := sentinelReplicasConverged(sentinels)
+	return func(s state) error {
+		if s.rf.SentinelEnabled() != sentinel {
+			return errors.New("the RedisFailover doesn't have the change")
+		}
+		if err := podsReady("redis", s.redis, replicas); err != nil {
+			return err
+		}
+		if sentinel {
+			if err := running(s); err != nil {
+				return err
+			}
+			if !s.sentinelService || !s.sentinelConfigMap {
+				return fmt.Errorf("the Sentinel Service exists: %t, its ConfigMap exists: %t", s.sentinelService, s.sentinelConfigMap)
+			}
+		} else if s.sentinel != nil || s.sentinelService || s.sentinelConfigMap || len(s.sentinels) > 0 {
+			return fmt.Errorf("the Sentinel Deployment exists: %t, its Service exists: %t, its ConfigMap exists: %t, %d Sentinel pods",
+				s.sentinel != nil, s.sentinelService, s.sentinelConfigMap, len(s.sentinels))
+		}
+		return healthy(s.rf)
+	}
 }

@@ -271,9 +271,24 @@ func TestQoSClass(t *testing.T) {
 func TestKillPlans(t *testing.T) {
 	m := mutations()
 	m.ForceDeleteProbability = 1
-	p := planFor(t, config.KillMaster, m, testState(), "rfr-x-0")
-	if p.pod != "rfr-x-0" || p.uid != "u0" || !p.force || p.patch != nil || p.params != "delete pod rfr-x-0 (force)" {
+	p := planFor(t, config.KillMasterForce, m, testState(), "rfr-x-0")
+	if p.pod != "rfr-x-0" || p.uid != "u0" || !p.force || p.patch != nil || p.params != "delete pod rfr-x-0 (force)" || p.reset {
+		t.Errorf("kill_master_force: %+v", p)
+	}
+	// The probability is for replicas and Sentinels only.
+	p = planFor(t, config.KillMaster, m, testState(), "rfr-x-0")
+	if p.pod != "rfr-x-0" || p.force || p.params != "delete pod rfr-x-0 (graceful)" {
 		t.Errorf("kill_master: %+v", p)
+	}
+	// The only pod without a volume loses the data by design.
+	s := testState()
+	s.rf.Spec.Redis.Replicas, s.redis = 1, s.redis[:1]
+	if p := planFor(t, config.KillMaster, m, s, "rfr-x-0"); !p.reset {
+		t.Errorf("only pod: %+v", p)
+	}
+	s.rf.Spec.Redis.Storage.PersistentVolumeClaim = &redisfailoverv1.EmbeddedPersistentVolumeClaim{}
+	if p := planFor(t, config.KillMaster, m, s, "rfr-x-0"); p.reset {
+		t.Errorf("only pod with a volume: %+v", p)
 	}
 	m.ForceDeleteProbability = 0
 	p = planFor(t, config.KillReplica, m, testState(), "rfr-x-0")
@@ -289,7 +304,7 @@ func TestKillPlans(t *testing.T) {
 	if p := planFor(t, config.KillMaster, m, testState(), "rfr-x-1"); p.skip == "" {
 		t.Errorf("not skipped: %+v", p)
 	}
-	s := testState()
+	s = testState()
 	s.redis[1].Labels[roleLabel] = roleMaster
 	if p := planFor(t, config.KillMaster, m, s, "rfr-x-0"); p.skip == "" {
 		t.Errorf("not skipped with two labelled masters: %+v", p)

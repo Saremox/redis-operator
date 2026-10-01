@@ -66,6 +66,14 @@ func (t *tracker) windowOpen() bool {
 	return !t.window.IsZero()
 }
 
+// drop forgets an invariant that is no longer evaluated, and reports
+// whether it was violated.
+func (t *tracker) drop(invariant string) bool {
+	_, ok := t.violated[invariant]
+	delete(t.violated, invariant)
+	return ok
+}
+
 func (t *tracker) closeWindow() {
 	t.window, t.held = time.Time{}, time.Time{}
 }

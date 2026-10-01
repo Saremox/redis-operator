@@ -142,11 +142,11 @@ func TestLedgerAging(t *testing.T) {
 
 type fakeMaster struct {
 	addr string
-	ch   chan struct{}
+	ch   chan string
 }
 
-func (f fakeMaster) MasterAddr() string         { return f.addr }
-func (f fakeMaster) Failovers() <-chan struct{} { return f.ch }
+func (f fakeMaster) MasterAddr() string       { return f.addr }
+func (f fakeMaster) Failovers() <-chan string { return f.ch }
 
 // fakeInfo answers INFO memory with the fill keys' size as used_memory,
 // and what policy and maxmemory hold.
@@ -188,7 +188,7 @@ func newTestData(t *testing.T, ledger bool) (*Data, *miniredis.Miniredis, *fakeI
 	fi.maxMemory.Store(400 * 1024)
 	m.Server().SetPreHook(fi.hook)
 	mt := metrics.New(prometheus.NewRegistry(), time.Minute)
-	d := New(cfg.Instances[0], cfg, fakeMaster{addr: m.Addr(), ch: make(chan struct{}, 1)}, mt, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := New(cfg.Instances[0], cfg, fakeMaster{addr: m.Addr(), ch: make(chan string, 1)}, nil, mt, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	_ = d.client.Close()
 	d.client = redis.NewClient(&redis.Options{Addr: m.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = d.client.Close() })
@@ -257,14 +257,14 @@ func TestVerify(t *testing.T) {
 	_ = m.Set(FillKey("x", 4), "garbage")
 	d.cfg.Fill.SampleKeys = 50
 	d.failedOver.Store(true)
-	if err := d.verify(ctx, EventFailover, 0); err != nil {
+	if err := d.verify(ctx, config.EventFailover, 0); err != nil {
 		t.Fatal(err)
 	}
 	// Every recent write, and both fill keys as all are sampled.
-	if got := lost(EventFailover); got != 5 {
+	if got := lost(config.EventFailover); got != 5 {
 		t.Errorf("lost %v, want 5", got)
 	}
-	if testutil.ToFloat64(mt.LedgerVerified.WithLabelValues("x", "ns", "operator", EventFailover)) != 1 {
+	if testutil.ToFloat64(mt.LedgerVerified.WithLabelValues("x", "ns", "operator", config.EventFailover)) != 1 {
 		t.Error("ledger_verified_total not counted")
 	}
 	// The first round's keys are aged out, the second's kept for samples.
@@ -276,10 +276,10 @@ func TestVerify(t *testing.T) {
 	}
 	// Each loss is counted once, and the samples of the second round
 	// pass.
-	if err := d.verify(ctx, EventPeriodic, 0); err != nil {
+	if err := d.verify(ctx, config.EventPeriodic, 0); err != nil {
 		t.Fatal(err)
 	}
-	if got := lost(EventPeriodic); got != 0 {
+	if got := lost(config.EventPeriodic); got != 0 {
 		t.Errorf("counted %v losses again", got)
 	}
 	if m.Exists(LedgerKey("x", 105)) || len(d.ledger.acked.spans) != 0 {
@@ -302,7 +302,7 @@ func TestVerifyAfterReset(t *testing.T) {
 	}
 	write(100)
 	d.writeFill(ctx, 1000)
-	if err := d.verify(ctx, EventPeriodic, 0); err != nil {
+	if err := d.verify(ctx, config.EventPeriodic, 0); err != nil {
 		t.Fatal(err)
 	}
 	write(30)

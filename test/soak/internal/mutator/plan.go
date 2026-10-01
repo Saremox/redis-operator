@@ -2,11 +2,12 @@ package mutator
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"maps"
-	"math/rand/v2"
+	mrand "math/rand/v2"
 	"slices"
 	"strings"
 
@@ -25,18 +26,22 @@ const (
 	roleReplica   = "slave"
 	redisName     = "redis"
 	resizeRequest = "redisfailovers.databases.spotahome.com/resize-requested-at"
-	mi            = 1 << 20
+	// secretChecksum is the checksum of the password on the redis pod
+	// template, which rolls the pods onto a changed Secret.
+	secretChecksum = "redisfailovers.databases.spotahome.com/secret-checksum"
+	sentinelPort   = 26379
+	mi             = 1 << 20
 )
 
 // stepRand returns the random source of one seed step. Each instance and
 // step gets its own, so a logged step can be replayed on its own.
-func stepRand(seed int64, in config.Instance, step int) *rand.Rand {
+func stepRand(seed int64, in config.Instance, step int) *mrand.Rand {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(in.Namespace + "/" + in.Name))
-	return rand.New(rand.NewPCG(uint64(seed)^h.Sum64(), uint64(step)))
+	return mrand.New(mrand.NewPCG(uint64(seed)^h.Sum64(), uint64(step)))
 }
 
-func pickKind(r *rand.Rand, m config.Mutations) config.Kind {
+func pickKind(r *mrand.Rand, m config.Mutations) config.Kind {
 	kinds := m.Sorted()
 	total := 0
 	for _, k := range kinds {
@@ -53,7 +58,7 @@ func pickKind(r *rand.Rand, m config.Mutations) config.Kind {
 }
 
 // pickOther returns a value of rg other than current.
-func pickOther(r *rand.Rand, rg config.Range, current int64) int64 {
+func pickOther(r *mrand.Rand, rg config.Range, current int64) int64 {
 	if current < rg.Min || current > rg.Max {
 		return rg.Min + r.Int64N(rg.Max-rg.Min+1)
 	}
@@ -72,23 +77,43 @@ type plan struct {
 	params string
 	// patch is a JSON merge patch of the RedisFailover.
 	patch []byte
+	// secret is a password to set in a Secret, before the patch.
+	secret *secretChange
 	// pod is the pod to delete, with its UID.
 	pod   string
 	uid   types.UID
 	force bool
-	// action applies a mutation that is neither a patch nor a delete.
-	action func(context.Context) error
+	// reset is a kill of an instance's only pod without a volume, which
+	// loses the data by design.
+	reset bool
+	// action applies a mutation that is neither a patch nor a delete;
+	// offline is scenario C.
+	action  func(context.Context) error
+	offline *offline
 	// converged is the mutation's own convergence signal: nil once the
-	// change is complete. probe, if set, must also return nil.
+	// change is complete, given what fetch reads. probe, if set, must also
+	// return nil.
 	converged func(state) error
+	fetch     fetchOpts
 	probe     func(context.Context) error
+}
+
+type secretChange struct {
+	name     string
+	password string
+}
+
+// newPassword returns a random password. It never appears in logs, so a
+// step can't be replayed with it, which doesn't matter.
+func newPassword() string {
+	return rand.Text()
 }
 
 func skipped(kind config.Kind, format string, a ...any) plan {
 	return plan{kind: kind, skip: fmt.Sprintf(format, a...)}
 }
 
-func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master string, d Data) plan {
+func newPlan(r *mrand.Rand, kind config.Kind, m config.Mutations, s state, master string, d Data) plan {
 	switch kind {
 	case config.RedisReplicas:
 		want := int32(pickOther(r, m.RedisReplicas, int64(s.rf.Spec.Redis.Replicas)))
@@ -108,7 +133,7 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 		}
 	case config.RedisResources:
 		return planResources(r, m.Resources, s)
-	case config.KillMaster:
+	case config.KillMaster, config.KillMasterForce:
 		masters := withRole(s.redis, roleMaster)
 		if len(masters) != 1 {
 			return skipped(kind, "%d pods are labelled master", len(masters))
@@ -116,21 +141,36 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 		if masters[0].Name != master {
 			return skipped(kind, "%s is labelled master, the observer saw %q", masters[0].Name, master)
 		}
-		return planKill(r, kind, m, masters, 0, redisPodReplaced)
+		p := planKill(kind, masters[0], kind == config.KillMasterForce, redisPodReplaced)
+		p.reset = s.rf.Spec.Redis.Replicas == 1 && s.rf.Spec.Redis.Storage.PersistentVolumeClaim == nil
+		return p
 	case config.KillReplica:
 		replicas := withRole(s.redis, roleReplica)
 		if len(replicas) == 0 {
 			return skipped(kind, "no replica")
 		}
-		return planKill(r, kind, m, replicas, r.IntN(len(replicas)), redisPodReplaced)
+		pod := replicas[r.IntN(len(replicas))]
+		return planKill(kind, pod, r.Float64() < m.ForceDeleteProbability, redisPodReplaced)
 	case config.KillSentinel:
 		if len(s.sentinels) == 0 {
 			return skipped(kind, "no sentinel pod")
 		}
 		want := s.rf.Spec.Sentinel.Replicas
-		return planKill(r, kind, m, s.sentinels, r.IntN(len(s.sentinels)), func(name string, uid types.UID) func(state) error {
+		pod := s.sentinels[r.IntN(len(s.sentinels))]
+		return planKill(kind, pod, r.Float64() < m.ForceDeleteProbability, func(name string, uid types.UID) func(state) error {
 			return sentinelPodReplaced(uid, want)
 		})
+	case config.PasswordRotate, config.AuthAdd, config.AuthRemove, config.PasswordRotateOffline:
+		return planAuth(kind, s)
+	case config.SentinelToggle:
+		want := !s.rf.SentinelEnabled()
+		return plan{
+			kind:      kind,
+			params:    fmt.Sprintf("sentinel.enabled %t -> %t", !want, want),
+			patch:     mergePatch(map[string]any{"sentinel": map[string]any{"enabled": want}}),
+			fetch:     fetchOpts{sentinelObjects: true},
+			converged: toggleConverged(want, s.rf.Spec.Sentinel.Replicas, s.rf.Spec.Redis.Replicas),
+		}
 	}
 	mm := s.rf.Spec.Redis.MaxMemory
 	if mm == nil {
@@ -192,7 +232,7 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 
 // planMemory changes the memory limit within rg, and a memory request in
 // proportion, so the QoS class stays the same.
-func planMemory(r *rand.Rand, rg config.Range, s state) plan {
+func planMemory(r *mrand.Rand, rg config.Range, s state) plan {
 	const kind = config.RedisMemory
 	cur := s.rf.Spec.Redis.Resources
 	lim, ok := cur.Limits[corev1.ResourceMemory]
@@ -231,9 +271,7 @@ func planMemory(r *rand.Rand, rg config.Range, s state) plan {
 	}
 }
 
-func planKill(r *rand.Rand, kind config.Kind, m config.Mutations, pods []corev1.Pod, i int, converged func(string, types.UID) func(state) error) plan {
-	p := pods[i]
-	force := r.Float64() < m.ForceDeleteProbability
+func planKill(kind config.Kind, p corev1.Pod, force bool, converged func(string, types.UID) func(state) error) plan {
 	how := "graceful"
 	if force {
 		how = "force"
@@ -246,6 +284,54 @@ func planKill(r *rand.Rand, kind config.Kind, m config.Mutations, pods []corev1.
 		force:     force,
 		converged: converged(p.Name, p.UID),
 	}
+}
+
+// planAuth changes the password, adds auth or removes it. Every one
+// converges once every redis pod accepts the new password, or needs none,
+// the pods rolled onto the Secret, and with Sentinel every Sentinel
+// monitors the master without trouble.
+func planAuth(kind config.Kind, s state) plan {
+	path := s.rf.Spec.Auth.SecretPath
+	p := plan{kind: kind}
+	password := newPassword()
+	switch kind {
+	case config.AuthAdd:
+		if path != "" {
+			return skipped(kind, "auth is on, with secret %s", path)
+		}
+		p.params = "add auth with secret " + s.authSecret
+		p.secret = &secretChange{name: s.authSecret, password: password}
+		p.patch = mergePatch(map[string]any{"auth": map[string]any{"secretPath": s.authSecret}})
+	case config.AuthRemove:
+		if path == "" {
+			return skipped(kind, "auth is off")
+		}
+		p.params = "remove auth with secret " + path
+		password = ""
+		p.patch = mergePatch(map[string]any{"auth": map[string]any{"secretPath": nil}})
+	case config.PasswordRotate:
+		if path == "" {
+			return skipped(kind, "auth is off")
+		}
+		p.params = "rotate the password in secret " + path
+		p.secret = &secretChange{name: path, password: password}
+	case config.PasswordRotateOffline:
+		if path == "" {
+			return skipped(kind, "auth is off")
+		}
+		p.params = "rotate the password in secret " + path + " while the operator is stopped, put it back, rotate again"
+		p.offline = &offline{secret: path, previous: s.password, first: newPassword(), second: password}
+	}
+	p.fetch = fetchOpts{password: &password, sentinelMaster: s.rf.SentinelEnabled()}
+	p.converged = authConverged(templateChecksum(s), s.rf.Spec.Redis.Replicas)
+	return p
+}
+
+func templateChecksum(s state) string {
+	if s.sts == nil {
+		return ""
+	}
+	return s.sts.Spec.Template.Annotations[secretChecksum]
 }
 
 func withRole(pods []corev1.Pod, role string) []corev1.Pod {
@@ -265,7 +351,7 @@ func mergePatch(spec map[string]any) []byte {
 
 // planResources changes cpu, memory or both: every request and limit of
 // them that the RedisFailover sets and the config bounds.
-func planResources(r *rand.Rand, b config.Resources, s state) plan {
+func planResources(r *mrand.Rand, b config.Resources, s state) plan {
 	const kind = config.RedisResources
 	cur := s.rf.Spec.Redis.Resources
 	type entry struct {

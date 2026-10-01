@@ -29,7 +29,7 @@ func TestProbe(t *testing.T) {
 	}}
 	probe := config.Probe{Interval: metav1.Duration{Duration: time.Second}, Timeout: metav1.Duration{Duration: time.Second},
 		WaitEvery: 2, WaitTimeout: metav1.Duration{Duration: 100 * time.Millisecond}}
-	p := New(in, path, Fresh, probe, m, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	p := New(in, path, Fresh, probe, nil, m, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx := context.Background()
 	run := func() {
 		c := path.NewClient(Fresh)
@@ -87,18 +87,19 @@ redis_soak_writable` + labels + ` 1
 	}
 }
 
-func TestPaths(t *testing.T) {
-	names := func(mode config.Mode) []string {
-		var n []string
-		for _, p := range Paths(config.Instance{Name: "x", Namespace: "ns", Mode: mode, Port: 6379}, time.Second) {
-			n = append(n, p.Name)
-		}
-		return n
-	}
-	if got := names(config.ModeOperator); !slices.Equal(got, []string{PathRFRM}) {
+func TestNames(t *testing.T) {
+	in := config.Instance{Name: "x", Namespace: "ns", Mode: config.ModeOperator, Port: 6379}
+	if got := Names(in, false); !slices.Equal(got, []string{PathRFRM}) {
 		t.Errorf("operator paths = %v", got)
 	}
-	if got := names(config.ModeSentinel); !slices.Equal(got, []string{PathSentinel, PathRFRM}) {
+	if got := Names(in, true); !slices.Equal(got, []string{PathSentinel, PathRFRM}) {
 		t.Errorf("sentinel paths = %v", got)
+	}
+	in.Bootstrap = &config.Bootstrap{Source: "src"}
+	if got := Names(in, false); !slices.Equal(got, []string{PathRFRS}) {
+		t.Errorf("bootstrap paths = %v", got)
+	}
+	if p := NewPath(PathRFRS, in, time.Second, nil); p.ReadKey != "soak:src:rfrm:pooled:seq" {
+		t.Errorf("read key %q", p.ReadKey)
 	}
 }

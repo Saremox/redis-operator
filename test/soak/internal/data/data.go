@@ -18,21 +18,17 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/time/rate"
 
+	"github.com/saremox/redis-operator/test/soak/internal/auth"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 	"github.com/saremox/redis-operator/test/soak/internal/prober"
 )
 
-// Events, the values of the event label besides the mutation kinds.
-const (
-	EventFailover = "failover"
-	EventPeriodic = "periodic"
-)
-
-// Master tells where the master is, and when it changed.
+// Master tells where the master is, and when it changed: Failovers
+// receives config.EventFailover or config.EventReset.
 type Master interface {
 	MasterAddr() string
-	Failovers() <-chan struct{}
+	Failovers() <-chan string
 }
 
 // Data fills one instance and keeps its ledger.
@@ -43,6 +39,7 @@ type Data struct {
 	// client writes through rfrm, like an application.
 	client *redis.Client
 	master Master
+	auth   *auth.Source
 	rnd    *rand.Rand
 	log    *slog.Logger
 
@@ -69,7 +66,7 @@ type request struct {
 	done  chan struct{}
 }
 
-func New(in config.Instance, cfg *config.Config, master Master, m *metrics.Metrics, log *slog.Logger) *Data {
+func New(in config.Instance, cfg *config.Config, master Master, a *auth.Source, m *metrics.Metrics, log *slog.Logger) *Data {
 	labels := prometheus.Labels{"rf": in.Name, "namespace": in.Namespace, "mode": string(in.Mode)}
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(in.Namespace + "/" + in.Name))
@@ -77,8 +74,9 @@ func New(in config.Instance, cfg *config.Config, master Master, m *metrics.Metri
 		in:       in,
 		cfg:      *in.Data,
 		timeout:  cfg.Probe.Timeout.Duration,
-		client:   prober.MasterService(in, cfg.Probe.Timeout.Duration).NewClient(prober.Pooled),
+		client:   prober.MasterService(in, cfg.Probe.Timeout.Duration, a).NewClient(prober.Pooled),
 		master:   master,
+		auth:     a,
 		rnd:      rand.New(rand.NewPCG(uint64(cfg.Mutation.Seed), h.Sum64())),
 		log:      log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
 		requests: make(chan request),
@@ -116,12 +114,17 @@ func (d *Data) Filled() bool { return d.filled.Load() }
 // after the mutation, as the mutation's.
 func (d *Data) Begin() { d.mutating.Store(true) }
 
-// Verify verifies the data after a mutation of kind, at the mutator's step,
-// and ends the mutation.
-func (d *Data) Verify(ctx context.Context, kind config.Kind, step int) {
-	r := request{event: string(kind), step: step, done: make(chan struct{})}
+// Verify verifies the data after a mutation, at the mutator's step, and
+// ends the mutation. event is the mutation's kind, or config.EventReset for
+// one that loses the data by design.
+func (d *Data) Verify(ctx context.Context, event string, step int) {
+	verifyAfter(ctx, d.requests, event, step)
+}
+
+func verifyAfter(ctx context.Context, requests chan<- request, event string, step int) {
+	r := request{event: event, step: step, done: make(chan struct{})}
 	select {
-	case d.requests <- r:
+	case requests <- r:
 	case <-ctx.Done():
 		return
 	}
@@ -146,14 +149,14 @@ func (d *Data) runVerifier(ctx context.Context) {
 			d.verifyRetrying(ctx, r.event, r.step)
 			d.mutating.Store(false)
 			close(r.done)
-		case <-d.master.Failovers():
+		case event := <-d.master.Failovers():
 			d.failedOver.Store(true)
 			if !d.mutating.Load() {
-				d.verifyRetrying(ctx, EventFailover, 0)
+				d.verifyRetrying(ctx, event, 0)
 			}
 		case <-periodic:
 			if !d.mutating.Load() {
-				d.verifyRetrying(ctx, EventPeriodic, 0)
+				d.verifyRetrying(ctx, config.EventPeriodic, 0)
 			}
 		}
 	}
@@ -184,14 +187,7 @@ func (d *Data) verify(ctx context.Context, event string, step int) error {
 		return errNoMaster
 	}
 	start := time.Now()
-	c := redis.NewClient(&redis.Options{
-		Addr:                  addr,
-		DialTimeout:           d.timeout,
-		ReadTimeout:           5 * d.timeout,
-		WriteTimeout:          5 * d.timeout,
-		ContextTimeoutEnabled: true,
-		MaxRetries:            -1,
-	})
+	c := d.podClient(addr, d.auth)
 	defer func() { _ = c.Close() }()
 	mi, err := memoryInfo(ctx, c)
 	if err != nil {
@@ -257,6 +253,19 @@ func (d *Data) verify(ctx context.Context, event string, step int) error {
 	}
 	log.Info("data verified")
 	return nil
+}
+
+// podClient connects to a pod directly, for verifications.
+func (d *Data) podClient(addr string, a *auth.Source) *redis.Client {
+	return redis.NewClient(&redis.Options{
+		Addr:                  addr,
+		CredentialsProvider:   a.Provider(),
+		DialTimeout:           d.timeout,
+		ReadTimeout:           5 * d.timeout,
+		WriteTimeout:          5 * d.timeout,
+		ContextTimeoutEnabled: true,
+		MaxRetries:            -1,
+	})
 }
 
 const chunk = 500

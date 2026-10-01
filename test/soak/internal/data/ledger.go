@@ -90,3 +90,15 @@ func (l *ledger) agedOut(s span) {
 	l.aged = max(l.aged, s.hi)
 	l.acked.dropBelow(l.aged)
 }
+
+// recentSample returns up to k of the writes acknowledged since the last
+// verification. Their keys are deleted only after two more verifications.
+func (l *ledger) recentSample(rnd *rand.Rand, k int) []int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	to := l.next
+	if l.inflight >= 0 {
+		to = l.inflight
+	}
+	return sample(rnd, l.acked.within(l.verified, to), k)
+}

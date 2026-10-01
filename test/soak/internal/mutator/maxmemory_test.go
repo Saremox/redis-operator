@@ -54,7 +54,7 @@ type fakeData struct {
 
 func (fakeData) Filled() bool                                           { return true }
 func (fakeData) Begin()                                                 {}
-func (fakeData) Verify(context.Context, config.Kind, int)               {}
+func (fakeData) Verify(context.Context, string, int)                    {}
 func (f fakeData) Writable(context.Context) error                       { return f.writable }
 func (f fakeData) Burst(context.Context, time.Duration) (string, error) { return f.burst() }
 

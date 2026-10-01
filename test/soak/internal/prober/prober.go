@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/saremox/redis-operator/test/soak/internal/auth"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 )
@@ -21,18 +22,29 @@ import (
 type Client string
 
 const (
-	// Pooled keeps one long-lived client, like an application.
+	// Pooled keeps one long-lived client, like an application. New
+	// connections use the Secret's current password; open ones stay
+	// authenticated as they were.
 	Pooled Client = "pooled"
 	// Retrying is Pooled with go-redis's default retries, like an
 	// application that didn't tune its client.
 	Retrying Client = "retrying"
 	// Fresh dials a new connection for every probe, like a new pod.
 	Fresh Client = "fresh"
+	// Follower is Pooled, but replaces its client with one for the new
+	// password as soon as the Secret changes, like an application that
+	// rereads its secret. Its auth failures show how long the operator
+	// takes to apply a change.
+	Follower Client = "follower"
 )
+
+// Clients are the client styles every path is probed with.
+var Clients = []Client{Pooled, Retrying, Fresh, Follower}
 
 type Prober struct {
 	path     Path
 	client   Client
+	auth     *auth.Source
 	interval time.Duration
 	timeout  time.Duration
 	// Every waitEvery-th SET is followed by WAIT 1 waitTimeout.
@@ -52,7 +64,7 @@ type Prober struct {
 	waitAcked      prometheus.Gauge
 }
 
-func New(in config.Instance, path Path, client Client, probe config.Probe, m *metrics.Metrics, log *slog.Logger) *Prober {
+func New(in config.Instance, path Path, client Client, probe config.Probe, a *auth.Source, m *metrics.Metrics, log *slog.Logger) *Prober {
 	labels := prometheus.Labels{
 		"rf":        in.Name,
 		"namespace": in.Namespace,
@@ -60,9 +72,10 @@ func New(in config.Instance, path Path, client Client, probe config.Probe, m *me
 		"path":      path.Name,
 		"client":    string(client),
 	}
-	return &Prober{
+	p := &Prober{
 		path:        path,
 		client:      client,
+		auth:        a,
 		interval:    probe.Interval.Duration,
 		timeout:     probe.Timeout.Duration,
 		waitEvery:   int64(probe.WaitEvery),
@@ -73,19 +86,24 @@ func New(in config.Instance, path Path, client Client, probe config.Probe, m *me
 		total:          m.ProbeTotal.MustCurryWith(labels),
 		duration:       m.ProbeDuration.MustCurryWith(labels),
 		lastSuccess:    m.LastSuccess.MustCurryWith(labels),
-		writable:       m.Writable.With(labels),
 		readable:       m.Readable.With(labels),
 		outageDuration: m.OutageDuration.With(labels),
 		waitAcked:      m.WaitAckedReplicas.WithLabelValues(in.Name, in.Namespace, string(in.Mode)),
 	}
+	if path.ReadKey == "" {
+		p.writable = m.Writable.With(labels)
+	}
+	return p
 }
 
 func (p *Prober) Run(ctx context.Context) {
 	var pooled *redis.Client
-	if p.client != Fresh {
-		pooled = p.path.NewClient(p.client)
-		defer func() { _ = pooled.Close() }()
-	}
+	var password string
+	defer func() {
+		if pooled != nil {
+			_ = pooled.Close()
+		}
+	}()
 	t := time.NewTicker(p.interval)
 	defer t.Stop()
 	for {
@@ -94,18 +112,32 @@ func (p *Prober) Run(ctx context.Context) {
 			return
 		case <-t.C:
 		}
-		c := pooled
-		if c == nil {
-			c = p.path.NewClient(Fresh)
-		}
-		p.probe(ctx, c)
-		if pooled == nil {
+		switch p.client {
+		case Fresh:
+			c := p.path.NewClient(Fresh)
+			p.probe(ctx, c)
 			_ = c.Close()
+			continue
+		case Follower:
+			if pw := p.auth.Password(); pooled != nil && pw != password {
+				_ = pooled.Close()
+				pooled = nil
+				p.log.Info("follower switched password")
+			}
 		}
+		if pooled == nil {
+			password = p.auth.Password()
+			pooled = p.path.NewClient(p.client)
+		}
+		p.probe(ctx, pooled)
 	}
 }
 
 func (p *Prober) probe(ctx context.Context, c *redis.Client) {
+	if p.path.ReadKey != "" {
+		p.read(ctx, c)
+		return
+	}
 	start := time.Now()
 	p.seq++
 	setErr := p.do(ctx, "set", func(ctx context.Context) error {
@@ -120,17 +152,32 @@ func (p *Prober) probe(ctx context.Context, c *redis.Client) {
 			return err
 		})
 	}
-	getErr := p.do(ctx, "get", func(ctx context.Context) error {
-		err := c.Get(ctx, p.key).Err()
+	getErr := p.get(ctx, c, p.key)
+	p.writable.Set(gauge(setErr == nil))
+	p.readable.Set(gauge(getErr == nil))
+	p.result(start, cmp.Or(setErr, getErr))
+}
+
+// read only GETs the path's read key, which may not exist yet.
+func (p *Prober) read(ctx context.Context, c *redis.Client) {
+	start := time.Now()
+	err := p.get(ctx, c, p.path.ReadKey)
+	p.readable.Set(gauge(err == nil))
+	p.result(start, err)
+}
+
+func (p *Prober) get(ctx context.Context, c *redis.Client, key string) error {
+	return p.do(ctx, "get", func(ctx context.Context) error {
+		err := c.Get(ctx, key).Err()
 		if errors.Is(err, redis.Nil) {
 			return nil
 		}
 		return err
 	})
-	p.writable.Set(gauge(setErr == nil))
-	p.readable.Set(gauge(getErr == nil))
+}
 
-	if err := cmp.Or(setErr, getErr); err != nil {
+func (p *Prober) result(start time.Time, err error) {
+	if err != nil {
 		if p.outage.fail(start) {
 			p.log.Warn("outage started", "result", Classify(err), "error", err.Error())
 		}
