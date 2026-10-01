@@ -12,6 +12,9 @@ instances:
   - name: op-basic
     namespace: op-basic
     mode: operator
+    data:
+      fill: {sizeMi: 32}
+      ledger: {}
     mutations:
       kinds:
         redis_replicas: 2
@@ -29,6 +32,9 @@ instances:
   - name: sent-basic
     namespace: sent-basic
     mode: sentinel
+    data:
+      fill: {sizeMi: 32}
+      ledger: {}
     mutations:
       kinds:
         redis_replicas: 2
@@ -39,3 +45,35 @@ instances:
       redisReplicas: {min: 1, max: 5}
       sentinelReplicas: {min: 3, max: 5}
       forceDeleteProbability: 0.5
+  - name: op-maxmem
+    namespace: op-maxmem
+    mode: operator
+    maxMemoryPolicy: allkeys-lru
+    data:
+      fill: {percent: 90}
+    mutations:
+      kinds:
+        redis_memory: 2
+        maxmemory_policy: 1
+        maxmemory_percent: 2
+        kill_replica: 1
+      redisMemory: {min: 160, max: 320}
+      maxMemoryPolicies: [allkeys-lru, allkeys-lfu, allkeys-random]
+      maxMemoryPercent: {min: 10, max: 95}
+      forceDeleteProbability: 0.5
+  - name: op-noevict
+    namespace: op-noevict
+    mode: operator
+    maxMemoryPolicy: noeviction
+    data:
+      fill: {percent: 70, ttl: 24h}
+      ledger: {}
+    mutations:
+      kinds:
+        redis_memory: 2
+        maxmemory_policy: 1
+        maxmemory_percent: 2
+        fill_burst: 2
+      redisMemory: {min: 128, max: 256}
+      maxMemoryPolicies: [noeviction, volatile-lru, volatile-ttl]
+      maxMemoryPercent: {min: 10, max: 95}

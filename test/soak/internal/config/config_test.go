@@ -13,7 +13,7 @@ func TestLoadExample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Instances) != 2 || c.Instances[0].Name != "op-basic" || c.Instances[1].Mode != ModeSentinel {
+	if len(c.Instances) != 3 || c.Instances[0].Name != "op-basic" || c.Instances[1].Mode != ModeSentinel {
 		t.Fatalf("unexpected instances: %+v", c.Instances)
 	}
 }
