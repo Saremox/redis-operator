@@ -138,8 +138,8 @@ type view struct {
 	windowOpen bool
 	master     string
 	masterIP   string
-	// sentinelPath is whether the instance runs Sentinels that agree on the
-	// master, so it can be probed through them.
+	// sentinelPath is whether the instance runs Sentinels that are Ready
+	// and agree on the master, so it can be probed through them.
 	sentinelPath bool
 	redis        []PodAddr
 }
@@ -185,8 +185,8 @@ func (o *Observer) MasterAddr() string {
 	return ""
 }
 
-// SentinelPath reports whether the instance runs Sentinels that agreed on
-// the master since its mode last changed to Sentinel.
+// SentinelPath reports whether the instance's Sentinels were all Ready and
+// agreed on the master since its mode last changed to Sentinel.
 func (o *Observer) SentinelPath() bool {
 	v := o.view.Load()
 	return v != nil && v.sentinelPath
@@ -324,7 +324,8 @@ func newPod(p *corev1.Pod) pod {
 
 var errNoIP = errors.New("no pod IP")
 
-// client connects to a pod; a with the Secret's current password.
+// client connects to a pod, authenticating with a's current password, or
+// with none for a nil a.
 func (o *Observer) client(ip string, port int, a *auth.Source) *redis.Client {
 	return redis.NewClient(&redis.Options{
 		Addr:                  net.JoinHostPort(ip, strconv.Itoa(port)),

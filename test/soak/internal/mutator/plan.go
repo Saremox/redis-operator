@@ -2,12 +2,12 @@ package mutator
 
 import (
 	"context"
-	"crypto/rand"
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"maps"
-	mrand "math/rand/v2"
+	"math/rand/v2"
 	"slices"
 	"strings"
 
@@ -35,13 +35,13 @@ const (
 
 // stepRand returns the random source of one seed step. Each instance and
 // step gets its own, so a logged step can be replayed on its own.
-func stepRand(seed int64, in config.Instance, step int) *mrand.Rand {
+func stepRand(seed int64, in config.Instance, step int) *rand.Rand {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(in.Namespace + "/" + in.Name))
-	return mrand.New(mrand.NewPCG(uint64(seed)^h.Sum64(), uint64(step)))
+	return rand.New(rand.NewPCG(uint64(seed)^h.Sum64(), uint64(step)))
 }
 
-func pickKind(r *mrand.Rand, m config.Mutations) config.Kind {
+func pickKind(r *rand.Rand, m config.Mutations) config.Kind {
 	kinds := m.Sorted()
 	total := 0
 	for _, k := range kinds {
@@ -58,7 +58,7 @@ func pickKind(r *mrand.Rand, m config.Mutations) config.Kind {
 }
 
 // pickOther returns a value of rg other than current.
-func pickOther(r *mrand.Rand, rg config.Range, current int64) int64 {
+func pickOther(r *rand.Rand, rg config.Range, current int64) int64 {
 	if current < rg.Min || current > rg.Max {
 		return rg.Min + r.Int64N(rg.Max-rg.Min+1)
 	}
@@ -106,14 +106,14 @@ type secretChange struct {
 // newPassword returns a random password. It never appears in logs, so a
 // step can't be replayed with it, which doesn't matter.
 func newPassword() string {
-	return rand.Text()
+	return crand.Text()
 }
 
 func skipped(kind config.Kind, format string, a ...any) plan {
 	return plan{kind: kind, skip: fmt.Sprintf(format, a...)}
 }
 
-func newPlan(r *mrand.Rand, kind config.Kind, m config.Mutations, s state, master string, d Data) plan {
+func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master string, d Data) plan {
 	switch kind {
 	case config.RedisReplicas:
 		want := int32(pickOther(r, m.RedisReplicas, int64(s.rf.Spec.Redis.Replicas)))
@@ -232,7 +232,7 @@ func newPlan(r *mrand.Rand, kind config.Kind, m config.Mutations, s state, maste
 
 // planMemory changes the memory limit within rg, and a memory request in
 // proportion, so the QoS class stays the same.
-func planMemory(r *mrand.Rand, rg config.Range, s state) plan {
+func planMemory(r *rand.Rand, rg config.Range, s state) plan {
 	const kind = config.RedisMemory
 	cur := s.rf.Spec.Redis.Resources
 	lim, ok := cur.Limits[corev1.ResourceMemory]
@@ -351,7 +351,7 @@ func mergePatch(spec map[string]any) []byte {
 
 // planResources changes cpu, memory or both: every request and limit of
 // them that the RedisFailover sets and the config bounds.
-func planResources(r *mrand.Rand, b config.Resources, s state) plan {
+func planResources(r *rand.Rand, b config.Resources, s state) plan {
 	const kind = config.RedisResources
 	cur := s.rf.Spec.Redis.Resources
 	type entry struct {
