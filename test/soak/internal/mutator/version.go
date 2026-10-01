@@ -53,8 +53,8 @@ type server struct {
 
 // planImage follows one of the chain's edges from the redis image's
 // version, picked by the step's random source; a following Sentinel image
-// changes with it. At the end of the chain it resets the instance instead,
-// once separate Sentinels have caught up.
+// changes with it. At the end of the chain it moves separate Sentinels
+// on instead, and once they caught up resets the instance.
 func (m *Mutator) planImage(r *rand.Rand, s state) plan {
 	const kind = config.ImageUpgrade
 	ch := m.in.Chain
@@ -65,7 +65,7 @@ func (m *Mutator) planImage(r *rand.Rand, s state) plan {
 	edges := m.versions.EdgesFrom(cur.Name, ch)
 	if len(edges) == 0 {
 		if sv, _ := m.versions.VersionOf(s.rf.Spec.Sentinel.Image); ch.Sentinel == config.SentinelSeparate && sv.Name != cur.Name {
-			return skipped(kind, "the chain ends at %s, the Sentinels run %s", cur.Name, s.rf.Spec.Sentinel.Image)
+			return m.planSentinelImage(r, s)
 		}
 		return m.planReset(s, "the chain ends at "+cur.Name)
 	}
@@ -90,7 +90,8 @@ func (m *Mutator) planImage(r *rand.Rand, s state) plan {
 }
 
 // planSentinelImage follows one of the chain's edges from the Sentinel
-// image's version towards the redis image's.
+// image's version towards the redis image's; once the Sentinels caught up
+// it changes the redis image instead.
 func (m *Mutator) planSentinelImage(r *rand.Rand, s state) plan {
 	const kind = config.SentinelImageUpgrade
 	ch := m.in.Chain
@@ -100,7 +101,7 @@ func (m *Mutator) planSentinelImage(r *rand.Rand, s state) plan {
 	case !ok || !dok:
 		return skipped(kind, "images %s and %s aren't both configured versions", s.rf.Spec.Sentinel.Image, s.rf.Spec.Redis.Image)
 	case cur.Name == data.Name:
-		return skipped(kind, "the Sentinels run the redis image's version %s", cur.Name)
+		return m.planImage(r, s)
 	}
 	var edges []config.Edge
 	for _, e := range m.versions.EdgesFrom(cur.Name, ch) {

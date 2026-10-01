@@ -128,10 +128,11 @@ func TestPlanImage(t *testing.T) {
 }
 
 // Separate Sentinels follow the data image along the chain, and the chain
-// resets only once they caught up.
+// resets only once they caught up; neither kind is skipped while the other
+// can move on.
 func TestPlanSentinelImage(t *testing.T) {
 	m := versionMutator(t, "migrate")
-	if p := m.planSentinelImage(stepRand(1, m.in, 1), onImages("redis:7.2.16-alpine", "redis:7.2.16-alpine")); p.skip == "" {
+	if p := m.planSentinelImage(stepRand(1, m.in, 1), onImages("redis:7.2.16-alpine", "redis:7.2.16-alpine")); p.kind != config.ImageUpgrade || p.edge == nil || p.edge.sentinel {
 		t.Errorf("Sentinels on the data's version: %+v", p)
 	}
 	// From redis-7.2 only valkey-7.2 and valkey-8 lead to valkey-8.
@@ -149,8 +150,8 @@ func TestPlanSentinelImage(t *testing.T) {
 	}
 
 	end := onImages("valkey/valkey:9.1.2-alpine", "valkey/valkey:8.1.10-alpine")
-	if p := m.planImage(stepRand(1, m.in, 1), end); p.skip == "" {
-		t.Errorf("reset before the Sentinels caught up: %+v", p)
+	if p := m.planImage(stepRand(1, m.in, 1), end); p.kind != config.SentinelImageUpgrade || p.edge == nil || p.edge.edge.To != "valkey-9" {
+		t.Errorf("at the end before the Sentinels caught up: %+v", p)
 	}
 	if p := m.planSentinelImage(stepRand(1, m.in, 1), end); p.edge == nil || p.edge.edge.To != "valkey-9" {
 		t.Errorf("plan %+v", p)
@@ -272,7 +273,8 @@ func TestClassify(t *testing.T) {
 		reasons string
 	}{
 		{"converged", tr, func(o observation) observation { return observation{converged: true, verified: true} }, transitionOK, ""},
-		{"stopped safely", tr, func(o observation) observation { return o }, transitionFailedSafe, "RDB format version 12"},
+		// An unknown edge that didn't converge within its bound, or got stuck.
+		{"stuck, stopped safely", tr, func(o observation) observation { return o }, transitionFailedSafe, "RDB format version 12"},
 		{"lost writes", tr, func(o observation) observation { o.lost = 3; return o }, transitionFailedUnsafe, "3 acknowledged writes lost"},
 		{"not verified", tr, func(o observation) observation { o.verified = false; return o }, transitionFailedUnsafe, "couldn't be verified"},
 		{"no master", tr, func(o observation) observation { o.master = ""; return o }, transitionFailedUnsafe, "no single master"},
