@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Kind is a kind of mutation, the value of the kind label.
@@ -17,9 +20,20 @@ const (
 	KillMaster       Kind = "kill_master"
 	KillReplica      Kind = "kill_replica"
 	KillSentinel     Kind = "kill_sentinel"
+	RedisMemory      Kind = "redis_memory"
+	MaxMemoryPolicy  Kind = "maxmemory_policy"
+	MaxMemoryPercent Kind = "maxmemory_percent"
+	FillBurst        Kind = "fill_burst"
 )
 
-var kinds = []Kind{RedisReplicas, SentinelReplicas, RedisResources, KillMaster, KillReplica, KillSentinel}
+var kinds = []Kind{
+	RedisReplicas, SentinelReplicas, RedisResources, KillMaster, KillReplica, KillSentinel,
+	RedisMemory, MaxMemoryPolicy, MaxMemoryPercent, FillBurst,
+}
+
+func maxMemoryOnly(k Kind) bool {
+	return k == RedisMemory || k == MaxMemoryPolicy || k == MaxMemoryPercent || k == FillBurst
+}
 
 func sentinelOnly(k Kind) bool {
 	return k == SentinelReplicas || k == KillSentinel
@@ -35,6 +49,12 @@ type Mutations struct {
 	// ForceDeleteProbability is the share of pod kills that delete the pod
 	// with GracePeriodSeconds=0 instead of gracefully.
 	ForceDeleteProbability float64 `json:"forceDeleteProbability"`
+	// RedisMemory bounds the redis container's memory limit in Mi.
+	RedisMemory       Range    `json:"redisMemory"`
+	MaxMemoryPolicies []string `json:"maxMemoryPolicies"`
+	MaxMemoryPercent  Range    `json:"maxMemoryPercent"`
+	// FillBurstHold is how long fill_burst keeps writing past maxmemory.
+	FillBurstHold metav1.Duration `json:"fillBurstHold"`
 }
 
 // Range is an inclusive range.
@@ -67,7 +87,7 @@ func (m Mutations) Sorted() []Kind {
 	return slices.Sorted(maps.Keys(m.Kinds))
 }
 
-func (m Mutations) validate(mode Mode) error {
+func (m Mutations) validate(in Instance) error {
 	for k, w := range m.Kinds {
 		if !slices.Contains(kinds, k) {
 			return fmt.Errorf("unknown kind %q", k)
@@ -75,8 +95,11 @@ func (m Mutations) validate(mode Mode) error {
 		if w < 1 {
 			return fmt.Errorf("%s: weight must be at least 1", k)
 		}
-		if sentinelOnly(k) && mode != ModeSentinel {
+		if sentinelOnly(k) && in.Mode != ModeSentinel {
 			return fmt.Errorf("%s needs a sentinel instance", k)
+		}
+		if maxMemoryOnly(k) && in.MaxMemoryPolicy == "" {
+			return fmt.Errorf("%s needs an instance with maxMemoryPolicy", k)
 		}
 	}
 	if m.ForceDeleteProbability < 0 || m.ForceDeleteProbability > 1 {
@@ -96,6 +119,55 @@ func (m Mutations) validate(mode Mode) error {
 		if err := m.Resources.validate(); err != nil {
 			return fmt.Errorf("resources: %w", err)
 		}
+		if err := m.Resources.validateData(in); err != nil {
+			return fmt.Errorf("resources: %w", err)
+		}
+	}
+	if _, ok := m.Kinds[RedisMemory]; ok {
+		if err := m.RedisMemory.validate(minMemoryLimitMi); err != nil {
+			return fmt.Errorf("redisMemory: %w", err)
+		}
+	}
+	if _, ok := m.Kinds[MaxMemoryPolicy]; ok {
+		if len(m.MaxMemoryPolicies) < 2 {
+			return errors.New("maxMemoryPolicies: at least two policies")
+		}
+		for _, p := range m.MaxMemoryPolicies {
+			if !slices.Contains(maxMemoryPolicies, p) {
+				return fmt.Errorf("maxMemoryPolicies: %q must be one of %s", p, strings.Join(maxMemoryPolicies, ", "))
+			}
+		}
+	}
+	if _, ok := m.Kinds[MaxMemoryPercent]; ok {
+		if err := m.MaxMemoryPercent.validate(10); err != nil || m.MaxMemoryPercent.Max > 95 {
+			return errors.New("maxMemoryPercent: min and max must be between 10 and 95, max greater than min")
+		}
+	}
+	if _, ok := m.Kinds[FillBurst]; ok {
+		if in.Data == nil || !slices.Contains(in.Policies(), "noeviction") {
+			return errors.New("fill_burst needs data and the noeviction policy")
+		}
+		if m.FillBurstHold.Duration <= 0 {
+			return errors.New("fillBurstHold must be positive")
+		}
+	}
+	return nil
+}
+
+// validateData keeps the memory limits of an instance with data above
+// what the data needs. With maxMemory the data follows the limit, which
+// only redis_memory changes knowing what the operator does then.
+func (r Resources) validateData(in Instance) error {
+	if !r.Requests.Memory.Set() && !r.Limits.Memory.Set() || in.Data == nil {
+		return nil
+	}
+	if in.MaxMemoryPolicy != "" {
+		return errors.New("memory of a maxMemory instance with data is changed by redis_memory only")
+	}
+	// A full sync forks the master, whose copy-on-write pages can double
+	// the data, plus the operator's 32Mi reserve.
+	if least := 2*in.Data.Fill.SizeMi + 32; r.Limits.Memory.Set() && r.Limits.Memory.Min < least {
+		return fmt.Errorf("limits.memory: min must be at least %dMi for %dMi of data", least, in.Data.Fill.SizeMi)
 	}
 	return nil
 }

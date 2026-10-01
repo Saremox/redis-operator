@@ -38,6 +38,9 @@ type Operator struct {
 type Probe struct {
 	Interval metav1.Duration `json:"interval"`
 	Timeout  metav1.Duration `json:"timeout"`
+	// WaitEvery runs WAIT 1 <waitTimeout> after every n-th SET.
+	WaitEvery   int             `json:"waitEvery"`
+	WaitTimeout metav1.Duration `json:"waitTimeout"`
 }
 
 // Observer sets how often the invariants are checked, and how long an
@@ -73,11 +76,15 @@ func (m Mutation) On() bool {
 }
 
 type Instance struct {
-	Name      string    `json:"name"`
-	Namespace string    `json:"namespace"`
-	Mode      Mode      `json:"mode"`
-	Port      int       `json:"port"`
-	Mutations Mutations `json:"mutations"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Mode      Mode   `json:"mode"`
+	Port      int    `json:"port"`
+	// MaxMemoryPolicy is the spec.redis.maxMemory.policy the instance is
+	// created with, empty without maxMemory.
+	MaxMemoryPolicy string    `json:"maxMemoryPolicy"`
+	Data            *Data     `json:"data"`
+	Mutations       Mutations `json:"mutations"`
 }
 
 func Load(path string) (*Config, error) {
@@ -113,6 +120,12 @@ func (c *Config) setDefaults() {
 	if c.Probe.Timeout.Duration == 0 {
 		c.Probe.Timeout.Duration = time.Second
 	}
+	if c.Probe.WaitEvery == 0 {
+		c.Probe.WaitEvery = 10
+	}
+	if c.Probe.WaitTimeout.Duration == 0 {
+		c.Probe.WaitTimeout.Duration = c.Probe.Timeout.Duration / 2
+	}
 	if c.Observer.Interval.Duration == 0 {
 		c.Observer.Interval.Duration = 5 * time.Second
 	}
@@ -135,6 +148,12 @@ func (c *Config) setDefaults() {
 		if c.Instances[i].Port == 0 {
 			c.Instances[i].Port = 6379
 		}
+		if c.Instances[i].Data != nil {
+			c.Instances[i].Data.setDefaults()
+		}
+		if c.Instances[i].Mutations.FillBurstHold.Duration == 0 {
+			c.Instances[i].Mutations.FillBurstHold.Duration = 10 * time.Second
+		}
 	}
 }
 
@@ -144,6 +163,9 @@ func (c *Config) validate() error {
 	}
 	if c.Mutation.Interval.Duration < 0 || c.Mutation.Jitter.Duration < 0 || c.Mutation.MinDwell.Duration < 0 || c.Mutation.StopAfter.Duration < 0 {
 		return fmt.Errorf("mutation: negative duration")
+	}
+	if c.Probe.WaitEvery < 1 || c.Probe.WaitTimeout.Duration < 0 || c.Probe.WaitTimeout.Duration >= c.Probe.Timeout.Duration {
+		return fmt.Errorf("probe: waitEvery must be at least 1 and waitTimeout shorter than timeout")
 	}
 	if c.Mutation.MinDwell.Duration >= c.Observer.ConvergenceTimeout.Duration {
 		return fmt.Errorf("mutation: minDwell must be shorter than observer.convergenceTimeout")
@@ -162,7 +184,10 @@ func (c *Config) validate() error {
 		if in.Port < 1 || in.Port > 65535 {
 			return fmt.Errorf("instance %q: invalid port %d", in.Name, in.Port)
 		}
-		if err := in.Mutations.validate(in.Mode); err != nil {
+		if err := in.validateData(); err != nil {
+			return fmt.Errorf("instance %q: %w", in.Name, err)
+		}
+		if err := in.Mutations.validate(in); err != nil {
 			return fmt.Errorf("instance %q: mutations: %w", in.Name, err)
 		}
 		key := in.Namespace + "/" + in.Name

@@ -136,3 +136,92 @@ func TestInvalid(t *testing.T) {
 		})
 	}
 }
+
+func TestData(t *testing.T) {
+	c, err := Parse([]byte(`
+instances:
+  - name: a
+    namespace: ns
+    maxMemoryPolicy: noeviction
+    data:
+      fill: {percent: 70, ttl: 1h}
+      ledger: {}
+    mutations:
+      kinds: {redis_memory: 1, maxmemory_policy: 1, maxmemory_percent: 1, fill_burst: 1}
+      redisMemory: {min: 128, max: 256}
+      maxMemoryPolicies: [noeviction, volatile-lru]
+      maxMemoryPercent: {min: 10, max: 95}
+  - name: b
+    namespace: ns
+    maxMemoryPolicy: allkeys-lru
+    data: {fill: {percent: 90}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Probe.WaitEvery != 10 || c.Probe.WaitTimeout.Duration != 500*time.Millisecond {
+		t.Errorf("probe defaults: %+v", c.Probe)
+	}
+	d := c.Instances[0].Data
+	if d.Fill.Percent != 70 || d.Fill.SizeMi != 16 || d.Fill.ValueBytes != 1024 || d.Fill.KeysPerSecond != 1000 || d.Fill.Batch != 50 {
+		t.Errorf("fill defaults: %+v", d.Fill)
+	}
+	if l := d.Ledger; l.WritesPerSecond != 10 || l.ValueBytes != 64 || l.SampleKeys != 100 || l.VerifyInterval.Duration != 10*time.Minute {
+		t.Errorf("ledger defaults: %+v", l)
+	}
+	if c.Instances[0].Mutations.FillBurstHold.Duration != 10*time.Second {
+		t.Errorf("fillBurstHold default: %v", c.Instances[0].Mutations.FillBurstHold)
+	}
+	if got := c.Instances[0].Policies(); !slices.Equal(got, []string{"noeviction", "noeviction", "volatile-lru"}) {
+		t.Errorf("policies %v", got)
+	}
+	if c.Instances[1].Data.Ledger != nil {
+		t.Error("ledger on by default")
+	}
+}
+
+func TestInvalidData(t *testing.T) {
+	instance := func(policy, data, mutations string) string {
+		return "instances: [{name: a, namespace: ns, maxMemoryPolicy: '" + policy + "', data: " + data + ", mutations: " + mutations + "}]"
+	}
+	cases := map[string]string{
+		"unknown policy":       instance("lru", "{fill: {}}", "{}"),
+		"ledger under allkeys": instance("allkeys-lru", "{fill: {}, ledger: {}}", "{}"),
+		"ledger switched to allkeys": instance("noeviction", "{fill: {}, ledger: {}}",
+			"{kinds: {maxmemory_policy: 1}, maxMemoryPolicies: [noeviction, allkeys-lfu]}"),
+		"ledger under volatile without ttl": instance("volatile-lru", "{fill: {}, ledger: {}}", "{}"),
+		"fill percent":                      instance("noeviction", "{fill: {percent: 120}}", "{}"),
+		"tiny values":                       instance("noeviction", "{fill: {valueBytes: 4}}", "{}"),
+		"maxMemory kind without maxMemory":  instance("", "{fill: {}}", "{kinds: {maxmemory_percent: 1}, maxMemoryPercent: {min: 10, max: 95}}"),
+		"no memory range":                   instance("noeviction", "{fill: {}}", "{kinds: {redis_memory: 1}}"),
+		"memory below 64Mi":                 instance("noeviction", "{fill: {}}", "{kinds: {redis_memory: 1}, redisMemory: {min: 32, max: 128}}"),
+		"one policy":                        instance("noeviction", "{fill: {}}", "{kinds: {maxmemory_policy: 1}, maxMemoryPolicies: [noeviction]}"),
+		"bad policy":                        instance("noeviction", "{fill: {}}", "{kinds: {maxmemory_policy: 1}, maxMemoryPolicies: [noeviction, lru]}"),
+		"percent above 95":                  instance("noeviction", "{fill: {}}", "{kinds: {maxmemory_percent: 1}, maxMemoryPercent: {min: 10, max: 99}}"),
+		"burst without noeviction":          instance("allkeys-lru", "{fill: {}}", "{kinds: {fill_burst: 1}}"),
+		"burst without data":                "instances: [{name: a, namespace: ns, maxMemoryPolicy: noeviction, mutations: {kinds: {fill_burst: 1}}}]",
+		"memory resources with maxMemory": instance("noeviction", "{fill: {}}",
+			"{kinds: {redis_resources: 1}, resources: {limits: {memory: {min: 192, max: 512}}}}"),
+		"memory below the data": instance("", "{fill: {sizeMi: 100}}",
+			"{kinds: {redis_resources: 1}, resources: {limits: {memory: {min: 192, max: 512}}}}"),
+		"wait timeout": "probe: {timeout: 1s, waitTimeout: 1s}\ninstances: [{name: a, namespace: ns}]",
+	}
+	for name, in := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse([]byte(in)); err == nil {
+				t.Error("expected an error")
+			}
+		})
+	}
+	// cpu stays changeable on a maxMemory instance with data, and memory
+	// with room for the data.
+	for _, in := range []string{
+		instance("noeviction", "{fill: {}}", "{kinds: {redis_resources: 1}, resources: {requests: {cpu: {min: 25, max: 100}}}}"),
+		instance("", "{fill: {sizeMi: 32}}", "{kinds: {redis_resources: 1}, resources: {limits: {memory: {min: 192, max: 512}}}}"),
+		instance("volatile-lru", "{fill: {ttl: 1h}, ledger: {}}", "{}"),
+	} {
+		if _, err := Parse([]byte(in)); err != nil {
+			t.Errorf("%s: %v", in, err)
+		}
+	}
+}
