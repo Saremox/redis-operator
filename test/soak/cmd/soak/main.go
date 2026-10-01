@@ -26,6 +26,7 @@ import (
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/data"
 	"github.com/saremox/redis-operator/test/soak/internal/global"
+	"github.com/saremox/redis-operator/test/soak/internal/instances"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 	"github.com/saremox/redis-operator/test/soak/internal/mutator"
 	"github.com/saremox/redis-operator/test/soak/internal/observer"
@@ -75,9 +76,14 @@ func run(configPath, listen string, log *slog.Logger) error {
 	defer stop()
 
 	reg := prometheus.NewRegistry()
-	m := metrics.New(reg, cfg.Observer.ConvergenceTimeout.Duration)
+	// Convergence histograms reach the longest timeout of up to 5 pods.
+	m := metrics.New(reg, cfg.LongestTimeout(5))
 	srv := &http.Server{Addr: listen, Handler: metrics.Handler(reg), ReadHeaderTimeout: 10 * time.Second}
 
+	insts, err := ensureInstances(ctx, kube, rfs, cfg, log)
+	if err != nil {
+		return err
+	}
 	sources, err := authSources(ctx, kube, rfs, cfg.Instances)
 	if err != nil {
 		return err
@@ -112,7 +118,7 @@ func run(configPath, listen string, log *slog.Logger) error {
 		}
 		wg.Go(func() { o.Run(ctx) })
 		if cfg.Mutation.On() && len(in.Mutations.Kinds) > 0 {
-			mu := mutator.New(in, cfg, kube, rfs, o, d, a, lock, m, log)
+			mu := mutator.New(in, cfg, kube, rfs, o, d, a, lock, insts[in.Name], m, log)
 			wg.Go(func() { mu.Run(ctx) })
 		}
 	}
@@ -130,6 +136,28 @@ func run(configPath, listen string, log *slog.Logger) error {
 		return nil
 	}
 	return err
+}
+
+// ensureInstances creates every instance with a template that doesn't
+// exist yet, on its configured versions.
+func ensureInstances(ctx context.Context, kube kubernetes.Interface, rfs versioned.Interface, cfg *config.Config, log *slog.Logger) (map[string]*instances.Instance, error) {
+	out := map[string]*instances.Instance{}
+	for _, in := range cfg.Instances {
+		if in.Template == "" {
+			continue
+		}
+		i, err := instances.New(in, kube, rfs, log)
+		if err != nil {
+			return nil, fmt.Errorf("instance %s: %w", in.Name, err)
+		}
+		redis, _ := cfg.VersionNamed(in.Version)
+		sentinel, _ := cfg.VersionNamed(in.SentinelVersion)
+		if err := i.Ensure(ctx, redis.Image, sentinel.Image); err != nil {
+			return nil, fmt.Errorf("instance %s: %w", in.Name, err)
+		}
+		out[in.Name] = i
+	}
+	return out, nil
 }
 
 // authSources follows every instance's auth Secret, through an informer

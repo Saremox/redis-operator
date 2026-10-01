@@ -56,3 +56,11 @@ func (i info) int(key string) int64 {
 	n, _ := strconv.ParseInt(i[key], 10, 64)
 	return n
 }
+
+// ServerOf returns the server and version an INFO server reply reports,
+// and its replication fields if it has them.
+func ServerOf(reply string) (name, version string, fields map[string]string) {
+	i := parseInfo(reply)
+	name, version = i.server()
+	return name, version, i
+}

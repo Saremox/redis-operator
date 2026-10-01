@@ -53,7 +53,7 @@ type Data struct {
 	filled     atomic.Bool
 	mutating   atomic.Bool
 	failedOver atomic.Bool
-	requests   chan request
+	requests   chan *request
 
 	oom      prometheus.Counter
 	lost     *prometheus.CounterVec
@@ -61,9 +61,12 @@ type Data struct {
 }
 
 type request struct {
+	ctx   context.Context
 	event string
 	step  int
 	done  chan struct{}
+	lost  int
+	err   error
 }
 
 func New(in config.Instance, cfg *config.Config, master Master, a *auth.Source, m *metrics.Metrics, log *slog.Logger) *Data {
@@ -79,7 +82,7 @@ func New(in config.Instance, cfg *config.Config, master Master, a *auth.Source, 
 		auth:     a,
 		rnd:      rand.New(rand.NewPCG(uint64(cfg.Mutation.Seed), h.Sum64())),
 		log:      log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
-		requests: make(chan request),
+		requests: make(chan *request),
 		oom:      m.OOMRejections.With(labels),
 		lost:     m.LostWrites.MustCurryWith(labels),
 		verified: m.LedgerVerified.MustCurryWith(labels),
@@ -114,24 +117,31 @@ func (d *Data) Filled() bool { return d.filled.Load() }
 // after the mutation, as the mutation's.
 func (d *Data) Begin() { d.mutating.Store(true) }
 
+// Refill makes Filled false until the filler reached its target again,
+// after the instance was recreated empty.
+func (d *Data) Refill() { d.filled.Store(false) }
+
 // Verify verifies the data after a mutation, at the mutator's step, and
 // ends the mutation. event is the mutation's kind, or config.EventReset for
-// one that loses the data by design.
-func (d *Data) Verify(ctx context.Context, event string, step int) {
-	verifyAfter(ctx, d.requests, event, step)
+// one that loses the data by design. It returns the writes found lost, or
+// an error if the data couldn't be verified before ctx was done.
+func (d *Data) Verify(ctx context.Context, event string, step int) (int, error) {
+	return verifyAfter(ctx, d.requests, event, step)
 }
 
-func verifyAfter(ctx context.Context, requests chan<- request, event string, step int) {
-	r := request{event: event, step: step, done: make(chan struct{})}
+func verifyAfter(ctx context.Context, requests chan<- *request, event string, step int) (int, error) {
+	r := &request{ctx: ctx, event: event, step: step, done: make(chan struct{})}
 	select {
 	case requests <- r:
 	case <-ctx.Done():
-		return
+		return 0, ctx.Err()
 	}
 	select {
 	case <-r.done:
 	case <-ctx.Done():
+		return 0, ctx.Err()
 	}
+	return r.lost, r.err
 }
 
 func (d *Data) runVerifier(ctx context.Context) {
@@ -146,33 +156,34 @@ func (d *Data) runVerifier(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case r := <-d.requests:
-			d.verifyRetrying(ctx, r.event, r.step)
+			r.lost, r.err = d.verifyRetrying(r.ctx, r.event, r.step)
 			d.mutating.Store(false)
 			close(r.done)
 		case event := <-d.master.Failovers():
 			d.failedOver.Store(true)
 			if !d.mutating.Load() {
-				d.verifyRetrying(ctx, event, 0)
+				_, _ = d.verifyRetrying(ctx, event, 0)
 			}
 		case <-periodic:
 			if !d.mutating.Load() {
-				d.verifyRetrying(ctx, config.EventPeriodic, 0)
+				_, _ = d.verifyRetrying(ctx, config.EventPeriodic, 0)
 			}
 		}
 	}
 }
 
-func (d *Data) verifyRetrying(ctx context.Context, event string, step int) {
+// verifyRetrying verifies until it succeeds or ctx is done.
+func (d *Data) verifyRetrying(ctx context.Context, event string, step int) (int, error) {
 	for attempt := 1; ; attempt++ {
-		err := d.verify(ctx, event, step)
+		lost, err := d.verify(ctx, event, step)
 		if err == nil || ctx.Err() != nil {
-			return
+			return lost, err
 		}
 		if attempt%10 == 1 {
 			d.log.Warn("verifying the data", "event", event, "step", step, "attempt", attempt, "error", err.Error())
 		}
 		if !sleep(ctx, 2*time.Second) {
-			return
+			return 0, ctx.Err()
 		}
 	}
 }
@@ -181,17 +192,17 @@ var errNoMaster = errors.New("no single master")
 
 // verify checks the writes acknowledged since the previous verification,
 // a sample of older ones and a sample of fill keys on the master.
-func (d *Data) verify(ctx context.Context, event string, step int) error {
+func (d *Data) verify(ctx context.Context, event string, step int) (int, error) {
 	addr := d.master.MasterAddr()
 	if addr == "" {
-		return errNoMaster
+		return 0, errNoMaster
 	}
 	start := time.Now()
 	c := d.podClient(addr, d.auth)
 	defer func() { _ = c.Close() }()
 	mi, err := memoryInfo(ctx, c)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	var r round
@@ -200,16 +211,16 @@ func (d *Data) verify(ctx context.Context, event string, step int) error {
 		r = d.ledger.plan(d.rnd, d.cfg.Ledger.SampleKeys)
 		size := d.cfg.Ledger.ValueBytes
 		if lostRecent, _, err = d.check(ctx, c, LedgerKey, size, members(r.recent)); err != nil {
-			return err
+			return 0, err
 		}
 		if lostOlder, _, err = d.check(ctx, c, LedgerKey, size, r.older); err != nil {
-			return err
+			return 0, err
 		}
 		// A sample that lost writes lost an unknown share of the older
 		// ones: count them all now, so later events don't inherit them.
 		if len(lostOlder) > 0 {
 			if lostOlder, _, err = d.check(ctx, c, LedgerKey, size, members(r.olderAll)); err != nil {
-				return err
+				return 0, err
 			}
 		}
 	}
@@ -219,7 +230,7 @@ func (d *Data) verify(ctx context.Context, event string, step int) error {
 	d.fillMu.Unlock()
 	lostFill, missingFill, err := d.check(ctx, c, FillKey, d.cfg.Fill.ValueBytes, fillSeqs)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// Fill keys may be evicted or expire, but never change.
 	if d.cfg.Fill.TTL.Duration > 0 || mi.maxMemory > 0 && strings.HasPrefix(mi.policy, "allkeys-") {
@@ -252,7 +263,7 @@ func (d *Data) verify(ctx context.Context, event string, step int) error {
 			"lost_fill", len(lostFill), "lost_fill_keys", format(spansOf(lostFill)))
 	}
 	log.Info("data verified")
-	return nil
+	return lost, nil
 }
 
 // podClient connects to a pod directly, for verifications.

@@ -38,6 +38,9 @@ type state struct {
 	// sentinelService and sentinelConfigMap tell whether they exist.
 	sentinelService   bool
 	sentinelConfigMap bool
+	// servers is what every redis and Sentinel pod reports in INFO, by pod
+	// name.
+	servers map[string]server
 }
 
 type sentinelMaster struct {

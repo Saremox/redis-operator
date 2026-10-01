@@ -236,7 +236,7 @@ func TestVerify(t *testing.T) {
 	}
 	d.writeFill(ctx, 50)
 
-	if err := d.verify(ctx, "kill_master", 1); err != nil {
+	if _, err := d.verify(ctx, "kill_master", 1); err != nil {
 		t.Fatal(err)
 	}
 	if lost("kill_master") != 0 {
@@ -257,12 +257,13 @@ func TestVerify(t *testing.T) {
 	_ = m.Set(FillKey("x", 4), "garbage")
 	d.cfg.Fill.SampleKeys = 50
 	d.failedOver.Store(true)
-	if err := d.verify(ctx, config.EventFailover, 0); err != nil {
+	n, err := d.verify(ctx, config.EventFailover, 0)
+	if err != nil {
 		t.Fatal(err)
 	}
 	// Every recent write, and both fill keys as all are sampled.
-	if got := lost(config.EventFailover); got != 5 {
-		t.Errorf("lost %v, want 5", got)
+	if got := lost(config.EventFailover); got != 5 || n != 5 {
+		t.Errorf("lost %v, returned %d, want 5", got, n)
 	}
 	if testutil.ToFloat64(mt.LedgerVerified.WithLabelValues("x", "ns", "operator", config.EventFailover)) != 1 {
 		t.Error("ledger_verified_total not counted")
@@ -276,7 +277,7 @@ func TestVerify(t *testing.T) {
 	}
 	// Each loss is counted once, and the samples of the second round
 	// pass.
-	if err := d.verify(ctx, config.EventPeriodic, 0); err != nil {
+	if _, err := d.verify(ctx, config.EventPeriodic, 0); err != nil {
 		t.Fatal(err)
 	}
 	if got := lost(config.EventPeriodic); got != 0 {
@@ -302,13 +303,13 @@ func TestVerifyAfterReset(t *testing.T) {
 	}
 	write(100)
 	d.writeFill(ctx, 1000)
-	if err := d.verify(ctx, config.EventPeriodic, 0); err != nil {
+	if _, err := d.verify(ctx, config.EventPeriodic, 0); err != nil {
 		t.Fatal(err)
 	}
 	write(30)
 	// The only pod is killed: everything is gone.
 	m.FlushAll()
-	if err := d.verify(ctx, "kill_master", 1); err != nil {
+	if _, err := d.verify(ctx, "kill_master", 1); err != nil {
 		t.Fatal(err)
 	}
 	// Every ledger write, though only 5 older ones are sampled, and the
@@ -318,7 +319,7 @@ func TestVerifyAfterReset(t *testing.T) {
 	}
 	write(10)
 	d.writeFill(ctx, 10)
-	if err := d.verify(ctx, "redis_replicas", 2); err != nil {
+	if _, err := d.verify(ctx, "redis_replicas", 2); err != nil {
 		t.Fatal(err)
 	}
 	if got := lost("redis_replicas"); got != 0 {
@@ -337,7 +338,7 @@ func TestVerifyEvictable(t *testing.T) {
 	policy := "allkeys-lru"
 	fi.policy.Store(&policy)
 	d.cfg.Fill.SampleKeys = 50
-	if err := d.verify(ctx, "redis_memory", 1); err != nil {
+	if _, err := d.verify(ctx, "redis_memory", 1); err != nil {
 		t.Fatal(err)
 	}
 	// Evicted keys are expected; a wrong value isn't.

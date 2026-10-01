@@ -27,6 +27,7 @@ import (
 	"github.com/saremox/redis-operator/test/soak/internal/auth"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/global"
+	"github.com/saremox/redis-operator/test/soak/internal/instances"
 	"github.com/saremox/redis-operator/test/soak/internal/maxmem"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 	"github.com/saremox/redis-operator/test/soak/internal/observer"
@@ -43,10 +44,13 @@ const (
 // Data is what the mutator needs of an instance's data.
 type Data interface {
 	Filled() bool
+	// Refill makes Filled false until the recreated instance is filled.
+	Refill()
 	// Begin and Verify bracket a mutation: Verify checks the data after
-	// it. event is the mutation's kind, or config.EventReset.
+	// it, and returns the writes it lost. event is the mutation's kind, or
+	// config.EventReset.
 	Begin()
-	Verify(ctx context.Context, event string, step int)
+	Verify(ctx context.Context, event string, step int) (int, error)
 	Burst(ctx context.Context, hold time.Duration) (string, error)
 	Writable(ctx context.Context) error
 }
@@ -59,23 +63,38 @@ type Mutator struct {
 	// converge bounds each step of a mutation that waits on the operator
 	// itself.
 	convergeTimeout time.Duration
-	kube            kubernetes.Interface
-	rfs             versioned.Interface
-	observer        *observer.Observer
-	data            Data
-	auth            *auth.Source
-	lock            *global.Lock
-	log             *slog.Logger
+	observerCfg     config.Observer
+	// versions holds the version catalogue and the transition graph.
+	versions *config.Config
+	kube     kubernetes.Interface
+	rfs      versioned.Interface
+	observer *observer.Observer
+	data     Data
+	auth     *auth.Source
+	lock     *global.Lock
+	// instance recreates the instance from its template, nil without one.
+	instance *instances.Instance
+	log      *slog.Logger
 
-	total      *prometheus.CounterVec
-	converge   prometheus.ObserverVec
-	recreated  *prometheus.CounterVec
-	inProgress *prometheus.GaugeVec
+	// resets counts the resets, which take a chain's starts in turn;
+	// mixed is the version change whose mixed window is open, and
+	// resetWhy why the next mutation is a reset.
+	resets   int
+	mixed    *mixedWindow
+	resetWhy string
+
+	total        *prometheus.CounterVec
+	converge     prometheus.ObserverVec
+	recreated    *prometheus.CounterVec
+	inProgress   *prometheus.GaugeVec
+	transitions  *prometheus.CounterVec
+	mixedSeconds prometheus.ObserverVec
+	findings     *prometheus.CounterVec
 }
 
 // New returns the mutator of an instance; data is nil for an instance
-// without data.
-func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs versioned.Interface, o *observer.Observer, data Data, a *auth.Source, lock *global.Lock, m *metrics.Metrics, log *slog.Logger) *Mutator {
+// without data, inst nil for one without a template.
+func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs versioned.Interface, o *observer.Observer, data Data, a *auth.Source, lock *global.Lock, inst *instances.Instance, m *metrics.Metrics, log *slog.Logger) *Mutator {
 	labels := prometheus.Labels{"rf": in.Name, "namespace": in.Namespace, "mode": string(in.Mode)}
 	mu := &Mutator{
 		in:              in,
@@ -83,20 +102,29 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		operator:        cfg.Operator,
 		timeout:         cfg.Probe.Timeout.Duration,
 		convergeTimeout: cfg.Observer.ConvergenceTimeout.Duration,
+		observerCfg:     cfg.Observer,
+		versions:        cfg,
 		kube:            kube,
 		rfs:             rfs,
 		observer:        o,
 		data:            data,
 		auth:            a,
 		lock:            lock,
+		instance:        inst,
 		log:             log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode, "seed", cfg.Mutation.Seed),
 		total:           m.MutationTotal.MustCurryWith(labels),
 		converge:        m.MutationConverge.MustCurryWith(labels),
 		recreated:       m.PodsRecreated.MustCurryWith(labels),
 		inProgress:      m.MutationInProgress.MustCurryWith(labels),
+		transitions:     m.VersionTransition.MustCurryWith(labels),
+		mixedSeconds:    m.VersionMixed.MustCurryWith(labels),
+		findings:        m.Findings.MustCurryWith(labels),
 	}
 	for _, k := range in.Mutations.Sorted() {
 		mu.inProgress.WithLabelValues(string(k)).Set(0)
+	}
+	if _, ok := in.Mutations.Kinds[config.ImageUpgrade]; ok && inst != nil {
+		mu.inProgress.WithLabelValues(string(config.Reset)).Set(0)
 	}
 	return mu
 }
@@ -128,7 +156,13 @@ func (m *Mutator) Run(ctx context.Context) {
 			step--
 			continue
 		}
-		m.mutate(ctx, step, r, kind)
+		next := m.mutate(ctx, step, r, kind)
+		// A version change that didn't converge is reset at once, while
+		// its window is still held.
+		for next != "" && ctx.Err() == nil {
+			step++
+			next = m.mutate(ctx, step, stepRand(m.cfg.Seed, m.in, step), next)
+		}
 		unlock()
 		d := m.cfg.Interval.Duration + time.Duration(r.Int64N(int64(m.cfg.Jitter.Duration)+1))
 		select {
@@ -177,31 +211,49 @@ func (m *Mutator) waitQuiet(ctx context.Context) bool {
 // within its bound: the mutation timed out.
 type expectation struct{ error }
 
-func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind config.Kind) {
+// mutate applies one mutation and waits until it converged. It returns
+// config.Reset when the mutation was a version change that didn't, so the
+// instance must be reset next.
+func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind config.Kind) config.Kind {
 	s, err := m.fetch(ctx, fetchOpts{})
 	if err != nil {
 		if ctx.Err() == nil {
 			m.log.Warn("reading the instance for a mutation", "step", step, "error", err.Error())
 		}
-		return
+		return ""
 	}
-	p := newPlan(r, kind, m.in.Mutations, s, m.observer.Master(), m.data)
+	p := m.plan(r, kind, s)
+	kind = p.kind
 	log := m.log.With("kind", kind, "step", step)
 	if p.skip != "" {
 		m.total.WithLabelValues(string(kind), resultSkipped).Inc()
 		log.Info("mutation skipped", "result", resultSkipped, "reason", p.skip)
-		return
+		return ""
 	}
+	timeout := m.cfg.Timeout(kind, m.observerCfg, s.rf.Spec.Redis.Replicas)
 	log = log.With("params", p.params, "redis_replicas", s.rf.Spec.Redis.Replicas)
 	before := uids(s.redis)
 
 	inProgress := m.inProgress.WithLabelValues(string(kind))
 	inProgress.Set(1)
 	defer inProgress.Set(0)
+	// An edge that may fail is observed for its timeout only, and its
+	// window held on, for the reset that follows.
+	bound := time.Duration(0)
+	hold := timeout
+	if p.edge != nil {
+		m.mixed = &mixedWindow{t: p.edge}
+		if d := p.edge.edge.Timeout.Duration; d > 0 {
+			timeout = d
+		}
+		if p.edge.edge.Expect != config.ExpectOK {
+			bound, hold = timeout, 2*timeout
+		}
+	}
 	// A rejected mutation changed nothing, so its window only waits for
 	// the invariants.
 	var applied, rejected atomic.Bool
-	h := m.observer.Hold(m.convergeTimeout, func(ctx context.Context) error {
+	h := m.observer.Hold(hold, func(ctx context.Context) error {
 		switch {
 		case rejected.Load():
 			return nil
@@ -222,7 +274,7 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 	if m.data != nil {
 		m.data.Begin()
 	}
-	log.Info("mutating")
+	log.Info("mutating", "timeout_seconds", timeout.Seconds())
 	start := time.Now()
 	applyErr := m.apply(ctx, p, log)
 	if applyErr != nil {
@@ -231,11 +283,9 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 	applied.Store(true)
 	h.Applied()
 	appliedAt := time.Now()
-	var converged bool
-	select {
-	case <-ctx.Done():
-		return
-	case converged = <-h.Done():
+	converged, ok := m.await(ctx, h, bound)
+	if !ok {
+		return ""
 	}
 	d := time.Since(start)
 
@@ -267,13 +317,100 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 		level = slog.LevelWarn
 	}
 	log.Log(ctx, level, "mutation done", "result", result, "duration_seconds", d.Seconds(), "pods_recreated", recreated)
-	if m.data != nil {
-		event := string(kind)
-		if p.reset {
-			event = config.EventReset
-		}
-		m.data.Verify(ctx, event, step)
+	event := string(kind)
+	if p.reset {
+		event = config.EventReset
 	}
+	if p.edge == nil || applyErr != nil {
+		if m.data != nil {
+			_, _ = m.data.Verify(ctx, event, step)
+		}
+		return ""
+	}
+	vctx, cancel := context.WithTimeout(ctx, verifyBound)
+	lost, verr := m.verify(vctx, event, step)
+	cancel()
+	if m.judge(ctx, p.edge, converged, lost, verr, log) != transitionOK && m.instance != nil {
+		m.resetWhy = "after " + p.edge.edge.String() + " didn't converge"
+		return config.Reset
+	}
+	return ""
+}
+
+// verifyBound bounds the verification a version change is judged by, as
+// a change that failed may leave the instance without a master.
+const verifyBound = 2 * time.Minute
+
+func (m *Mutator) verify(ctx context.Context, event string, step int) (int, error) {
+	if m.data == nil {
+		return 0, nil
+	}
+	return m.data.Verify(ctx, event, step)
+}
+
+func (m *Mutator) plan(r *rand.Rand, kind config.Kind, s state) plan {
+	switch kind {
+	case config.ImageUpgrade:
+		return m.planImage(r, s)
+	case config.SentinelImageUpgrade:
+		return m.planSentinelImage(r, s)
+	case config.Reset:
+		why := "picked"
+		if m.resetWhy != "" {
+			why, m.resetWhy = m.resetWhy, ""
+		}
+		return m.planReset(s, why)
+	}
+	return newPlan(r, kind, m.in.Mutations, s, m.observer.Master(), m.data)
+}
+
+// await waits until the window closes, or for at most bound if set, and
+// samples the mixed window meanwhile. It reports whether the mutation
+// converged, and false for ok if ctx was done.
+func (m *Mutator) await(ctx context.Context, h *observer.Hold, bound time.Duration) (converged, ok bool) {
+	var limit <-chan time.Time
+	if bound > 0 {
+		t := time.NewTimer(bound)
+		defer t.Stop()
+		limit = t.C
+	}
+	tick := time.NewTicker(m.observerCfg.Interval.Duration)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false, false
+		case converged = <-h.Done():
+			m.sampleMixed(ctx)
+			return converged, true
+		case <-limit:
+			m.sampleMixed(ctx)
+			return false, true
+		case <-tick.C:
+			m.sampleMixed(ctx)
+		}
+	}
+}
+
+// sampleMixed follows the open mixed window, and records it once it ended.
+func (m *Mutator) sampleMixed(ctx context.Context) {
+	if m.mixed == nil {
+		return
+	}
+	s, err := m.fetch(ctx, fetchOpts{servers: true})
+	if err != nil {
+		return
+	}
+	if d, ended := m.mixed.observe(time.Now(), podImages(m.mixed.t, s)); ended {
+		m.recordMixed(d)
+	}
+}
+
+func (m *Mutator) recordMixed(d time.Duration) {
+	t := m.mixed.t
+	m.mixed = nil
+	m.mixedSeconds.WithLabelValues(t.edge.From, t.edge.To).Observe(d.Seconds())
+	m.log.Info("mixed versions", "from", t.edge.From, "to", t.edge.To, "sentinel", t.sentinel, "duration_seconds", d.Seconds())
 }
 
 func (m *Mutator) apply(ctx context.Context, p plan, log *slog.Logger) error {
@@ -328,6 +465,8 @@ type fetchOpts struct {
 	// sentinelObjects reads the Sentinel Deployment, Service and ConfigMap
 	// whatever the mode.
 	sentinelObjects bool
+	// servers reads INFO server from every redis and Sentinel pod.
+	servers bool
 }
 
 func (m *Mutator) fetch(ctx context.Context, opts fetchOpts) (state, error) {
@@ -364,6 +503,9 @@ func (m *Mutator) fetch(ctx context.Context, opts fetchOpts) (state, error) {
 	if opts.sentinelMaster {
 		s.sentinelMasters = m.sentinelMasters(ctx, s.sentinels)
 	}
+	if opts.servers {
+		s.servers = m.servers(ctx, s.redis, s.sentinels, port)
+	}
 	s.sts, err = m.kube.AppsV1().StatefulSets(m.in.Namespace).Get(ctx, "rfr-"+m.in.Name, metav1.GetOptions{})
 	if err != nil {
 		return state{}, err
@@ -398,8 +540,12 @@ func exists[T any](_ T, err error) (bool, error) {
 
 // podClient connects to a redis or Sentinel pod with credentials.
 func (m *Mutator) podClient(ip string, port int, credentials func() (string, string)) *redis.Client {
+	return m.podClientAddr(net.JoinHostPort(ip, strconv.Itoa(port)), credentials)
+}
+
+func (m *Mutator) podClientAddr(addr string, credentials func() (string, string)) *redis.Client {
 	return redis.NewClient(&redis.Options{
-		Addr:                  net.JoinHostPort(ip, strconv.Itoa(port)),
+		Addr:                  addr,
 		CredentialsProvider:   credentials,
 		DialTimeout:           m.timeout,
 		ReadTimeout:           m.timeout,
@@ -449,6 +595,34 @@ func (m *Mutator) checkPassword(ctx context.Context, pods []corev1.Pod, port int
 	out := map[string]error{}
 	for _, p := range pods {
 		out[p.Name] = errs[p.Name]
+	}
+	return out
+}
+
+// servers reads INFO server, and INFO replication, from every redis and
+// Sentinel pod.
+func (m *Mutator) servers(ctx context.Context, redisPods, sentinels []corev1.Pod, port int) map[string]server {
+	out := map[string]server{}
+	for _, set := range []struct {
+		pods     []corev1.Pod
+		port     int
+		creds    func() (string, string)
+		sections []string
+	}{
+		{redisPods, port, m.auth.Provider(), []string{"server", "replication"}},
+		{sentinels, sentinelPort, auth.Fixed(""), []string{"server"}},
+	} {
+		vals, errs := eachPod(ctx, m, set.pods, set.port, set.creds, func(ctx context.Context, c *redis.Client) (string, error) {
+			return c.Info(ctx, set.sections...).Result()
+		})
+		for _, p := range set.pods {
+			if err, ok := errs[p.Name]; ok {
+				out[p.Name] = server{err: err}
+				continue
+			}
+			name, version, fields := observer.ServerOf(vals[p.Name])
+			out[p.Name] = server{name: name, version: version, fields: fields}
+		}
 	}
 	return out
 }

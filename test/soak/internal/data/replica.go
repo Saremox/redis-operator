@@ -47,7 +47,7 @@ type Replica struct {
 	auth     *auth.Source
 	rnd      *rand.Rand
 	log      *slog.Logger
-	requests chan request
+	requests chan *request
 
 	lost     *prometheus.CounterVec
 	verified *prometheus.CounterVec
@@ -65,7 +65,7 @@ func NewReplica(in config.Instance, cfg *config.Config, source *Data, pods Pods,
 		auth:     a,
 		rnd:      rand.New(rand.NewPCG(uint64(cfg.Mutation.Seed), h.Sum64())),
 		log:      log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
-		requests: make(chan request),
+		requests: make(chan *request),
 		lost:     m.LostWrites.MustCurryWith(labels),
 		verified: m.LedgerVerified.MustCurryWith(labels),
 	}
@@ -73,9 +73,10 @@ func NewReplica(in config.Instance, cfg *config.Config, source *Data, pods Pods,
 
 func (r *Replica) Filled() bool { return true }
 func (r *Replica) Begin()       {}
+func (r *Replica) Refill()      {}
 
-func (r *Replica) Verify(ctx context.Context, event string, step int) {
-	verifyAfter(ctx, r.requests, event, step)
+func (r *Replica) Verify(ctx context.Context, event string, step int) (int, error) {
+	return verifyAfter(ctx, r.requests, event, step)
 }
 
 func (r *Replica) Burst(context.Context, time.Duration) (string, error) {
@@ -94,68 +95,68 @@ func (r *Replica) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case req := <-r.requests:
-			r.verifyRetrying(ctx, req.event, req.step)
+			req.lost, req.err = r.verifyRetrying(req.ctx, req.event, req.step)
 			close(req.done)
 		case <-t.C:
-			r.verifyRetrying(ctx, config.EventPeriodic, 0)
+			_, _ = r.verifyRetrying(ctx, config.EventPeriodic, 0)
 		}
 	}
 }
 
-func (r *Replica) verifyRetrying(ctx context.Context, event string, step int) {
+func (r *Replica) verifyRetrying(ctx context.Context, event string, step int) (int, error) {
 	for attempt := 1; ; attempt++ {
-		err := r.verify(ctx, event, step)
+		lost, err := r.verify(ctx, event, step)
 		if err == nil || ctx.Err() != nil {
-			return
+			return lost, err
 		}
 		if attempt%10 == 1 {
 			r.log.Warn("verifying the data", "event", event, "step", step, "attempt", attempt, "error", err.Error())
 		}
 		if !sleep(ctx, 2*time.Second) {
-			return
+			return 0, ctx.Err()
 		}
 	}
 }
 
 // verify reads a sample of the source's recent ledger writes from the
 // source's master, and then from every pod once it has replicated as far.
-func (r *Replica) verify(ctx context.Context, event string, step int) error {
+func (r *Replica) verify(ctx context.Context, event string, step int) (int, error) {
 	start := time.Now()
 	src := r.source
 	seqs := src.ledger.recentSample(r.rnd, r.cfg.SampleKeys)
 	if len(seqs) == 0 {
-		return errors.New("no source writes since its last verification yet")
+		return 0, errors.New("no source writes since its last verification yet")
 	}
 	addr := src.master.MasterAddr()
 	if addr == "" {
-		return errNoMaster
+		return 0, errNoMaster
 	}
 	c := src.podClient(addr, src.auth)
 	defer func() { _ = c.Close() }()
 	size := src.cfg.Ledger.ValueBytes
 	gone, _, err := src.check(ctx, c, LedgerKey, size, seqs)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// The source's own losses are counted on the source.
 	present := slices.DeleteFunc(seqs, func(n int64) bool { return slices.Contains(gone, n) })
 	info, err := replication(ctx, c)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	at := position{replID: info["master_replid"]}
 	if at.offset, err = strconv.ParseInt(info["master_repl_offset"], 10, 64); err != nil {
-		return err
+		return 0, err
 	}
 	pods := r.pods.RedisAddrs()
 	if len(pods) == 0 {
-		return errors.New("no redis pod")
+		return 0, errors.New("no redis pod")
 	}
 	lost := 0
 	for _, p := range pods {
 		n, err := r.verifyPod(ctx, p, present, at)
 		if err != nil {
-			return fmt.Errorf("%s: %w", p.Name, err)
+			return 0, fmt.Errorf("%s: %w", p.Name, err)
 		}
 		lost += n
 	}
@@ -167,7 +168,7 @@ func (r *Replica) verify(ctx context.Context, event string, step int) error {
 		log.Warn("lost writes")
 	}
 	log.Info("data verified")
-	return nil
+	return lost, nil
 }
 
 func (r *Replica) verifyPod(ctx context.Context, p observer.PodAddr, seqs []int64, at position) (int, error) {

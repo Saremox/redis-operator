@@ -46,6 +46,9 @@ type Metrics struct {
 	EvictedKeys       *prometheus.CounterVec
 	LostWrites        *prometheus.CounterVec
 	LedgerVerified    *prometheus.CounterVec
+
+	VersionTransition *prometheus.CounterVec
+	VersionMixed      *prometheus.HistogramVec
 }
 
 // New registers the metrics. Convergence histograms reach up to
@@ -194,12 +197,24 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 			Name:      "ledger_verified_total",
 			Help:      "Verifications of the acknowledged writes, by the mutation kind or failover they ran after.",
 		}, labels("event")),
+		VersionTransition: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "version_transition_total",
+			Help:      "Version changes by the configured names of the versions, the edge's expectation and the result: ok, failed_safe or failed_unsafe.",
+		}, labels("from", "to", "expect", "result")),
+		VersionMixed: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "version_mixed_seconds",
+			Help:      "How long an instance ran two versions: from the first pod on the new version until the last pod on the old one was gone.",
+			Buckets:   []float64{10, 20, 30, 45, 60, 90, 120, 180, 300, 600, 900, 1200, 1800, 3600},
+		}, labels("from", "to")),
 	}
 	reg.MustRegister(
 		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration, m.BuildInfo,
 		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.ServerInfo,
 		m.MutationTotal, m.MutationConverge, m.PodsRecreated, m.MutationInProgress,
 		m.WaitAckedReplicas, m.DatasetKeys, m.UsedMemory, m.MaxMemory, m.OOMRejections, m.EvictedKeys, m.LostWrites, m.LedgerVerified,
+		m.VersionTransition, m.VersionMixed,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
