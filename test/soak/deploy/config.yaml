@@ -1,7 +1,13 @@
 operator:
   namespace: redis-operator
   deployment: redis-operator
+observer:
+  interval: 5s
+  convergenceTimeout: 10m
 instances:
   - name: op-basic
     namespace: op-basic
     mode: operator
+  - name: sent-basic
+    namespace: sent-basic
+    mode: sentinel

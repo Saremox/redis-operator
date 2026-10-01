@@ -8,6 +8,7 @@ CLUSTER ?= soak
 KIND_NODE ?= v1.35.0
 OPERATOR_VERSION ?=
 DURATION ?= 120
+RECOVERY ?= 180
 
 .PHONY: build test lint image kind-up kind-e2e
 
@@ -28,4 +29,4 @@ kind-up:
 
 kind-e2e: build
 	CLUSTER=$(CLUSTER) KIND_NODE=$(KIND_NODE) OPERATOR_VERSION=$(OPERATOR_VERSION) \
-		DURATION=$(DURATION) ./e2e/kind-e2e.sh
+		DURATION=$(DURATION) RECOVERY=$(RECOVERY) ./e2e/kind-e2e.sh
