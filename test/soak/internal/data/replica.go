@@ -30,6 +30,12 @@ type Pods interface {
 // had when it was read.
 const catchUp = 30 * time.Second
 
+// position is where a replication stream is: its ID and offset.
+type position struct {
+	replID string
+	offset int64
+}
+
 // Replica verifies a bootstrapping instance, which is read-only: it writes
 // nothing, and checks that every pod holds what the source's master holds
 // of the source's ledger.
@@ -117,6 +123,9 @@ func (r *Replica) verify(ctx context.Context, event string, step int) error {
 	start := time.Now()
 	src := r.source
 	seqs := src.ledger.recentSample(r.rnd, r.cfg.SampleKeys)
+	if len(seqs) == 0 {
+		return errors.New("no source writes since its last verification yet")
+	}
 	addr := src.master.MasterAddr()
 	if addr == "" {
 		return errNoMaster
@@ -130,8 +139,12 @@ func (r *Replica) verify(ctx context.Context, event string, step int) error {
 	}
 	// The source's own losses are counted on the source.
 	present := slices.DeleteFunc(seqs, func(n int64) bool { return slices.Contains(gone, n) })
-	offset, err := replOffset(ctx, c, "master_repl_offset")
+	info, err := replication(ctx, c)
 	if err != nil {
+		return err
+	}
+	at := position{replID: info["master_replid"]}
+	if at.offset, err = strconv.ParseInt(info["master_repl_offset"], 10, 64); err != nil {
 		return err
 	}
 	pods := r.pods.RedisAddrs()
@@ -140,7 +153,7 @@ func (r *Replica) verify(ctx context.Context, event string, step int) error {
 	}
 	lost := 0
 	for _, p := range pods {
-		n, err := r.verifyPod(ctx, p, present, offset)
+		n, err := r.verifyPod(ctx, p, present, at)
 		if err != nil {
 			return fmt.Errorf("%s: %w", p.Name, err)
 		}
@@ -157,20 +170,21 @@ func (r *Replica) verify(ctx context.Context, event string, step int) error {
 	return nil
 }
 
-func (r *Replica) verifyPod(ctx context.Context, p observer.PodAddr, seqs []int64, offset int64) (int, error) {
+func (r *Replica) verifyPod(ctx context.Context, p observer.PodAddr, seqs []int64, at position) (int, error) {
 	c := r.source.podClient(p.Addr, r.auth)
 	defer func() { _ = c.Close() }()
 	deadline := time.Now().Add(catchUp)
 	for {
-		got, err := replOffset(ctx, c, "slave_repl_offset")
+		info, err := replication(ctx, c)
 		if err != nil {
 			return 0, err
 		}
-		if got >= offset {
+		if caughtUp(info, at) {
 			break
 		}
 		if time.Now().After(deadline) {
-			return 0, fmt.Errorf("replicated up to %d, the source's master was at %d %s before", got, offset, catchUp)
+			return 0, fmt.Errorf("replicates %s up to %s with link %s, the source's master was at %s:%d %s before",
+				info["master_replid"], info["slave_repl_offset"], info["master_link_status"], at.replID, at.offset, catchUp)
 		}
 		if !sleep(ctx, 200*time.Millisecond) {
 			return 0, ctx.Err()
@@ -183,15 +197,25 @@ func (r *Replica) verifyPod(ctx context.Context, p observer.PodAddr, seqs []int6
 	return len(lost), err
 }
 
-func replOffset(ctx context.Context, c *redis.Client, key string) (int64, error) {
+// caughtUp reports whether a replica's INFO replication shows it has
+// replicated as far as at. Offsets of different streams can't be
+// compared: after the source's master was replaced, a replica that hasn't
+// synced with the new one yet may be far ahead in the old stream.
+func caughtUp(info map[string]string, at position) bool {
+	offset, err := strconv.ParseInt(info["slave_repl_offset"], 10, 64)
+	return err == nil && info["master_link_status"] == "up" && info["master_replid"] == at.replID && offset >= at.offset
+}
+
+func replication(ctx context.Context, c *redis.Client) (map[string]string, error) {
 	s, err := c.Info(ctx, "replication").Result()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
+	info := map[string]string{}
 	for line := range strings.Lines(s) {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), key+":"); ok {
-			return strconv.ParseInt(v, 10, 64)
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), ":"); ok {
+			info[k] = v
 		}
 	}
-	return 0, fmt.Errorf("no %s", key)
+	return info, nil
 }
