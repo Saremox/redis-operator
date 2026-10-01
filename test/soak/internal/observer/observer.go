@@ -24,6 +24,7 @@ import (
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/client/k8s/clientset/versioned"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
+	"github.com/saremox/redis-operator/test/soak/internal/maxmem"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 )
 
@@ -49,6 +50,9 @@ type Observer struct {
 	master     pod
 	lagPods    map[string]bool
 	servers    map[string][2]string
+	oomSeen    map[string]bool
+	evictions  evictions
+	failoverCh chan struct{}
 
 	ok         *prometheus.GaugeVec
 	violation  prometheus.ObserverVec
@@ -58,6 +62,11 @@ type Observer struct {
 	lag        *prometheus.GaugeVec
 	rfHealthy  prometheus.Gauge
 	serverInfo *prometheus.GaugeVec
+
+	datasetKeys prometheus.Gauge
+	usedMemory  prometheus.Gauge
+	maxMemory   prometheus.Gauge
+	evicted     prometheus.Counter
 }
 
 func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs versioned.Interface, m *metrics.Metrics, log *slog.Logger) *Observer {
@@ -73,6 +82,7 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		holds:      make(chan *hold, 1),
 		lagPods:    map[string]bool{},
 		servers:    map[string][2]string{},
+		failoverCh: make(chan struct{}, 1),
 		ok:         m.InvariantOK.MustCurryWith(labels),
 		violation:  m.InvariantViolation.MustCurryWith(labels),
 		findings:   m.Findings.MustCurryWith(labels),
@@ -81,6 +91,11 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		lag:        m.ReplicationLag.MustCurryWith(labels),
 		rfHealthy:  m.RFHealthy.With(labels),
 		serverInfo: m.ServerInfo.MustCurryWith(labels),
+
+		datasetKeys: m.DatasetKeys.With(labels),
+		usedMemory:  m.UsedMemory.With(labels),
+		maxMemory:   m.MaxMemory.With(labels),
+		evicted:     m.EvictedKeys.With(labels),
 	}
 }
 
@@ -93,8 +108,9 @@ type hold struct {
 
 // view is what a mutator reads of the observer's last round.
 type view struct {
-	quiet  bool
-	master string
+	quiet    bool
+	master   string
+	masterIP string
 }
 
 // Hold opens a convergence window for a mutation that is about to be
@@ -121,6 +137,20 @@ func (o *Observer) Master() string {
 		return v.master
 	}
 	return ""
+}
+
+// MasterAddr returns the address of the pod that last was the single
+// master.
+func (o *Observer) MasterAddr() string {
+	if v := o.view.Load(); v != nil && v.masterIP != "" {
+		return net.JoinHostPort(v.masterIP, strconv.Itoa(o.in.Port))
+	}
+	return ""
+}
+
+// Failovers receives after the master's identity changed.
+func (o *Observer) Failovers() <-chan struct{} {
+	return o.failoverCh
 }
 
 func (o *Observer) Run(ctx context.Context) {
@@ -153,6 +183,7 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 	spec := rf.DeepCopy()
 	_ = spec.Validate()
 	s := snapshot{
+		rf:               spec,
 		sentinel:         spec.SentinelEnabled(),
 		redisReplicas:    spec.Spec.Redis.Replicas,
 		sentinelReplicas: spec.Spec.Sentinel.Replicas,
@@ -172,7 +203,7 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 		p := &pods.Items[i]
 		switch p.Labels["app.kubernetes.io/component"] {
 		case "redis":
-			s.redis = append(s.redis, redisPod{pod: newPod(p)})
+			s.redis = append(s.redis, redisPod{pod: newPod(p), limit: maxmem.RedisLimit(p)})
 		case "sentinel":
 			s.sentinels = append(s.sentinels, sentinelPod{pod: newPod(p)})
 		}
@@ -198,9 +229,10 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 	}
 
 	var wg sync.WaitGroup
+	withConfig := spec.Spec.Redis.MaxMemory != nil
 	for i := range s.redis {
 		p := &s.redis[i]
-		wg.Go(func() { p.info, p.err = o.redisInfo(ctx, p.IP, s.port) })
+		wg.Go(func() { o.redisInfo(ctx, p, s.port, withConfig) })
 	}
 	for i := range s.sentinels {
 		p := &s.sentinels[i]
@@ -218,10 +250,11 @@ func newPod(p *corev1.Pod) pod {
 		}
 	}
 	return pod{
-		Name:  p.Name,
-		UID:   string(p.UID),
-		IP:    p.Status.PodIP,
-		Ready: ready && p.DeletionTimestamp == nil,
+		Name:     p.Name,
+		UID:      string(p.UID),
+		IP:       p.Status.PodIP,
+		Ready:    ready && p.DeletionTimestamp == nil,
+		OOMKills: oomKills(p),
 	}
 }
 
@@ -238,19 +271,25 @@ func (o *Observer) client(ip string, port int) *redis.Client {
 	})
 }
 
-func (o *Observer) redisInfo(ctx context.Context, ip string, port int) (info, error) {
-	if ip == "" {
-		return nil, errNoIP
+// redisInfo sends INFO to the pod, and with withConfig CONFIG GET
+// maxmemory*.
+func (o *Observer) redisInfo(ctx context.Context, p *redisPod, port int, withConfig bool) {
+	if p.IP == "" {
+		p.err, p.configErr = errNoIP, errNoIP
+		return
 	}
-	c := o.client(ip, port)
+	c := o.client(p.IP, port)
 	defer func() { _ = c.Close() }()
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 	s, err := c.Info(ctx).Result()
-	if err != nil {
-		return nil, err
+	if err == nil {
+		p.info = parseInfo(s)
 	}
-	return parseInfo(s), nil
+	p.err = err
+	if withConfig {
+		p.config, p.configErr = c.ConfigGet(ctx, "maxmemory*").Result()
+	}
 }
 
 func (o *Observer) sentinelMaster(ctx context.Context, ip string) (string, error) {
@@ -308,7 +347,13 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 	o.rfHealthy.Set(gauge(s.state == redisfailoverv1.HealthyState))
 	o.observeMaster(s)
 	o.observeServers(s)
-	o.view.Store(&view{quiet: allOK && !o.tracker.windowOpen(), master: o.master.Name})
+	o.observeOOMKills(s)
+	o.observeData(s)
+	v := &view{quiet: allOK && !o.tracker.windowOpen(), master: o.master.Name}
+	if _, err := s.master(); err == nil {
+		v.masterIP = o.master.IP
+	}
+	o.view.Store(v)
 }
 
 func (o *Observer) record(e event) {
@@ -353,6 +398,10 @@ func (o *Observer) observeMaster(s snapshot) {
 		if o.master.UID != "" && o.master.UID != master.UID {
 			o.failovers.Inc()
 			o.log.Warn("failover", "from", o.master.Name, "to", master.Name)
+			select {
+			case o.failoverCh <- struct{}{}:
+			default:
+			}
 		}
 		o.master = master.pod
 		lags = s.lags(master)

@@ -37,6 +37,15 @@ type Metrics struct {
 	MutationConverge   *prometheus.HistogramVec
 	PodsRecreated      *prometheus.CounterVec
 	MutationInProgress *prometheus.GaugeVec
+
+	WaitAckedReplicas *prometheus.GaugeVec
+	DatasetKeys       *prometheus.GaugeVec
+	UsedMemory        *prometheus.GaugeVec
+	MaxMemory         *prometheus.GaugeVec
+	OOMRejections     *prometheus.CounterVec
+	EvictedKeys       *prometheus.CounterVec
+	LostWrites        *prometheus.CounterVec
+	LedgerVerified    *prometheus.CounterVec
 }
 
 // New registers the metrics. Convergence histograms reach up to
@@ -145,11 +154,52 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 			Name:      "mutation_in_progress",
 			Help:      "1 while a mutation of the kind is converging.",
 		}, labels("kind")),
+		WaitAckedReplicas: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "wait_acked_replicas",
+			Help:      "Replicas that acknowledged the last sampled probe write within the WAIT timeout.",
+		}, labels()),
+		DatasetKeys: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "dataset_keys",
+			Help:      "Keys on the master, from INFO keyspace.",
+		}, labels()),
+		UsedMemory: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "used_memory_bytes",
+			Help:      "The master's used_memory.",
+		}, labels()),
+		MaxMemory: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "maxmemory_bytes",
+			Help:      "The master's maxmemory, 0 for none.",
+		}, labels()),
+		OOMRejections: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "oom_rejections_total",
+			Help:      "Fill and ledger writes rejected with OOM.",
+		}, labels()),
+		EvictedKeys: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "evicted_keys_total",
+			Help:      "Keys the redis pods evicted, from the evicted_keys deltas in INFO stats.",
+		}, labels()),
+		LostWrites: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "lost_writes_total",
+			Help:      "Acknowledged writes found missing or wrong, by the mutation kind or failover they were verified after.",
+		}, labels("event")),
+		LedgerVerified: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "ledger_verified_total",
+			Help:      "Verifications of the acknowledged writes, by the mutation kind or failover they ran after.",
+		}, labels("event")),
 	}
 	reg.MustRegister(
 		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration, m.BuildInfo,
 		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.ServerInfo,
 		m.MutationTotal, m.MutationConverge, m.PodsRecreated, m.MutationInProgress,
+		m.WaitAckedReplicas, m.DatasetKeys, m.UsedMemory, m.MaxMemory, m.OOMRejections, m.EvictedKeys, m.LostWrites, m.LedgerVerified,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)

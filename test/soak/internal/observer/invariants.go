@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/test/soak/internal/maxmem"
 )
 
 // Invariant names, the values of the invariant label.
@@ -17,6 +18,10 @@ const (
 	invReplication       = "replication"
 	invSentinelAgreement = "sentinel_agreement"
 	invHealthy           = "healthy"
+	invConfig            = "config"
+	// invOOMKilled is judged apart from the others: every OOM kill is a
+	// finding, in a convergence window too.
+	invOOMKilled = "oom_killed"
 )
 
 type pod struct {
@@ -24,12 +29,19 @@ type pod struct {
 	UID   string
 	IP    string
 	Ready bool
+	// OOMKills identify the pod's containers' OOM kills.
+	OOMKills []string
 }
 
 type redisPod struct {
 	pod
 	info info
 	err  error
+	// limit is the redis container's memory limit.
+	limit int64
+	// config holds the maxmemory* settings of instances with maxMemory.
+	config    map[string]string
+	configErr error
 }
 
 type sentinelPod struct {
@@ -41,6 +53,8 @@ type sentinelPod struct {
 
 // snapshot is everything one round of checks looks at.
 type snapshot struct {
+	// rf has the operator's defaults applied.
+	rf               *redisfailoverv1.RedisFailover
 	sentinel         bool
 	redisReplicas    int32
 	sentinelReplicas int32
@@ -68,6 +82,9 @@ func evaluate(s snapshot) []check {
 	}
 	if s.sentinel {
 		checks = append(checks, check{invSentinelAgreement, s.checkSentinels(master)})
+	}
+	if s.rf != nil && s.rf.Spec.Redis.MaxMemory != nil {
+		checks = append(checks, check{invConfig, s.checkConfig()})
 	}
 	return append(checks, check{invHealthy, s.checkHealthy()})
 }
@@ -190,6 +207,24 @@ func (s snapshot) checkSentinels(master *redisPod) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// checkConfig checks maxmemory and maxmemory-policy on every redis pod with
+// an IP, the pods the operator configures.
+func (s snapshot) checkConfig() error {
+	var pods []maxmem.Pod
+	for _, p := range s.redis {
+		if p.IP == "" {
+			continue
+		}
+		mp := maxmem.Pod{Name: p.Name, Limit: p.limit, Err: p.configErr}
+		if p.configErr == nil {
+			mp.MaxMemory, mp.Err = strconv.ParseInt(p.config["maxmemory"], 10, 64)
+			mp.Policy = p.config["maxmemory-policy"]
+		}
+		pods = append(pods, mp)
+	}
+	return maxmem.Check(s.rf, s.message, pods)
 }
 
 func (s snapshot) checkHealthy() error {
