@@ -10,7 +10,10 @@ operator:
   deployment: redis-operator
 observer:
   interval: 5s
-  convergenceTimeout: 5m
+  # Longer than the 5m the operator retries an in-place resize the kubelet
+  # refuses, e.g. a memory limit below the page cache in use, before it
+  # recreates the pod.
+  convergenceTimeout: 8m
 mutation:
   interval: 10s
   jitter: 10s

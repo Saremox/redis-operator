@@ -60,7 +60,7 @@ pvc_instances="op-full"
 # e2e/config.yaml's observer.convergenceTimeout, plus the longest interval
 # and a data verification; scenario C pauses every mutator for up to
 # another convergence timeout.
-convergence=300
+convergence=480
 interval=80
 
 if ! kind get clusters 2>/dev/null | grep -qx "$cluster"; then
@@ -308,24 +308,25 @@ jq -rs '
   | [.[0].rf, .[0].kind, .[0].path, .[0].client, length, (map(.d) | add * 10 | round / 10), (map(.d) | max * 10 | round / 10)]
   | @tsv' "$artifacts/soak.jsonl" | table rf kind path client outages total max
 
-echo "--- auth windows (seconds of outage that started during each auth change)"
-# The follower switches to the new password at once: its outage is how
+echo "--- auth windows (outages that started during each auth change: result it started with, seconds)"
+# The follower switches to the new password at once: its auth outage is how
 # long the operator took to apply the change. The other styles keep their
-# open connections, or take the Secret's password for new ones.
+# open connections, or take the Secret's password for new ones. Outages
+# that start closed or timeout are the pods rolling onto the Secret.
 jq -rs '
   def ts: capture("^(?<s>[^.Z]+)(?<f>\\.[0-9]+)?") | ((.s + "Z") | fromdateiso8601) + ((.f // "0") | tonumber);
-  (map(select(.msg == "outage started"))) as $os
-  | (map(select(.msg == "outage ended"))) as $oe
+  (map(select(.msg == "outage started") | . + {t: (.time | ts)})) as $os
+  | (map(select(.msg == "outage ended") | . + {s: ((.time | ts) - .duration_seconds)})) as $oe
   | (map(select(.msg == "mutating"))) as $starts
   | .[] | select(.msg == "mutation done" and (.kind | test("^(password_rotate|auth_add|auth_remove|password_rotate_offline)$"))) | . as $d
   | ([$starts[] | select(.rf == $d.rf and .step == $d.step)] | first) as $m
   | ($m.time | ts) as $from | ($d.time | ts) as $to
-  | [$oe[] | select(.rf == $d.rf and ((.time | ts) - .duration_seconds) >= $from and ((.time | ts) - .duration_seconds) <= $to)] as $outs
-  | ($outs | group_by([.path, .client])[]) as $g
-  | [$d.rf, $d.step, $d.kind, $d.redis_replicas, $g[0].path, $g[0].client, ($g | length),
-     ($g | map(.duration_seconds) | add * 10 | round / 10), ($g | map(.duration_seconds) | max * 10 | round / 10),
-     ([$os[] | select(.rf == $d.rf and .path == $g[0].path and .client == $g[0].client and (.time | ts) >= $from and (.time | ts) <= $to) | .result] | unique | join(","))]
-  | @tsv' "$artifacts/soak.jsonl" | table rf step kind replicas path client outages total max results
+  | [$oe[] | select(.rf == $d.rf and .s >= $from and .s <= $to) | . as $e
+     | . + {result: ([$os[] | select(.rf == $e.rf and .path == $e.path and .client == $e.client and .t >= $e.s - 0.1 and .t <= $e.s + 3)] | first | .result)}]
+  | group_by([.path, .client])[]
+  | [$d.rf, $d.step, $d.kind, $d.redis_replicas, .[0].path, .[0].client,
+     (map("\(.result):\(.duration_seconds * 10 | round / 10)") | join(" "))]
+  | @tsv' "$artifacts/soak.jsonl" | table rf step kind replicas path client outages
 
 echo "--- scenario C phases (seconds)"
 jq -r 'select(.msg == "scenario phase done" or .msg == "scenario phase failed")
@@ -345,6 +346,23 @@ jq -rs '
      ($outs | group_by(.client) | map("\(.[0].client)=\(map(.duration_seconds) | add * 10 | round / 10)") | join(" "))]
   | @tsv' "$artifacts/soak.jsonl" | table step change converge_s outages per_client
 jq -c 'select(.msg == "path added" or .msg == "path removed") | {time, rf, msg, path}' "$artifacts/soak.jsonl" | grep toggle || true
+
+echo "--- bootstrap during op-basic's master changes (seconds)"
+# Its link breaks while op-basic fails over; rfrm-op-basic's ClusterIP then
+# leads it to the new master.
+jq -rs '
+  def ts: capture("^(?<s>[^.Z]+)(?<f>\\.[0-9]+)?") | ((.s + "Z") | fromdateiso8601) + ((.f // "0") | tonumber);
+  (map(select(.rf == "bootstrap" and .msg == "invariant restored" and .invariant == "one_master") | . + {s: ((.time | ts) - .duration_seconds)})) as $down
+  | (map(select(.rf == "bootstrap" and .msg == "outage ended") | . + {s: ((.time | ts) - .duration_seconds)})) as $reads
+  | (map(select(.rf == "op-basic" and .msg == "mutating"))) as $starts
+  | .[] | select(.rf == "op-basic" and .msg == "mutation done" and (.kind | test("^(kill_master|kill_master_force|redis_replicas)$"))) | . as $d
+  | ([$starts[] | select(.step == $d.step)] | first.time | ts) as $from | (($d.time | ts) + 30) as $to
+  | [$down[] | select(.s >= $from and .s <= $to)] as $dn
+  | select(($dn | length) > 0 or ($d.kind | test("^kill_")))
+  | [$d.step, $d.kind, $d.redis_replicas, $d.params,
+     ($dn | map(.duration_seconds | . * 10 | round / 10 | tostring) | join(" ") | if . == "" then "-" else . end),
+     ([$reads[] | select(.s >= $from and .s <= $to)] | length)]
+  | @tsv' "$artifacts/soak.jsonl" | table step kind replicas params link_down rfrs_outages
 
 echo "--- bootstrap: lag behind op-basic's master (bytes) and verifications"
 awk '{ n[$2]++; s[$2] += $3; if ($3 > m[$2]) m[$2] = $3; l[$2] = $3 }
