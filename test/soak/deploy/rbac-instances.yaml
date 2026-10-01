@@ -1,6 +1,6 @@
-# Grants the mutator its rules in every instance's namespace. Keep one
-# RoleBinding per instance namespace in config.yaml; the namespaces must
-# exist before this is applied.
+# Grants the mutator its rules, and every client its auth Secrets, in every
+# instance's namespace. Keep one RoleBinding per instance namespace in
+# config.yaml; the namespaces must exist before this is applied.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -48,6 +48,62 @@ kind: RoleBinding
 metadata:
   name: redis-soak-mutator
   namespace: op-noevict
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: op-full
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: sent-full
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: toggle
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: bootstrap
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
