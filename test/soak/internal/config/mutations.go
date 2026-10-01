@@ -18,17 +18,36 @@ const (
 	SentinelReplicas Kind = "sentinel_replicas"
 	RedisResources   Kind = "redis_resources"
 	KillMaster       Kind = "kill_master"
+	KillMasterForce  Kind = "kill_master_force"
 	KillReplica      Kind = "kill_replica"
 	KillSentinel     Kind = "kill_sentinel"
 	RedisMemory      Kind = "redis_memory"
 	MaxMemoryPolicy  Kind = "maxmemory_policy"
 	MaxMemoryPercent Kind = "maxmemory_percent"
 	FillBurst        Kind = "fill_burst"
+	PasswordRotate   Kind = "password_rotate"
+	AuthAdd          Kind = "auth_add"
+	AuthRemove       Kind = "auth_remove"
+	SentinelToggle   Kind = "sentinel_toggle"
+	// PasswordRotateOffline is scenario C: the password changes while the
+	// operator is stopped.
+	PasswordRotateOffline Kind = "password_rotate_offline"
 )
 
 var kinds = []Kind{
-	RedisReplicas, SentinelReplicas, RedisResources, KillMaster, KillReplica, KillSentinel,
+	RedisReplicas, SentinelReplicas, RedisResources, KillMaster, KillMasterForce, KillReplica, KillSentinel,
 	RedisMemory, MaxMemoryPolicy, MaxMemoryPercent, FillBurst,
+	PasswordRotate, AuthAdd, AuthRemove, SentinelToggle, PasswordRotateOffline,
+}
+
+// bootstrapKinds are the kinds of a bootstrapping instance, which has no
+// master of its own.
+var bootstrapKinds = []Kind{RedisReplicas, RedisResources, KillReplica}
+
+// Exclusive reports whether a kind affects every instance, so no other
+// mutation may run meanwhile.
+func Exclusive(k Kind) bool {
+	return k == PasswordRotateOffline
 }
 
 func maxMemoryOnly(k Kind) bool {
@@ -46,8 +65,9 @@ type Mutations struct {
 	RedisReplicas    Range        `json:"redisReplicas"`
 	SentinelReplicas Range        `json:"sentinelReplicas"`
 	Resources        Resources    `json:"resources"`
-	// ForceDeleteProbability is the share of pod kills that delete the pod
-	// with GracePeriodSeconds=0 instead of gracefully.
+	// ForceDeleteProbability is the share of replica and Sentinel kills
+	// that delete the pod with GracePeriodSeconds=0 instead of gracefully.
+	// Master kills are kill_master or kill_master_force.
 	ForceDeleteProbability float64 `json:"forceDeleteProbability"`
 	// RedisMemory bounds the redis container's memory limit in Mi.
 	RedisMemory       Range    `json:"redisMemory"`
@@ -100,6 +120,9 @@ func (m Mutations) validate(in Instance) error {
 		}
 		if maxMemoryOnly(k) && in.MaxMemoryPolicy == "" {
 			return fmt.Errorf("%s needs an instance with maxMemoryPolicy", k)
+		}
+		if in.Bootstrap != nil && !slices.Contains(bootstrapKinds, k) {
+			return fmt.Errorf("%s can't run on a bootstrapping instance", k)
 		}
 	}
 	if m.ForceDeleteProbability < 0 || m.ForceDeleteProbability > 1 {
@@ -216,3 +239,13 @@ func (r Resources) validate() error {
 	}
 	return nil
 }
+
+// Events, the values of the event label besides the mutation kinds.
+const (
+	EventFailover = "failover"
+	EventPeriodic = "periodic"
+	// EventReset is a failover that loses the data by design: the only pod
+	// of an instance without a PersistentVolumeClaim was replaced, or the
+	// RedisFailover was recreated.
+	EventReset = "reset"
+)

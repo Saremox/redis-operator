@@ -2,8 +2,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -82,9 +84,26 @@ type Instance struct {
 	Port      int    `json:"port"`
 	// MaxMemoryPolicy is the spec.redis.maxMemory.policy the instance is
 	// created with, empty without maxMemory.
-	MaxMemoryPolicy string    `json:"maxMemoryPolicy"`
-	Data            *Data     `json:"data"`
-	Mutations       Mutations `json:"mutations"`
+	MaxMemoryPolicy string `json:"maxMemoryPolicy"`
+	// AuthSecret is the Secret auth_add creates or updates and names in
+	// spec.auth.secretPath.
+	AuthSecret string     `json:"authSecret"`
+	Bootstrap  *Bootstrap `json:"bootstrap"`
+	Data       *Data      `json:"data"`
+	Mutations  Mutations  `json:"mutations"`
+}
+
+// Bootstrap configures an instance whose spec.bootstrapNode reaches
+// another configured instance's master, the source. It is read-only: it is
+// probed by reading a key the source's probes write, and verified by
+// reading a sample of the source's ledger from every pod.
+type Bootstrap struct {
+	Source string `json:"source"`
+	// SampleKeys is the number of the source's ledger keys each
+	// verification reads.
+	SampleKeys int `json:"sampleKeys"`
+	// VerifyInterval verifies the pods when no mutation did for this long.
+	VerifyInterval metav1.Duration `json:"verifyInterval"`
 }
 
 func Load(path string) (*Config, error) {
@@ -151,6 +170,17 @@ func (c *Config) setDefaults() {
 		if c.Instances[i].Data != nil {
 			c.Instances[i].Data.setDefaults()
 		}
+		if c.Instances[i].AuthSecret == "" {
+			c.Instances[i].AuthSecret = c.Instances[i].Name + "-auth"
+		}
+		if b := c.Instances[i].Bootstrap; b != nil {
+			if b.SampleKeys == 0 {
+				b.SampleKeys = 100
+			}
+			if b.VerifyInterval.Duration == 0 {
+				b.VerifyInterval.Duration = time.Minute
+			}
+		}
 		if c.Instances[i].Mutations.FillBurstHold.Duration == 0 {
 			c.Instances[i].Mutations.FillBurstHold.Duration = 10 * time.Second
 		}
@@ -187,6 +217,9 @@ func (c *Config) validate() error {
 		if err := in.validateData(); err != nil {
 			return fmt.Errorf("instance %q: %w", in.Name, err)
 		}
+		if err := c.validateBootstrap(in); err != nil {
+			return fmt.Errorf("instance %q: bootstrap: %w", in.Name, err)
+		}
 		if err := in.Mutations.validate(in); err != nil {
 			return fmt.Errorf("instance %q: mutations: %w", in.Name, err)
 		}
@@ -195,6 +228,29 @@ func (c *Config) validate() error {
 			return fmt.Errorf("instance %s is configured twice", key)
 		}
 		seen[key] = true
+	}
+	return nil
+}
+
+func (c *Config) validateBootstrap(in Instance) error {
+	b := in.Bootstrap
+	if b == nil {
+		return nil
+	}
+	switch {
+	case in.Mode != ModeOperator:
+		return errors.New("a bootstrapping instance runs in operator mode, without Sentinels")
+	case in.Data != nil:
+		return errors.New("a bootstrapping instance is read-only and has no data")
+	case b.SampleKeys < 1 || b.VerifyInterval.Duration < 0:
+		return errors.New("sampleKeys must be at least 1 and verifyInterval positive")
+	}
+	i := slices.IndexFunc(c.Instances, func(s Instance) bool { return s.Name == b.Source })
+	if i < 0 {
+		return fmt.Errorf("source %q is not configured", b.Source)
+	}
+	if src := c.Instances[i]; src.Bootstrap != nil || src.Data == nil || src.Data.Ledger == nil {
+		return fmt.Errorf("source %q must have a ledger and not bootstrap itself", b.Source)
 	}
 	return nil
 }

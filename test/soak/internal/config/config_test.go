@@ -13,7 +13,7 @@ func TestLoadExample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Instances) != 3 || c.Instances[0].Name != "op-basic" || c.Instances[1].Mode != ModeSentinel {
+	if len(c.Instances) != 5 || c.Instances[0].Name != "op-basic" || c.Instances[1].Mode != ModeSentinel || c.Instances[4].Bootstrap == nil {
 		t.Fatalf("unexpected instances: %+v", c.Instances)
 	}
 }
@@ -223,5 +223,47 @@ func TestInvalidData(t *testing.T) {
 		if _, err := Parse([]byte(in)); err != nil {
 			t.Errorf("%s: %v", in, err)
 		}
+	}
+}
+
+func TestBootstrap(t *testing.T) {
+	c, err := Parse([]byte(`
+instances:
+  - {name: src, namespace: src, data: {fill: {}, ledger: {}}, mutations: {kinds: {kill_master_force: 1, password_rotate: 1, auth_add: 1, auth_remove: 1, password_rotate_offline: 1, sentinel_toggle: 1}}}
+  - name: boot
+    namespace: boot
+    bootstrap: {source: src}
+    mutations: {kinds: {redis_replicas: 1, kill_replica: 1}, redisReplicas: {min: 1, max: 3}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, boot := c.Instances[0], c.Instances[1]
+	if src.AuthSecret != "src-auth" {
+		t.Errorf("authSecret default %q", src.AuthSecret)
+	}
+	if b := boot.Bootstrap; b.SampleKeys != 100 || b.VerifyInterval.Duration != time.Minute {
+		t.Errorf("bootstrap defaults: %+v", b)
+	}
+	if !Exclusive(PasswordRotateOffline) || Exclusive(PasswordRotate) {
+		t.Error("exclusive kinds")
+	}
+
+	base := "  - {name: src, namespace: src, data: {fill: {}, ledger: {}}}\n"
+	cases := map[string]string{
+		"unknown source":   "  - {name: boot, namespace: boot, bootstrap: {source: other}}\n",
+		"source no ledger": "  - {name: src2, namespace: src, data: {fill: {}}}\n  - {name: boot, namespace: boot, bootstrap: {source: src2}}\n",
+		"with data":        "  - {name: boot, namespace: boot, bootstrap: {source: src}, data: {fill: {}}}\n",
+		"sentinel":         "  - {name: boot, namespace: boot, mode: sentinel, bootstrap: {source: src}}\n",
+		"from itself":      "  - {name: boot, namespace: boot, bootstrap: {source: boot}}\n",
+		"master kill":      "  - {name: boot, namespace: boot, bootstrap: {source: src}, mutations: {kinds: {kill_master: 1}}}\n",
+		"toggle":           "  - {name: boot, namespace: boot, bootstrap: {source: src}, mutations: {kinds: {sentinel_toggle: 1}}}\n",
+	}
+	for name, in := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse([]byte("instances:\n" + base + in)); err == nil {
+				t.Error("expected an error")
+			}
+		})
 	}
 }

@@ -94,13 +94,19 @@ instances:
       # - redis_resources: the redis container's cpu, memory or both, within
       #   resources.
       # - kill_master, kill_replica, kill_sentinel (sentinel only): delete
-      #   one such pod.
+      #   one such pod; kill_master gracefully.
+      # - kill_master_force: delete the master with GracePeriodSeconds=0.
       # - redis_memory, maxmemory_policy, maxmemory_percent, fill_burst
       #   (maxMemoryPolicy instances only): see op-noevict below.
+      # - password_rotate, auth_add, auth_remove, password_rotate_offline:
+      #   see op-full below.
+      # - sentinel_toggle: flip spec.sentinel.enabled; the probe paths
+      #   follow.
       kinds:
         redis_replicas: 2
         redis_resources: 2
-        kill_master: 2
+        kill_master: 1
+        kill_master_force: 1
         kill_replica: 1
       # At least 1.
       redisReplicas: {min: 1, max: 5}
@@ -117,7 +123,8 @@ instances:
           memory: {min: 32, max: 128}
         limits:
           memory: {min: 192, max: 512}
-      # The share of pod kills that delete with GracePeriodSeconds=0.
+      # The share of replica and Sentinel kills that delete with
+      # GracePeriodSeconds=0.
       forceDeleteProbability: 0.5
   - name: sent-basic
     namespace: sent-basic
@@ -129,6 +136,7 @@ instances:
         kill_master: 2
         kill_replica: 1
         kill_sentinel: 1
+        sentinel_toggle: 1
       redisReplicas: {min: 1, max: 5}
       # At least 3.
       sentinelReplicas: {min: 3, max: 5}
@@ -156,3 +164,45 @@ instances:
       maxMemoryPolicies: [noeviction, volatile-lru, volatile-ttl]
       maxMemoryPercent: {min: 10, max: 95}
       fillBurstHold: 10s
+  # Every client authenticates while the RedisFailover has
+  # spec.auth.secretPath, with the Secret's current password.
+  - name: op-full
+    namespace: op-full
+    mode: operator
+    # The Secret auth_add creates or updates and names in
+    # spec.auth.secretPath; default <name>-auth.
+    authSecret: op-full-auth
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        # A new random password in the Secret spec.auth.secretPath names.
+        password_rotate: 2
+        # Set or remove spec.auth.secretPath; auth_add creates authSecret.
+        auth_add: 1
+        auth_remove: 1
+        # Scenario C: rotate while the operator is scaled to 0, expect
+        # "unable to apply the configured password", put the previous
+        # password back, expect Healthy, rotate again. It pauses every
+        # other instance's mutations.
+        password_rotate_offline: 1
+  # Replicates from op-basic's master: spec.bootstrapNode.host is the
+  # ClusterIP of rfrm-op-basic. Read-only, so it has no data; it is probed
+  # through rfrs by reading what op-basic's probes write.
+  - name: bootstrap
+    namespace: bootstrap
+    mode: operator
+    bootstrap:
+      # A configured instance with a ledger.
+      source: op-basic
+      # op-basic's ledger keys read from every pod per verification.
+      sampleKeys: 100
+      # Verify when no mutation did for this long.
+      verifyInterval: 1m
+    mutations:
+      # Only redis_replicas, redis_resources and kill_replica.
+      kinds:
+        redis_replicas: 1
+        kill_replica: 1
+      redisReplicas: {min: 1, max: 3}
