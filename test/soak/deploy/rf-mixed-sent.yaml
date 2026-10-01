@@ -1,0 +1,18 @@
+# The mixed-sent instance's RedisFailover; the tester sets its name, namespace
+# and images, and creates or resets it from this template.
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: mixed-sent
+spec:
+  sentinel:
+    enabled: true
+    replicas: 3
+  redis:
+    replicas: 3
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 192Mi

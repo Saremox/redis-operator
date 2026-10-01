@@ -69,19 +69,29 @@ kind: ClusterRole
 metadata:
   name: redis-soak-mutator
 rules:
+  # Instances with a template are created, and reset, by the tester.
   - apiGroups: ["databases.spotahome.com"]
     resources: ["redisfailovers"]
-    verbs: ["patch"]
+    verbs: ["patch", "create", "delete"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
+  # A version change that didn't converge is judged by its pods' logs.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # A reset deletes the instance's volumes.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["list", "delete"]
   - apiGroups: ["apps"]
     resources: ["statefulsets", "deployments"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["services", "configmaps"]
     verbs: ["get"]
-  # auth_add creates the Secret it names.
+  # auth_add creates the Secret it names; a reset deletes and recreates
+  # the one its template names.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

@@ -14,3 +14,12 @@ configMapGenerator:
     namespace: redis-soak
     files:
       - config.yaml
+      # The templates of the instances the tester creates and resets.
+      - rf-redis-chain.yaml
+      - rf-redis-chain-sent.yaml
+      - rf-migrate.yaml
+      - rf-migrate-sent.yaml
+      - rf-edge.yaml
+      - rf-valkey-op.yaml
+      - rf-valkey-sent.yaml
+      - rf-mixed-sent.yaml
