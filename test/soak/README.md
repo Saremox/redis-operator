@@ -241,10 +241,12 @@ mutation, and verifies the data after each.
 
 Kills delete with a UID precondition. `kill_master` and
 `kill_master_force` are separate kinds rather than one kind with a label:
-without SIGTERM the master neither waits for its replicas nor saves, and
-the failover waits for the operator's or Sentinel's timeout, so their
-convergence times and losses differ, and a kind already splits
-`mutation_total`, `mutation_converge_seconds`, `pods_recreated_total` and
+a forced delete removes the pod object at once, skips the preStop hook and
+leaves the master only the kubelet's 2s minimum between SIGTERM and
+SIGKILL, so its shutdown, waiting for its replicas, is cut short and its
+replacement starts right away; their convergence times and losses
+differ, and a kind already splits `mutation_total`,
+`mutation_converge_seconds`, `pods_recreated_total` and
 `lost_writes_total` without adding a label every other series would carry.
 Replica and Sentinel kills delete with `GracePeriodSeconds=0` with a
 probability of `forceDeleteProbability`. A master kill of an instance's
