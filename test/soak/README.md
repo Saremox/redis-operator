@@ -34,6 +34,58 @@ Each path is probed with three client styles:
 Each probe is a `SET soak:<rf>:<path>:<client>:seq <n>` followed by a `GET`
 of the same key. Except for `retrying`, go-redis retries are off, so every
 failure is counted. `retrying` retries within the same `probe.timeout`.
+Every `probe.waitEvery`-th successful `SET` (default 10) is followed by
+`WAIT 1 <probe.waitTimeout>` (default half the probe timeout), recorded as
+`op="wait"`, with the replicas that acknowledged it in
+`wait_acked_replicas`.
+
+### Data
+
+For every instance with a `data` section:
+
+- **The filler** keeps the master's `used_memory` at `fill.percent` of
+  `maxmemory`, or at `fill.sizeMi` without one, and tops it up after
+  evictions and resets. It writes `soak:<rf>:fill:<n>` through `rfrm` with
+  a pooled client, in pipelines of `fill.batch` keys at most
+  `fill.keysPerSecond`, optionally with `fill.ttl`. Every value is derived
+  from its key alone, so any key can be verified without keeping state.
+- **The ledger** (`data.ledger`) writes `soak:<rf>:ledger:<seq>` at
+  `writesPerSecond` and records every acknowledged seq, as compact ranges.
+- **A verification** reads, from the master's pod directly:
+  - every ledger write acknowledged since the previous verification;
+  - a sample of `ledger.sampleKeys` of those the previous verification
+    checked, and all of them if the sample lost any, so later events don't
+    inherit the loss;
+  - a sample of `fill.sampleKeys` fill keys. A missing fill key counts
+    only where it can't have been evicted or expired (no TTL, and no
+    `allkeys-*` policy); after a fill loss, older fill keys are forgotten,
+    as the sample can't tell how many more are gone.
+
+  Every missing or wrong key counts in `lost_writes_total{event}` and is
+  logged (`lost writes`, with the seq ranges); each is counted once.
+  Ledger keys older than the previous verification are then deleted and
+  forgotten, which bounds the tester's memory and the instance's keys.
+- Verifications run after every mutation (`event` is the kind), after
+  every failover the observer sees outside a mutation (`failover`), and
+  every `ledger.verifyInterval` without either (`periodic`). Each is
+  logged as `data verified` with `event`, `step`, whether the master
+  changed since the previous one (`failover`), the keys checked and
+  `lost`.
+
+Async replication makes some loss possible, so `lost_writes_total` is a
+number to watch, not a finding.
+
+The ledger's keys must never be evicted, or their loss couldn't be told
+from an eviction. Config validation rejects a ledger on an instance that
+may run under `allkeys-*` (its `maxMemoryPolicy` or one
+`maxmemory_policy` may switch to), and under `volatile-*` without a
+`fill.ttl`, so that only fill keys are evictable. `allkeys-*` instances
+run the filler only; the ledger also pauses while the master runs an
+`allkeys-*` policy set by hand.
+
+`oom_rejections_total` counts the fill, ledger and burst writes rejected
+with `OOM`. Leftover ledger and burst keys of an earlier run are deleted
+at startup.
 
 ### Invariants
 
@@ -50,10 +102,22 @@ to every redis pod by its IP, and asks every Sentinel pod for
 | `replication` | Every other redis pod is a replica of the master's IP and port, with `master_link_status:up`. |
 | `sentinel_agreement` | (Sentinel instances only) every Sentinel reports the master's IP and port. |
 | `healthy` | The RedisFailover's `status.state` is `Healthy`. |
+| `config` | (Instances with `spec.redis.maxMemory` only) `CONFIG GET maxmemory` and `maxmemory-policy` on every redis pod with an IP equal what the operator sets, see below. |
+| `oom_killed` | No container of a redis or Sentinel pod reports an `OOMKilled` termination. |
 
 The mode the invariants follow is the RedisFailover's `sentinel.enabled`,
 with the operator's defaults applied. Redis and Valkey are read the same way:
 the roles `master`/`primary` and `slave`/`replica` are both accepted.
+
+`config` computes the expected values with the operator's own helpers
+from `api/redisfailover/v1` (`MaxMemoryFor`, `CustomConfigSets`,
+`ManagedMaxMemoryError`): `customConfig` wins; otherwise `maxmemory` is
+`percent` of the smallest pod's memory limit (each capped by the
+configured one, preferring what the kubelet reports as applied), keeping
+32Mi free, and isn't checked where the operator doesn't manage it. Where
+the status message keeps `maxmemory` (`maxmemory kept at X: ...`), every
+pod must run `X` instead; under `allkeys-*` only if the master changed
+while lowering it, as `allkeys-*` is otherwise always lowered.
 
 A pod that doesn't answer `INFO` has no role, so an unreachable master
 violates `one_master`, and an unreachable replica violates `replication`.
@@ -82,6 +146,26 @@ instance one mutation at a time:
 | `kill_master` | Deletes the pod labelled `redisfailovers-role=master`, if it is the one the observer last saw as the single master. | A new pod of the same name is Ready. |
 | `kill_replica` | Deletes a pod labelled `redisfailovers-role=slave`. | A new pod of the same name is Ready. |
 | `kill_sentinel` | Deletes a Sentinel pod. | The pod is gone and the Deployment is converged as for `sentinel_replicas`. |
+| `redis_memory` | Merge-patches the memory limit to another value in `redisMemory` (Mi), and a memory request in proportion, keeping the QoS class. The range may go below what the data needs. | `maxmemory` is what the operator sets (as for `config`), and either every pod runs the new values (as for `redis_resources`) or, without an `allkeys-*` policy, the status keeps `maxmemory` because the new target would not fit the data, every pod is ready and none shrank. |
+| `maxmemory_policy` | Merge-patches `spec.redis.maxMemory.policy` to another of `maxMemoryPolicies`. | The spec has the change, every redis pod is ready and runs the `maxmemory` settings the operator sets. |
+| `maxmemory_percent` | Merge-patches `spec.redis.maxMemory.percent` to another value in `maxMemoryPercent` (10-95). | As for `maxmemory_policy`. |
+| `fill_burst` | (`noeviction` only) Writes `soak:<rf>:burst:<n>` past `maxmemory` until writes are rejected with `OOM`, keeps trying for `fillBurstHold`, then deletes the burst's keys. | The burst is done, all redis pods are ready, and a write through `rfrm` is accepted again. |
+
+The last four need `maxMemoryPolicy`. Under `allkeys-*`, `redis_memory`
+expects the limit applied, `maxmemory` lowered and keys evicted; under
+`noeviction` and `volatile-*`, a target below the data makes the operator
+keep `maxmemory`, report it in `.status.message` and hold the rollout.
+
+On instances with data, `redis_resources` keeps memory changes safe for
+the data: on `maxMemoryPolicy` instances it may change cpu only, as their
+data follows the limit and only `redis_memory` knows what the operator
+does then; elsewhere the data is a fixed `fill.sizeMi`, and the memory
+limit's range must start at twice that plus 32Mi (a full sync forks the
+master, whose copy-on-write pages can double the data, plus the
+operator's reserve).
+
+The mutator waits for the data to be filled once before its first
+mutation, and verifies the data after each.
 
 Kills delete with a UID precondition, gracefully or, with a probability
 of `forceDeleteProbability`, with `GracePeriodSeconds=0`.
@@ -91,7 +175,8 @@ StatefulSets use `OnDelete`, for which the controller never advances it.
 
 Each mutation is logged as `mutating` and then `mutation done` (or
 `mutation skipped`) with `rf`, `namespace`, `mode`, `kind`, `seed`, `step`,
-`params` (`old -> new`, or the pod deleted and how), `result`,
+`params` (`old -> new`, or the pod deleted and how), `redis_replicas`,
+`result`,
 `duration_seconds` and `pods_recreated`.
 
 `result` is one of:
@@ -126,7 +211,9 @@ Then:
 - A violation that is still open when its window times out becomes a
   finding then.
 
-Each finding increments `findings_total{invariant}` once. The tester also
+Each finding increments `findings_total{invariant}` once. An OOM kill is
+a finding of `oom_killed` even inside a window: the operator's 32Mi reserve
+is there so no data size it allows gets a pod killed. The tester also
 opens a window when it first sees an instance, since a change may be in
 flight.
 
@@ -150,26 +237,47 @@ make kind-e2e             # kind cluster, operator, instances, mutating tester, 
 ```
 
 `kind-e2e` reuses `.claude/skills/kind-cluster/`, installs the operator from
-this checkout with `charts/redisoperator`, recreates `op-basic` and
-`sent-basic` from scratch, and deploys the tester with
-[`e2e/config.yaml`](e2e/config.yaml): the mutator on, a 10-20s interval and
-seed 629, which picks every enabled kind within each instance's first five
-steps. The mutator starts mutations for `DURATION` seconds (default 600).
-Once the last ones have converged, it asserts from `/metrics` that:
+this checkout with `charts/redisoperator`, recreates its instances from
+scratch, and deploys the tester with [`e2e/config.yaml`](e2e/config.yaml):
+
+| Instance | Mode | maxMemory | Data | Mutations |
+|---|---|---|---|---|
+| `op-basic` | operator | none | 32Mi, ledger | `redis_replicas`, `redis_resources`, `kill_master`, `kill_replica` |
+| `sent-basic` | Sentinel | none | 32Mi, ledger | `redis_replicas`, `sentinel_replicas`, `kill_master`, `kill_replica`, `kill_sentinel` |
+| `op-maxmem` | operator | `allkeys-lru`, 75% of 256Mi | 90% of `maxmemory`, filler only | `redis_memory`, `maxmemory_policy` (`allkeys-*`), `maxmemory_percent`, `kill_replica` |
+| `op-noevict` | operator | `noeviction`, 75% of 192Mi | 70% of `maxmemory` (fill TTL 1h), ledger | `redis_memory`, `maxmemory_policy` (`noeviction`, `volatile-*`), `maxmemory_percent`, `fill_burst` |
+
+The mutator runs with a 10-20s interval and seed 6517, which picks every
+enabled kind within each instance's first six steps, `fill_burst` twice
+under `noeviction` on `op-noevict`, and both a graceful and a forced
+`kill_master`. It starts mutations for `DURATION` seconds (default 900).
+Once the last ones have converged, the script asserts from `/metrics` and
+the tester's log that:
 
 - every enabled kind converged at least once on every instance, and none
   timed out or was rejected;
-- `findings_total` stayed 0;
-- every invariant holds, with one master, and `server_info` has a series
-  per redis pod;
-- every path and client style can write and read again;
-- each instance whose master was killed failed over.
+- `findings_total` stayed 0, OOM kills included;
+- every invariant holds, `config` and `oom_killed` included, with one
+  master, and `server_info` has a series per redis pod;
+- every path and client style can write and read again, and `WAIT`
+  succeeded on each;
+- each instance whose master was killed failed over;
+- `op-noevict` rejected writes with `OOM` and `op-maxmem` evicted keys;
+- the data was verified after every mutation, and after every failover
+  outside a mutation.
 
 It prints every mutation, the convergence time per kind, the outages per
 path and client style attributed to the mutation they started in, the
-pods each kind recreated, and any findings or timed-out windows. The
-tester's and the operator's logs, the instances' events and the last
-scrape are kept in `bin/kind-e2e-artifacts/`. Set
+pods each kind recreated, every data verification with the mutation it
+followed, the lost writes per instance and event (kills by graceful or
+forced deletion and whether the pod was the only one, scale-downs by
+whether they removed the master; losses on a graceful path, which Redis 7
+should not have as it waits for its replicas on SIGTERM, are flagged
+`NOTABLE`), the dataset, memory, OOM, eviction and
+`WAIT` metrics, the `config` invariant's violations and the operator's
+`maxmemory kept`/`lowered` messages, and any findings or timed-out
+windows. The tester's and the operator's logs, the instances' events and
+the last scrape are kept in `bin/kind-e2e-artifacts/`. Set
 `OPERATOR_VERSION=4.2.0-rc1` to install a released chart and image instead.
 
 ### Pointing it at an RC
@@ -208,7 +316,7 @@ Served on `:9090/metrics`; `/healthz` answers `ok`. Per-instance series carry
 
 | Metric | Type | Extra labels |
 |---|---|---|
-| `redis_soak_probe_total` | counter | `path`, `client`, `op` (`set`/`get`), `result` |
+| `redis_soak_probe_total` | counter | `path`, `client`, `op` (`set`/`get`/`wait`), `result` |
 | `redis_soak_probe_duration_seconds` | histogram | `path`, `client`, `op` |
 | `redis_soak_writable`, `redis_soak_readable` | gauge (0/1) | `path`, `client` |
 | `redis_soak_last_success_timestamp_seconds` | gauge | `path`, `client`, `op` |
@@ -226,6 +334,13 @@ Served on `:9090/metrics`; `/healthz` answers `ok`. Per-instance series carry
 | `redis_soak_mutation_converge_seconds` | histogram | `kind` |
 | `redis_soak_pods_recreated_total` | counter | `kind` |
 | `redis_soak_mutation_in_progress` | gauge (0/1) | `kind` |
+| `redis_soak_wait_acked_replicas` | gauge | |
+| `redis_soak_dataset_keys` | gauge | |
+| `redis_soak_used_memory_bytes`, `redis_soak_maxmemory_bytes` | gauge | |
+| `redis_soak_oom_rejections_total` | counter | |
+| `redis_soak_evicted_keys_total` | counter | |
+| `redis_soak_lost_writes_total` | counter | `event` (a mutation kind, `failover` or `periodic`) |
+| `redis_soak_ledger_verified_total` | counter | `event` |
 
 `result` is one of `ok`, `timeout`, `refused`, `readonly`, `loading`, `auth`,
 `oom`, `masterdown`, `noreplicas`, `dns`, `closed` and `other`. Server errors
@@ -256,3 +371,12 @@ at least `minDwell`, so the values are at least `minDwell` and step by
 `pods_recreated_total` counts the redis pods a mutation replaced by a new
 pod of the same name, by UID. A kill counts the pod it deleted; a
 `redis_resources` mutation that counts any was not done in place.
+
+`dataset_keys`, `used_memory_bytes` and `maxmemory_bytes` come from the
+master's `INFO`. `evicted_keys_total` sums every redis pod's `evicted_keys`
+deltas from `INFO stats`; a new `run_id` is taken as a restarted counter,
+and a pod first seen after the tester started counts from 0, so restarts
+and failovers neither lose nor double-count evictions.
+`wait_acked_replicas` is the reply of the last sampled `WAIT 1`, from any
+path and client style. `ledger_verified_total` counts verifications,
+including the fill-only ones of instances without a ledger.
