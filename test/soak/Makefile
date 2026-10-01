@@ -3,12 +3,12 @@ IMAGE ?= ghcr.io/saremox/redis-operator-soak
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 # kind-e2e settings. OPERATOR_VERSION installs a released chart and image
-# instead of building the operator from this checkout.
+# instead of building the operator from this checkout. DURATION is how
+# many seconds the mutator starts mutations.
 CLUSTER ?= soak
 KIND_NODE ?= v1.35.0
 OPERATOR_VERSION ?=
-DURATION ?= 120
-RECOVERY ?= 180
+DURATION ?= 600
 
 .PHONY: build test lint image kind-up kind-e2e
 
@@ -29,4 +29,4 @@ kind-up:
 
 kind-e2e: build
 	CLUSTER=$(CLUSTER) KIND_NODE=$(KIND_NODE) OPERATOR_VERSION=$(OPERATOR_VERSION) \
-		DURATION=$(DURATION) RECOVERY=$(RECOVERY) ./e2e/kind-e2e.sh
+		DURATION=$(DURATION) ./e2e/kind-e2e.sh

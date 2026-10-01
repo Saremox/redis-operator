@@ -1,28 +1,27 @@
 #!/usr/bin/env bash
-# Runs the soak tester against op-basic and sent-basic on kind and asserts
-# from its metrics that every probe path and client style succeeds and every
-# invariant holds. Then it kills each instance's master pod and asserts that
-# the instances fail over and recover, and reports the outage and violation
-# durations it measured.
+# Runs the soak tester with the mutator against op-basic and sent-basic on
+# kind. After DURATION seconds the mutator stops starting mutations; once
+# the last ones have converged, the script asserts from the tester's
+# metrics that every enabled kind converged at least once on every
+# instance, that no mutation timed out or was rejected, that there were no
+# findings, that every invariant holds and that every probe path and client
+# style succeeds again. It then reports the convergence time per kind, the
+# outages each kill kind caused per path and client style, the pods each
+# kind recreated, and any findings.
 #
 # Environment: CLUSTER, KIND_NODE, OPERATOR_VERSION (empty: build the
-# operator from this checkout), DURATION (seconds to let the tester run),
-# RECOVERY (seconds the instances get to recover from the master kill).
+# operator from this checkout), DURATION (seconds the mutator starts
+# mutations).
 set -euo pipefail
 
 cluster=${CLUSTER:-soak}
 node=${KIND_NODE:-v1.35.0}
-duration=${DURATION:-120}
-# The replacement pod can't be Ready for 30-40s (the operator's readiness
-# probe has a 30s initial delay and the default 10s period), after a
-# failover that takes up to 10s (operator failoverTimeout) or ~15s
-# (Sentinel down-after 5s, then the election). That is about a minute;
-# three minutes leaves room for a slow node without hiding a hang.
-recovery=${RECOVERY:-180}
+duration=${DURATION:-600}
 soak=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$soak/../.." && pwd)
 skill=$repo/.claude/skills/kind-cluster
 export KUBECONFIG=/tmp/kind-$cluster/kubeconfig
+artifacts=$soak/bin/kind-e2e-artifacts
 
 instances=(op-basic sent-basic)
 declare -A paths=([op-basic]="rfrm" [sent-basic]="sentinel rfrm")
@@ -30,7 +29,15 @@ declare -A invariants=(
   [op-basic]="pods one_master master_service replication healthy"
   [sent-basic]="pods one_master master_service replication sentinel_agreement healthy"
 )
+# The kinds e2e/config.yaml enables.
+declare -A kinds=(
+  [op-basic]="redis_replicas redis_resources kill_master kill_replica"
+  [sent-basic]="redis_replicas sentinel_replicas kill_master kill_replica kill_sentinel"
+)
 clients="pooled retrying fresh"
+# e2e/config.yaml's observer.convergenceTimeout, plus the longest interval.
+convergence=300
+interval=20
 
 if ! kind get clusters 2>/dev/null | grep -qx "$cluster"; then
   "$skill/kind-up.sh" "$cluster" "$node"
@@ -48,6 +55,9 @@ else
 fi
 
 echo "--- instances"
+# An earlier run's mutations leave the instances changed: start afresh.
+kubectl -n redis-soak delete deployment soak --ignore-not-found --wait
+kubectl delete namespace "${instances[@]}" --ignore-not-found --wait
 for rf in "${instances[@]}"; do
   kubectl apply -f "$soak/e2e/$rf.yaml"
 done
@@ -69,26 +79,33 @@ ctx=$(mktemp -d)
 trap 'rm -rf "$ctx"' EXIT
 mkdir -p "$ctx/out"
 cp "$soak/bin/soak" "$ctx/out/soak"
-docker build -q -f "$soak/Dockerfile" --build-context build="$ctx" -t redis-operator-soak:e2e "$ctx" >/dev/null
-"$skill/registry.sh" push redis-operator-soak:e2e
+# The tag changes with the binary: the node keeps an image it has, so a
+# fixed tag would run the previous build.
+tag=e2e-$(sha256sum "$soak/bin/soak" | cut -c1-12)
+docker build -q -f "$soak/Dockerfile" --build-context build="$ctx" -t "redis-operator-soak:$tag" "$ctx" >/dev/null
+"$skill/registry.sh" push "redis-operator-soak:$tag"
 
-# kustomize only accepts a relative base.
+# kustomize only accepts a relative base, and files below the overlay.
 overlay=$soak/bin/kind-e2e
 mkdir -p "$overlay"
+sed "s/^  stopAfter: .*/  stopAfter: ${duration}s/" "$soak/e2e/config.yaml" >"$overlay/config.yaml"
 cat >"$overlay/kustomization.yaml" <<YAML
 resources:
   - ../../deploy
 images:
   - name: ghcr.io/saremox/redis-operator-soak
     newName: redis-operator-soak
-    newTag: e2e
+    newTag: $tag
+configMapGenerator:
+  - name: soak-config
+    namespace: redis-soak
+    behavior: replace
+    files:
+      - config.yaml
 YAML
 kubectl apply -k "$overlay"
-kubectl -n redis-soak rollout restart deployment/soak
 kubectl -n redis-soak rollout status deployment/soak --timeout=180s
-
-echo "--- running for ${duration}s"
-sleep "$duration"
+started=$(date +%s)
 
 scrape() {
   metrics=$(kubectl get --raw /api/v1/namespaces/redis-soak/services/soak:metrics/proxy/metrics)
@@ -120,11 +137,52 @@ check() {
 eq() { [[ $1 == "$2" ]]; }
 ge() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a >= b) }'; }
 gt() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a > b) }'; }
+# table HEADER... prints tab-separated lines as aligned columns.
+table() {
+  {
+    local IFS=$'\t'
+    echo "$*"
+    cat
+  } | awk -F'\t' '
+    { for (i = 1; i <= NF; i++) { c[NR, i] = $i; if (length($i) > w[i]) w[i] = length($i) } if (NF > nf) nf = NF }
+    END { for (r = 1; r <= NR; r++) { for (i = 1; i < nf; i++) printf("%-" w[i] + 2 "s", c[r, i]); print c[r, nf] } }'
+}
+logs() {
+  kubectl -n redis-soak logs deployment/soak --since="$(($(date +%s) - started + 30))s" | jq -R -c 'fromjson?'
+}
+
+echo "--- mutating for ${duration}s"
+while (($(date +%s) < started + duration)); do
+  sleep 60
+  scrape
+  grep -E '^redis_soak_mutation_total' <<<"$metrics" | sed 's/^redis_soak_//' || true
+done
+echo "--- waiting for the last mutations to converge"
+deadline=$(($(date +%s) + convergence + interval + 60))
+until (($(logs | jq -s '[.[] | select(.msg == "mutator stopped")] | length') == ${#instances[@]})); do
+  if (($(date +%s) > deadline)); then
+    echo "FAIL: the mutators didn't stop"
+    fail=1
+    break
+  fi
+  sleep 10
+done
+# Let the probes and the observer catch up with the last mutation.
+sleep 15
+scrape
+
+mkdir -p "$artifacts"
+logs >"$artifacts/soak.jsonl"
+kubectl -n redis-operator logs deployment/redis-operator --since="$(($(date +%s) - started + 30))s" >"$artifacts/operator.log"
+for rf in "${instances[@]}"; do
+  kubectl -n "$rf" get events --sort-by=.lastTimestamp >"$artifacts/events-$rf.txt"
+done
+echo "$metrics" >"$artifacts/metrics.txt"
 
 # probes_ok checks that every path and client style is writable and readable
 # and succeeded recently.
 probes_ok() {
-  local quiet=${1:-} rf path client gauge op last now ok=0
+  local rf path client gauge op last now ok=0
   now=$(date +%s)
   for rf in "${instances[@]}"; do
     for path in ${paths[$rf]}; do
@@ -132,12 +190,12 @@ probes_ok() {
         local l=("rf=\"$rf\"" "path=\"$path\"" "client=\"$client\"")
         for gauge in writable readable; do
           eq "$(value "redis_soak_$gauge" "${l[@]}")" 1 ||
-            { [[ -n $quiet ]] || echo "FAIL: $gauge{rf=$rf,path=$path,client=$client} != 1"; ok=1; }
+            { echo "FAIL: $gauge{rf=$rf,path=$path,client=$client} != 1"; ok=1; }
         done
         for op in set get; do
           last=$(value redis_soak_last_success_timestamp_seconds "${l[@]}" "op=\"$op\"")
           gt "$last" $((now - 10)) ||
-            { [[ -n $quiet ]] || echo "FAIL: last_success{rf=$rf,path=$path,client=$client,op=$op} is stale: $last"; ok=1; }
+            { echo "FAIL: last_success{rf=$rf,path=$path,client=$client,op=$op} is stale: $last"; ok=1; }
         done
       done
     done
@@ -146,127 +204,85 @@ probes_ok() {
 }
 # invariants_ok checks that every invariant holds and there is one master.
 invariants_ok() {
-  local quiet=${1:-} rf inv ok=0
+  local rf inv ok=0
   for rf in "${instances[@]}"; do
     for inv in ${invariants[$rf]}; do
       eq "$(value redis_soak_invariant_ok "rf=\"$rf\"" "invariant=\"$inv\"")" 1 ||
-        { [[ -n $quiet ]] || echo "FAIL: invariant_ok{rf=$rf,invariant=$inv} != 1"; ok=1; }
+        { echo "FAIL: invariant_ok{rf=$rf,invariant=$inv} != 1"; ok=1; }
     done
     eq "$(value redis_soak_masters "rf=\"$rf\"")" 1 ||
-      { [[ -n $quiet ]] || echo "FAIL: masters{rf=$rf} != 1"; ok=1; }
+      { echo "FAIL: masters{rf=$rf} != 1"; ok=1; }
   done
   return $ok
 }
 
-scrape
-grep -E '^redis_soak_(build_info|writable|readable|invariant_ok|masters|failovers_total|findings_total|rf_healthy|server_info|replication_lag_bytes)' <<<"$metrics"
-kubectl -n redis-soak logs deployment/soak --tail=20
+echo "--- mutations"
+jq -r 'select(.msg == "mutation done" or .msg == "mutation skipped")
+  | [.rf, .step, .kind, .result, (.duration_seconds // 0 | . * 10 | round / 10), (.pods_recreated // "-"), (.params // .reason)] | @tsv' \
+  "$artifacts/soak.jsonl" | table rf step kind result seconds recreated params
+echo
+grep -E '^redis_soak_(mutation_total|pods_recreated_total)' <<<"$metrics" | sed 's/^redis_soak_//'
 
-# Probes run once a second; allow for the tester's startup.
-min=$((duration * 8 / 10))
+echo "--- convergence per kind (seconds; at least minDwell, in observer ticks)"
+jq -rs '[.[] | select(.msg == "mutation done" and .result == "converged")] | group_by([.rf, .kind])[]
+  | [.[0].rf, .[0].kind, length, (map(.duration_seconds) | min | round), (map(.duration_seconds) | add / length | round),
+     (map(.duration_seconds) | max | round)] | @tsv' "$artifacts/soak.jsonl" |
+  table rf kind converged min mean max
+
+echo "--- outages by the mutation they started in (seconds)"
+# An outage is attributed to the mutation of its instance that was in
+# progress when its first probe failed.
+jq -rs '
+  def ts: capture("^(?<s>[^.Z]+)(?<f>\\.[0-9]+)?") | ((.s + "Z") | fromdateiso8601) + ((.f // "0") | tonumber);
+  (map(select(.msg == "mutating"))) as $starts
+  | (map(select(.msg == "mutation done"))) as $dones
+  | [.[] | select(.msg == "outage ended") | . as $o
+     | (($o.time | ts) - $o.duration_seconds) as $start
+     | ([$starts[] | select(.rf == $o.rf and (.time | ts) <= $start)] | last) as $m
+     | ([$dones[] | select($m != null and .rf == $o.rf and .step == $m.step)] | first) as $d
+     | {rf: $o.rf, path: $o.path, client: $o.client, d: $o.duration_seconds,
+        kind: (if $m != null and ($d == null or ($d.time | ts) >= $start) then $m.kind else "none" end)}]
+  | group_by([.rf, .kind, .path, .client])[]
+  | [.[0].rf, .[0].kind, .[0].path, .[0].client, length, (map(.d) | add * 10 | round / 10), (map(.d) | max * 10 | round / 10)]
+  | @tsv' "$artifacts/soak.jsonl" | table rf kind path client outages total max
+
+echo "--- findings"
+jq -c 'select(.finding == true or (.msg | test("timed out"))) | del(.level, .namespace, .mode)' "$artifacts/soak.jsonl"
+grep -E '^redis_soak_findings_total' <<<"$metrics" || echo "none"
+
+echo "--- assertions"
 check "probes" probes_ok
 check "invariants" invariants_ok
 for rf in "${instances[@]}"; do
-  for path in ${paths[$rf]}; do
-    for client in $clients; do
-      for op in set get; do
-        ok=$(value redis_soak_probe_total "rf=\"$rf\"" "path=\"$path\"" "client=\"$client\"" "op=\"$op\"" 'result="ok"')
-        check "probe_total{rf=$rf,path=$path,client=$client,op=$op,result=ok} = $ok < $min" ge "$ok" "$min"
-      done
+  for kind in ${kinds[$rf]}; do
+    l=("rf=\"$rf\"" "kind=\"$kind\"")
+    check "mutation_total{rf=$rf,kind=$kind,result=converged} = 0" \
+      ge "$(value redis_soak_mutation_total "${l[@]}" 'result="converged"')" 1
+    for result in timeout rejected; do
+      n=$(value redis_soak_mutation_total "${l[@]}" "result=\"$result\"")
+      check "mutation_total{rf=$rf,kind=$kind,result=$result} = $n" eq "$n" 0
     done
   done
+  if gt "$(value redis_soak_mutation_total "rf=\"$rf\"" 'kind="kill_master"' 'result="converged"')" 0; then
+    check "failovers_total{rf=$rf} = 0 after killing the master" \
+      gt "$(value redis_soak_failovers_total "rf=\"$rf\"")" 0
+  fi
+  for n in $(series redis_soak_findings_total "rf=\"$rf\""); do
+    check "findings_total{rf=$rf} = $n" eq "$n" 0
+  done
+  replicas=$(kubectl -n "$rf" get redisfailover "$rf" -o jsonpath='{.spec.redis.replicas}')
   n=$(series redis_soak_server_info "rf=\"$rf\"" | wc -l)
-  check "server_info{rf=$rf} has $n series, want 3" eq "$n" 3
-  check "findings_total{rf=$rf} before the master kill" eq "$(series redis_soak_findings_total "rf=\"$rf\"")" ""
+  check "server_info{rf=$rf} has $n series, want $replicas" eq "$n" "$replicas"
 done
 check "build_info" grep -q '^redis_soak_build_info{operator_version=' <<<"$metrics"
+
 if [[ $fail != 0 ]]; then
-  exit 1
-fi
-echo "PASS: every path and client style probes successfully and every invariant holds"
-
-echo "--- killing the master pods"
-before=$metrics
-declare -A failovers
-for rf in "${instances[@]}"; do
-  failovers[$rf]=$(value redis_soak_failovers_total "rf=\"$rf\"")
-done
-killed_at=$(date +%s)
-for rf in "${instances[@]}"; do
-  master=$(kubectl -n "$rf" get pods -l redisfailovers-role=master -o name)
-  echo "$rf: deleting $master"
-  kubectl -n "$rf" delete "$master" --grace-period=0 --force
-done
-
-# Wait for a violation to show before waiting for the recovery.
-sleep 15
-deadline=$((killed_at + recovery))
-while :; do
-  scrape
-  recovered=1
+  echo "--- evidence (all of it in $artifacts)"
+  jq -c 'select(.level == "WARN") | del(.namespace, .mode)' "$artifacts/soak.jsonl" | tail -40
+  grep -iE 'error|warn|failover|master' "$artifacts/operator.log" | tail -60 || true
   for rf in "${instances[@]}"; do
-    gt "$(value redis_soak_failovers_total "rf=\"$rf\"")" "${failovers[$rf]}" || recovered=0
+    grep -v Normal "$artifacts/events-$rf.txt" | tail -20 || true
   done
-  if [[ $recovered == 1 ]] && invariants_ok quiet && probes_ok quiet; then
-    break
-  fi
-  if (($(date +%s) > deadline)); then
-    echo "FAIL: not recovered ${recovery}s after the master kill"
-    probes_ok || true
-    invariants_ok || true
-    for rf in "${instances[@]}"; do
-      echo "failovers_total{rf=$rf}: ${failovers[$rf]} -> $(value redis_soak_failovers_total "rf=\"$rf\"")"
-    done
-    kubectl -n redis-soak logs deployment/soak --since=5m | grep -v '"level":"DEBUG"' | tail -60
-    exit 1
-  fi
-  sleep 5
-done
-echo "PASS: recovered $(($(date +%s) - killed_at))s after the master kill"
-
-# Let the restored invariants' and probes' state settle into the metrics,
-# then check the probes once more.
-sleep 10
-scrape
-check "probes after the recovery" probes_ok
-check "invariants after the recovery" invariants_ok
-
-# delta NAME LABEL... prints how much a series grew since the kill.
-delta() {
-  local now then
-  now=$(value "$@")
-  then=$(metrics=$before value "$@")
-  awk -v a="$now" -v b="$then" 'BEGIN { printf "%.3f", a - b }'
-}
-echo "--- measured during the master kill"
-printf '%-11s %-9s %-9s %8s %10s\n' rf path client outages seconds
-for rf in "${instances[@]}"; do
-  for path in ${paths[$rf]}; do
-    for client in $clients; do
-      l=("rf=\"$rf\"" "path=\"$path\"" "client=\"$client\"")
-      printf '%-11s %-9s %-9s %8.0f %10s\n' "$rf" "$path" "$client" \
-        "$(delta redis_soak_outage_duration_seconds_count "${l[@]}")" \
-        "$(delta redis_soak_outage_duration_seconds_sum "${l[@]}")"
-    done
-  done
-done
-printf '\n%-11s %-19s %10s %10s %9s\n' rf invariant violations seconds findings
-for rf in "${instances[@]}"; do
-  for inv in ${invariants[$rf]}; do
-    l=("rf=\"$rf\"" "invariant=\"$inv\"")
-    printf '%-11s %-19s %10.0f %10s %9.0f\n' "$rf" "$inv" \
-      "$(delta redis_soak_invariant_violation_seconds_count "${l[@]}")" \
-      "$(delta redis_soak_invariant_violation_seconds_sum "${l[@]}")" \
-      "$(delta redis_soak_findings_total "${l[@]}")"
-  done
-done
-echo
-grep -E '^redis_soak_(failovers_total|masters|findings_total|replication_lag_bytes|server_info)' <<<"$metrics"
-echo
-kubectl -n redis-soak logs deployment/soak --since="$(($(date +%s) - killed_at + 5))s" |
-  jq -R -c 'fromjson? | select(.msg | test("outage|invariant|failover|window")) | del(.time, .level, .namespace, .mode)'
-
-if [[ $fail != 0 ]]; then
   exit 1
 fi
-echo "PASS: both instances failed over and recovered, and every probe succeeds again"
+echo "PASS: every kind converged on every instance, without findings, and every probe succeeds"
