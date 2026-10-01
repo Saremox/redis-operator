@@ -3,6 +3,7 @@ package metrics
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -31,9 +32,16 @@ type Metrics struct {
 	ReplicationLag     *prometheus.GaugeVec
 	RFHealthy          *prometheus.GaugeVec
 	ServerInfo         *prometheus.GaugeVec
+
+	MutationTotal      *prometheus.CounterVec
+	MutationConverge   *prometheus.HistogramVec
+	PodsRecreated      *prometheus.CounterVec
+	MutationInProgress *prometheus.GaugeVec
 }
 
-func New(reg prometheus.Registerer) *Metrics {
+// New registers the metrics. Convergence histograms reach up to
+// convergenceTimeout.
+func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 	labels := func(extra ...string) []string {
 		return append(append([]string{}, instanceLabels...), extra...)
 	}
@@ -116,14 +124,47 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name:      "server_info",
 			Help:      "Always 1. The server and version each redis pod reports in INFO server.",
 		}, labels("pod", "server", "version")),
+		MutationTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "mutation_total",
+			Help:      "Mutations by kind and result: converged, timeout, rejected or skipped.",
+		}, labels("kind", "result")),
+		MutationConverge: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "mutation_converge_seconds",
+			Help:      "Time from applying a mutation to its convergence window closing.",
+			Buckets:   convergeBuckets(convergenceTimeout),
+		}, labels("kind")),
+		PodsRecreated: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "pods_recreated_total",
+			Help:      "Redis pods a mutation replaced by a new pod of the same name.",
+		}, labels("kind")),
+		MutationInProgress: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "mutation_in_progress",
+			Help:      "1 while a mutation of the kind is converging.",
+		}, labels("kind")),
 	}
 	reg.MustRegister(
 		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration, m.BuildInfo,
 		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.ServerInfo,
+		m.MutationTotal, m.MutationConverge, m.PodsRecreated, m.MutationInProgress,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 	return m
+}
+
+func convergeBuckets(timeout time.Duration) []float64 {
+	var buckets []float64
+	for _, b := range []float64{1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 300, 600, 1200, 1800, 3600} {
+		if b >= timeout.Seconds() {
+			break
+		}
+		buckets = append(buckets, b)
+	}
+	return append(buckets, timeout.Seconds())
 }
 
 // Handler serves /metrics and /healthz.

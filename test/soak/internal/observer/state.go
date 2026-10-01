@@ -11,9 +11,13 @@ import (
 // to be converging after a change, so a violation that starts then is not a
 // finding. A window closes once every invariant holds, or after the
 // convergence timeout; violations still open at the timeout become findings.
+// A window held by a mutation also needs the mutation to have converged and
+// the minimum dwell to have passed before it closes.
 type tracker struct {
 	timeout  time.Duration
+	dwell    time.Duration
 	window   time.Time // zero when no window is open
+	held     time.Time // zero when no mutation holds the window
 	violated map[string]*violation
 }
 
@@ -43,8 +47,8 @@ type event struct {
 	finding  bool
 }
 
-func newTracker(timeout time.Duration) *tracker {
-	return &tracker{timeout: timeout, violated: map[string]*violation{}}
+func newTracker(timeout, dwell time.Duration) *tracker {
+	return &tracker{timeout: timeout, dwell: dwell, violated: map[string]*violation{}}
 }
 
 // openWindow starts a convergence window, or restarts the open one.
@@ -52,15 +56,27 @@ func (t *tracker) openWindow(now time.Time) {
 	t.window = now
 }
 
+// hold opens a window for a mutation, or restarts the open one, and keeps
+// it open until the mutation has converged.
+func (t *tracker) hold(now time.Time) {
+	t.window, t.held = now, now
+}
+
 func (t *tracker) windowOpen() bool {
 	return !t.window.IsZero()
 }
 
-func (t *tracker) update(now time.Time, checks []check) []event {
+func (t *tracker) closeWindow() {
+	t.window, t.held = time.Time{}, time.Time{}
+}
+
+// update judges one round of checks. converged is whether the mutation
+// holding the window, if any, has converged.
+func (t *tracker) update(now time.Time, checks []check, converged bool) []event {
 	var events []event
 	if t.windowOpen() && now.Sub(t.window) >= t.timeout {
 		events = append(events, event{kind: evWindowTimedOut, duration: now.Sub(t.window)})
-		t.window = time.Time{}
+		t.closeWindow()
 		for _, name := range slices.Sorted(maps.Keys(t.violated)) {
 			if v := t.violated[name]; !v.finding {
 				v.finding = true
@@ -82,9 +98,10 @@ func (t *tracker) update(now time.Time, checks []check) []event {
 		}
 		allOK = allOK && c.err == nil
 	}
-	if t.windowOpen() && allOK {
+	released := t.held.IsZero() || converged && now.Sub(t.held) >= t.dwell
+	if t.windowOpen() && allOK && released {
 		events = append(events, event{kind: evWindowClosed, duration: now.Sub(t.window)})
-		t.window = time.Time{}
+		t.closeWindow()
 	}
 	return events
 }

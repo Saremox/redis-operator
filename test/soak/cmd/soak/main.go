@@ -69,7 +69,7 @@ func run(configPath, listen string, log *slog.Logger) error {
 	defer stop()
 
 	reg := prometheus.NewRegistry()
-	m := metrics.New(reg)
+	m := metrics.New(reg, cfg.Observer.ConvergenceTimeout.Duration)
 	srv := &http.Server{Addr: listen, Handler: metrics.Handler(reg), ReadHeaderTimeout: 10 * time.Second}
 
 	var wg sync.WaitGroup

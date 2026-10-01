@@ -1,10 +1,14 @@
 package observer
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -20,7 +24,7 @@ func newTestObserver(t *testing.T) (*Observer, *prometheus.Registry) {
 		t.Fatal(err)
 	}
 	reg := prometheus.NewRegistry()
-	o := New(cfg.Instances[0], cfg, nil, nil, metrics.New(reg), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	o := New(cfg.Instances[0], cfg, nil, nil, metrics.New(reg, time.Minute), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return o, reg
 }
 
@@ -41,8 +45,8 @@ func TestApply(t *testing.T) {
 	labels := `mode="sentinel",namespace="ns",rf="x"`
 
 	s := withServer(healthy(true), serverRedis, "7.2.12")
-	o.apply(at(0), s, 1)
-	o.apply(at(5), s, 1)
+	o.apply(at(0), s, 1, false)
+	o.apply(at(5), s, 1, false)
 
 	// rfr-x-0 is killed: rfr-x-1 takes over, and the replacement for
 	// rfr-x-0 isn't up yet.
@@ -55,7 +59,7 @@ func TestApply(t *testing.T) {
 	for i := range s.sentinels {
 		s.sentinels[i].master = "10.0.0.11:6379"
 	}
-	o.apply(at(10), withServer(s, serverRedis, "7.2.12"), 1)
+	o.apply(at(10), withServer(s, serverRedis, "7.2.12"), 1, false)
 
 	// rfr-x-0 is back as a replica, on Valkey.
 	s = healthy(true)
@@ -67,7 +71,7 @@ func TestApply(t *testing.T) {
 	for i := range s.sentinels {
 		s.sentinels[i].master = "10.0.0.11:6379"
 	}
-	o.apply(at(30), withServer(s, serverValkey, "8.1.10"), 1)
+	o.apply(at(30), withServer(s, serverValkey, "8.1.10"), 1, false)
 
 	want := `
 # HELP redis_soak_failovers_total Changes of the master's identity.
@@ -106,13 +110,13 @@ redis_soak_server_info{mode="sentinel",namespace="ns",pod="rfr-x-2",rf="x",serve
 
 func TestApplyLagWhileFailingOver(t *testing.T) {
 	o, reg := newTestObserver(t)
-	o.apply(at(0), healthy(true), 1)
+	o.apply(at(0), healthy(true), 1, false)
 	if n := testutil.CollectAndCount(reg, "redis_soak_replication_lag_bytes"); n != 2 {
 		t.Errorf("%d lag series, want 2", n)
 	}
 	s := healthy(true)
 	s.redis[0].info = nil
-	o.apply(at(5), s, 1)
+	o.apply(at(5), s, 1, false)
 	if n := testutil.CollectAndCount(reg, "redis_soak_replication_lag_bytes"); n != 0 {
 		t.Errorf("%d lag series without a master, want 0", n)
 	}
@@ -126,13 +130,13 @@ func TestGenerationOpensWindow(t *testing.T) {
 	// The first observation opens a window: a change may be in flight.
 	s := healthy(true)
 	s.redis[2].Ready = false
-	o.apply(at(0), s, 1)
-	o.apply(at(5), healthy(true), 1)
+	o.apply(at(0), s, 1, false)
+	o.apply(at(5), healthy(true), 1, false)
 	if o.tracker.windowOpen() {
 		t.Error("window still open after convergence")
 	}
-	o.apply(at(10), s, 2)
-	o.apply(at(15), s, 2)
+	o.apply(at(10), s, 2, false)
+	o.apply(at(15), s, 2, false)
 	if v := testutil.ToFloat64(o.findings.WithLabelValues(invPods)); v != 0 {
 		t.Errorf("findings = %v, want 0", v)
 	}
@@ -140,9 +144,64 @@ func TestGenerationOpensWindow(t *testing.T) {
 	if !o.tracker.windowOpen() {
 		t.Error("window closed early")
 	}
-	o.apply(at(20), healthy(true), 2)
-	o.apply(at(25), s, 2)
+	o.apply(at(20), healthy(true), 2, false)
+	o.apply(at(25), s, 2, false)
 	if v := testutil.ToFloat64(o.findings.WithLabelValues(invPods)); v != 1 {
 		t.Errorf("findings = %v, want 1", v)
+	}
+}
+
+func TestHold(t *testing.T) {
+	o, _ := newTestObserver(t)
+	ctx := context.Background()
+	step := func(now time.Time, s snapshot) {
+		o.takeHold()
+		o.apply(now, s, 1, o.converged(ctx))
+	}
+	step(at(0), healthy(true))
+	if !o.Quiet() || o.Master() != "rfr-x-0" {
+		t.Fatalf("quiet %v, master %q", o.Quiet(), o.Master())
+	}
+
+	var converged atomic.Bool
+	done := make(chan (<-chan bool))
+	go func() {
+		done <- o.Hold(func(context.Context) error {
+			if converged.Load() {
+				return nil
+			}
+			return errors.New("not yet")
+		})
+	}()
+	result := <-done
+	// The killed master's replacement isn't there yet.
+	s := healthy(true)
+	s.redis = s.redis[1:]
+	s.redis[0].info = replicationInfo("master", "", "", "2000")
+	s.redis[1].info["master_host"] = "10.0.0.11"
+	s.endpoints = []string{"10.0.0.11"}
+	for i := range s.sentinels {
+		s.sentinels[i].master = "10.0.0.11:6379"
+	}
+	step(time.Now(), s)
+	if o.Quiet() {
+		t.Error("quiet while held")
+	}
+	converged.Store(true)
+	step(time.Now().Add(5*time.Second), healthy(true))
+	select {
+	case <-result:
+		t.Fatal("window closed before the dwell")
+	default:
+	}
+	step(time.Now().Add(20*time.Second), healthy(true))
+	if ok := <-result; !ok {
+		t.Error("window timed out")
+	}
+	if v := testutil.ToFloat64(o.findings.WithLabelValues(invPods)); v != 0 {
+		t.Errorf("findings = %v, want 0", v)
+	}
+	if !o.Quiet() {
+		t.Error("not quiet after the window closed")
 	}
 }

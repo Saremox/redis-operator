@@ -22,7 +22,7 @@ import (
 func TestProbe(t *testing.T) {
 	s := miniredis.RunT(t)
 	reg := prometheus.NewRegistry()
-	m := metrics.New(reg)
+	m := metrics.New(reg, time.Minute)
 	in := config.Instance{Name: "op-basic", Namespace: "op-basic", Mode: config.ModeOperator, Port: 6379}
 	path := Path{Name: PathRFRM, NewClient: func(Client) *redis.Client {
 		return redis.NewClient(&redis.Options{Addr: s.Addr(), MaxRetries: -1})

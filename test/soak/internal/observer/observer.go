@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -40,6 +41,10 @@ type Observer struct {
 	log      *slog.Logger
 
 	tracker    *tracker
+	holds      chan *hold
+	hold       *hold
+	holdErr    error
+	view       atomic.Pointer[view]
 	generation int64
 	master     pod
 	lagPods    map[string]bool
@@ -64,7 +69,8 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		kube:       kube,
 		rfs:        rfs,
 		log:        log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
-		tracker:    newTracker(cfg.Observer.ConvergenceTimeout.Duration),
+		tracker:    newTracker(cfg.Observer.ConvergenceTimeout.Duration, cfg.Mutation.MinDwell.Duration),
+		holds:      make(chan *hold, 1),
 		lagPods:    map[string]bool{},
 		servers:    map[string][2]string{},
 		ok:         m.InvariantOK.MustCurryWith(labels),
@@ -78,6 +84,45 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 	}
 }
 
+// hold is a convergence window a mutation holds open.
+type hold struct {
+	since     time.Time
+	converged func(context.Context) error
+	done      chan bool
+}
+
+// view is what a mutator reads of the observer's last round.
+type view struct {
+	quiet  bool
+	master string
+}
+
+// Hold opens a convergence window for a mutation that is about to be
+// applied. The window stays open until converged returns nil, every
+// invariant holds and the minimum dwell has passed, or until the
+// convergence timeout. The channel receives true when it closed and false
+// when it timed out. Only one hold may be pending at a time.
+func (o *Observer) Hold(converged func(context.Context) error) <-chan bool {
+	h := &hold{since: time.Now(), converged: converged, done: make(chan bool, 1)}
+	o.holds <- h
+	return h.done
+}
+
+// Quiet reports whether, at the last check, no convergence window was open
+// and every invariant held.
+func (o *Observer) Quiet() bool {
+	v := o.view.Load()
+	return v != nil && v.quiet
+}
+
+// Master returns the name of the pod that last was the single master.
+func (o *Observer) Master() string {
+	if v := o.view.Load(); v != nil {
+		return v.master
+	}
+	return ""
+}
+
 func (o *Observer) Run(ctx context.Context) {
 	t := time.NewTicker(o.interval)
 	defer t.Stop()
@@ -86,7 +131,10 @@ func (o *Observer) Run(ctx context.Context) {
 		if err != nil && ctx.Err() == nil {
 			o.log.Warn("observing", "error", err.Error())
 		} else if err == nil {
-			o.apply(time.Now(), s, generation)
+			// A hold is taken only after the snapshot is collected, so the
+			// window is open before any snapshot of the mutation is judged.
+			o.takeHold()
+			o.apply(time.Now(), s, generation, o.converged(ctx))
 		}
 		select {
 		case <-ctx.Done():
@@ -223,22 +271,44 @@ func (o *Observer) sentinelMaster(ctx context.Context, ip string) (string, error
 	return net.JoinHostPort(addr[0], addr[1]), nil
 }
 
-func (o *Observer) apply(now time.Time, s snapshot, generation int64) {
+func (o *Observer) takeHold() {
+	select {
+	case h := <-o.holds:
+		o.hold, o.holdErr = h, nil
+		o.tracker.hold(h.since)
+		o.log.Info("convergence window opened", "by", "mutation")
+	default:
+	}
+}
+
+// converged reports whether the mutation holding the window has converged.
+func (o *Observer) converged(ctx context.Context) bool {
+	if o.hold == nil {
+		return false
+	}
+	o.holdErr = o.hold.converged(ctx)
+	return o.holdErr == nil
+}
+
+func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged bool) {
 	if generation != o.generation {
 		o.tracker.openWindow(now)
 		o.log.Info("convergence window opened", "generation", generation, "previous_generation", o.generation)
 		o.generation = generation
 	}
 	checks := evaluate(s)
+	allOK := true
 	for _, c := range checks {
 		o.ok.WithLabelValues(c.invariant).Set(gauge(c.err == nil))
+		allOK = allOK && c.err == nil
 	}
-	for _, e := range o.tracker.update(now, checks) {
+	for _, e := range o.tracker.update(now, checks, converged) {
 		o.record(e)
 	}
 	o.rfHealthy.Set(gauge(s.state == redisfailoverv1.HealthyState))
 	o.observeMaster(s)
 	o.observeServers(s)
+	o.view.Store(&view{quiet: allOK && !o.tracker.windowOpen(), master: o.master.Name})
 }
 
 func (o *Observer) record(e event) {
@@ -257,8 +327,21 @@ func (o *Observer) record(e event) {
 		log.Warn("invariant still violated after the convergence timeout", "duration_seconds", e.duration.Seconds())
 	case evWindowClosed:
 		o.log.Info("convergence window closed", "duration_seconds", e.duration.Seconds())
+		o.release(true)
 	case evWindowTimedOut:
-		o.log.Warn("convergence window timed out", "duration_seconds", e.duration.Seconds())
+		log := o.log
+		if o.hold != nil && o.holdErr != nil {
+			log = log.With("mutation", o.holdErr.Error())
+		}
+		log.Warn("convergence window timed out", "duration_seconds", e.duration.Seconds())
+		o.release(false)
+	}
+}
+
+func (o *Observer) release(converged bool) {
+	if o.hold != nil {
+		o.hold.done <- converged
+		o.hold = nil
 	}
 }
 
