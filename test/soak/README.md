@@ -15,21 +15,33 @@ that tag's spec.
 ### Probes
 
 For every configured instance it probes the master once per
-`probe.interval`, through every path the instance's mode has:
+`probe.interval`, through every path the instance's current mode has:
 
-- `sentinel` (Sentinel instances only): the way a Sentinel-aware client
+- `sentinel` (with Sentinel only): the way a Sentinel-aware client
   connects. go-redis's failover client asks the Sentinels behind
   `rfs-<name>:26379` for `mymaster`, and follows their failover
   announcements.
-- `rfrm` (every instance): the `rfrm-<name>` Service.
+- `rfrm` (every instance but a bootstrapping one): the `rfrm-<name>`
+  Service.
+- `rfrs` (bootstrapping instances only, read-only): the `rfrs-<name>`
+  Service, as every pod is a replica.
 
-Each path is probed with three client styles:
+The paths follow the RedisFailover's `sentinel.enabled`, not the config:
+`sentinel` is added once the Sentinels are all Ready and agree on the
+master after the mode changed to Sentinel, and removed, with its series,
+as soon as the mode is no longer Sentinel. A path's probes start from scratch when it is added.
+
+Each path is probed with four client styles:
 
 - `pooled`: one long-lived go-redis client, like an application.
 - `retrying`: the same with go-redis's default retries, like an application
   that didn't tune its client.
 - `fresh`: a new client for every probe, like a newly started pod. On the
   `sentinel` path, that includes asking a Sentinel for the master.
+- `follower`: `pooled`, but its client is replaced by one for the new
+  password as soon as the auth Secret changes, like an application that
+  rereads its secret. Its `auth` failures, and the outage they make, show
+  how long the operator takes to apply a password change.
 
 Each probe is a `SET soak:<rf>:<path>:<client>:seq <n>` followed by a `GET`
 of the same key. Except for `retrying`, go-redis retries are off, so every
@@ -37,7 +49,21 @@ failure is counted. `retrying` retries within the same `probe.timeout`.
 Every `probe.waitEvery`-th successful `SET` (default 10) is followed by
 `WAIT 1 <probe.waitTimeout>` (default half the probe timeout), recorded as
 `op="wait"`, with the replicas that acknowledged it in
-`wait_acked_replicas`.
+`wait_acked_replicas`. On `rfrs`, a probe only `GET`s the key the source
+instance's pooled `rfrm` probe writes, which may not have replicated yet.
+
+### Auth
+
+When the RedisFailover has `spec.auth.secretPath`, every connection the
+tester makes authenticates: the probes, the observer's `INFO` and `CONFIG
+GET`, the mutator's checks, the filler, the ledger, the verifications and
+the burst. The Sentinels themselves need no password. The password is
+read from the Secret through an informer on the instance namespace's
+Secrets, and the `secretPath` from the RedisFailover as the observer and
+the mutator read it. go-redis's credentials provider hands every new
+connection the Secret's current password; open connections stay
+authenticated as they were, as Redis keeps them when its password changes.
+Passwords never appear in logs, metrics or errors.
 
 ### Data
 
@@ -67,7 +93,10 @@ For every instance with a `data` section:
   forgotten, which bounds the tester's memory and the instance's keys.
 - Verifications run after every mutation (`event` is the kind), after
   every failover the observer sees outside a mutation (`failover`), and
-  every `ledger.verifyInterval` without either (`periodic`). Each is
+  every `ledger.verifyInterval` without either (`periodic`). A failover
+  that loses the data by design is a `reset`: a kill of the only pod of an
+  instance without a PersistentVolumeClaim, by the mutator or anything
+  else, or a recreated RedisFailover. Each is
   logged as `data verified` with `event`, `step`, whether the master
   changed since the previous one (`failover`), the keys checked and
   `lost`.
@@ -87,6 +116,21 @@ run the filler only; the ledger also pauses while the master runs an
 with `OOM`. Leftover ledger and burst keys of an earlier run are deleted
 at startup.
 
+A **bootstrapping instance** (`bootstrap.source`) is read-only: it has no
+filler, no ledger and no write probes. Its verification takes a sample of
+`bootstrap.sampleKeys` of the source's ledger writes acknowledged since the
+source's last verification (waiting for some if there are none yet),
+reads them from the source's master, notes the master's `master_replid`
+and `master_repl_offset`, and then, from every pod once it has caught up
+(within 30s: the same `master_replid`, its link up and its
+`slave_repl_offset` as far), reads those the master holds. Offsets of
+different replication IDs aren't compared: after the source's master was
+replaced, a pod that hasn't synced with the new one yet can be far ahead
+in the old stream. Each key a caught-up pod lacks counts in
+`lost_writes_total`. It runs after
+every mutation of the instance and every `bootstrap.verifyInterval`
+(default 1m).
+
 ### Invariants
 
 Every `observer.interval` (default 5s), the observer reads the
@@ -97,27 +141,43 @@ to every redis pod by its IP, and asks every Sentinel pod for
 | Invariant | Holds when |
 |---|---|
 | `pods` | There are `spec.redis.replicas` redis pods and all are Ready. With Sentinel, there are also `spec.sentinel.replicas` Sentinel pods, all Ready. |
-| `one_master` | Exactly one redis pod reports the master role in `INFO replication`. |
-| `master_service` | The `rfrm-<name>` EndpointSlices hold exactly one ready address, the master's. |
-| `replication` | Every other redis pod is a replica of the master's IP and port, with `master_link_status:up`. |
-| `sentinel_agreement` | (Sentinel instances only) every Sentinel reports the master's IP and port. |
+| `one_master` | Exactly one redis pod reports the master role in `INFO replication`. Bootstrapping: every pod replicates from `bootstrapNode` with `master_link_status:up`. |
+| `master_service` | The `rfrm-<name>` EndpointSlices hold exactly one ready address, the master's. Bootstrapping: none, as the operator labels no pod master. |
+| `replication` | Every other redis pod is a replica of the master's IP and port, with `master_link_status:up`. Not while bootstrapping. |
+| `sentinel_agreement` | (With Sentinel only) every Sentinel reports the master's IP and port. |
 | `healthy` | The RedisFailover's `status.state` is `Healthy`. |
-| `config` | (Instances with `spec.redis.maxMemory` only) `CONFIG GET maxmemory` and `maxmemory-policy` on every redis pod with an IP equal what the operator sets, see below. |
+| `config` | `CONFIG GET` on every redis pod with an IP returns what `spec.redis.customConfig` sets, and with Sentinel `SENTINEL MASTER mymaster` on every Sentinel returns what `spec.sentinel.customConfig` sets. With `spec.redis.maxMemory`, `maxmemory` and `maxmemory-policy` equal what the operator sets, see below. |
 | `oom_killed` | No container of a redis or Sentinel pod reports an `OOMKilled` termination. |
 
-The mode the invariants follow is the RedisFailover's `sentinel.enabled`,
-with the operator's defaults applied. Redis and Valkey are read the same way:
-the roles `master`/`primary` and `slave`/`replica` are both accepted.
+The mode the invariants follow is the RedisFailover's `sentinel.enabled`
+and `bootstrapNode`, with the operator's defaults applied. An invariant the
+mode no longer has, like `sentinel_agreement` after Sentinel was switched
+off, is dropped: its `invariant_ok` series and any open violation are
+forgotten. Redis and Valkey are read the same way: the roles
+`master`/`primary` and `slave`/`replica` are both accepted.
 
-`config` computes the expected values with the operator's own helpers
-from `api/redisfailover/v1` (`MaxMemoryFor`, `CustomConfigSets`,
-`ManagedMaxMemoryError`): `customConfig` wins; otherwise `maxmemory` is
-`percent` of the smallest pod's memory limit (each capped by the
-configured one, preferring what the kubelet reports as applied), keeping
-32Mi free, and isn't checked where the operator doesn't manage it. Where
-the status message keeps `maxmemory` (`maxmemory kept at X: ...`), every
-pod must run `X` instead; under `allkeys-*` only if the master changed
-while lowering it, as `allkeys-*` is otherwise always lowered.
+`config` compares `customConfig` as the operator applies it: an entry is a
+key and the rest of the line, `""` is the empty value, and a later entry
+for a key wins. Values are compared case-insensitively, and memory sizes by
+their bytes (`100mb` is `104857600`). The operator's own defaults, like
+`replica-priority 100`, or `0` while bootstrapping, are checked too. Not
+checked are `requirepass`, `masterauth` and `aclfile`, which the operator
+sets itself or loads with `ACL LOAD`, and with `maxMemory` the keys the
+check below owns: `maxmemory`, `maxmemory-policy` and
+`replica-ignore-maxmemory`, which the operator sets to `yes` (`no` is
+rejected). The Sentinel fields use the names `SENTINEL SET` takes; keys
+`SENTINEL MASTER` doesn't report, like `auth-pass`, can't be checked.
+
+For `maxmemory`, `config` computes the expected values with the operator's
+own helpers from `api/redisfailover/v1` (`MaxMemoryFor`,
+`CustomConfigSets`, `ManagedMaxMemoryError`): `customConfig` wins;
+otherwise `maxmemory` is `percent` of the smallest pod's memory limit (each
+capped by the configured one, preferring what the kubelet reports as
+applied), keeping 32Mi free, and isn't checked where the operator doesn't
+manage it. Where the status message keeps `maxmemory` (`maxmemory kept at
+X: ...`), every pod must run `X` instead; under `allkeys-*` only if the
+master changed while lowering it, as `allkeys-*` is otherwise always
+lowered.
 
 A pod that doesn't answer `INFO` has no role, so an unreachable master
 violates `one_master`, and an unreachable replica violates `replication`.
@@ -134,24 +194,36 @@ instance one mutation at a time:
 2. It picks a kind by weight, and the kind's parameters, from the seed
    and the instance's step. Each instance and step has its own random
    source, so a step logged with its seed can be replayed on its own.
-3. It opens a convergence window and applies the mutation.
-4. It waits for the window to close or time out, and records the result.
-5. It sleeps `mutation.interval` plus up to `mutation.jitter`.
+3. It takes the global lock: shared for most kinds, exclusive for
+   `password_rotate_offline`, which stops the operator for every
+   instance. An exclusive mutation waits until every running mutation is
+   done, and every other mutator waits until it is; it then checks again
+   that its instance is quiet.
+4. It opens a convergence window and applies the mutation.
+5. It waits for the window to close or time out, and records the result.
+6. It sleeps `mutation.interval` plus up to `mutation.jitter`.
 
 | Kind | Mutation | Converged when |
 |---|---|---|
 | `redis_replicas` | Merge-patches `spec.redis.replicas` to another value in `redisReplicas`. | The `rfr-<name>` StatefulSet has the new `spec.replicas`, has observed its generation, and has that many replicas, all ready and on its update revision; so many redis pods exist, all Ready. |
 | `sentinel_replicas` | Merge-patches `spec.sentinel.replicas` to another value in `sentinelReplicas`. | The `rfs-<name>` Deployment has observed its generation and has that many replicas, all ready, updated and available; so many Sentinel pods exist, all Ready. |
 | `redis_resources` | Merge-patches the cpu, memory or both of the redis container's requests and limits to other values within `resources`. Only values the RedisFailover already sets are changed, so the set of requests and limits stays the same, and a change that would alter the QoS class is skipped: the operator can resize the pods in place. | Every redis pod runs the new values: the kubelet reports them in `status.containerStatuses[].resources` (or, if it doesn't, the pod spec has them and no resize is in flight), and no pod has a pending `resize-requested-at` annotation. The StatefulSet is converged as for `redis_replicas`. |
-| `kill_master` | Deletes the pod labelled `redisfailovers-role=master`, if it is the one the observer last saw as the single master. | A new pod of the same name is Ready. |
+| `kill_master` | Deletes the pod labelled `redisfailovers-role=master`, if it is the one the observer last saw as the single master, gracefully. | A new pod of the same name is Ready. |
+| `kill_master_force` | As `kill_master`, with `GracePeriodSeconds=0`. | As for `kill_master`. |
 | `kill_replica` | Deletes a pod labelled `redisfailovers-role=slave`. | A new pod of the same name is Ready. |
 | `kill_sentinel` | Deletes a Sentinel pod. | The pod is gone and the Deployment is converged as for `sentinel_replicas`. |
 | `redis_memory` | Merge-patches the memory limit to another value in `redisMemory` (Mi), and a memory request in proportion, keeping the QoS class. The range may go below what the data needs. | `maxmemory` is what the operator sets (as for `config`), and either every pod runs the new values (as for `redis_resources`) or, without an `allkeys-*` policy, the status keeps `maxmemory` because the new target would not fit the data, every pod is ready and none shrank. |
 | `maxmemory_policy` | Merge-patches `spec.redis.maxMemory.policy` to another of `maxMemoryPolicies`. | The spec has the change, every redis pod is ready and runs the `maxmemory` settings the operator sets. |
 | `maxmemory_percent` | Merge-patches `spec.redis.maxMemory.percent` to another value in `maxMemoryPercent` (10-95). | As for `maxmemory_policy`. |
 | `fill_burst` | (`noeviction` only) Writes `soak:<rf>:burst:<n>` past `maxmemory` until writes are rejected with `OOM`, keeps trying for `fillBurstHold`, then deletes the burst's keys. | The burst is done, all redis pods are ready, and a write through `rfrm` is accepted again. |
+| `password_rotate` | (With auth) Sets the `password` key of the Secret `spec.auth.secretPath` names to a new random password, in place. | Every redis pod accepts the new password; the StatefulSet's pod template carries a new `secret-checksum` annotation, the StatefulSet is converged as for `redis_replicas`, and every pod carries the template's checksum; with Sentinel, every Sentinel's `SENTINEL MASTER mymaster` flags have no `s_down`, `o_down` or `disconnected`, and its `num-slaves` is `spec.redis.replicas - 1`; the RedisFailover is `Healthy`. |
+| `auth_add` | (Without auth) Creates or updates the Secret `authSecret` (default `<name>-auth`) with a new random password, then merge-patches `spec.auth.secretPath` to it. | As for `password_rotate`. |
+| `auth_remove` | (With auth) Merge-patches `spec.auth.secretPath` away. | As for `password_rotate`, with every pod needing no password. |
+| `password_rotate_offline` | (With auth; scenario C) Scales the operator to 0 and waits until its pod is gone, rotates the password, scales the operator to 1, expects `NotHealthy` with `unable to apply the configured password`, puts the previous password back, expects `Healthy` with every pod on it, and rotates again. Each expectation waits up to `observer.convergenceTimeout`. | As for `password_rotate`, for the last password. |
+| `sentinel_toggle` | Merge-patches `spec.sentinel.enabled` to the other value. | Switched on: the Sentinel Deployment is converged as for `sentinel_replicas`, and the `rfs-<name>` Service and ConfigMap exist. Switched off: the Deployment, Service, ConfigMap and every Sentinel pod are gone. Either way all redis pods are Ready and the RedisFailover is `Healthy`. |
 
-The last four need `maxMemoryPolicy`. Under `allkeys-*`, `redis_memory`
+`redis_memory`, `maxmemory_policy`, `maxmemory_percent` and `fill_burst`
+need `maxMemoryPolicy`. Under `allkeys-*`, `redis_memory`
 expects the limit applied, `maxmemory` lowered and keys evicted; under
 `noeviction` and `volatile-*`, a target below the data makes the operator
 keep `maxmemory`, report it in `.status.message` and hold the rollout.
@@ -167,8 +239,27 @@ operator's reserve).
 The mutator waits for the data to be filled once before its first
 mutation, and verifies the data after each.
 
-Kills delete with a UID precondition, gracefully or, with a probability
-of `forceDeleteProbability`, with `GracePeriodSeconds=0`.
+Kills delete with a UID precondition. `kill_master` and
+`kill_master_force` are separate kinds rather than one kind with a label:
+without SIGTERM the master neither waits for its replicas nor saves, and
+the failover waits for the operator's or Sentinel's timeout, so their
+convergence times and losses differ, and a kind already splits
+`mutation_total`, `mutation_converge_seconds`, `pods_recreated_total` and
+`lost_writes_total` without adding a label every other series would carry.
+Replica and Sentinel kills delete with `GracePeriodSeconds=0` with a
+probability of `forceDeleteProbability`. A master kill of an instance's
+only pod without a PersistentVolumeClaim is verified as a `reset`.
+
+The auth kinds never log a password: `params` names the Secret.
+`password_rotate_offline` logs each phase as `scenario phase done` (or
+`scenario phase failed`) with `phase`, `phase_name` and
+`duration_seconds`; phase 8 is the last rotation's convergence. A phase
+whose expectation doesn't come within its bound makes the result
+`timeout`; the scenario still runs to the end, and never leaves the
+operator stopped.
+
+The bootstrapping instance may only run `redis_replicas`,
+`redis_resources` and `kill_replica`.
 
 The StatefulSet's `currentRevision` isn't compared: the operator's
 StatefulSets use `OnDelete`, for which the controller never advances it.
@@ -183,8 +274,8 @@ Each mutation is logged as `mutating` and then `mutation done` (or
 
 - `converged`: the window closed.
 - `timeout`: the window timed out after `observer.convergenceTimeout`.
-- `rejected`: the API refused the patch or the delete. Its window closes
-  once the invariants hold.
+- `rejected`: the API refused the patch, the delete or the Secret change.
+  Its window closes once the invariants hold.
 - `skipped`: the mutation couldn't be applied, e.g. a replica kill on an
   instance with one redis pod, or a resource change that would alter
   the QoS class. Nothing was changed and no window was opened.
@@ -204,6 +295,12 @@ A violation is expected while the instance converges after a change, and a
   tester didn't make, e.g. a spec change by hand, opens a window that
   closes as soon as every invariant holds, or after the convergence
   timeout. The operator itself bumps the generation at times, too.
+- **Something outside the instance** holds a window open, restarted on
+  every check, for as long as it lasts: `password_rotate_offline` stopped
+  the operator (every instance), or a bootstrapping instance's source is
+  in a window or has no single master, as its replication link breaks
+  when the source fails over. The window then closes once every invariant
+  holds.
 
 Then:
 
@@ -220,6 +317,13 @@ flight.
 Pod kills open a window like every mutation, so the failover after a
 master kill isn't a finding. A pod killed by anything else, or a failover
 nobody asked for, is.
+
+Known, documented operator limitations are not findings, and the tester
+doesn't look at them: until a redis pod restarts after a password change,
+its exporter sidecar and its pre-stop `SAVE` use the old password; and an
+operator restarted between a Secret change and its next check reports
+`unable to apply the configured password` until the documented recovery,
+which `password_rotate_offline` exercises.
 
 Every transition is logged as a JSON line with `rf`, `namespace`, `mode`
 and `invariant`: `invariant violated` with the `reason` and whether it is a
@@ -240,17 +344,26 @@ make kind-e2e             # kind cluster, operator, instances, mutating tester, 
 this checkout with `charts/redisoperator`, recreates its instances from
 scratch, and deploys the tester with [`e2e/config.yaml`](e2e/config.yaml):
 
-| Instance | Mode | maxMemory | Data | Mutations |
-|---|---|---|---|---|
-| `op-basic` | operator | none | 32Mi, ledger | `redis_replicas`, `redis_resources`, `kill_master`, `kill_replica` |
-| `sent-basic` | Sentinel | none | 32Mi, ledger | `redis_replicas`, `sentinel_replicas`, `kill_master`, `kill_replica`, `kill_sentinel` |
-| `op-maxmem` | operator | `allkeys-lru`, 75% of 256Mi | 90% of `maxmemory`, filler only | `redis_memory`, `maxmemory_policy` (`allkeys-*`), `maxmemory_percent`, `kill_replica` |
-| `op-noevict` | operator | `noeviction`, 75% of 192Mi | 70% of `maxmemory` (fill TTL 1h), ledger | `redis_memory`, `maxmemory_policy` (`noeviction`, `volatile-*`), `maxmemory_percent`, `fill_burst` |
+| Instance | Mode | Storage, auth | maxMemory | Data | Mutations |
+|---|---|---|---|---|---|
+| `op-basic` | operator | emptyDir | none | 32Mi, ledger | `redis_replicas`, `redis_resources`, `kill_master`, `kill_master_force`, `kill_replica` |
+| `sent-basic` | Sentinel | emptyDir | none | 32Mi, ledger | `redis_replicas`, `sentinel_replicas`, `kill_master`, `kill_master_force`, `kill_replica`, `kill_sentinel` |
+| `op-maxmem` | operator | emptyDir | `allkeys-lru`, 75% of 256Mi | 90% of `maxmemory`, filler only | `redis_memory`, `maxmemory_policy` (`allkeys-*`), `maxmemory_percent`, `kill_replica` |
+| `op-noevict` | operator | emptyDir | `noeviction`, 75% of 192Mi | 70% of `maxmemory` (fill TTL 1h), ledger | `redis_memory`, `maxmemory_policy` (`noeviction`, `volatile-*`), `maxmemory_percent`, `fill_burst` |
+| `op-full` | operator | PVC (kind's default StorageClass), auth; exporter, `preventMasterEviction` | none | 16Mi, ledger | `password_rotate`, `auth_remove`, `auth_add`, `password_rotate_offline`, `kill_master`, `kill_master_force`, `redis_replicas` (1-2) |
+| `sent-full` | Sentinel | emptyDir, auth; port 6380, both exporters, redis and Sentinel `customConfig` | none | 16Mi, ledger | `password_rotate`, `kill_master`, `kill_sentinel`, `sentinel_replicas` |
+| `toggle` | operator at first | emptyDir, auth | none | 16Mi, ledger | `sentinel_toggle`, `kill_master` |
+| `bootstrap` | operator, `bootstrapNode` = ClusterIP of `rfrm-op-basic` | emptyDir | none | read-only | `redis_replicas`, `kill_replica` |
 
-The mutator runs with a 10-20s interval and seed 6517, which picks every
-enabled kind within each instance's first six steps, `fill_burst` twice
-under `noeviction` on `op-noevict`, and both a graceful and a forced
-`kill_master`. It starts mutations for `DURATION` seconds (default 900).
+The observer's convergence timeout is 8m, longer than the 5m the operator
+retries an in-place resize the kubelet refuses (e.g. a memory limit below
+the page cache in use) before it recreates the pod. The mutator runs with
+a 10-20s interval and seed 24080, which picks every
+enabled kind within each instance's first eight steps and `op-full`'s
+first twelve. On `op-full` it rotates the password with three pods,
+runs scenario C on step 5 and restarts the single pod gracefully on step
+8; it kills `op-basic`'s only pod (a `reset`) and `toggle`'s master in
+both modes. It starts mutations for `DURATION` seconds (default 2100).
 Once the last ones have converged, the script asserts from `/metrics` and
 the tester's log that:
 
@@ -258,27 +371,43 @@ the tester's log that:
   timed out or was rejected;
 - `findings_total` stayed 0, OOM kills included;
 - every invariant holds, `config` and `oom_killed` included, with one
-  master, and `server_info` has a series per redis pod;
+  master (none while bootstrapping), and `server_info` has a series per
+  redis pod;
 - every path and client style can write and read again, and `WAIT`
-  succeeded on each;
+  succeeded on each; the bootstrap's `rfrs` reads again;
 - each instance whose master was killed failed over;
 - `op-noevict` rejected writes with `OOM` and `op-maxmem` evicted keys;
 - the data was verified after every mutation, and after every failover
-  outside a mutation.
+  outside a mutation; the bootstrap was verified, and lacked none of
+  `op-basic`'s writes;
+- no write was lost by `password_rotate`, `auth_add`, `auth_remove`,
+  `sentinel_toggle` or `password_rotate_offline`, or by a graceful
+  `kill_master` (a single pod's restart included) or a scale-down on
+  `op-full`'s volumes. A scale-down that removed the master is excluded
+  and reported apart: a known operator race (`checkAndHealOperatorManagedMode`
+  in `checker.go` promotes a replica in its `case 1` branch without
+  waiting for `masterPodStopping`).
 
 It prints every mutation, the convergence time per kind, the outages per
 path and client style attributed to the mutation they started in, the
-pods each kind recreated, every data verification with the mutation it
-followed, the lost writes per instance and event (kills by graceful or
-forced deletion and whether the pod was the only one, scale-downs by
-whether they removed the master; losses on a graceful path, which Redis 7
-should not have as it waits for its replicas on SIGTERM, are flagged
-`NOTABLE`), the dataset, memory, OOM, eviction and
+auth windows (each outage that started during an auth change, with the
+result it started with: `follower`'s `auth` outage is the operator's
+delay, `closed` and `timeout` ones the pods rolling onto the Secret),
+scenario C's phases with their durations, the outages on `rfrm` during
+each Sentinel toggle, how long the bootstrap's link was down during each
+of `op-basic`'s master changes, its lag behind `op-basic`'s master
+(sampled every 20s) and its verifications, the pods each kind recreated, every data
+verification with the mutation it followed, the lost writes per instance
+and event (kills by graceful or forced deletion and whether the pod was
+the only one, scale-downs by whether they removed the master; losses on a
+graceful path, which Redis 7 should not have as it waits for its replicas
+on SIGTERM, are flagged `NOTABLE`), the dataset, memory, OOM, eviction and
 `WAIT` metrics, the `config` invariant's violations and the operator's
 `maxmemory kept`/`lowered` messages, and any findings or timed-out
-windows. The tester's and the operator's logs, the instances' events and
-the last scrape are kept in `bin/kind-e2e-artifacts/`. Set
-`OPERATOR_VERSION=4.2.0-rc1` to install a released chart and image instead.
+windows. The tester's and the operator's logs, the instances' events, the
+bootstrap's lag samples and the last scrape are kept in
+`bin/kind-e2e-artifacts/`. Set `OPERATOR_VERSION=4.2.0-rc1` to install a
+released chart and image instead.
 
 ### Pointing it at an RC
 
@@ -297,12 +426,15 @@ its Deployment, matching `operator` in `deploy/config.yaml`. A ClusterRole
 lets the observer read pods, EndpointSlices and RedisFailovers in the
 instances' namespaces.
 
-The mutator's rights (patch RedisFailovers, delete pods, read StatefulSets
-and Deployments) are granted only in the instances' namespaces: the
-`redis-soak-mutator` ClusterRole holds the rules once, and
-`deploy/rbac-instances.yaml` binds it with a RoleBinding in every instance
-namespace. Keep that file in step with the instances in `config.yaml`, and
-create the namespaces before applying the manifests.
+The mutator's rights (patch RedisFailovers, delete pods, read StatefulSets,
+Deployments, Services and ConfigMaps, and read, watch, create and update
+Secrets, which every client's password comes from) are granted only in
+the instances' namespaces: the `redis-soak-mutator` ClusterRole holds the
+rules once, and `deploy/rbac-instances.yaml` binds it with a RoleBinding
+in every instance namespace. Keep that file in step with the instances in
+`config.yaml`, and create the namespaces before applying the manifests.
+`password_rotate_offline` scales the operator through its Deployment's
+`scale` subresource, which the Role in the operator's namespace allows.
 
 ## Configuration
 
@@ -312,11 +444,13 @@ config the manifests ship.
 ## Metrics
 
 Served on `:9090/metrics`; `/healthz` answers `ok`. Per-instance series carry
-`rf`, `namespace` and `mode` (`operator` or `sentinel`).
+`rf`, `namespace` and `mode` (`operator` or `sentinel`). `mode` is the
+configured one, so an instance's series stay the same when
+`sentinel_toggle` switches its mode.
 
 | Metric | Type | Extra labels |
 |---|---|---|
-| `redis_soak_probe_total` | counter | `path`, `client`, `op` (`set`/`get`/`wait`), `result` |
+| `redis_soak_probe_total` | counter | `path` (`sentinel`/`rfrm`/`rfrs`), `client` (`pooled`/`retrying`/`fresh`/`follower`), `op` (`set`/`get`/`wait`), `result` |
 | `redis_soak_probe_duration_seconds` | histogram | `path`, `client`, `op` |
 | `redis_soak_writable`, `redis_soak_readable` | gauge (0/1) | `path`, `client` |
 | `redis_soak_last_success_timestamp_seconds` | gauge | `path`, `client`, `op` |
@@ -339,7 +473,7 @@ Served on `:9090/metrics`; `/healthz` answers `ok`. Per-instance series carry
 | `redis_soak_used_memory_bytes`, `redis_soak_maxmemory_bytes` | gauge | |
 | `redis_soak_oom_rejections_total` | counter | |
 | `redis_soak_evicted_keys_total` | counter | |
-| `redis_soak_lost_writes_total` | counter | `event` (a mutation kind, `failover` or `periodic`) |
+| `redis_soak_lost_writes_total` | counter | `event` (a mutation kind, `failover`, `reset` or `periodic`) |
 | `redis_soak_ledger_verified_total` | counter | `event` |
 
 `result` is one of `ok`, `timeout`, `refused`, `readonly`, `loading`, `auth`,
@@ -349,7 +483,8 @@ Valkey count the same way. `closed` is a connection closed or reset by the
 server, such as the operator disconnecting clients from a demoted master.
 
 An outage runs from the first failed probe to the next successful one, per
-path and client style.
+path and client style. A path's series are deleted when the path goes
+away.
 
 `masters` is the number of redis pods reporting the master role: 1 is right,
 0 is an instance without a master and 2 or more a split brain.
@@ -357,7 +492,8 @@ path and client style.
 that is replaced by a new pod with the same name counts too).
 `replication_lag_bytes` is the master's `master_repl_offset` minus each
 replica's `slave_repl_offset`, for the replicas of the current master; the
-two `INFO` replies are a few milliseconds apart, so it is floored at 0.
+two `INFO` replies are a few milliseconds apart, so it is floored at 0. A
+bootstrapping instance's pods lag behind the source's master.
 `server_info` comes from `INFO server` (`valkey_version`, `server_name` and
 `redis_version`) and shows pods running different servers or versions.
 The per-pod series exist only while the pod answers `INFO`, and disappear
