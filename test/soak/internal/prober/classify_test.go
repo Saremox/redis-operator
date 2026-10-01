@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -54,6 +57,10 @@ func TestClassifyNonServerErrors(t *testing.T) {
 		{&net.OpError{Op: "read", Err: timeoutError{}}, ResultTimeout},
 		{&net.DNSError{Err: "no such host", Name: "rfrm-x.ns.svc", IsNotFound: true}, ResultDNS},
 		{&net.DNSError{Err: "i/o timeout", Name: "rfrm-x.ns.svc", IsTimeout: true}, ResultDNS},
+		{io.EOF, ResultClosed},
+		{fmt.Errorf("probe: %w", io.ErrUnexpectedEOF), ResultClosed},
+		{&net.OpError{Op: "read", Err: os.NewSyscallError("read", syscall.ECONNRESET)}, ResultClosed},
+		{&net.OpError{Op: "write", Err: os.NewSyscallError("write", syscall.EPIPE)}, ResultClosed},
 		{errors.New("EOF"), ResultOther},
 		{redis.ErrClosed, ResultOther},
 	}
@@ -122,6 +129,27 @@ func TestClassifyClientErrors(t *testing.T) {
 			}
 		}()
 		if got := Classify(ping(l.Addr().String())); got != ResultTimeout {
+			t.Errorf("got %q", got)
+		}
+	})
+
+	t.Run("closed", func(t *testing.T) {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = l.Close() }()
+		go func() {
+			for {
+				c, err := l.Accept()
+				if err != nil {
+					return
+				}
+				_, _ = c.Read(make([]byte, 64))
+				_ = c.Close()
+			}
+		}()
+		if got := Classify(ping(l.Addr().String())); got != ResultClosed {
 			t.Errorf("got %q", got)
 		}
 	})

@@ -23,14 +23,14 @@ func TestProbe(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := metrics.New(reg)
 	in := config.Instance{Name: "op-basic", Namespace: "op-basic", Mode: config.ModeOperator, Port: 6379}
-	path := Path{Name: PathRFRM, NewClient: func() *redis.Client {
+	path := Path{Name: PathRFRM, NewClient: func(Client) *redis.Client {
 		return redis.NewClient(&redis.Options{Addr: s.Addr(), MaxRetries: -1})
 	}}
 	probe := config.Probe{Interval: metav1.Duration{Duration: time.Second}, Timeout: metav1.Duration{Duration: time.Second}}
 	p := New(in, path, Fresh, probe, m, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx := context.Background()
 	run := func() {
-		c := path.NewClient()
+		c := path.NewClient(Fresh)
 		defer func() { _ = c.Close() }()
 		p.probe(ctx, c)
 	}

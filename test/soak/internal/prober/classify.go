@@ -3,6 +3,7 @@ package prober
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"syscall"
@@ -23,6 +24,7 @@ const (
 	ResultMasterDown = "masterdown"
 	ResultNoReplicas = "noreplicas"
 	ResultDNS        = "dns"
+	ResultClosed     = "closed"
 	ResultOther      = "other"
 )
 
@@ -57,6 +59,10 @@ func Classify(err error) string {
 	}
 	if errors.Is(err, syscall.ECONNREFUSED) {
 		return ResultRefused
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return ResultClosed
 	}
 	var netErr net.Error
 	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netErr) && netErr.Timeout() {

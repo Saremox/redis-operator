@@ -23,6 +23,9 @@ type Client string
 const (
 	// Pooled keeps one long-lived client, like an application.
 	Pooled Client = "pooled"
+	// Retrying is Pooled with go-redis's default retries, like an
+	// application that didn't tune its client.
+	Retrying Client = "retrying"
 	// Fresh dials a new connection for every probe, like a new pod.
 	Fresh Client = "fresh"
 )
@@ -72,8 +75,8 @@ func New(in config.Instance, path Path, client Client, probe config.Probe, m *me
 
 func (p *Prober) Run(ctx context.Context) {
 	var pooled *redis.Client
-	if p.client == Pooled {
-		pooled = p.path.NewClient()
+	if p.client != Fresh {
+		pooled = p.path.NewClient(p.client)
 		defer func() { _ = pooled.Close() }()
 	}
 	t := time.NewTicker(p.interval)
@@ -86,7 +89,7 @@ func (p *Prober) Run(ctx context.Context) {
 		}
 		c := pooled
 		if c == nil {
-			c = p.path.NewClient()
+			c = p.path.NewClient(Fresh)
 		}
 		p.probe(ctx, c)
 		if pooled == nil {

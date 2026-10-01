@@ -12,13 +12,16 @@ that tag's spec.
 ## What it does today
 
 For every configured instance it probes the master through the
-`rfrm-<name>` Service, once per `probe.interval`, with two client styles:
+`rfrm-<name>` Service, once per `probe.interval`, with three client styles:
 
 - `pooled`: one long-lived go-redis client, like an application.
+- `retrying`: the same with go-redis's default retries, like an application
+  that didn't tune its client.
 - `fresh`: a new connection for every probe, like a newly started pod.
 
 Each probe is a `SET soak:<rf>:rfrm:<client>:seq <n>` followed by a `GET` of
-the same key. go-redis retries are off, so every failure is counted.
+the same key. Except for `retrying`, go-redis retries are off, so every
+failure is counted. `retrying` retries within the same `probe.timeout`.
 
 ## Running it
 
@@ -31,7 +34,7 @@ make kind-e2e             # kind cluster, operator, op-basic, tester, assertions
 `kind-e2e` reuses `.claude/skills/kind-cluster/`, installs the operator from
 this checkout with `charts/redisoperator`, creates `op-basic`, deploys the
 tester, lets it run for `DURATION` seconds (default 120) and asserts from
-`/metrics` that both client styles can write and read through `rfrm`. Set
+`/metrics` that every client style can write and read through `rfrm`. Set
 `OPERATOR_VERSION=4.2.0-rc1` to install a released chart and image instead.
 
 ### Pointing it at an RC
@@ -69,10 +72,10 @@ Served on `:9090/metrics`; `/healthz` answers `ok`. Per-instance series carry
 | `redis_soak_build_info` | gauge | `operator_version`, `tester_version` |
 
 `result` is one of `ok`, `timeout`, `refused`, `readonly`, `loading`, `auth`,
-`oom`, `masterdown`, `noreplicas`, `dns` and `other`. Server errors are
-classified by their leading error code, never by the message, so Redis and
-Valkey count the same way. A connection closed by the server, such as the
-operator disconnecting clients from a demoted master, counts as `other`.
+`oom`, `masterdown`, `noreplicas`, `dns`, `closed` and `other`. Server errors
+are classified by their leading error code, never by the message, so Redis and
+Valkey count the same way. `closed` is a connection closed or reset by the
+server, such as the operator disconnecting clients from a demoted master.
 
 An outage runs from the first failed probe to the next successful one, per
 path and client style. `operator_version` is the image tag of the operator

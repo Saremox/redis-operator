@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the soak tester against op-basic on kind and asserts from its metrics
-# that the rfrm probes succeed for both client styles.
+# that the rfrm probes succeed for every client style.
 #
 # Environment: CLUSTER, KIND_NODE, OPERATOR_VERSION (empty: build the
 # operator from this checkout), DURATION (seconds to let the tester run).
@@ -84,7 +84,7 @@ series() {
     echo "${line##* }"
   done < <(grep -F "$name{" <<<"$metrics" || true)
 }
-for client in pooled fresh; do
+for client in pooled retrying fresh; do
   for gauge in writable readable; do
     v=$(series "redis_soak_$gauge" "client=\"$client\"")
     [[ $v == 1 ]] || { echo "FAIL: $gauge{client=$client} = ${v:-missing}"; fail=1; }
@@ -102,4 +102,4 @@ grep -q '^redis_soak_build_info{operator_version=' <<<"$metrics" || { echo "FAIL
 if [[ $fail != 0 ]]; then
   exit 1
 fi
-echo "PASS: rfrm probes succeed for pooled and fresh clients"
+echo "PASS: rfrm probes succeed for every client style"

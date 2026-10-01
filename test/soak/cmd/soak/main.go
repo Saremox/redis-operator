@@ -64,7 +64,7 @@ func run(configPath, listen string, log *slog.Logger) error {
 	wg.Go(func() { reportBuildInfo(ctx, kube, cfg.Operator, m, log) })
 	for _, in := range cfg.Instances {
 		path := prober.MasterService(in, cfg.Probe.Timeout.Duration)
-		for _, client := range []prober.Client{prober.Pooled, prober.Fresh} {
+		for _, client := range []prober.Client{prober.Pooled, prober.Retrying, prober.Fresh} {
 			p := prober.New(in, path, client, cfg.Probe, m, log)
 			wg.Go(func() { p.Run(ctx) })
 		}
