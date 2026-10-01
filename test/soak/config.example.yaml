@@ -9,14 +9,27 @@ operator:
 
 probe:
   interval: 1s
-  # Per command, including the dial of a fresh connection.
+  # Per command, including the dial of a fresh connection. The observer
+  # uses it for its INFO and SENTINEL commands too.
   timeout: 1s
 
-# Each instance is a RedisFailover the tester probes through rfrm-<name>.
+observer:
+  # How often each instance's invariants are checked.
+  interval: 5s
+  # How long an instance may take to converge after its spec changed
+  # (metadata.generation) before a violation counts as a finding.
+  convergenceTimeout: 10m
+
+# Each instance is a RedisFailover the tester probes and observes.
 instances:
   - name: op-basic
     namespace: op-basic
-    # operator (sentinel.enabled: false) or sentinel.
+    # operator (sentinel.enabled: false): probed through rfrm-<name>.
+    # sentinel: probed through Sentinel (rfs-<name>:26379, mymaster) and
+    # through rfrm-<name>.
     mode: operator
     # spec.redis.port
     port: 6379
+  - name: sent-basic
+    namespace: sent-basic
+    mode: sentinel

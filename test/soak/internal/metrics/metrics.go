@@ -22,6 +22,15 @@ type Metrics struct {
 	LastSuccess    *prometheus.GaugeVec
 	OutageDuration *prometheus.HistogramVec
 	BuildInfo      *prometheus.GaugeVec
+
+	InvariantOK        *prometheus.GaugeVec
+	InvariantViolation *prometheus.HistogramVec
+	Findings           *prometheus.CounterVec
+	Masters            *prometheus.GaugeVec
+	Failovers          *prometheus.CounterVec
+	ReplicationLag     *prometheus.GaugeVec
+	RFHealthy          *prometheus.GaugeVec
+	ServerInfo         *prometheus.GaugeVec
 }
 
 func New(reg prometheus.Registerer) *Metrics {
@@ -66,9 +75,51 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name:      "build_info",
 			Help:      "Always 1. The operator version is the image tag of its Deployment.",
 		}, []string{"operator_version", "tester_version"}),
+		InvariantOK: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "invariant_ok",
+			Help:      "1 if the invariant held at the last check.",
+		}, labels("invariant")),
+		InvariantViolation: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "invariant_violation_seconds",
+			Help:      "How long an invariant stayed violated.",
+			Buckets:   []float64{1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1800, 3600},
+		}, labels("invariant")),
+		Findings: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "findings_total",
+			Help:      "Invariant violations outside a convergence window.",
+		}, labels("invariant")),
+		Masters: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "masters",
+			Help:      "Redis pods reporting the master role. 1 is right.",
+		}, labels()),
+		Failovers: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "failovers_total",
+			Help:      "Changes of the master's identity.",
+		}, labels()),
+		ReplicationLag: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "replication_lag_bytes",
+			Help:      "The master's replication offset minus the replica's.",
+		}, labels("pod")),
+		RFHealthy: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "rf_healthy",
+			Help:      "1 if the RedisFailover's status.state is Healthy.",
+		}, labels()),
+		ServerInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "server_info",
+			Help:      "Always 1. The server and version each redis pod reports in INFO server.",
+		}, labels("pod", "server", "version")),
 	}
 	reg.MustRegister(
 		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration, m.BuildInfo,
+		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.ServerInfo,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)

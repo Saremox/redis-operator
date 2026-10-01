@@ -23,6 +23,7 @@ const maxNameLength = 48
 type Config struct {
 	Operator  Operator   `json:"operator"`
 	Probe     Probe      `json:"probe"`
+	Observer  Observer   `json:"observer"`
 	Instances []Instance `json:"instances"`
 }
 
@@ -36,6 +37,14 @@ type Operator struct {
 type Probe struct {
 	Interval metav1.Duration `json:"interval"`
 	Timeout  metav1.Duration `json:"timeout"`
+}
+
+// Observer sets how often the invariants are checked, and how long an
+// instance may take to converge after a change before its violations count
+// as findings.
+type Observer struct {
+	Interval           metav1.Duration `json:"interval"`
+	ConvergenceTimeout metav1.Duration `json:"convergenceTimeout"`
 }
 
 type Instance struct {
@@ -77,6 +86,12 @@ func (c *Config) setDefaults() {
 	}
 	if c.Probe.Timeout.Duration == 0 {
 		c.Probe.Timeout.Duration = time.Second
+	}
+	if c.Observer.Interval.Duration == 0 {
+		c.Observer.Interval.Duration = 5 * time.Second
+	}
+	if c.Observer.ConvergenceTimeout.Duration == 0 {
+		c.Observer.ConvergenceTimeout.Duration = 10 * time.Minute
 	}
 	for i := range c.Instances {
 		if c.Instances[i].Mode == "" {

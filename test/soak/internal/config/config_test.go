@@ -12,7 +12,7 @@ func TestLoadExample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Instances) != 1 || c.Instances[0].Name != "op-basic" {
+	if len(c.Instances) != 2 || c.Instances[0].Name != "op-basic" || c.Instances[1].Mode != ModeSentinel {
 		t.Fatalf("unexpected instances: %+v", c.Instances)
 	}
 }
@@ -34,6 +34,9 @@ func TestDefaults(t *testing.T) {
 	}
 	if c.Probe.Interval.Duration != time.Second || c.Probe.Timeout.Duration != time.Second {
 		t.Errorf("probe defaults: %+v", c.Probe)
+	}
+	if c.Observer.Interval.Duration != 5*time.Second || c.Observer.ConvergenceTimeout.Duration != 10*time.Minute {
+		t.Errorf("observer defaults: %+v", c.Observer)
 	}
 	if c.Operator.Namespace != "redis-operator" || c.Operator.Deployment != "redis-operator" {
 		t.Errorf("operator defaults: %+v", c.Operator)

@@ -1,0 +1,58 @@
+package observer
+
+import (
+	"strconv"
+	"strings"
+)
+
+const (
+	roleMaster  = "master"
+	roleReplica = "replica"
+
+	serverRedis  = "redis"
+	serverValkey = "valkey"
+)
+
+// info is the key:value body of an INFO reply.
+type info map[string]string
+
+func parseInfo(s string) info {
+	i := info{}
+	for line := range strings.Lines(s) {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		if k, v, ok := strings.Cut(line, ":"); ok {
+			i[k] = v
+		}
+	}
+	return i
+}
+
+// role normalises the replication role, which Valkey may report as
+// primary or replica.
+func (i info) role() string {
+	switch i["role"] {
+	case "master", "primary":
+		return roleMaster
+	case "slave", "replica":
+		return roleReplica
+	}
+	return ""
+}
+
+func (i info) server() (name, version string) {
+	if v := i["valkey_version"]; v != "" {
+		return serverValkey, v
+	}
+	if i["server_name"] == serverValkey {
+		return serverValkey, i["redis_version"]
+	}
+	return serverRedis, i["redis_version"]
+}
+
+func (i info) int(key string) int64 {
+	n, _ := strconv.ParseInt(i[key], 10, 64)
+	return n
+}

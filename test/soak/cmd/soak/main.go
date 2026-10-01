@@ -19,8 +19,10 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/saremox/redis-operator/client/k8s/clientset/versioned"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
+	"github.com/saremox/redis-operator/test/soak/internal/observer"
 	"github.com/saremox/redis-operator/test/soak/internal/operator"
 	"github.com/saremox/redis-operator/test/soak/internal/prober"
 )
@@ -51,7 +53,14 @@ func run(configPath, listen string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// The observers list pods, EndpointSlices and RedisFailovers for every
+	// instance every few seconds.
+	restCfg.QPS, restCfg.Burst = 50, 100
 	kube, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return err
+	}
+	rfs, err := versioned.NewForConfig(restCfg)
 	if err != nil {
 		return err
 	}
@@ -72,6 +81,8 @@ func run(configPath, listen string, log *slog.Logger) error {
 				wg.Go(func() { p.Run(ctx) })
 			}
 		}
+		o := observer.New(in, cfg, kube, rfs, m, log)
+		wg.Go(func() { o.Run(ctx) })
 	}
 	wg.Go(func() {
 		<-ctx.Done()
