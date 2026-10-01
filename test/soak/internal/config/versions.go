@@ -39,7 +39,8 @@ type Edge struct {
 	To     string `json:"to"`
 	Expect string `json:"expect"`
 	// Timeout bounds how long a change along the edge is observed before
-	// it is judged; by default the kind's timeout.
+	// it is judged, if it doesn't get stuck first; by default the kind's
+	// timeout.
 	Timeout metav1.Duration `json:"timeout"`
 }
 

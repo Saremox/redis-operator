@@ -237,8 +237,8 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 	inProgress := m.inProgress.WithLabelValues(string(kind))
 	inProgress.Set(1)
 	defer inProgress.Set(0)
-	// An edge that may fail is observed for its timeout only, and its
-	// window held on, for the reset that follows.
+	// An edge that may fail is observed for its timeout only, or until it
+	// is stuck, and its window held on, for the reset that follows.
 	bound := time.Duration(0)
 	hold := timeout
 	if p.edge != nil {
@@ -283,7 +283,11 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 	applied.Store(true)
 	h.Applied()
 	appliedAt := time.Now()
-	converged, ok := m.await(ctx, h, bound)
+	var watch *transition
+	if bound > 0 {
+		watch = p.edge
+	}
+	converged, ok := m.await(ctx, h, bound, watch)
 	if !ok {
 		return ""
 	}
@@ -364,10 +368,17 @@ func (m *Mutator) plan(r *rand.Rand, kind config.Kind, s state) plan {
 	return newPlan(r, kind, m.in.Mutations, s, m.observer.Master(), m.data)
 }
 
+// stuckGrace is how long a change along an edge that may fail is still
+// observed once a pod on the new version couldn't load the data, for what
+// the operator does next.
+const stuckGrace = time.Minute
+
 // await waits until the window closes, or for at most bound if set, and
-// samples the mixed window meanwhile. It reports whether the mutation
-// converged, and false for ok if ctx was done.
-func (m *Mutator) await(ctx context.Context, h *observer.Hold, bound time.Duration) (converged, ok bool) {
+// samples the mixed window meanwhile. A watched change also ends
+// stuckGrace after a pod on its new version couldn't load the data. It
+// reports whether the mutation converged, and false for ok if ctx was
+// done.
+func (m *Mutator) await(ctx context.Context, h *observer.Hold, bound time.Duration, watch *transition) (converged, ok bool) {
 	var limit <-chan time.Time
 	if bound > 0 {
 		t := time.NewTimer(bound)
@@ -376,34 +387,67 @@ func (m *Mutator) await(ctx context.Context, h *observer.Hold, bound time.Durati
 	}
 	tick := time.NewTicker(m.observerCfg.Interval.Duration)
 	defer tick.Stop()
+	var stuck time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return false, false
 		case converged = <-h.Done():
-			m.sampleMixed(ctx)
+			m.sample(ctx, nil)
 			return converged, true
 		case <-limit:
-			m.sampleMixed(ctx)
+			m.sample(ctx, nil)
 			return false, true
 		case <-tick.C:
-			m.sampleMixed(ctx)
+			if !stuck.IsZero() {
+				m.sample(ctx, nil)
+				if time.Since(stuck) >= stuckGrace {
+					return false, true
+				}
+				continue
+			}
+			if pod, line := m.sample(ctx, watch); line != "" {
+				stuck = time.Now()
+				m.log.Info("rollout stuck", "from", watch.edge.From, "to", watch.edge.To, "pod", pod, "log", line,
+					"grace_seconds", stuckGrace.Seconds())
+			}
 		}
 	}
 }
 
-// sampleMixed follows the open mixed window, and records it once it ended.
-func (m *Mutator) sampleMixed(ctx context.Context) {
-	if m.mixed == nil {
-		return
+// sample follows the open mixed window, and records it once it ended. For
+// a watched change it returns a pod on the new version whose log says it
+// couldn't load the data, and that line.
+func (m *Mutator) sample(ctx context.Context, watch *transition) (pod, line string) {
+	if m.mixed == nil && watch == nil {
+		return "", ""
 	}
 	s, err := m.fetch(ctx, fetchOpts{servers: true})
 	if err != nil {
-		return
+		return "", ""
 	}
-	if d, ended := m.mixed.observe(time.Now(), podImages(m.mixed.t, s)); ended {
-		m.recordMixed(d)
+	if m.mixed != nil {
+		if d, ended := m.mixed.observe(time.Now(), podImages(m.mixed.t, s)); ended {
+			m.recordMixed(d)
+		}
 	}
+	if watch == nil {
+		return "", ""
+	}
+	pods := s.redis
+	if watch.sentinel {
+		pods = s.sentinels
+	}
+	for i := range pods {
+		p := &pods[i]
+		if containerImage(p, watch.container()) != watch.to.Image {
+			continue
+		}
+		if line := m.loadError(ctx, p, watch.container()); line != "" {
+			return p.Name, line
+		}
+	}
+	return "", ""
 }
 
 func (m *Mutator) recordMixed(d time.Duration) {
