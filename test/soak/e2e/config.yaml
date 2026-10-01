@@ -1,13 +1,18 @@
+# kind-e2e's config: deploy/config.yaml with a short mutation interval and a
+# fixed seed. Seed 629 picks every enabled kind within the first five steps
+# of both instances. kind-e2e sets stopAfter to DURATION.
 operator:
   namespace: redis-operator
   deployment: redis-operator
 observer:
   interval: 5s
-  convergenceTimeout: 10m
+  convergenceTimeout: 5m
 mutation:
-  interval: 2m
-  jitter: 1m
+  interval: 10s
+  jitter: 10s
   minDwell: 15s
+  seed: 629
+  stopAfter: 600s
 instances:
   - name: op-basic
     namespace: op-basic

@@ -24,6 +24,7 @@ type Config struct {
 	Operator  Operator   `json:"operator"`
 	Probe     Probe      `json:"probe"`
 	Observer  Observer   `json:"observer"`
+	Mutation  Mutation   `json:"mutation"`
 	Instances []Instance `json:"instances"`
 }
 
@@ -47,11 +48,36 @@ type Observer struct {
 	ConvergenceTimeout metav1.Duration `json:"convergenceTimeout"`
 }
 
+// Mutation sets how often instances are mutated. A mutation's
+// convergence timeout is observer.convergenceTimeout.
+type Mutation struct {
+	// Enabled defaults to true; instances without mutations are never
+	// mutated.
+	Enabled  *bool           `json:"enabled"`
+	Interval metav1.Duration `json:"interval"`
+	// Jitter is the most that is added at random to every interval.
+	Jitter metav1.Duration `json:"jitter"`
+	// MinDwell is the least time a mutation's convergence window stays
+	// open, so a change the operator hasn't picked up yet isn't taken as
+	// converged.
+	MinDwell metav1.Duration `json:"minDwell"`
+	// Seed makes every pick reproducible. 0 picks a seed at startup.
+	Seed int64 `json:"seed"`
+	// StopAfter stops starting mutations this long after startup, for
+	// runs of a fixed length. 0 never stops.
+	StopAfter metav1.Duration `json:"stopAfter"`
+}
+
+func (m Mutation) On() bool {
+	return m.Enabled == nil || *m.Enabled
+}
+
 type Instance struct {
-	Name      string `json:"name"`
-	Namespace string `json:"namespace"`
-	Mode      Mode   `json:"mode"`
-	Port      int    `json:"port"`
+	Name      string    `json:"name"`
+	Namespace string    `json:"namespace"`
+	Mode      Mode      `json:"mode"`
+	Port      int       `json:"port"`
+	Mutations Mutations `json:"mutations"`
 }
 
 func Load(path string) (*Config, error) {
@@ -93,6 +119,15 @@ func (c *Config) setDefaults() {
 	if c.Observer.ConvergenceTimeout.Duration == 0 {
 		c.Observer.ConvergenceTimeout.Duration = 10 * time.Minute
 	}
+	if c.Mutation.Interval.Duration == 0 {
+		c.Mutation.Interval.Duration = 2 * time.Minute
+	}
+	if c.Mutation.MinDwell.Duration == 0 {
+		c.Mutation.MinDwell.Duration = 15 * time.Second
+	}
+	if c.Mutation.Seed == 0 {
+		c.Mutation.Seed = time.Now().UnixNano()
+	}
 	for i := range c.Instances {
 		if c.Instances[i].Mode == "" {
 			c.Instances[i].Mode = ModeOperator
@@ -107,6 +142,12 @@ func (c *Config) validate() error {
 	if len(c.Instances) == 0 {
 		return fmt.Errorf("no instances configured")
 	}
+	if c.Mutation.Interval.Duration < 0 || c.Mutation.Jitter.Duration < 0 || c.Mutation.MinDwell.Duration < 0 || c.Mutation.StopAfter.Duration < 0 {
+		return fmt.Errorf("mutation: negative duration")
+	}
+	if c.Mutation.MinDwell.Duration >= c.Observer.ConvergenceTimeout.Duration {
+		return fmt.Errorf("mutation: minDwell must be shorter than observer.convergenceTimeout")
+	}
 	seen := map[string]bool{}
 	for _, in := range c.Instances {
 		if in.Name == "" || in.Namespace == "" {
@@ -120,6 +161,9 @@ func (c *Config) validate() error {
 		}
 		if in.Port < 1 || in.Port > 65535 {
 			return fmt.Errorf("instance %q: invalid port %d", in.Name, in.Port)
+		}
+		if err := in.Mutations.validate(in.Mode); err != nil {
+			return fmt.Errorf("instance %q: mutations: %w", in.Name, err)
 		}
 		key := in.Namespace + "/" + in.Name
 		if seen[key] {

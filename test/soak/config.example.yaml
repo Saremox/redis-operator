@@ -17,8 +17,28 @@ observer:
   # How often each instance's invariants are checked.
   interval: 5s
   # How long an instance may take to converge after its spec changed
-  # (metadata.generation) before a violation counts as a finding.
+  # (metadata.generation) or a mutation, before a violation counts as a
+  # finding.
   convergenceTimeout: 10m
+
+# The mutator changes each instance with a mutations section, one mutation
+# at a time, once the instance is quiet: no convergence window open and
+# every invariant holding.
+mutation:
+  # false switches the mutator off.
+  enabled: true
+  # The pause after a mutation converged, plus up to jitter at random.
+  interval: 2m
+  jitter: 0s
+  # The least time a mutation's convergence window stays open, so a change
+  # the operator hasn't picked up yet isn't taken as converged.
+  minDwell: 15s
+  # Every pick is reproducible from the seed and the step logged with each
+  # mutation. 0 (the default) picks a seed at startup and logs it.
+  seed: 0
+  # Stop starting mutations this long after startup, for runs of a fixed
+  # length. 0s never stops.
+  stopAfter: 0s
 
 # Each instance is a RedisFailover the tester probes and observes.
 instances:
@@ -30,6 +50,47 @@ instances:
     mode: operator
     # spec.redis.port
     port: 6379
+    # Without mutations, an instance is only probed and observed.
+    mutations:
+      # The enabled kinds and their weights:
+      # - redis_replicas: spec.redis.replicas, within redisReplicas.
+      # - sentinel_replicas (sentinel only): spec.sentinel.replicas, within
+      #   sentinelReplicas.
+      # - redis_resources: the redis container's cpu, memory or both, within
+      #   resources.
+      # - kill_master, kill_replica, kill_sentinel (sentinel only): delete
+      #   one such pod.
+      kinds:
+        redis_replicas: 2
+        redis_resources: 2
+        kill_master: 2
+        kill_replica: 1
+      # At least 1.
+      redisReplicas: {min: 1, max: 5}
+      # Only the requests and limits the RedisFailover already sets are
+      # changed, so the operator can resize the pods in place. cpu is in
+      # millicores and memory in Mi. A request's range must lie below its
+      # limit's, so the QoS class can't change, and a memory limit must be
+      # at least 64Mi and leave room for the data.
+      resources:
+        requests:
+          cpu: {min: 25, max: 200}
+          memory: {min: 32, max: 128}
+        limits:
+          memory: {min: 192, max: 512}
+      # The share of pod kills that delete with GracePeriodSeconds=0.
+      forceDeleteProbability: 0.5
   - name: sent-basic
     namespace: sent-basic
     mode: sentinel
+    mutations:
+      kinds:
+        redis_replicas: 2
+        sentinel_replicas: 1
+        kill_master: 2
+        kill_replica: 1
+        kill_sentinel: 1
+      redisReplicas: {min: 1, max: 5}
+      # At least 3.
+      sentinelReplicas: {min: 3, max: 5}
+      forceDeleteProbability: 0.5
