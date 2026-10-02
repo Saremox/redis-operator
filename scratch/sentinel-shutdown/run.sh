@@ -19,9 +19,17 @@ SUM=$OUT/summary.txt
 now() { date +%s%3N; }
 fmt() { date -u -d @$(($1 / 1000)) +%T; }
 log() { echo "$(date -u +%T.%3N) $*" | tee -a "$OUT/driver.log"; }
-die() { log "FATAL: $*"; exit 1; }
+die() {
+  log "FATAL: $*"
+  log "last convergence check failed on: $(cat "$OUT/why" 2>/dev/null)"
+  k get redisfailover $rf -o jsonpath='{.status}' 2>&1 | tee -a "$OUT/driver.log"; echo
+  k get pods -o wide 2>&1 | tee -a "$OUT/driver.log"
+  wx probe.sh "$(redis_json | jq -r '.items[].status.podIP // empty' | tr '\n' ' ')" "$(sentinel_ips)" 2>&1 | tee -a "$OUT/driver.log"
+  exit 1
+}
+why() { echo "$*" >"$OUT/why"; return 1; }
 k() { kubectl -n $ns "$@"; }
-wx() { kubectl -n $ns exec writer -- "$@"; }
+wx() { timeout 30 kubectl -n $ns exec writer -- "$@"; }
 
 redis_json() { k get pods -l app.kubernetes.io/component=redis -o json; }
 sentinel_ips() { k get pods -l app.kubernetes.io/component=sentinel -o jsonpath='{.items[*].status.podIP}'; }
@@ -40,18 +48,18 @@ annotate() {
 # all Sentinels agree, master pod labelled. Prints "pod ip".
 converged() {
   local j rips sips out mip m
-  j=$(redis_json) || return 1
-  [[ $(jq '.items | length' <<<"$j") == 3 ]] || return 1
-  [[ $(jq '[.items[] | select(.metadata.deletionTimestamp == null) | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | length' <<<"$j") == 3 ]] || return 1
-  [[ $(k get redisfailover $rf -o jsonpath='{.status.state}') == Healthy ]] || return 1
+  j=$(redis_json) || { why "pods list"; return 1; }
+  [[ $(jq '.items | length' <<<"$j") == 3 ]] || { why "pod count $(jq '.items | length' <<<"$j")"; return 1; }
+  [[ $(jq '[.items[] | select(.metadata.deletionTimestamp == null) | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | length' <<<"$j") == 3 ]] || { why "ready pods"; return 1; }
+  [[ $(k get redisfailover $rf -o jsonpath='{.status.state}') == Healthy ]] || { why "RF state $(k get redisfailover $rf -o jsonpath='{.status}')"; return 1; }
   rips=$(jq -r '.items[].status.podIP' <<<"$j" | tr '\n' ' ')
   sips=$(sentinel_ips)
-  out=$(wx probe.sh "$rips" "$sips" 2>/dev/null) || return 1
-  [[ $(awk '$1=="R" && $3=="master"' <<<"$out" | wc -l) == 1 ]] || return 1
+  out=$(wx probe.sh "$rips" "$sips" 2>/dev/null) || { why "probe failed"; return 1; }
+  [[ $(awk '$1=="R" && $3=="master"' <<<"$out" | wc -l) == 1 ]] || { why "masters: $(tr '\n' ';' <<<"$out")"; return 1; }
   mip=$(awk '$1=="R" && $3=="master" {print $2}' <<<"$out")
-  [[ $(awk -v m="$mip" '$1=="R" && $3=="slave" && $4==m && $5=="up"' <<<"$out" | wc -l) == 2 ]] || return 1
-  [[ $(awk -v m="$mip" '$1=="S" && $3==m' <<<"$out" | wc -l) == 3 ]] || return 1
-  [[ $(jq -r --arg ip "$mip" '.items[] | select(.status.podIP == $ip) | .metadata.labels["redisfailovers-role"] // ""' <<<"$j") == master ]] || return 1
+  [[ $(awk -v m="$mip" '$1=="R" && $3=="slave" && $4==m && $5=="up"' <<<"$out" | wc -l) == 2 ]] || { why "replica links: $(tr '\n' ';' <<<"$out")"; return 1; }
+  [[ $(awk -v m="$mip" '$1=="S" && $3==m' <<<"$out" | wc -l) == 3 ]] || { why "sentinels: $(tr '\n' ';' <<<"$out")"; return 1; }
+  [[ $(jq -r --arg ip "$mip" '.items[] | select(.status.podIP == $ip) | .metadata.labels["redisfailovers-role"] // ""' <<<"$j") == master ]] || { why "master $mip not labelled"; return 1; }
   m=$(jq -r --arg ip "$mip" '.items[] | select(.status.podIP == $ip) | .metadata.name' <<<"$j")
   echo "$m $mip"
 }
@@ -199,30 +207,6 @@ for i in 1 2 3; do
   delete_master "DEL$i"
 done
 
-### Same script with the Sentinel address it expects
-cm=$(k get statefulset rfr-$rf -o jsonpath='{.spec.template.spec.volumes[?(@.name=="redis-shutdown-config")].configMap.name}')
-{
-  echo "RFS_SL_SERVICE_HOST=rfs-$rf"
-  echo "RFS_SL_SERVICE_PORT_SENTINEL=26379"
-  k get configmap "$cm" -o jsonpath='{.data.shutdown\.sh}'
-} >"$OUT/shutdown-env.sh"
-k create configmap shutdown-env --from-file=shutdown.sh="$OUT/shutdown-env.sh" >/dev/null
-log "ROLL: switching to configmap shutdown-env (default script from $cm plus the two variables)"
-echo "ROLL: spec.redis.shutdownConfigMap set to shutdown-env; the operator replaces all pods, the master last (old master still runs the default script)" >>"$SUM"
-k patch redisfailover $rf --type merge -p '{"spec":{"redis":{"shutdownConfigMap":"shutdown-env"}}}' >/dev/null
-deadline=$(($(date +%s) + 480))
-until [[ $(redis_json | jq '[.items[] | select(any(.spec.volumes[]; .name == "redis-shutdown-config" and .configMap.name == "shutdown-env"))] | length') == 3 ]] && converged >/dev/null; do
-  (($(date +%s) < deadline)) || die "ROLL: rollout did not finish"
-  sleep 3
-done
-log "ROLL: done"
-sleep 5
-check ROLL
-
-for i in 1 2; do
-  delete_master "ENV$i"
-done
-
 ### Control: forced SENTINEL FAILOVER with the old master up
 r=$(wait_converged 300) || die "CTRL: not converged"
 read -r m mip <<<"$r"
@@ -239,6 +223,30 @@ done
 log "CTRL: converged, master $r"
 sleep 5
 check CTRL
+
+### Same script with the Sentinel address it expects
+cm=$(k get statefulset rfr-$rf -o jsonpath='{.spec.template.spec.volumes[?(@.name=="redis-shutdown-config")].configMap.name}')
+{
+  echo "RFS_SL_SERVICE_HOST=rfs-$rf"
+  echo "RFS_SL_SERVICE_PORT_SENTINEL=26379"
+  k get configmap "$cm" -o jsonpath='{.data.shutdown\.sh}'
+} >"$OUT/shutdown-env.sh"
+k create configmap shutdown-env --from-file=shutdown.sh="$OUT/shutdown-env.sh" >/dev/null
+log "ROLL: switching to configmap shutdown-env (default script from $cm plus the two variables)"
+echo "ROLL: spec.redis.shutdownConfigMap set to shutdown-env; the operator replaces all pods, the master last (old master still runs the default script)" >>"$SUM"
+k patch redisfailover $rf --type merge -p '{"spec":{"redis":{"shutdownConfigMap":"shutdown-env"}}}' >/dev/null
+deadline=$(($(date +%s) + 360))
+until [[ $(redis_json | jq '[.items[] | select(any(.spec.volumes[]; .name == "redis-shutdown-config" and .configMap.name == "shutdown-env"))] | length') == 3 ]] && converged >/dev/null; do
+  (($(date +%s) < deadline)) || die "ROLL: rollout did not finish"
+  sleep 3
+done
+log "ROLL: done"
+sleep 5
+check ROLL
+
+for i in 1 2; do
+  delete_master "ENV$i"
+done
 
 ### Report
 collect

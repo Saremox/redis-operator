@@ -59,6 +59,10 @@ jobs:
           done
           echo "=== operator (failover-related)"
           grep -iE 'master|failover|stopping|promot' operator.log | tail -80 || true
+          echo "=== operator log tail"
+          tail -40 operator.log | cut -c1-400 || true
+          echo "=== monitor tail"
+          tail -15 monitor.log || true
           echo "=== events"
           grep -E 'rfr-|PreStop' events.txt | tail -60 || true
 
