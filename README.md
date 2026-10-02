@@ -168,7 +168,9 @@ A changed spec replaces the redis pods one at a time, replicas first and the mas
 
 ### Custom shutdown script
 
-By default, a custom shutdown file is given. This file makes redis to `SAVE` it's data, and when Sentinel is enabled and redis is master, it'll call sentinel to ask for failover.
+By default, the operator gives each redis pod a shutdown script. The script makes redis `SAVE` its data before it stops. When Sentinel runs and the pod is the master, the script first asks Sentinel to fail over. Thus Sentinel moves the master immediately and does not wait for `down-after-milliseconds`. The redis pods have no service links, so the script finds Sentinel through the Service name `rfs-<NAME>` on port 26379.
+
+During the failover, the script pauses the writes on the old master, and then makes it a replica of the new master. This prevents the loss of writes that the old master acknowledged, because the clients get `READONLY` instead. The pause needs Redis 6.2 or later. On an earlier version, the script continues without the pause. The script waits a maximum of 12 seconds for the new master. Thus the script ends inside the default 30-second grace period, and the `SAVE` can run.
 
 This behavior is configurable, creating a configmap and indicating to use it. An example about how to use this option can be found in the [shutdown example file](example/redisfailover/custom-shutdown.yaml).
 

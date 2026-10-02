@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1130,6 +1132,7 @@ func TestRedisShutdownConfigMapRetries(t *testing.T) {
 	assert := assert.New(t)
 
 	rf := generateRF()
+	rf.Spec.Sentinel.Enabled = ptr.To(true)
 
 	var script string
 	ms := &mK8SService.Services{}
@@ -3272,28 +3275,225 @@ sentinel parallel-syncs mymaster 2`
 // ---------------------------------------------------------------------------
 
 func TestEnsureRedisShutdownConfigMapGenerated(t *testing.T) {
-	assert := assert.New(t)
-	rf := generateRF()
-	rf.Name = "my-redis"
-	rf.Spec.Redis.Port = 6379
+	tests := []struct {
+		name         string
+		sentinel     *bool
+		bootstrap    *redisfailoverv1.BootstrapSettings
+		wantSentinel bool
+	}{
+		{name: "sentinel enabled", sentinel: ptr.To(true), wantSentinel: true},
+		{name: "sentinel disabled", sentinel: ptr.To(false)},
+		{name: "sentinel unset", sentinel: nil},
+		{
+			name:         "bootstrap with sentinels allowed",
+			sentinel:     ptr.To(true),
+			bootstrap:    &redisfailoverv1.BootstrapSettings{Host: "127.0.0.1", AllowSentinels: true},
+			wantSentinel: true,
+		},
+		{
+			name:      "bootstrap without sentinels",
+			sentinel:  ptr.To(true),
+			bootstrap: &redisfailoverv1.BootstrapSettings{Host: "127.0.0.1"},
+		},
+	}
 
-	var gotCM *corev1.ConfigMap
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF()
+			rf.Name = "my-redis"
+			rf.Spec.Redis.Port = 6379
+			rf.Spec.Sentinel.Enabled = test.sentinel
+			rf.Spec.BootstrapNode = test.bootstrap
+
+			var gotCM *corev1.ConfigMap
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				gotCM = args.Get(1).(*corev1.ConfigMap)
+			}).Return(nil)
+
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
+
+			assert.NoError(err)
+			if assert.NotNil(gotCM) {
+				content := gotCM.Data["shutdown.sh"]
+				// The redis pods have no service links, so the script must
+				// not depend on the RFS_<NAME>_SERVICE_* variables.
+				assert.NotContains(content, "RFS_")
+				assert.Contains(content, "redis-cli -p 6379")
+				assert.True(strings.HasSuffix(content, "eval $save_command"))
+				if test.wantSentinel {
+					assert.Contains(content, "redis-cli -h rfs-my-redis -p 26379 --csv SENTINEL get-master-addr-by-name mymaster")
+					assert.Contains(content, "redis-cli -h rfs-my-redis -p 26379 SENTINEL failover mymaster")
+					// The script must end inside the default 30s grace period.
+					assert.NotContains(content, "sleep 3")
+					assert.Contains(content, "deadline=$(($(date +%s) + 12))")
+					assert.Contains(content, "CLIENT PAUSE")
+					assert.Contains(content, `[ "$(date +%s)" -lt "$deadline" ]`)
+				} else {
+					assert.NotContains(content, "SENTINEL")
+					assert.NotContains(content, "26379")
+					assert.NotContains(content, "CLIENT PAUSE")
+					assert.True(strings.HasPrefix(content, `cmd="redis-cli -p 6379"`))
+				}
+			}
+		})
+	}
+}
+
+func TestRedisShutdownScriptEndsInsideGracePeriod(t *testing.T) {
+	if _, err := exec.LookPath("timeout"); err != nil {
+		t.Skip("timeout is not installed")
+	}
+
+	rf := generateRF()
+	rf.Spec.Redis.Port = 6379
+	rf.Spec.Sentinel.Enabled = ptr.To(true)
+	var script string
 	ms := &mK8SService.Services{}
 	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
-		gotCM = args.Get(1).(*corev1.ConfigMap)
+		script = args.Get(1).(*corev1.ConfigMap).Data["shutdown.sh"]
 	}).Return(nil)
-
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-	err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
+	require.NoError(t, client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{}))
 
-	assert.NoError(err)
-	if assert.NotNil(gotCM) {
-		content := gotCM.Data["shutdown.sh"]
-		// rf.Name "my-redis" is upper-cased and its dashes replaced with
-		// underscores to build the RFS_<NAME>_SERVICE_* env var names.
-		assert.Contains(content, "RFS_MY_REDIS_SERVICE_HOST")
-		assert.Contains(content, "RFS_MY_REDIS_SERVICE_PORT_SENTINEL")
-		assert.Contains(content, "redis-cli -p 6379")
+	// The fake Sentinel reports this pod (10.0.0.1) as the master on the
+	// first query and 10.0.0.2 after it. The fake local Redis answers OK.
+	fakeCLI := `#!/bin/sh
+echo "auth=$REDISCLI_AUTH $*" >>"$FAKE_LOG"
+case "$*" in
+*"-h "*) ;;
+*"CLIENT PAUSE"*) echo "${FAKE_PAUSE:-OK}"; exit 0 ;;
+*) echo OK; exit 0 ;;
+esac
+[ "$FAKE_FROZEN" = 1 ] && exec sleep 30
+case "$*" in
+*get-master-addr-by-name*)
+	if [ "$FAKE_STUCK" != 1 ] && [ "$(grep -c get-master-addr-by-name "$FAKE_LOG")" -gt 1 ]; then
+		echo '"10.0.0.2","6379"'
+	else
+		echo '"10.0.0.1","6379"'
+	fi ;;
+*failover*) echo "${FAKE_FAILOVER:-OK}" ;;
+esac
+`
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "redis-cli"), []byte(fakeCLI), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hostname"), []byte("#!/bin/sh\necho 10.0.0.1\n"), 0o755))
+
+	sentinel := "auth= -h " + rfservice.GetSentinelName(rf) + " -p 26379 "
+	lookup := sentinel + "--csv SENTINEL get-master-addr-by-name mymaster"
+	failover := sentinel + "SENTINEL failover mymaster"
+	tests := []struct {
+		name      string
+		env       []string
+		wantCalls []string
+		maxTime   time.Duration
+	}{
+		{
+			name: "master moves",
+			env:  []string{"REDIS_PASSWORD=secret"},
+			wantCalls: []string{
+				lookup,
+				"auth=secret -p 6379 CLIENT PAUSE <ms> WRITE",
+				failover,
+				lookup,
+				"auth=secret -p 6379 REPLICAOF 10.0.0.2 6379",
+				"auth=secret -p 6379 CLIENT UNPAUSE",
+				"auth=secret -p 6379 save",
+			},
+			maxTime: 5 * time.Second,
+		},
+		{
+			// Redis before 6.2 has no CLIENT PAUSE WRITE.
+			name: "pause fails",
+			env:  []string{"FAKE_PAUSE=ERR syntax error"},
+			wantCalls: []string{
+				lookup,
+				"auth= -p 6379 CLIENT PAUSE <ms> WRITE",
+				failover,
+				lookup,
+				"auth= -p 6379 REPLICAOF 10.0.0.2 6379",
+				"auth= -p 6379 CLIENT UNPAUSE",
+				"auth= -p 6379 save",
+			},
+			maxTime: 5 * time.Second,
+		},
+		{
+			name: "failover fails",
+			env:  []string{"FAKE_FAILOVER=NOGOODSLAVE No suitable replica to promote"},
+			wantCalls: []string{
+				lookup,
+				"auth= -p 6379 CLIENT PAUSE <ms> WRITE",
+				failover,
+				failover,
+				failover,
+				"auth= -p 6379 CLIENT UNPAUSE",
+				"auth= -p 6379 save",
+			},
+			maxTime: 6 * time.Second,
+		},
+		{
+			// The poll stops at the 12s deadline.
+			name:    "no new master",
+			env:     []string{"FAKE_STUCK=1"},
+			maxTime: 16 * time.Second,
+		},
+		{
+			// Three lookups of at most 2s each, and a 1s sleep after each.
+			name: "frozen sentinel",
+			env:  []string{"FAKE_FROZEN=1"},
+			wantCalls: []string{
+				lookup,
+				lookup,
+				lookup,
+				"auth= -p 6379 save",
+			},
+			maxTime: 12 * time.Second,
+		},
+	}
+	pause := regexp.MustCompile(`CLIENT PAUSE (\d+) WRITE`)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			logFile := filepath.Join(t.TempDir(), "calls")
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "sh", "-c", script)
+			cmd.WaitDelay = time.Second
+			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "FAKE_LOG="+logFile, "REDIS_PASSWORD=")
+			cmd.Env = append(cmd.Env, test.env...)
+			start := time.Now()
+			out, err := cmd.CombinedOutput()
+			elapsed := time.Since(start)
+			require.NoError(t, err, string(out))
+			assert.Less(t, elapsed, test.maxTime)
+			raw, err := os.ReadFile(logFile)
+			require.NoError(t, err)
+			calls := strings.Split(strings.TrimSpace(string(raw)), "\n")
+			for i, call := range calls {
+				if m := pause.FindStringSubmatch(call); m != nil {
+					// The pause ends 6s after the 12s deadline.
+					ms, err := strconv.Atoi(m[1])
+					require.NoError(t, err)
+					assert.GreaterOrEqual(t, ms, 17000)
+					assert.LessOrEqual(t, ms, 18000)
+					calls[i] = pause.ReplaceAllString(call, "CLIENT PAUSE <ms> WRITE")
+				}
+			}
+			if test.wantCalls != nil {
+				assert.Equal(t, test.wantCalls, calls)
+				return
+			}
+			// The poll repeats the lookup until the deadline.
+			require.GreaterOrEqual(t, len(calls), 6)
+			assert.Equal(t, []string{lookup, "auth= -p 6379 CLIENT PAUSE <ms> WRITE", failover}, calls[:3])
+			for _, call := range calls[3 : len(calls)-2] {
+				assert.Equal(t, lookup, call)
+			}
+			assert.Equal(t, []string{"auth= -p 6379 CLIENT UNPAUSE", "auth= -p 6379 save"}, calls[len(calls)-2:])
+		})
 	}
 }
 
