@@ -639,7 +639,7 @@ func TestRFControllerCountsOneEventPerUpdate(t *testing.T) {
 }
 
 func TestRFControllerEnqueueAfter(t *testing.T) {
-	c, err := newRFController(&recordingHandler{}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	c, err := newRFController(&recordingHandler{}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
 	require.NoError(t, err)
 	c.enqueueAfter("ns/rf", 50*time.Millisecond)
 	assert.Equal(t, 0, c.queue.Len())
