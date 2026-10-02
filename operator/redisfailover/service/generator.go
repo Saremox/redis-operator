@@ -1016,6 +1016,9 @@ func getSecurityContext(secctx *corev1.PodSecurityContext) *corev1.PodSecurityCo
 	if merged.FSGroup == nil {
 		merged.FSGroup = result.FSGroup
 	}
+	if merged.SeccompProfile == nil {
+		merged.SeccompProfile = result.SeccompProfile
+	}
 	return merged
 }
 
