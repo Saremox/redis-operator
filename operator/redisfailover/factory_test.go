@@ -18,6 +18,7 @@ import (
 	clientfeatures "k8s.io/client-go/features"
 	clientfeaturestesting "k8s.io/client-go/features/testing"
 	fakekubernetes "k8s.io/client-go/kubernetes/fake"
+	fakemetadata "k8s.io/client-go/metadata/fake"
 	"k8s.io/client-go/tools/cache"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -214,7 +215,7 @@ func TestNewBuildsController(t *testing.T) {
 	mr := &mRedisService.Client{}
 	k8sClient := fakekubernetes.NewClientset()
 
-	ctrl, err := New(cfg, mk, k8sClient, "test-namespace", mr, metrics.Dummy, log.Dummy)
+	ctrl, err := New(cfg, mk, k8sClient, fakemetadata.NewSimpleMetadataClient(fakemetadata.NewTestScheme()), "test-namespace", mr, metrics.Dummy, log.Dummy)
 
 	require.NoError(t, err)
 	assert.NotNil(t, ctrl)
@@ -237,7 +238,7 @@ func TestNewPropagatesLeaderElectionError(t *testing.T) {
 	mr := &mRedisService.Client{}
 	k8sClient := fakekubernetes.NewClientset()
 
-	ctrl, err := New(cfg, mk, k8sClient, "", mr, metrics.Dummy, log.Dummy)
+	ctrl, err := New(cfg, mk, k8sClient, fakemetadata.NewSimpleMetadataClient(fakemetadata.NewTestScheme()), "", mr, metrics.Dummy, log.Dummy)
 
 	assert.Error(t, err)
 	assert.Nil(t, ctrl)
@@ -246,7 +247,7 @@ func TestNewPropagatesLeaderElectionError(t *testing.T) {
 }
 
 func TestNewPropagatesControllerError(t *testing.T) {
-	ctrl, err := New(Config{SupportedNamespacesRegex: ".*"}, &mK8SService.Services{}, fakekubernetes.NewClientset(), "test-namespace", &mRedisService.Client{}, failingQueueMetrics{metrics.Dummy}, log.Dummy)
+	ctrl, err := New(Config{SupportedNamespacesRegex: ".*"}, &mK8SService.Services{}, fakekubernetes.NewClientset(), fakemetadata.NewSimpleMetadataClient(fakemetadata.NewTestScheme()), "test-namespace", &mRedisService.Client{}, failingQueueMetrics{metrics.Dummy}, log.Dummy)
 
 	assert.Error(t, err)
 	assert.Nil(t, ctrl)

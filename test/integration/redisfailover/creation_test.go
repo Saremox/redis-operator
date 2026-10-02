@@ -157,7 +157,7 @@ func TestRedisFailover(t *testing.T) {
 	}
 
 	// Kubernetes clients.
-	k8sClient, customClient, err := utils.CreateKubernetesClients(flags)
+	k8sClient, customClient, metadataClient, err := utils.CreateKubernetesClients(flags)
 	require.NoError(err)
 
 	// Create the redis clients
@@ -182,7 +182,7 @@ func TestRedisFailover(t *testing.T) {
 	// Create operator and run. A short resync: waiting for the sentinels to
 	// see the new slaves before replacing the master isn't driven by any
 	// Kubernetes event.
-	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{SyncInterval: 2, SupportedNamespacesRegex: "^" + namespace + "$"}, k8sservice, k8sClient, namespace, redisClient, metrics.Dummy, log.Dummy)
+	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{SyncInterval: 2, SupportedNamespacesRegex: "^" + namespace + "$"}, k8sservice, k8sClient, metadataClient, namespace, redisClient, metrics.Dummy, log.Dummy)
 	require.NoError(err)
 
 	// Its own cancelable context, not context.Background(): without this,

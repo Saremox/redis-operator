@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/tools/cache"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -29,7 +30,7 @@ const (
 
 // New will create an operator that is responsible for managing all the required stuff
 // to create redis failovers.
-func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, lockNamespace string, redisClient redis.Client, metricsRecorder metrics.Recorder, logger log.Logger) (Controller, error) {
+func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, metaClient metadata.Interface, lockNamespace string, redisClient redis.Client, metricsRecorder metrics.Recorder, logger log.Logger) (Controller, error) {
 	// Create internal services.
 	rfService := rfservice.NewRedisFailoverKubeClient(k8sService, logger, metricsRecorder)
 	var opts []rfservice.Option
@@ -50,7 +51,7 @@ func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, lo
 		return nil, err
 	}
 
-	c, err := newRFController(rfHandler, rfRetriever, newPodListWatch(k8sClient), time.Duration(cfg.SyncInterval)*time.Second, cfg.Concurrency, leRunner, metricsRecorder, logger)
+	c, err := newRFController(rfHandler, rfRetriever, newPodListWatch(k8sClient), newSecretListWatch(metaClient), time.Duration(cfg.SyncInterval)*time.Second, cfg.Concurrency, leRunner, metricsRecorder, logger)
 	if err != nil {
 		return nil, err
 	}

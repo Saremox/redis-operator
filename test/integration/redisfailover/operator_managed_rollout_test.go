@@ -200,7 +200,7 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 		Development: true,
 	}
 
-	k8sClient, customClient, err := utils.CreateKubernetesClients(flags)
+	k8sClient, customClient, metadataClient, err := utils.CreateKubernetesClients(flags)
 	require.NoError(err)
 
 	redisClient := redis.New(metrics.Dummy)
@@ -218,7 +218,7 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 	k8sservice := k8s.New(k8sClient, customClient, log.Dummy, metrics.Dummy)
 	// The resync is far longer than the rollout's timeout, so only pod events
 	// can drive the rollout's steps.
-	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{SyncInterval: 600, SupportedNamespacesRegex: "^" + ommNamespace + "$"}, k8sservice, k8sClient, ommNamespace, redisClient, metrics.Dummy, log.Dummy)
+	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{SyncInterval: 600, SupportedNamespacesRegex: "^" + ommNamespace + "$"}, k8sservice, k8sClient, metadataClient, ommNamespace, redisClient, metrics.Dummy, log.Dummy)
 	require.NoError(err)
 
 	go func() {
