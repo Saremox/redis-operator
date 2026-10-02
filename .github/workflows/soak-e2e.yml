@@ -22,6 +22,8 @@ on:
       duration:
         description: Seconds the tester mutates; empty for the profile's default
         required: false
+  push:
+    branches: [claude/soak-e2e-run]
 
 permissions:
   contents: read
@@ -29,6 +31,10 @@ permissions:
 jobs:
   soak-e2e:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [versions, full]
     timeout-minutes: 150
     defaults:
       run:
@@ -51,8 +57,8 @@ jobs:
 
       - name: Run the kind e2e
         env:
-          OPERATOR_VERSION: ${{ inputs.operator_version }}
-          E2E_PROFILE: ${{ inputs.profile }}
+          OPERATOR_VERSION: ${{ inputs.operator_version || '4.2.0-rc2' }}
+          E2E_PROFILE: ${{ inputs.profile || matrix.profile }}
           UPGRADE_FROM: ${{ inputs.upgrade_from }}
           DURATION: ${{ inputs.duration }}
         run: |
@@ -63,5 +69,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: soak-e2e-${{ inputs.profile }}-${{ inputs.operator_version }}
+          name: soak-e2e-${{ matrix.profile }}-${{ inputs.operator_version || '4.2.0-rc2' }}
           path: test/soak/bin/kind-e2e-artifacts
