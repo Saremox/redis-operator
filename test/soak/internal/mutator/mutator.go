@@ -130,6 +130,9 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 			mu.total.WithLabelValues(string(k), r)
 		}
 	}
+	if inst != nil {
+		mu.findings.WithLabelValues(invResetIncomplete)
+	}
 	return mu
 }
 
@@ -269,6 +272,11 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 			bound, hold = timeout, 2*timeout
 		}
 	}
+	// A reset that failed can leave no RedisFailover. Then the observer
+	// does not end the window.
+	if kind == config.Reset {
+		bound = 2 * timeout
+	}
 	// A rejected mutation changed nothing, so its window only waits for
 	// the invariants.
 	var applied, rejected atomic.Bool
@@ -311,6 +319,10 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 		return ""
 	}
 	d := time.Since(start)
+	if kind == config.Reset && !converged && time.Since(appliedAt) >= bound {
+		m.findings.WithLabelValues(invResetIncomplete).Inc()
+		log.Warn("reset did not complete", "finding", true, "bound_seconds", bound.Seconds())
+	}
 
 	result := resultTimeout
 	var exp expectation
@@ -344,15 +356,15 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 	if p.reset {
 		event = config.EventReset
 	}
-	if p.edge == nil || applyErr != nil {
-		if m.data != nil {
-			_, _ = m.data.Verify(ctx, event, step)
-		}
-		return ""
-	}
 	vctx, cancel := context.WithTimeout(ctx, verifyBound)
 	lost, verr := m.verify(vctx, event, step)
 	cancel()
+	if p.edge == nil || applyErr != nil {
+		if verr != nil && ctx.Err() == nil {
+			log.Warn("data not verified", "error", verr.Error())
+		}
+		return ""
+	}
 	if m.judge(ctx, p.edge, converged, lost, verr, log) != transitionOK && m.instance != nil {
 		m.resetWhy = "after " + p.edge.edge.String() + " didn't converge"
 		return config.Reset
@@ -360,8 +372,9 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 	return ""
 }
 
-// verifyBound bounds the verification a version change is judged by, as
-// a change that failed may leave the instance without a master.
+// verifyBound bounds the verification after a mutation, as a mutation may
+// leave the instance without a master. The mutator holds the global lock
+// during the verification.
 const verifyBound = 2 * time.Minute
 
 func (m *Mutator) verify(ctx context.Context, event string, step int) (int, error) {

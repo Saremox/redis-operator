@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -378,6 +379,21 @@ func TestVerifyEvictable(t *testing.T) {
 	// Evicted keys are expected; a wrong value isn't.
 	if got := testutil.ToFloat64(mt.LostWrites.WithLabelValues("x", "ns", "operator", "redis_memory")); got != 1 {
 		t.Errorf("lost %v, want 1", got)
+	}
+}
+
+// A caller that stops to wait for a busy verifier still ends the mutation,
+// so failovers and periodic verifications are verified again.
+func TestVerifyTimeoutEndsMutation(t *testing.T) {
+	d, _, _, _ := newTestData(t, false)
+	d.Begin()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := d.Verify(ctx, "kill_master", 1); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Verify: %v", err)
+	}
+	if d.mutating.Load() {
+		t.Error("the mutation did not end")
 	}
 }
 

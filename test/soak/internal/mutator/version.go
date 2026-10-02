@@ -26,6 +26,10 @@ const (
 // change that failed unsafely counts.
 const invVersionTransition = "version_transition"
 
+// invResetIncomplete is the invariant label of the finding a reset counts
+// when its window did not end within its bound.
+const invResetIncomplete = "reset_incomplete"
+
 const sentinelName = "sentinel"
 
 // transition is a planned version change of the redis image, or of the

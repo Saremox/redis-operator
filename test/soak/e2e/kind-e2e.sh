@@ -45,6 +45,11 @@ on_exit() {
     kubectl get pods -A -o wide >"$artifacts/failure/pods.txt" 2>&1 || true
     kubectl get events -A --sort-by=.lastTimestamp >"$artifacts/failure/events.txt" 2>&1 || true
     kubectl -n redis-operator logs deployment/redis-operator --tail=5000 >"$artifacts/failure/operator.log" 2>&1 || true
+    # The job log is readable where the artifacts are not.
+    echo "--- failure: state of each RedisFailover"
+    kubectl get redisfailovers -A -o custom-columns=NAMESPACE:.metadata.namespace,STATE:.status.state,MESSAGE:.status.message 2>&1 || true
+    echo "--- failure: last operator log lines"
+    tail -n 60 "$artifacts/failure/operator.log" || true
   fi
 }
 trap on_exit EXIT

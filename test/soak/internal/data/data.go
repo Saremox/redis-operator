@@ -144,6 +144,8 @@ func (d *Data) Refill() {
 // data by design. It returns the number of lost writes, or an error if ctx is
 // done before the verification.
 func (d *Data) Verify(ctx context.Context, event string, step int) (int, error) {
+	// The verifier does not get the request if ctx is done first.
+	defer d.mutating.Store(false)
 	return verifyAfter(ctx, d.requests, event, step)
 }
 
