@@ -3369,7 +3369,8 @@ func TestEnsureRedisReadinessConfigMap(t *testing.T) {
 
 // TestRedisReadinessScript runs ready.sh against a fake redis-cli that prints
 // INFO replication as Redis 7.2-8 and Valkey 8-9 report it, or hangs like a
-// frozen server that accepts the connection but never replies.
+// frozen server that accepts the connection but never replies. Each case runs
+// with and without timeout on PATH.
 func TestRedisReadinessScript(t *testing.T) {
 	if _, err := exec.LookPath("timeout"); err != nil {
 		t.Skip("timeout is not installed")
@@ -3443,23 +3444,42 @@ func TestRedisReadinessScript(t *testing.T) {
 	fakeCLI := "#!/bin/sh\n[ -s \"$FAKE_INFO\" ] || exec sleep 10\ncat \"$FAKE_INFO\"\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "redis-cli"), []byte(fakeCLI), 0o755))
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			info := filepath.Join(t.TempDir(), "info")
-			require.NoError(t, os.WriteFile(info, []byte(test.info), 0o644))
+	// An image with the script's other tools but no timeout.
+	bare := t.TempDir()
+	for _, tool := range []string{"sh", "xargs", "grep", "tr", "cut", "cat", "sleep"} {
+		p, err := exec.LookPath(tool)
+		require.NoError(t, err)
+		require.NoError(t, os.Symlink(p, filepath.Join(bare, tool)))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(bare, "redis-cli"), []byte(fakeCLI), 0o755))
 
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, "sh", script)
-			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "FAKE_INFO="+info)
-			cmd.WaitDelay = time.Second
-			start := time.Now()
-			out, err := cmd.CombinedOutput()
-			assert.Equal(t, test.ready, err == nil, "ready.sh output: %s", out)
-			// The kubelet's probe timeout is 5s, and some runtimes don't
-			// enforce it while a child still holds the output open.
-			assert.Less(t, time.Since(start), 5*time.Second, "ready.sh must finish within the probe timeout")
-		})
+	paths := []struct{ name, path string }{
+		{"", dir + ":" + os.Getenv("PATH")},
+		{", without timeout", bare},
+	}
+	for _, test := range tests {
+		for _, p := range paths {
+			// Without timeout a frozen server still hangs the script.
+			if test.info == "" && p.name != "" {
+				continue
+			}
+			t.Run(test.name+p.name, func(t *testing.T) {
+				info := filepath.Join(t.TempDir(), "info")
+				require.NoError(t, os.WriteFile(info, []byte(test.info), 0o644))
+
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, "sh", script)
+				cmd.Env = append(os.Environ(), "PATH="+p.path, "FAKE_INFO="+info)
+				cmd.WaitDelay = time.Second
+				start := time.Now()
+				out, err := cmd.CombinedOutput()
+				assert.Equal(t, test.ready, err == nil, "ready.sh output: %s", out)
+				// The kubelet's probe timeout is 5s, and some runtimes don't
+				// enforce it while a child still holds the output open.
+				assert.Less(t, time.Since(start), 5*time.Second, "ready.sh must finish within the probe timeout")
+			})
+		}
 	}
 }
 
