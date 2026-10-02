@@ -148,21 +148,21 @@ func TestResizePodInPlaceFollowsTheKubelet(t *testing.T) {
 }
 
 // The kubelet's memory usage includes the page cache, so it can refuse a
-// memory decrease that the recreated pod fits.
+// memory decrease that the recreated pod fits. It refuses it on every retry,
+// so the pod is recreated without waiting for the timeout.
 func TestResizePodInPlaceRecreatesForARefusedMemoryDecrease(t *testing.T) {
 	old, new := resources("1", "2Gi"), resources("1", "1Gi")
-	failing := func(age time.Duration) *corev1.Pod {
-		c := condition(corev1.PodResizeInProgress, corev1.PodReasonError, age)
-		c.Message = "cannot decrease memory limits: attempting to set container 'redis' memory limit (1073741824) below current usage (1181116006)"
-		return stalePod(new, old, c)
+	for _, message := range []string{
+		"cannot decrease memory limits: attempting to set pod memory limit (1073741824) below current usage (1181116006)",
+		`cannot decrease memory limits: attempting to set container "redis" memory limit (1073741824) below current usage (1181116006)`,
+	} {
+		c := condition(corev1.PodResizeInProgress, corev1.PodReasonError, 0)
+		c.Message = message
+		result, _, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), stalePod(new, old, c)}, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, ResizeRecreate, result.Action)
+		assert.Equal(t, "resize failed: "+message, result.Message)
 	}
-	result, _, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), failing(time.Minute)}, nil)
-	assert.NoError(t, err)
-	assert.Equal(t, ResizeWaiting, result.Action)
-
-	result, _, err = runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), failing(time.Hour)}, nil)
-	assert.NoError(t, err)
-	assert.Equal(t, ResizeRecreate, result.Action)
 }
 
 // A resize that the kubelet neither applies nor reports on in time falls back

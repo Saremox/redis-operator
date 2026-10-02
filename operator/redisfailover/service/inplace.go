@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -36,6 +37,10 @@ type ResizeResult struct {
 // inPlaceResizeTimeout bounds how long a deferred or failing resize is waited
 // for before the pod is recreated instead.
 var inPlaceResizeTimeout = 5 * time.Minute
+
+// memoryBelowUsage is in the kubelet's error for a memory limit decrease below
+// the pod's or a container's current usage (validateMemoryResizeAction).
+const memoryBelowUsage = "below current usage"
 
 var resizableResources = []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory}
 
@@ -110,9 +115,10 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 		return waiting("resize of pod %s deferred: %s", podName, c.Message)
 	}
 	if c := podCondition(pod, corev1.PodResizeInProgress); c != nil {
-		// E.g. a memory limit below the usage the kubelet sees, which counts
-		// the page cache.
-		if c.Reason == corev1.PodReasonError && sinceLatest(c.LastTransitionTime.Time) > inPlaceResizeTimeout {
+		// A memory limit below the usage the kubelet sees, which counts the
+		// page cache, is refused on every retry while the usage stays, so it
+		// is not waited for. Only the message tells it apart from other errors.
+		if c.Reason == corev1.PodReasonError && (strings.Contains(c.Message, memoryBelowUsage) || sinceLatest(c.LastTransitionTime.Time) > inPlaceResizeTimeout) {
 			return recreate("resize failed: " + c.Message)
 		}
 		return waiting("resize of pod %s in progress", podName)

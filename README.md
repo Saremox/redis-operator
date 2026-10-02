@@ -212,7 +212,7 @@ For small instances, the default `client-output-buffer-limit` for `pubsub` (32mb
 
 On Kubernetes 1.33 or later, an update that only changes container cpu or memory resizes the redis pods in place instead of recreating them, so no data is reloaded and the master does not fail over. Pods are resized one at a time, replicas first. Lowering a memory limit in place needs Kubernetes 1.35. Set `redis.inPlaceResize: Disabled` to always recreate the pods.
 
-A pod is still recreated when the update changes anything else, adds or removes requests or limits, or changes the pod's QoS class, when the node's kubelet does not support in-place resize, and when the kubelet reports the resize as infeasible, defers it or fails it for more than 5 minutes, or does not apply it within 5 minutes without reporting why. The operator needs `patch` on `pods/resize` and `get` on `controllerrevisions`, which the chart, the kustomize and the example manifests grant; without them the pods are recreated.
+A pod is still recreated when the update changes anything else, adds or removes requests or limits, or changes the pod's QoS class, when the node's kubelet does not support in-place resize, and when the kubelet reports the resize as infeasible or refuses a memory limit below the pod's current usage (which counts the page cache), when it defers or fails the resize for more than 5 minutes, or does not apply it within 5 minutes without reporting why. The operator needs `patch` on `pods/resize` and `get` on `controllerrevisions`, which the chart, the kustomize and the example manifests grant; without them the pods are recreated.
 
 ### Custom shutdown script
 
