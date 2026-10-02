@@ -315,6 +315,10 @@ elif [[ -z ${OPERATOR_VERSION:-} ]]; then
     --namespace redis-operator --create-namespace \
     --set image.repository=redis-operator --set image.tag=soak-e2e --wait
 else
+  # kind-up installs the CRD of this checkout, and helm does not replace an
+  # existing CRD. A release before #207 loses its status writes on that CRD.
+  helm show crds oci://ghcr.io/saremox/redis-operator/charts/redis-operator --version "$OPERATOR_VERSION" |
+    kubectl apply --server-side --force-conflicts -f -
   helm upgrade --install redis-operator oci://ghcr.io/saremox/redis-operator/charts/redis-operator \
     --version "$OPERATOR_VERSION" --namespace redis-operator --create-namespace --wait
 fi
