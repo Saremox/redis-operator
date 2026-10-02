@@ -132,13 +132,23 @@ func (c *Config) Reaches(ch *Chain, from, to string) bool {
 }
 
 func (v *Version) setDefaults() {
-	repo, tag, _ := strings.Cut(v.Image, ":")
+	repo, tag := splitImage(v.Image)
 	if v.Server == "" {
 		v.Server = path.Base(repo)
 	}
 	if v.Release == "" {
 		v.Release, _, _ = strings.Cut(tag, "-")
 	}
+}
+
+// splitImage returns an image's repository and tag, without its digest. A
+// registry's port is part of the repository.
+func splitImage(image string) (repo, tag string) {
+	image, _, _ = strings.Cut(image, "@")
+	if i := strings.LastIndex(image, ":"); i > strings.LastIndex(image, "/") {
+		return image[:i], image[i+1:]
+	}
+	return image, ""
 }
 
 // validateVersions checks the catalogue and the graph: unique names, exact

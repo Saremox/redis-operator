@@ -154,3 +154,20 @@ func TestTemplateRelativeToConfig(t *testing.T) {
 		t.Errorf("template = %s, want it relative to the config", got)
 	}
 }
+
+// The server and release come from the image's repository name and tag,
+// whatever its registry's port, and without its digest.
+func TestVersionDefaults(t *testing.T) {
+	for image, want := range map[string][2]string{
+		"redis:7.2.16-alpine":                                             {"redis", "7.2.16"},
+		"valkey/valkey:9.1.2-alpine":                                      {"valkey", "9.1.2"},
+		"registry.example:5000/team/redis:7.2.16":                         {"redis", "7.2.16"},
+		"registry.example:5000/team/valkey:8.1.10-alpine@sha256:0123abcd": {"valkey", "8.1.10"},
+	} {
+		v := Version{Name: "v", Image: image}
+		v.setDefaults()
+		if got := [2]string{v.Server, v.Release}; got != want {
+			t.Errorf("%s: server and release %v, want %v", image, got, want)
+		}
+	}
+}
