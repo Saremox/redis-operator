@@ -96,9 +96,11 @@ For every instance with a `data` section:
 - Verifications run after every mutation (`event` is the kind), after
   every failover the observer sees outside a mutation (`failover`), and
   every `ledger.verifyInterval` without either (`periodic`). A failover
-  that loses the data by design is a `reset`: a kill of the only pod of an
-  instance without a PersistentVolumeClaim, by the mutator or anything
-  else, or a recreated RedisFailover. A `reset` mutation forgets every
+  that loses the data by design is a `reset`: the only pod of an instance
+  without a PersistentVolumeClaim replaced by one that never held the
+  data, by the mutator or anything else, or a recreated RedisFailover. A
+  failover to a pod that was a replica with its link up, like the one a
+  scale-down leaves, is a `failover`, so its losses count. A `reset` mutation forgets every
   write acknowledged before it recreated the instance, so its
   verification counts only the writes since, which must all be there. Each is
   logged as `data verified` with `event`, `step`, whether the master

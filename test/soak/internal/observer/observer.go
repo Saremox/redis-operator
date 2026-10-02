@@ -58,8 +58,11 @@ type Observer struct {
 	rfUID      string
 	// recreated is set when the RedisFailover was recreated, until the
 	// failover that follows.
-	recreated  bool
-	master     pod
+	recreated bool
+	master    pod
+	// synced are the redis pods, by UID, that were the master or a replica
+	// with its link up: they hold the data.
+	synced     map[string]bool
 	lagPods    map[string]bool
 	servers    map[string][2]string
 	oomSeen    map[string]bool
@@ -694,9 +697,11 @@ func (o *Observer) observeMaster(s snapshot) {
 		if o.master.UID != "" && o.master.UID != master.UID {
 			o.failovers.Inc()
 			event := config.EventFailover
-			// The only pod without a volume, or a new RedisFailover, starts
-			// empty.
-			if o.recreated || s.redisReplicas == 1 && !s.pvc {
+			// A new RedisFailover starts empty, as does the only pod, without
+			// a volume, when it replaced the master: it never held the data.
+			// A pod that replicated from the master, e.g. the one a
+			// scale-down left, has it.
+			if o.recreated || s.redisReplicas == 1 && !s.pvc && !o.synced[master.UID] {
 				event = config.EventReset
 			}
 			o.recreated = false
@@ -709,6 +714,7 @@ func (o *Observer) observeMaster(s snapshot) {
 		o.master = master.pod
 		lags = s.lags(master)
 	}
+	o.synced = synced(s, o.synced)
 	for name := range o.lagPods {
 		if _, ok := lags[name]; !ok {
 			o.lag.DeleteLabelValues(name)
@@ -719,6 +725,18 @@ func (o *Observer) observeMaster(s snapshot) {
 		o.lag.WithLabelValues(name).Set(float64(lag))
 		o.lagPods[name] = true
 	}
+}
+
+// synced returns the pods of the snapshot that held the data in this round
+// or an earlier one: the master, or a replica with its link up.
+func synced(s snapshot, before map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range s.redis {
+		if before[r.UID] || r.info.role() == roleMaster || r.info.role() == roleReplica && r.info["master_link_status"] == "up" {
+			out[r.UID] = true
+		}
+	}
+	return out
 }
 
 // observeServers exports the server and version of every pod that answered

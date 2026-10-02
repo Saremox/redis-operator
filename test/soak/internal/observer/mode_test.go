@@ -397,3 +397,37 @@ func TestReplicaReadyWithoutDataReportOnly(t *testing.T) {
 		}
 	}
 }
+
+// A failover to a pod that held the data stays a failover, so its losses
+// count: a scale-down that removed the master leaves one replica without a
+// volume, and a new, never synced pod promoted next to others is no reset
+// either.
+func TestFailoverToSurvivorIsNoReset(t *testing.T) {
+	o, _ := newTestObserver(t)
+	s := healthy(false)
+	s.uid = "rf1"
+	o.apply(at(0), s, 1, false)
+	o.apply(at(5), s, 1, false)
+	// Scaled down to 1: rfr-x-1, a synced replica, is the master now.
+	down := healthy(false)
+	down.uid, down.redisReplicas = "rf1", 1
+	down.redis = down.redis[1:2]
+	down.redis[0].info = replicationInfo("master", "", "", "1000")
+	down.endpoints = []string{"10.0.0.11"}
+	o.apply(at(10), down, 1, false)
+	if ev := <-o.Failovers(); ev != config.EventFailover {
+		t.Errorf("scale-down to a synced replica: %s", ev)
+	}
+
+	o, _ = newTestObserver(t)
+	o.apply(at(0), s, 1, false)
+	// The master is replaced by a pod that never synced, and promoted
+	// although two synced replicas are there.
+	fresh := healthy(false)
+	fresh.uid = "rf1"
+	fresh.redis[0].UID = "u0-new"
+	o.apply(at(5), fresh, 1, false)
+	if ev := <-o.Failovers(); ev != config.EventFailover {
+		t.Errorf("an empty pod promoted next to synced ones: %s", ev)
+	}
+}
