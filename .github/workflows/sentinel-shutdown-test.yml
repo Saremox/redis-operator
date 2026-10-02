@@ -1,0 +1,76 @@
+name: Sentinel shutdown write-loss test (scratch)
+
+on:
+  push:
+    branches:
+      - claude/sentinel-shutdown-test
+
+permissions:
+  contents: read
+
+jobs:
+  sentinel-shutdown:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build images
+        run: |
+          docker build -t redis-operator:sl -f docker/app/Dockerfile . > build-operator.log 2>&1 &
+          op=$!
+          docker build -t sentloss:ci scratch/sentinel-shutdown > build-writer.log 2>&1 &
+          wr=$!
+          docker pull -q redis:7.2.12-alpine
+          wait $op || { tail -50 build-operator.log; exit 1; }
+          wait $wr || { tail -50 build-writer.log; exit 1; }
+
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: sl
+
+      - name: Load images and install the operator
+        run: |
+          kind load docker-image redis-operator:sl sentloss:ci redis:7.2.12-alpine --name sl
+          kubectl version
+          kubectl apply --server-side -f manifests/databases.spotahome.com_redisfailovers.yaml
+          helm upgrade --install redis-operator ./charts/redisoperator \
+            --namespace redis-operator --create-namespace \
+            --set image.repository=redis-operator \
+            --set image.tag=sl \
+            --set image.pullPolicy=Never \
+            --wait --timeout=180s
+
+      - name: Run
+        run: OUT=$PWD/out bash scratch/sentinel-shutdown/run.sh
+
+      - name: Details
+        if: always()
+        run: |
+          cd out || exit 0
+          echo "::group::driver.log"; cat driver.log; echo "::endgroup::"
+          echo "=== state transitions (pods name=ip/label/flags | rfrm endpoints | redis ip:role>master/link | sentinels)"
+          cat transitions.log
+          echo "=== sentinel events"
+          cat sentinel-*.log 2>/dev/null | grep -E '[+-](sdown|odown|try-failover|elected-leader|selected-slave|promoted-slave|failover-end|switch-master|convert-to-slave|failover-state)' | sort -k5,5 | awk '!seen[$0]++' || true
+          for f in redis-*.log; do
+            echo "=== $f"
+            grep -vE 'Background saving|fork|COW|RDB:' "$f" | tail -40
+          done
+          echo "=== operator (failover-related)"
+          grep -iE 'master|failover|stopping|promot' operator.log | tail -80 || true
+          echo "=== events"
+          grep -E 'rfr-|PreStop' events.txt | tail -60 || true
+
+      - name: Summary
+        if: always()
+        run: |
+          cat out/summary.txt || true
+          { echo '```'; cat out/summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sentinel-shutdown-out
+          path: out
+          retention-days: 3
