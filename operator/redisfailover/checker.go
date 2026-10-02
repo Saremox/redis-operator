@@ -10,6 +10,7 @@ import (
 	"github.com/saremox/redis-operator/service/k8s"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
@@ -19,7 +20,14 @@ import (
 )
 
 // UpdateRedisesPods if the running version of pods is equal to the statefulset one
-func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailover) error {
+func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailover) (err error) {
+	var wait *rolloutWait
+	defer func() {
+		if err == nil {
+			r.reportRolloutWait(rf, wait)
+		}
+	}()
+
 	redises, err := r.rfChecker.GetRedisesIPs(rf)
 	if err != nil {
 		return err
@@ -39,7 +47,8 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 				return err
 			}
 			if !ready {
-				return nil
+				wait, err = r.replicaRolloutWait(rf, rip)
+				return err
 			}
 		}
 	}
@@ -62,7 +71,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			return err
 		}
 		if revision != ssUR {
-			if settled, err := r.redisPodsSettled(rf, ssUR); err != nil || !settled {
+			if wait, err = r.redisPodsSettled(rf, ssUR); err != nil || wait != nil {
 				return err
 			}
 			//Delete pod and wait next round to check if the new one is synced
@@ -119,7 +128,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 				}
 			}
 
-			if settled, err := r.redisPodsSettled(rf, ssUR); err != nil || !settled {
+			if wait, err = r.redisPodsSettled(rf, ssUR); err != nil || wait != nil {
 				return err
 			}
 			err = r.rfHealer.DeletePod(master, rf)
@@ -134,33 +143,118 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 	return nil
 }
 
-// redisPodsSettled reports whether the last redis pod replacement has
-// finished: the StatefulSet has all its pods, none is being deleted, and every
-// pod already on the update revision is ready. Pod events start the next
-// reconcile right after a delete, so without this check a rollout would delete
-// several pods at once.
-func (r *RedisFailoverHandler) redisPodsSettled(rf *redisfailoverv1.RedisFailover, updateRevision string) (bool, error) {
+// redisPodsSettled returns what the rollout waits on until the last redis pod
+// replacement has finished: the StatefulSet has all its pods, none is being
+// deleted, and every pod already on the update revision is ready. Pod events
+// start the next reconcile right after a delete, so without this check a
+// rollout would delete several pods at once.
+func (r *RedisFailoverHandler) redisPodsSettled(rf *redisfailoverv1.RedisFailover, updateRevision string) (*rolloutWait, error) {
 	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	wait := func(reason string) (bool, error) {
-		r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).Infof("redis rollout waits: %s", reason)
-		return false, nil
+	wait := func(w *rolloutWait) (*rolloutWait, error) {
+		r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).Infof("redis rollout waits: %s", w)
+		return w, nil
 	}
 	if len(pods.Items) < int(rf.Spec.Redis.Replicas) {
-		return wait(fmt.Sprintf("%d of %d pods exist", len(pods.Items), rf.Spec.Redis.Replicas))
+		return wait(&rolloutWait{reason: fmt.Sprintf("%d of %d pods exist", len(pods.Items), rf.Spec.Redis.Replicas)})
 	}
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if pod.DeletionTimestamp != nil {
-			return wait("pod " + pod.Name + " is terminating")
+			return wait(&rolloutWait{uid: pod.UID, pod: pod.Name, reason: "terminating"})
 		}
 		if pod.Labels[appsv1.ControllerRevisionHashLabelKey] == updateRevision && !util.PodIsReady(pod) {
-			return wait("pod " + pod.Name + " is not ready")
+			return wait(&rolloutWait{uid: pod.UID, pod: pod.Name, reason: "not ready"})
 		}
 	}
-	return true, nil
+	return nil, nil
+}
+
+// replicaRolloutWait returns what a pending rollout waits on while the replica
+// at ip is not synced with its master, or nil without a pending rollout.
+func (r *RedisFailoverHandler) replicaRolloutWait(rf *redisfailoverv1.RedisFailover, ip string) (*rolloutWait, error) {
+	updateRevision, err := r.rfChecker.GetStatefulSetUpdateRevision(rf)
+	if err != nil {
+		return nil, err
+	}
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return nil, err
+	}
+	var wait *rolloutWait
+	pending := false
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Labels[appsv1.ControllerRevisionHashLabelKey] != updateRevision {
+			pending = true
+		}
+		if pod.Status.PodIP == ip && pod.DeletionTimestamp == nil {
+			wait = &rolloutWait{uid: pod.UID, pod: pod.Name, reason: "not synced with the master"}
+		}
+	}
+	if !pending {
+		return nil, nil
+	}
+	return wait, nil
+}
+
+// rolloutStallTimeout is how long the rollout waits on the same pod before the
+// status message says so. A full sync, even of a dataset of tens of GB, takes
+// less.
+var rolloutStallTimeout = 10 * time.Minute
+
+// rolloutWait is what the redis pod rollout waits on: a pod, or, without uid,
+// a missing one.
+type rolloutWait struct {
+	uid    types.UID
+	pod    string
+	reason string
+	since  time.Time
+}
+
+func (w *rolloutWait) String() string {
+	if w.pod == "" {
+		return w.reason
+	}
+	return "pod " + w.pod + " is " + w.reason
+}
+
+// passwordKey returns the namespace/name key of rf in the handler's
+// per-RedisFailover maps. It keeps the name it has on main, where the
+// password state uses it too.
+func passwordKey(rf *redisfailoverv1.RedisFailover) string {
+	return rf.Namespace + "/" + rf.Name
+}
+
+// reportRolloutWait tracks how long the rollout has waited on the same pod,
+// and sets the status message once that is longer than rolloutStallTimeout.
+// A nil wait means the rollout is not waiting.
+func (r *RedisFailoverHandler) reportRolloutWait(rf *redisfailoverv1.RedisFailover, wait *rolloutWait) {
+	key := passwordKey(rf)
+	if wait == nil {
+		r.rolloutWaits.Delete(key)
+		return
+	}
+	if v, ok := r.rolloutWaits.Load(key); ok && v.(rolloutWait).uid == wait.uid {
+		wait.since = v.(rolloutWait).since
+	} else {
+		wait.since = time.Now()
+		r.rolloutWaits.Store(key, *wait)
+	}
+	if time.Since(wait.since) < rolloutStallTimeout {
+		return
+	}
+	msg := fmt.Sprintf("rollout waiting for more than %dm: %s", int(rolloutStallTimeout.Minutes()), wait.reason)
+	if wait.pod != "" {
+		msg = fmt.Sprintf("rollout waiting on pod %s for more than %dm: %s", wait.pod, int(rolloutStallTimeout.Minutes()), wait.reason)
+	}
+	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).Warningf("%s", msg)
+	if rf.Status.Message != "" {
+		msg = rf.Status.Message + "; " + msg
+	}
+	rf.Status.Message = msg
 }
 
 // masterPodStopping reports whether the master's pod is being deleted but

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"sync"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -52,6 +53,9 @@ type RedisFailoverHandler struct {
 	rfHealer   rfservice.RedisFailoverHeal
 	mClient    metrics.Recorder
 	logger     log.Logger
+	// rolloutWaits holds, per namespace/name, the rolloutWait the redis pod
+	// rollout waits on and since when.
+	rolloutWaits sync.Map
 }
 
 // NewRedisFailoverHandler returns a new RF handler
@@ -84,6 +88,7 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 			return nil
 		}
 		r.mClient.DeleteCluster(rf.Namespace, rf.Name)
+		r.rolloutWaits.Delete(passwordKey(rf))
 		remaining := slices.DeleteFunc(slices.Clone(rf.Finalizers), func(f string) bool {
 			return f == redisFailoverFinalizer
 		})

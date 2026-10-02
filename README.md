@@ -162,6 +162,10 @@ To have the ability of this configuration to be changed "on the fly," without th
 
 **Important 2**: do **NOT** change the options used for control the redis/sentinel such as `port`, `bind`, `dir`, etc.
 
+### Pod updates
+
+A changed spec replaces the redis pods one at a time, replicas first and the master last, each once the previous one is ready and every replica is synced with the master. When the rollout waits on the same pod for more than 10 minutes, e.g. on a new image that can't load the master's data, the status message names the pod and the reason, e.g. `rollout waiting on pod rfr-<NAME>-1 for more than 10m: not synced with the master`. The state stays `Healthy`, as the master still serves, and the message clears once the rollout moves on.
+
 ### Custom shutdown script
 
 By default, a custom shutdown file is given. This file makes redis to `SAVE` it's data, and when Sentinel is enabled and redis is master, it'll call sentinel to ask for failover.
