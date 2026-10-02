@@ -95,7 +95,8 @@ type checkMetricInfo struct {
 	lastSeen  time.Time
 }
 
-// Instrumenter is the interface that will collect the metrics and has ability to send/expose those metrics.
+// Recorder collects the operator metrics. NewRecorder exposes them to
+// Prometheus, and Dummy discards them for tests.
 type Recorder interface {
 	ControllerRecorder
 
@@ -114,7 +115,7 @@ type Recorder interface {
 	RecordRedisOperation(kind string, IP string, operation string, status string, err string)
 }
 
-// PromMetrics implements the instrumenter so the metrics can be managed by Prometheus.
+// recorder implements Recorder so the metrics can be managed by Prometheus.
 type recorder struct {
 	// Metrics fields.
 	clusterOK            *prometheus.GaugeVec   // clusterOk is the status of a cluster
@@ -126,7 +127,7 @@ type recorder struct {
 	ControllerRecorder
 }
 
-// NewPrometheusMetrics returns a new PromMetrics object.
+// NewRecorder returns a new Recorder that registers its metrics on reg.
 func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 	// Create metrics.
 	clusterOK := prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -209,7 +210,8 @@ func (r recorder) SetClusterError(namespace string, name string) {
 	r.clusterOK.WithLabelValues(namespace, name).Set(0)
 }
 
-// DeleteCluster set the cluster status to Error
+// DeleteCluster deletes the cluster_ok series of a deleted RedisFailover, so
+// the metric does not report a cluster that no longer exists.
 func (r recorder) DeleteCluster(namespace string, name string) {
 	r.clusterOK.DeleteLabelValues(namespace, name)
 }

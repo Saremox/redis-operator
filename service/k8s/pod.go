@@ -20,7 +20,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// Pod the ServiceAccount service that knows how to interact with k8s to manage them
+// Pod the Pod service that knows how to interact with k8s to manage them
 type Pod interface {
 	GetPod(namespace string, name string) (*corev1.Pod, error)
 	DeletePod(namespace string, name string) error

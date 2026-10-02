@@ -32,8 +32,9 @@ const (
 	// makes the API server hold the object (with DeletionTimestamp set)
 	// until we remove it, which turns "delete" into an ordinary object we
 	// still see via Handle, and gives us a hook to clean up state that
-	// only exists outside the object itself, i.e. the cluster_ok metrics
-	// series (see the DeletionTimestamp branch in Handle).
+	// only exists outside the object itself: the cluster_ok metrics series
+	// and the per-RedisFailover maps of the handler, such as the password
+	// and rollout-wait state (see the DeletionTimestamp branch in Handle).
 	redisFailoverFinalizer = "redisfailovers.databases.spotahome.com/finalizer"
 )
 

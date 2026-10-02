@@ -383,10 +383,9 @@ func (r *RedisFailoverChecker) GetMasterIP(rf *redisfailoverv1.RedisFailover) (s
 	return masters[0], nil
 }
 
-// GetNumberMasters returns the number of redis nodes that are working as a master.
-// A ready pod that does not answer may still be the master, so if no pod
-// answers as master it returns an error rather than zero, and callers don't
-// promote over it. A pod Kubernetes has marked not ready is skipped.
+// GetNumberMasters counts the Running, non-terminating redis pods that answer
+// as master. If no pod answers as master and a ready pod does not answer, it
+// returns an error and not zero, because that pod can still be the master.
 func (r *RedisFailoverChecker) GetNumberMasters(rf *redisfailoverv1.RedisFailover) (int, error) {
 	nMasters := 0
 	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
@@ -505,7 +504,7 @@ func (r *RedisFailoverChecker) GetRedisesSlavesPods(rf *redisfailoverv1.RedisFai
 	return redises, nil
 }
 
-// GetRedisesMasterPod returns pods names of the Redis secondary nodes
+// GetRedisesMasterPod returns the name of the redis pod that answers as master.
 func (r *RedisFailoverChecker) GetRedisesMasterPod(rFailover *redisfailoverv1.RedisFailover) (string, error) {
 	rps, err := r.k8sService.GetStatefulSetPods(rFailover.Namespace, GetRedisName(rFailover))
 	if err != nil {
@@ -532,8 +531,8 @@ func (r *RedisFailoverChecker) GetRedisesMasterPod(rFailover *redisfailoverv1.Re
 	return "", errors.New("redis nodes known as master not found")
 }
 
-// GetStatefulSetUpdateRevision returns the current version for the statefulSet
-// If the label doesn't exist, we return an empty value and no error, so previous versions don't break
+// GetStatefulSetUpdateRevision returns `status.updateRevision` of the redis
+// StatefulSet. The rollout updates each pod whose revision label differs.
 func (r *RedisFailoverChecker) GetStatefulSetUpdateRevision(rFailover *redisfailoverv1.RedisFailover) (string, error) {
 	ss, err := r.k8sService.GetStatefulSet(rFailover.Namespace, GetRedisName(rFailover))
 	if err != nil {
@@ -547,7 +546,9 @@ func (r *RedisFailoverChecker) GetStatefulSetUpdateRevision(rFailover *redisfail
 	return ss.Status.UpdateRevision, nil
 }
 
-// GetRedisRevisionHash returns the statefulset uid for the pod
+// GetRedisRevisionHash returns the controller-revision-hash label of the pod.
+// It returns "" while an in-place resize is pending, so the rollout treats the
+// pod as stale until the resize is applied.
 func (r *RedisFailoverChecker) GetRedisRevisionHash(podName string, rFailover *redisfailoverv1.RedisFailover) (string, error) {
 	pod, err := r.k8sService.GetPod(rFailover.Namespace, podName)
 	if err != nil {
