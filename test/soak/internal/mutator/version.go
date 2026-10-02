@@ -51,10 +51,10 @@ type server struct {
 	err           error
 }
 
-// planImage follows one of the chain's edges from the redis image's
-// version, picked by the step's random source; a following Sentinel image
-// changes with it. At the end of the chain it moves separate Sentinels
-// on instead, and once they caught up resets the instance.
+// planImage follows an edge of the chain from the version of the redis image.
+// The random source of the step picks the edge. A Sentinel image that follows
+// changes with it. At the end of the chain, it moves separate Sentinels first,
+// and then resets the instance.
 func (m *Mutator) planImage(r *rand.Rand, s state) plan {
 	const kind = config.ImageUpgrade
 	ch := m.in.Chain
@@ -124,9 +124,9 @@ func (m *Mutator) planSentinelImage(r *rand.Rand, s state) plan {
 	}
 }
 
-// planSentinelFlip changes only the Sentinel image to another of the
-// instance's sentinelImages, picked by the step's random source. It isn't
-// an edge of the graph: Sentinels hold no data to load.
+// planSentinelFlip changes only the Sentinel image to a different value in
+// sentinelImages. The random source of the step picks it. It is not an edge of
+// the graph, because Sentinels hold no data to load.
 func (m *Mutator) planSentinelFlip(r *rand.Rand, s state) plan {
 	const kind = config.SentinelImageFlip
 	if !s.rf.SentinelEnabled() {
@@ -202,10 +202,10 @@ func (m *Mutator) resetVersions() (redis, sentinel config.Version) {
 	return redis, sentinel
 }
 
-// convergedOn holds once the redis StatefulSet runs its replicas, all ready
-// on redisImage and reporting its version in INFO server, the Sentinels
-// likewise on sentinelImage (any, if empty), and the RedisFailover is
-// Healthy. An empty redisImage is the spec's.
+// convergedOn holds when the redis StatefulSet runs its replicas, all ready on
+// redisImage and with its version in INFO server, the Sentinels also on
+// sentinelImage (any, if empty), and the RedisFailover is Healthy. An empty
+// redisImage is the image of the spec.
 func convergedOn(versions *config.Config, redisImage, sentinelImage string) func(state) error {
 	return func(s state) error {
 		image := redisImage
@@ -279,8 +279,8 @@ type mixedWindow struct {
 	start time.Time
 }
 
-// podImage is a pod's image and the server and version it reports, empty
-// if it didn't answer.
+// podImage is the image of a pod and the server and version that it reports,
+// empty if it did not answer.
 type podImage struct {
 	image, server, version string
 }
@@ -334,9 +334,9 @@ type observation struct {
 	// lacked.
 	verified bool
 	lost     int
-	// master is the single master's pod, "" without one; masterOn the
-	// version of its image, writable its reply to a write, and loadError
-	// a line of its log saying it couldn't load the data.
+	// master is the pod of the single master, "" without one. masterOn is the
+	// version of its image, writable its reply to a write, and loadError a
+	// line of its log that says that it could not load the data.
 	master    string
 	masterOn  string
 	writable  error
@@ -345,10 +345,10 @@ type observation struct {
 	pods []string
 }
 
-// classify judges a version change: ok if it converged; failed_safe if it
-// didn't, but the master stayed on the old version, writable, without
-// having failed to load the data, and no acknowledged write was lost, so
-// the rollout stopped instead of wiping data; failed_unsafe otherwise.
+// classify judges a version change. ok: it converged. failed_safe: it did not
+// converge, but the rollout stopped and kept the data. The master stayed on
+// the old version and writable, it loaded its data, and no acknowledged write
+// was lost. failed_unsafe: all other cases.
 func classify(t *transition, o observation) (string, []string) {
 	if o.converged {
 		return transitionOK, nil
@@ -414,8 +414,8 @@ func describePod(versions *config.Config, p *corev1.Pod, container string, sv se
 	return strings.Join(parts, " ")
 }
 
-// loadErrorLine returns the first line of a server log that says the data
-// couldn't be loaded, without its pid and timestamp prefix.
+// loadErrorLine returns the first line of a server log that says that the
+// server could not load the data, without its pid and timestamp prefix.
 func loadErrorLine(log string) string {
 	for line := range strings.Lines(log) {
 		l := strings.ToLower(line)
@@ -435,8 +435,8 @@ func loadErrorLine(log string) string {
 	return ""
 }
 
-// loadErrors are what Redis and Valkey log when they can't load an RDB
-// file, from disk or a full sync.
+// loadErrors are what Redis and Valkey log when they cannot load an RDB file,
+// from disk or from a full sync.
 var loadErrors = []string{
 	"can't handle rdb format version",
 	"wrong signature trying to load db",

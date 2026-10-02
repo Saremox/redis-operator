@@ -20,9 +20,9 @@ const (
 	invSentinelAgreement = "sentinel_agreement"
 	invHealthy           = "healthy"
 	invConfig            = "config"
-	// invReplicaReadyWithoutData is a Ready replica whose link is down and
-	// hasn't been up since it started: Kubernetes routes reads to a pod
-	// without the master's data.
+	// invReplicaReadyWithoutData is a Ready replica whose link is down and was
+	// never up since it started: Kubernetes sends reads to a pod without the
+	// data of the master.
 	invReplicaReadyWithoutData = "replica_ready_without_data"
 	// invOOMKilled is judged apart from the others: every OOM kill is a
 	// finding, in a convergence window too.
@@ -234,9 +234,9 @@ func (s snapshot) checkBootstrap() error {
 	return errors.Join(errs...)
 }
 
-// checkReadyReplicas checks that no Ready redis pod is a replica whose link
-// is down and hasn't been up since the server started: it never completed
-// a sync. Redis and Valkey report master_link_down_since_seconds -1 then.
+// checkReadyReplicas checks that no Ready redis pod is a replica that never
+// completed a sync: its link is down and was never up since the server
+// started. Redis and Valkey then report master_link_down_since_seconds -1.
 func (s snapshot) checkReadyReplicas() error {
 	var errs []error
 	for _, r := range s.redis {
@@ -277,7 +277,7 @@ func (s snapshot) lags(master *redisPod) map[string]int64 {
 		if r.Name == master.Name || r.info.role() != roleReplica || r.info["master_host"] != master.IP {
 			continue
 		}
-		// The two INFO replies aren't taken at the same instant.
+		// The two INFO replies are not from the same instant.
 		lags[r.Name] = max(0, offset-r.info.int("slave_repl_offset"))
 	}
 	return lags

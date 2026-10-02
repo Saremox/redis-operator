@@ -1,18 +1,18 @@
-# kind-e2e's config: deploy/config.yaml with a short mutation interval and a
-# fixed seed. Seed 24080 picks every enabled kind within the first eight
-# steps of every instance and twelve of op-full, where it rotates the
-# password with three pods, runs scenario C on step 5 and restarts the
-# single pod gracefully on step 8; it also kills op-basic's only pod (a
-# reset), and the toggle's master in both modes. kind-e2e sets stopAfter to
-# DURATION.
+# The kind-e2e config: deploy/config.yaml with a short mutation interval
+# and a fixed seed. Seed 24080 picks each enabled kind within the first
+# eight steps of each instance, and within the first twelve of op-full. On
+# op-full, it rotates the password with three pods, runs scenario C on step
+# 5, and restarts the single pod gracefully on step 8. It also kills the
+# only pod of op-basic (a reset), and the master of toggle in both modes.
+# kind-e2e sets stopAfter to DURATION.
 operator:
   namespace: redis-operator
   deployment: redis-operator
 observer:
   interval: 5s
-  # Longer than the 5m the operator retries an in-place resize the kubelet
-  # refuses, e.g. a memory limit below the page cache in use, before it
-  # recreates the pod.
+  # Longer than the 5m that the operator retries an in-place resize that
+  # the kubelet refuses (for example, a memory limit below the page cache in
+  # use) before it recreates the pod.
   convergenceTimeout: 8m
 mutation:
   interval: 10s
@@ -35,7 +35,8 @@ instances:
         kill_master_force: 1
         kill_replica: 1
       redisReplicas: {min: 1, max: 5}
-      # The memory limit stays above twice the data plus the reserve.
+      # The memory limit stays above two times the data plus the reserve,
+      # because a full sync can double the data.
       resources:
         requests:
           cpu: {min: 25, max: 200}
@@ -60,8 +61,8 @@ instances:
       redisReplicas: {min: 1, max: 5}
       sentinelReplicas: {min: 3, max: 5}
       forceDeleteProbability: 0.5
-  # allkeys-lru at 75% of 256Mi, filled to 90% of maxmemory: the filler
-  # only, as the ledger's keys could be evicted.
+  # allkeys-lru at 75% of 256Mi, filled to 90% of maxmemory. Filler only,
+  # because allkeys-* can evict ledger keys.
   - name: op-maxmem
     namespace: op-maxmem
     mode: operator
@@ -79,7 +80,7 @@ instances:
       maxMemoryPercent: {min: 10, max: 95}
       forceDeleteProbability: 0.5
   # noeviction at 75% of 192Mi, filled to 70% of maxmemory, with the
-  # ledger. Fill keys carry a TTL, so volatile-* evicts only them.
+  # ledger. Fill keys have a TTL, so volatile-* evicts only fill keys.
   - name: op-noevict
     namespace: op-noevict
     mode: operator
@@ -97,8 +98,8 @@ instances:
       maxMemoryPolicies: [noeviction, volatile-lru, volatile-ttl]
       maxMemoryPercent: {min: 10, max: 95}
       fillBurstHold: 10s
-  # PVCs and auth: the password is rotated, removed and added, and changed
-  # while the operator is stopped (scenario C).
+  # PVCs and auth. The mutator rotates, removes and adds the password, and
+  # changes it while the operator is stopped (scenario C).
   - name: op-full
     namespace: op-full
     mode: operator
@@ -114,7 +115,7 @@ instances:
         kill_master: 2
         kill_master_force: 1
         redis_replicas: 2
-      # A single pod's graceful restart must lose nothing with a volume.
+      # A graceful restart of a single pod with a volume must lose nothing.
       redisReplicas: {min: 1, max: 2}
   - name: sent-full
     namespace: sent-full
@@ -131,7 +132,7 @@ instances:
         sentinel_replicas: 1
       sentinelReplicas: {min: 3, max: 4}
       forceDeleteProbability: 0.5
-  # Created without Sentinel; its probe paths follow the mode.
+  # Starts without Sentinel. Its probe paths follow the mode.
   - name: toggle
     namespace: toggle
     mode: operator
@@ -142,7 +143,7 @@ instances:
       kinds:
         sentinel_toggle: 2
         kill_master: 1
-  # Replicates from op-basic's master through rfrm-op-basic; read-only.
+  # Read-only. Replicates from the master of op-basic through rfrm-op-basic.
   - name: bootstrap
     namespace: bootstrap
     mode: operator

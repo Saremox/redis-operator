@@ -1,7 +1,7 @@
-# The chaos lane's rights. operator_restart deletes the operator's pods and
-# reads its leader's Lease. operator_upgrade runs helm upgrade on the
-# operator's release: helm keeps the release in Secrets, manages the
-# chart's objects and runs its CRD hook Job. Namespace and the release
+# The rights of the chaos lane. operator_restart deletes the operator pods
+# and reads the Lease of the leader. operator_upgrade runs helm upgrade on
+# the operator release: helm keeps the release in Secrets, manages the
+# chart objects and runs the CRD hook Job. The namespace and the release
 # must match `operator` and `chaos.upgrade` in config.yaml.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -42,10 +42,10 @@ subjects:
     name: soak
     namespace: redis-soak
 ---
-# The chart's ClusterRoles and bindings, which helm can only create or
-# update holding what they grant, or escalate and bind: this is as much as
-# cluster-admin, for a cluster that exists for the soak. node_drain
-# cordons nodes and evicts their pods.
+# helm can create or update the ClusterRoles of the chart only if it holds
+# the rights that they grant, or escalate and bind. This is equal to
+# cluster-admin, so use it only on a cluster that exists for the soak test.
+# node_drain cordons nodes and evicts their pods.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -57,7 +57,7 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterrolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # The CRD's generation before and after the hook.
+  # The upgrade logs the CRD generation before and after the hook.
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
     verbs: ["get"]

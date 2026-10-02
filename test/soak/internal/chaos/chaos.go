@@ -1,6 +1,6 @@
-// Package chaos runs the global chaos lane: cluster-level actions that
-// disturb every instance at once, one at a time. While an action runs,
-// every mutator is paused and every instance is in a convergence window.
+// Package chaos runs the chaos lane: cluster-level actions, one at a time,
+// that disturb all instances together. While an action runs, all mutators wait
+// and all instances are in a convergence window.
 package chaos
 
 import (
@@ -105,8 +105,8 @@ func New(cfg *config.Config, kube kubernetes.Interface, lock *global.Lock, insta
 		config.OperatorUpgrade: l.upgrade,
 		config.NodeDrain:       l.drain,
 	}
-	// Alerts take the increase of chaos_total, which a series that first
-	// appears at 1 wouldn't show.
+	// Alerts use the increase of chaos_total, which does not show a series
+	// that starts at 1.
 	for _, k := range l.cfg.Sorted() {
 		l.inProgress.WithLabelValues(string(k)).Set(0)
 		for _, r := range []string{resultConverged, resultTimeout, resultFailed, resultSkipped} {
@@ -166,8 +166,8 @@ type action struct {
 	step int
 	r    *rand.Rand
 	log  *slog.Logger
-	// begin marks the start of the disruption for every instance's data;
-	// an action calls it once it is sure to disturb them.
+	// begin marks the data of each instance as in a change. An action calls it
+	// when it is sure to disturb the instances.
 	begin func()
 	// resets are the instances the action reset: it deleted the only redis
 	// pod of an instance without a volume, which loses the data by design.
@@ -176,8 +176,8 @@ type action struct {
 
 // outcome is what an action did.
 type outcome struct {
-	// skip is why it wasn't taken; err why it failed; timeout what didn't
-	// converge in time.
+	// skip is why the action was not taken, err why it failed, and timeout
+	// what did not converge in time.
 	skip    string
 	err     error
 	timeout error
@@ -206,8 +206,8 @@ func (l *Lane) act(ctx context.Context, step int, r *rand.Rand, kind config.Chao
 	log.Info("waiting for every mutation to finish")
 	unlock := l.lock.Exclusive()
 	defer unlock()
-	// A change in flight when the action starts would be another's: the
-	// lock and this wait should leave none.
+	// A change in progress at the start of the action belongs to a different
+	// change. The lock and this wait must leave none.
 	inFlight := l.waitQuiet(ctx)
 	if ctx.Err() != nil {
 		return
@@ -258,8 +258,8 @@ func (l *Lane) act(ctx context.Context, step int, r *rand.Rand, kind config.Chao
 	}
 }
 
-// waitQuiet waits until every instance is quiet, for at most the timeout,
-// and returns those that weren't.
+// waitQuiet waits until all instances are quiet, for a maximum of the timeout,
+// and returns the instances that are not quiet.
 func (l *Lane) waitQuiet(ctx context.Context) []string {
 	since := time.Now()
 	err := l.await(ctx, func(context.Context) error { return quiet(l.reports(), since) })

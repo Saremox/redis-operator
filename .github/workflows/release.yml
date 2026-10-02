@@ -100,8 +100,8 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-soak
-          # The operator image's tags: every release has a tester built
-          # against exactly its spec.
+          # The tags of the operator image, so that each release has a tester
+          # built against its spec.
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

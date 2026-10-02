@@ -26,15 +26,14 @@ const (
 	// connections use the Secret's current password; open ones stay
 	// authenticated as they were.
 	Pooled Client = "pooled"
-	// Retrying is Pooled with go-redis's default retries, like an
-	// application that didn't tune its client.
+	// Retrying is Pooled with the default go-redis retries, as an application
+	// with an untuned client.
 	Retrying Client = "retrying"
 	// Fresh dials a new connection for every probe, like a new pod.
 	Fresh Client = "fresh"
-	// Follower is Pooled, but replaces its client with one for the new
-	// password as soon as the Secret changes, like an application that
-	// rereads its secret. Its auth failures show how long the operator
-	// takes to apply a change.
+	// Follower is Pooled, but replaces its client when the Secret changes, as
+	// an application that reads its Secret again. Its auth failures show how
+	// long the operator takes to apply a password change.
 	Follower Client = "follower"
 )
 
@@ -51,7 +50,8 @@ type Prober struct {
 	auth     *auth.Source
 	interval time.Duration
 	timeout  time.Duration
-	// Every waitEvery-th SET is followed by WAIT 1 waitTimeout.
+	// A successful SET whose sequence number is a multiple of waitEvery is
+	// followed by WAIT 1 waitTimeout.
 	waitEvery   int64
 	waitTimeout time.Duration
 	key         string

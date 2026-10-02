@@ -154,8 +154,8 @@ func run(configPath, listen string, log *slog.Logger) error {
 	return err
 }
 
-// ensureInstances creates every instance with a template that doesn't
-// exist yet, on its configured versions.
+// ensureInstances creates each instance with a template that does not exist
+// yet, on its configured versions.
 func ensureInstances(ctx context.Context, kube kubernetes.Interface, rfs versioned.Interface, cfg *config.Config, log *slog.Logger) (map[string]*instances.Instance, error) {
 	out := map[string]*instances.Instance{}
 	for _, in := range cfg.Instances {
@@ -176,10 +176,9 @@ func ensureInstances(ctx context.Context, kube kubernetes.Interface, rfs version
 	return out, nil
 }
 
-// authSources follows every instance's auth Secret, through an informer
-// on the Secrets of each instance namespace. The observers and mutators
-// keep them on the RedisFailovers' secretPath; they start on the current
-// one, so the first probes authenticate.
+// authSources follows the auth Secret of each instance through an informer on
+// the Secrets of its namespace. Each source starts on the current secretPath,
+// so that the first probes authenticate.
 func authSources(ctx context.Context, kube kubernetes.Interface, rfs versioned.Interface, instances []config.Instance) (map[string]*auth.Source, error) {
 	factories := map[string]informers.SharedInformerFactory{}
 	sources := map[string]*auth.Source{}
@@ -207,8 +206,8 @@ func authSources(ctx context.Context, kube kubernetes.Interface, rfs versioned.I
 	return sources, nil
 }
 
-// reportBuildInfo follows the operator's version, which changes when a
-// newer release candidate is rolled out under the running tester.
+// reportBuildInfo follows the operator version, because a new release
+// candidate can roll out while the tester runs.
 func reportBuildInfo(ctx context.Context, kube kubernetes.Interface, op config.Operator, m *metrics.Metrics, log *slog.Logger) {
 	current := ""
 	t := time.NewTicker(30 * time.Second)
@@ -233,9 +232,9 @@ func reportBuildInfo(ctx context.Context, kube kubernetes.Interface, op config.O
 	}
 }
 
-// redisLogger sends go-redis's own logging to debug level: its Sentinel
-// client logs every Sentinel it discovers, which a fresh client per probe
-// would repeat every second.
+// redisLogger sends the go-redis logs to debug level: the Sentinel client logs
+// each Sentinel that it finds, and a fresh client for each probe repeats this
+// every second.
 type redisLogger struct{ log *slog.Logger }
 
 func (l redisLogger) Printf(ctx context.Context, format string, v ...any) {

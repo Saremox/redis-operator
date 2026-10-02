@@ -13,9 +13,9 @@ import (
 	"github.com/saremox/redis-operator/test/soak/internal/maxmem"
 )
 
-// unmanaged are redis keys the operator sets itself, whatever customConfig
-// says: the password, and aclfile, which it can't set and loads with ACL
-// LOAD instead.
+// unmanaged are the redis keys that the operator sets itself, whatever
+// customConfig says: the passwords, and aclfile, which it cannot set and loads
+// with ACL LOAD.
 var unmanaged = []string{"requirepass", "masterauth", "aclfile"}
 
 // maxMemoryKeys are left to the maxmem check with spec.redis.maxMemory: it
@@ -75,9 +75,10 @@ func Redis(rf *redisfailoverv1.RedisFailover, got map[string]string) error {
 	return errors.Join(errs...)
 }
 
-// Sentinel compares rf's Sentinel customConfig with a Sentinel's SENTINEL
-// MASTER mymaster fields, which use the same names as SENTINEL SET. Keys it
-// doesn't report, like auth-pass, can't be checked.
+// Sentinel compares the Sentinel customConfig of rf with the SENTINEL MASTER
+// mymaster fields of a Sentinel, which use the names of SENTINEL SET. It
+// cannot check keys that SENTINEL MASTER does not report, for example
+// auth-pass.
 func Sentinel(rf *redisfailoverv1.RedisFailover, fields map[string]string) error {
 	var errs []error
 	for _, e := range parse(rf.Spec.Sentinel.CustomConfig) {

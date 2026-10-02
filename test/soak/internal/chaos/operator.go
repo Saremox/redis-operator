@@ -253,11 +253,10 @@ func helmArgs(u config.Upgrade, namespace string, to config.OperatorVersion) []s
 	return args
 }
 
-// hop upgrades to one version: it runs helm upgrade, which runs the chart's
-// CRD hook first and fails if the hook does, waits until a pod on the new
-// image leads, and then until every instance is quiet. It returns the time
-// from the upgrade's start to convergence, or why it failed or didn't
-// converge in time.
+// hop upgrades to one version. helm runs the CRD hook of the chart first, and
+// fails if the hook fails. hop then waits until a pod on the new image leads,
+// and until all instances are quiet. It returns the time from the start of the
+// upgrade to convergence, or why it failed or did not converge in time.
 func (l *Lane) hop(ctx context.Context, a *action, from, to config.OperatorVersion) (time.Duration, error, error) {
 	log := a.log.With("from", from.Name, "to", to.Name)
 	s, err := l.operatorState(ctx)
@@ -346,8 +345,8 @@ type hookResult struct {
 	duration time.Duration
 }
 
-// hook judges the hook: helm deletes it once it succeeded, and fails the
-// upgrade if it didn't.
+// hook judges the CRD hook from what watchUpgrade saw: helm deletes the hook
+// Job when it succeeds, and fails the upgrade when it fails.
 func (w *watch) hook(helmOK bool) hookResult {
 	w.mu.Lock()
 	defer w.mu.Unlock()

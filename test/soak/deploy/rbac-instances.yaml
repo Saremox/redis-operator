@@ -1,6 +1,6 @@
-# Grants the mutator its rules, and every client its auth Secrets, in every
-# instance's namespace. Keep one RoleBinding per instance namespace in
-# config.yaml; the namespaces must exist before this is applied.
+# Grants the mutator rules and the auth Secrets in each instance namespace.
+# Keep one RoleBinding for each instance namespace in config.yaml. The
+# namespaces must exist before you apply this file.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:

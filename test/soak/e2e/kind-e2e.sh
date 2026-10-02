@@ -1,45 +1,27 @@
 #!/usr/bin/env bash
-# Runs the soak tester with the mutator, the filler and the ledger against
-# op-basic, sent-basic, op-maxmem, op-noevict, op-full, sent-full, toggle
-# and bootstrap on kind. After DURATION seconds the mutator stops starting
-# mutations; once the last ones have converged, the script asserts from the
-# tester's metrics and logs that every enabled kind converged at least once
-# on every instance, that no mutation timed out or was rejected, that there
-# were no findings (OOM kills included), that every invariant holds, that
-# every probe path and client style succeeds again, that op-noevict
-# rejected writes with OOM and op-maxmem evicted keys, that the data was
-# verified after every mutation and failover, and that no write was lost
-# by an auth change, a Sentinel toggle, or a graceful event on op-full's
-# volumes. It then reports the convergence time per kind, the outages per
-# mutation, path and client style, the auth windows, scenario C's phases,
-# the bootstrap's lag, the pods each kind recreated, the lost writes per
-# instance and event, and any findings.
+# Runs the soak tester on kind for one profile, then asserts and reports
+# the results from the metrics and the logs of the tester. README.md
+# ("Run the tester") lists the instances, the assertions and the report of
+# each profile:
+# - full (default): the instances of e2e/config.yaml.
+# - versions: the server version and fork instances of
+#   e2e/config-versions.yaml.
+# - chaos: the chaos lane of e2e/config-chaos.yaml on a control plane and
+#   two workers, and a check of deploy/monitoring against Prometheus and
+#   Grafana in the cluster.
 #
-# With E2E_PROFILE=versions it runs only the server version and fork
-# instances of e2e/config-versions.yaml instead, which the tester creates
-# from their templates, and asserts that every ok edge ends ok, that no
-# version change failed unsafely, and that the chains completed and reset;
-# it reports every edge with its mixed window, outages and losses, how the
-# unknown edges failed, the Valkey compatibility checks and the resets.
-#
-# With E2E_PROFILE=chaos it runs the chaos lane of e2e/config-chaos.yaml on
-# a control plane and two workers, against four small instances: it
-# installs UPGRADE_FROM, upgrades to UPGRADE_TO and back, restarts the
-# operator and drains each worker. It asserts that every action converged
-# with no change in flight, that no restart or upgrade lost writes, nor a
-# drain of the instance on volumes, and that the dashboard and alerts of
-# deploy/monitoring work against a Prometheus and a Grafana in the
-# cluster. It reports the time without an operator, the CRD hook, the
-# drains with their blocked evictions, and every action's outages and
-# losses.
-#
-# Environment: CLUSTER, KIND_NODE, SUBNET (the pod subnet's second octet),
-# OPERATOR_VERSION (empty: build the operator from this checkout),
-# E2E_PROFILE (full, versions or chaos), DURATION (seconds the mutator
-# starts mutations, default 2100, 3000 for versions, 1500 for chaos), and
-# for chaos UPGRADE_FROM and UPGRADE_TO: git refs built from source
-# (default 4.2.0-rc2 and origin/main), or with OPERATOR_VERSION a released
-# tag to upgrade from (required) and to OPERATOR_VERSION.
+# Environment:
+# - CLUSTER, KIND_NODE.
+# - SUBNET: the second octet of the pod subnet.
+# - OPERATOR_VERSION: a released version to install. Empty builds the
+#   operator from this checkout.
+# - E2E_PROFILE: full, versions or chaos.
+# - DURATION: how many seconds the mutator starts mutations. Default 2100,
+#   3000 for versions, 1500 for chaos.
+# - UPGRADE_FROM, UPGRADE_TO (chaos only): git refs to build (default
+#   4.2.0-rc2 and origin/main). With OPERATOR_VERSION, UPGRADE_FROM is the
+#   released tag to upgrade from (required), and the upgrade goes to
+#   OPERATOR_VERSION.
 set -euo pipefail
 
 cluster=${CLUSTER:-soak}
@@ -51,6 +33,21 @@ repo=$(cd "$soak/../.." && pwd)
 skill=$repo/.claude/skills/kind-cluster
 export KUBECONFIG=/tmp/kind-$cluster/kubeconfig
 artifacts=$soak/bin/kind-e2e-artifacts
+ctx=
+# A failure before the report keeps the cluster state, so that the uploaded
+# artifacts show the cause.
+on_exit() {
+  local rc=$?
+  [[ -n $ctx ]] && rm -rf "$ctx"
+  if ((rc != 0)) && [[ -f $KUBECONFIG ]]; then
+    mkdir -p "$artifacts/failure"
+    kubectl get redisfailovers -A -o yaml >"$artifacts/failure/redisfailovers.yaml" 2>&1 || true
+    kubectl get pods -A -o wide >"$artifacts/failure/pods.txt" 2>&1 || true
+    kubectl get events -A --sort-by=.lastTimestamp >"$artifacts/failure/events.txt" 2>&1 || true
+    kubectl -n redis-operator logs deployment/redis-operator --tail=5000 >"$artifacts/failure/operator.log" 2>&1 || true
+  fi
+}
+trap on_exit EXIT
 
 operator_invariants="pods one_master master_service replication replica_ready_without_data config healthy oom_killed"
 sentinel_invariants="pods one_master master_service replication sentinel_agreement replica_ready_without_data config healthy oom_killed"
@@ -390,7 +387,6 @@ echo "--- tester"
 # made on the host, since a Go build inside docker has no module proxy
 # access in every environment this runs in.
 ctx=$(mktemp -d)
-trap 'rm -rf "$ctx"' EXIT
 mkdir -p "$ctx/out"
 cp "$soak/bin/soak" "$ctx/out/soak"
 # The tag changes with the binary: the node keeps an image it has, so a

@@ -45,8 +45,8 @@ func NewRunner(in config.Instance, probe config.Probe, a *auth.Source, m *metric
 	}
 }
 
-// SetEvent sets what tells the probers' outages what ran when they
-// started: a chaos kind, the instance's mutation kind, or "" for none.
+// SetEvent sets the function that names what ran when an outage started: a
+// chaos kind, the mutation kind of the instance, or "" for none.
 func (r *Runner) SetEvent(event func() string) {
 	r.event = func() string {
 		if e := event(); e != "" {
@@ -56,8 +56,8 @@ func (r *Runner) SetEvent(event func() string) {
 	}
 }
 
-// Run follows paths, the names of the instance's current paths, every
-// probe interval.
+// Run makes the probers follow paths, the names of the current paths of the
+// instance, at each probe interval.
 func (r *Runner) Run(ctx context.Context, paths func() []string) {
 	defer r.sync(ctx, nil)
 	t := time.NewTicker(r.probe.Interval.Duration)

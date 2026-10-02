@@ -29,14 +29,14 @@ func (l *Lock) Exclusive() (unlock func()) {
 	return l.mu.Unlock
 }
 
-// Disturb marks every instance disturbed for reason, e.g. the operator
-// stopped, or no longer for "".
+// Disturb marks all instances as disturbed for reason, for example a stopped
+// operator. "" ends the disturbance.
 func (l *Lock) Disturb(reason string) {
 	l.disturbance.Store(&reason)
 }
 
-// Disturbance returns why every instance is disturbed, "" if it isn't.
-// Every instance is in a convergence window meanwhile.
+// Disturbance returns why all instances are disturbed, or "". All instances
+// are in a convergence window while they are disturbed.
 func (l *Lock) Disturbance() string {
 	if l == nil {
 		return ""

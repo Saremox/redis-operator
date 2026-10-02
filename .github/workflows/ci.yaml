@@ -76,8 +76,8 @@ jobs:
       - uses: dorny/paths-filter@v4
         id: filter
         with:
-          # The tester builds against the operator's API types through the
-          # replace in its go.mod.
+          # The tester builds against the operator API types through the
+          # replace in its go.mod, so changes to them also run this job.
           filters: |
             soak:
               - 'test/soak/**'

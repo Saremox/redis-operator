@@ -94,9 +94,9 @@ func New(in config.Instance, cfg *config.Config, master Master, a *auth.Source, 
 	return d
 }
 
-// initEvents creates the lost_writes_total series of every event at 0:
-// alerts take their increase, which a series that first appears with the
-// writes a verification lost wouldn't show.
+// initEvents creates the lost_writes_total series of each event at 0, because
+// the alerts use their increase, which does not show a series that starts
+// above 0.
 func initEvents(lost *prometheus.CounterVec, cfg *config.Config, in config.Instance) {
 	for _, e := range cfg.Events(in) {
 		lost.WithLabelValues(e)
@@ -139,10 +139,10 @@ func (d *Data) Refill() {
 	d.fillMu.Unlock()
 }
 
-// Verify verifies the data after a mutation, at the mutator's step, and
-// ends the mutation. event is the mutation's kind, or config.EventReset for
-// one that loses the data by design. It returns the writes found lost, or
-// an error if the data couldn't be verified before ctx was done.
+// Verify verifies the data after a mutation and ends the mutation. event is
+// the kind of the mutation, or config.EventReset for a mutation that loses the
+// data by design. It returns the number of lost writes, or an error if ctx is
+// done before the verification.
 func (d *Data) Verify(ctx context.Context, event string, step int) (int, error) {
 	return verifyAfter(ctx, d.requests, event, step)
 }
@@ -234,8 +234,9 @@ func (d *Data) verify(ctx context.Context, event string, step int) (int, error) 
 		if lostOlder, _, err = d.check(ctx, c, LedgerKey, size, r.older); err != nil {
 			return 0, err
 		}
-		// A sample that lost writes lost an unknown share of the older
-		// ones: count them all now, so later events don't inherit them.
+		// If the sample lost writes, an unknown share of the older writes is
+		// lost. Count all of them now, so that later events do not get this
+		// loss.
 		if len(lostOlder) > 0 {
 			if lostOlder, _, err = d.check(ctx, c, LedgerKey, size, members(r.olderAll)); err != nil {
 				return 0, err
@@ -262,8 +263,8 @@ func (d *Data) verify(ctx context.Context, event string, step int) (int, error) 
 		}
 	}
 	if len(lostFill) > 0 {
-		// The fill is only sampled: forget what the sample can't tell
-		// about, so later events don't inherit this one's losses.
+		// The fill is only sampled. Forget the keys that the sample cannot
+		// tell about, so that later events do not get this loss.
 		d.fillMu.Lock()
 		d.fillAck.dropBelow(fillTo)
 		d.fillMu.Unlock()
@@ -473,9 +474,9 @@ func (d *Data) writeFill(ctx context.Context, n int64) {
 	}
 }
 
-// Burst writes past maxmemory on a noeviction master until writes are
-// rejected, keeps trying for hold, then deletes what it wrote. It returns
-// why it didn't start, if it didn't.
+// Burst writes past maxmemory on a noeviction master until the master rejects
+// writes, continues for hold, then deletes what it wrote. If it did not start,
+// it returns why.
 func (d *Data) Burst(ctx context.Context, hold time.Duration) (string, error) {
 	mi, err := memoryInfo(ctx, d.client)
 	if err != nil {

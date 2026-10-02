@@ -47,7 +47,8 @@ type Operator struct {
 type Probe struct {
 	Interval metav1.Duration `json:"interval"`
 	Timeout  metav1.Duration `json:"timeout"`
-	// WaitEvery runs WAIT 1 <waitTimeout> after every n-th SET.
+	// WaitEvery sends WAIT 1 <waitTimeout> after a successful SET whose
+	// sequence number is a multiple of WaitEvery.
 	WaitEvery   int             `json:"waitEvery"`
 	WaitTimeout metav1.Duration `json:"waitTimeout"`
 }
@@ -79,9 +80,9 @@ type Mutation struct {
 	Interval metav1.Duration `json:"interval"`
 	// Jitter is the most that is added at random to every interval.
 	Jitter metav1.Duration `json:"jitter"`
-	// MinDwell is the least time a mutation's convergence window stays
-	// open, so a change the operator hasn't picked up yet isn't taken as
-	// converged.
+	// MinDwell is the minimum time that the convergence window of a mutation
+	// stays open. Without it, a change that the operator did not see yet can
+	// look converged.
 	MinDwell metav1.Duration `json:"minDwell"`
 	// Seed makes every pick reproducible. 0 picks a seed at startup.
 	Seed int64 `json:"seed"`
@@ -115,9 +116,9 @@ type Instance struct {
 	// AuthSecret is the Secret auth_add creates or updates and names in
 	// spec.auth.secretPath.
 	AuthSecret string `json:"authSecret"`
-	// Template is a RedisFailover manifest, relative to the config file,
-	// that the tester creates the instance from if it doesn't exist, and
-	// recreates it from on a reset.
+	// Template is a RedisFailover manifest, relative to the config file. The
+	// tester creates the instance from it if the instance does not exist, and
+	// recreates the instance from it on a reset.
 	Template string `json:"template"`
 	// Version and SentinelVersion set the redis and Sentinel image of an
 	// instance made from its template, by version name. A chain starts on
@@ -130,10 +131,10 @@ type Instance struct {
 	Mutations       Mutations  `json:"mutations"`
 }
 
-// Bootstrap configures an instance whose spec.bootstrapNode reaches
-// another configured instance's master, the source. It is read-only: it is
-// probed by reading a key the source's probes write, and verified by
-// reading a sample of the source's ledger from every pod.
+// Bootstrap configures an instance whose spec.bootstrapNode is the master of
+// another configured instance, the source. It is read-only: its probes read a
+// key that the probes of the source write, and its verification reads a sample
+// of the source ledger from each pod.
 type Bootstrap struct {
 	Source string `json:"source"`
 	// SampleKeys is the number of the source's ledger keys each
@@ -319,7 +320,8 @@ func (c *Config) validate() error {
 		if err := c.validateFlip(in); err != nil {
 			return fmt.Errorf("instance %q: mutations: %w", in.Name, err)
 		}
-		// Every instance is known by its name alone, e.g. as a source.
+		// Other config refers to an instance by its name alone, for example as
+		// a source.
 		if seen[in.Name] {
 			return fmt.Errorf("instance %s is configured twice: names must be unique across namespaces", in.Name)
 		}

@@ -42,8 +42,8 @@ const (
 	// Reset deletes the RedisFailover and its volumes, recreates it from
 	// its template on the chain's start, and refills it.
 	Reset Kind = "reset"
-	// SentinelImageFlip changes only the Sentinel image to another of
-	// sentinelImages, e.g. between a Redis and a Valkey version.
+	// SentinelImageFlip changes only the Sentinel image to a different value
+	// in sentinelImages, for example between a Redis and a Valkey version.
 	SentinelImageFlip Kind = "sentinel_image_flip"
 )
 
@@ -283,8 +283,9 @@ func (r Resources) validate() error {
 	if r.Limits.Memory.Set() && r.Limits.Memory.Min < minMemoryLimitMi {
 		return fmt.Errorf("limits.memory: min must be at least %dMi", minMemoryLimitMi)
 	}
-	// A request at its limit could turn a Burstable pod Guaranteed, which
-	// the operator can't resize in place, and one above it is invalid.
+	// A request equal to its limit can make a Burstable pod Guaranteed, which
+	// the operator cannot resize in place. A request above its limit is not
+	// valid.
 	for name, rr := range map[string][2]Range{
 		"cpu":    {r.Requests.CPU, r.Limits.CPU},
 		"memory": {r.Requests.Memory, r.Limits.Memory},

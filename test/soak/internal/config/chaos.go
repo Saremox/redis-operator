@@ -29,11 +29,9 @@ const (
 
 var chaosKinds = []ChaosKind{OperatorRestart, OperatorUpgrade, NodeDrain}
 
-// Chaos is the global chaos lane: at most one action at a time, for every
-// instance at once, one per interval plus up to jitter. Every mutator
-// pauses while an action runs, and every instance is in a convergence
-// window. It is off without kinds, or with mutation.enabled false, and
-// stops starting actions after mutation.stopAfter.
+// Chaos configures the chaos lane: one action at a time on all instances, one
+// for each interval plus up to jitter. It is off without kinds or with
+// mutation.enabled false, and starts no actions after mutation.stopAfter.
 type Chaos struct {
 	// Kinds are the enabled kinds and their weights.
 	Kinds    map[ChaosKind]int `json:"kinds"`

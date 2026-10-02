@@ -32,15 +32,15 @@ const (
 	ExpectUnknown = "unknown"
 )
 
-// Edge is a version change the tester may make. Downgrades are never
-// edges: a newer RDB can't be loaded by an older server.
+// Edge is a version change that the tester can make. Downgrades are never
+// edges, because an older server cannot load a newer RDB.
 type Edge struct {
 	From   string `json:"from"`
 	To     string `json:"to"`
 	Expect string `json:"expect"`
-	// Timeout bounds how long a change along the edge is observed before
-	// it is judged, if it doesn't get stuck first; by default the kind's
-	// timeout.
+	// Timeout is how long the tester observes a change along the edge before
+	// it judges the change, if the rollout does not get stuck first. The
+	// default is the timeout of the kind.
 	Timeout metav1.Duration `json:"timeout"`
 }
 

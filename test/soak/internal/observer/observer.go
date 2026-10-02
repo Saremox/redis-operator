@@ -76,8 +76,8 @@ type Observer struct {
 	external     string
 	sourceMaster string
 	sentinelUp   bool
-	// reportOnly are the invariants that are reported but never findings,
-	// and noted when each of them was violated.
+	// reportOnly are the invariants that are never findings. noted is when
+	// each of them was violated.
 	reportOnly map[string]bool
 	noted      map[string]time.Time
 
@@ -130,8 +130,8 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		maxMemory:   m.MaxMemory.With(labels),
 		evicted:     m.EvictedKeys.With(labels),
 	}
-	// Alerts take the increase of findings_total, which a series that
-	// first appears at 1 wouldn't show.
+	// Alerts use the increase of findings_total, which does not show a series
+	// that starts at 1.
 	o.findings.WithLabelValues(invOOMKilled)
 	return o
 }
@@ -145,7 +145,8 @@ type Hold struct {
 	applied   atomic.Int64
 }
 
-// Applied starts the window's timeout: the mutation was applied now.
+// Applied starts the timeout of the window. Call it when the mutation is
+// applied.
 func (h *Hold) Applied() {
 	h.applied.Store(time.Now().UnixNano())
 }
@@ -192,12 +193,11 @@ type PodAddr struct {
 	Addr string
 }
 
-// Hold opens a convergence window for a mutation that is about to be
-// applied. The window stays open until converged returns nil, every
-// invariant holds and the minimum dwell has passed since the mutation was
-// applied, or until timeout after that. Only one hold may be pending at a
-// time; a new one takes over the window of the previous one, which is then
-// never done.
+// Hold opens a convergence window for a mutation before the mutation is
+// applied. The window closes when converged returns nil, all invariants hold
+// and the minimum dwell passed after Applied, or at timeout after Applied.
+// Only one hold can wait at a time. A new hold takes the window of the
+// previous hold, whose Done then never receives.
 func (o *Observer) Hold(timeout time.Duration, converged func(context.Context) error) *Hold {
 	h := &Hold{since: time.Now(), timeout: timeout, converged: converged, done: make(chan bool, 1)}
 	o.holds <- h
@@ -214,7 +214,8 @@ func (o *Observer) Quiet() bool {
 // Report is what the observer's last round found.
 type Report struct {
 	At time.Time
-	// Quiet is no convergence window open and every invariant holding.
+	// Quiet is true when no convergence window is open and all invariants
+	// hold.
 	Quiet bool
 	// Failing are the violated invariants that may be findings.
 	Failing []string
@@ -299,7 +300,7 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 		return snapshot{}, 0, err
 	}
 	o.auth.Update(rf)
-	// Validate fills in the operator's defaults.
+	// Validate applies the operator defaults.
 	spec := rf.DeepCopy()
 	_ = spec.Validate()
 	s := snapshot{
@@ -575,13 +576,13 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 	o.view.Store(v)
 }
 
-// externalWindow holds a window open while something outside the instance
-// is expected to disturb it: a mutation stopped the operator, a chaos
-// action runs, or, for a bootstrapping instance, the source is converging or without a master.
-// A bootstrapping instance's window also opens when the source's master
-// changes, as its pods only reach the new one after their link to the old
-// one broke, which may be after the source converged; it then closes once
-// they all replicate the new master's stream.
+// externalWindow keeps a window open while a disturbance outside the instance
+// continues: a mutation stopped the operator, a chaos action runs, or the
+// source of a bootstrapping instance converges or has no master. A change of
+// the source master also opens a window for a bootstrapping instance. Its pods
+// connect to the new master only after their link to the old master breaks,
+// which can be after the source converged. The window closes when all pods
+// replicate the stream of the new master.
 func (o *Observer) externalWindow(now time.Time) {
 	reason := ""
 	switch {
@@ -697,10 +698,10 @@ func (o *Observer) observeMaster(s snapshot) {
 		if o.master.UID != "" && o.master.UID != master.UID {
 			o.failovers.Inc()
 			event := config.EventFailover
-			// A new RedisFailover starts empty, as does the only pod, without
-			// a volume, when it replaced the master: it never held the data.
-			// A pod that replicated from the master, e.g. the one a
-			// scale-down left, has it.
+			// A new RedisFailover starts empty. So does a new only pod without
+			// a volume that replaced the master: it never held the data. A pod
+			// that replicated from the master, for example the pod that a
+			// scale-down left, has the data.
 			if o.recreated || s.redisReplicas == 1 && !s.pvc && !o.synced[master.UID] {
 				event = config.EventReset
 			}
@@ -739,8 +740,8 @@ func synced(s snapshot, before map[string]bool) map[string]bool {
 	return out
 }
 
-// observeServers exports the server and version of every pod that answered
-// INFO, and drops the series of pods that didn't or are gone.
+// observeServers exports the server and version of each pod that answered
+// INFO, and deletes the series of the other pods.
 func (o *Observer) observeServers(s snapshot) {
 	servers := map[string][2]string{}
 	for _, p := range s.redis {

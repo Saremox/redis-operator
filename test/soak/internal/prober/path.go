@@ -23,7 +23,7 @@ const (
 	sentinelMasterName = "mymaster"
 )
 
-// Path is one way of reaching an instance.
+// Path is one way to reach an instance.
 type Path struct {
 	Name string
 	// ReadKey makes the path read-only: probes only GET it.
@@ -82,10 +82,9 @@ func service(prefix, name string, in config.Instance, timeout time.Duration, a *
 	}
 }
 
-// Sentinel reaches the master the way a Sentinel-aware client does: it asks
-// the Sentinels behind rfs-<name> for the master's address and follows
-// their failover announcements. The Sentinels need no password, the master
-// does.
+// Sentinel reaches the master as a Sentinel-aware client does: it asks the
+// Sentinels behind rfs-<name> for the master address and follows their
+// failover announcements. The Sentinels need no password; the master does.
 func Sentinel(in config.Instance, timeout time.Duration, a *auth.Source) Path {
 	addr := net.JoinHostPort(fmt.Sprintf("rfs-%s.%s.svc", in.Name, in.Namespace), strconv.Itoa(sentinelPort))
 	return Path{

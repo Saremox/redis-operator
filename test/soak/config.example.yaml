@@ -1,8 +1,8 @@
-# Example soak tester configuration. Every field except the instance list
-# has a default, shown here.
+# Example soak tester configuration. All fields except the instance list
+# have a default, which this file shows.
 
-# The operator Deployment whose image tag is exported as
-# redis_soak_build_info{operator_version}, and the Lease its leader holds.
+# The operator Deployment, whose image tag the tester exports as
+# redis_soak_build_info{operator_version}, and the Lease of its leader.
 operator:
   namespace: redis-operator
   deployment: redis-operator
@@ -10,42 +10,44 @@ operator:
 
 probe:
   interval: 1s
-  # Per command, including the dial of a fresh connection. The observer
-  # uses it for its INFO and SENTINEL commands too.
+  # For each command, including the dial of a fresh connection. The
+  # observer also uses it for its INFO and SENTINEL commands.
   timeout: 1s
-  # Every waitEvery-th successful SET is followed by WAIT 1 waitTimeout
-  # (op="wait"). waitTimeout defaults to half the timeout.
+  # A successful SET whose sequence number is a multiple of waitEvery is
+  # followed by WAIT 1 waitTimeout (op="wait"). The default waitTimeout is
+  # half of timeout.
   waitEvery: 10
   waitTimeout: 500ms
 
 observer:
-  # How often each instance's invariants are checked.
+  # How often the observer checks the invariants of each instance.
   interval: 5s
-  # How long an instance may take to converge after its spec changed
-  # (metadata.generation) or a mutation, before a violation counts as a
-  # finding.
+  # How long an instance can take to converge after a spec change
+  # (metadata.generation) or a mutation, before a violation is a finding.
   convergenceTimeout: 10m
-  # A Ready replica whose link is down and hasn't been up since it started
+  # A Ready replica whose link is down and was never up since it started
   # (replica_ready_without_data) is a finding. false only reports it, for
   # operators whose readiness probe passes such a replica.
   replicaReadyWithoutData: true
 
-# The mutator changes each instance with a mutations section, one mutation
-# at a time, once the instance is quiet: no convergence window open and
-# every invariant holding.
+# The mutator changes each instance that has a mutations section, with one
+# mutation at a time, when the instance is quiet: no convergence window is
+# open and all invariants hold.
 mutation:
-  # false switches the mutator off.
+  # false disables the mutator.
   enabled: true
   # The pause after a mutation converged, plus up to jitter at random.
   interval: 2m
   jitter: 0s
-  # The least time a mutation's convergence window stays open, so a change
-  # the operator hasn't picked up yet isn't taken as converged.
+  # The minimum time that the convergence window of a mutation stays open.
+  # Without it, a change that the operator did not see yet can look
+  # converged.
   minDwell: 15s
-  # Every pick is reproducible from the seed and the step logged with each
-  # mutation. 0 (the default) picks a seed at startup and logs it.
+  # You can reproduce each pick from the seed and the step that the log
+  # line of each mutation has. 0 (the default) picks a seed at startup and
+  # logs it.
   seed: 0
-  # Stop starting mutations this long after startup, for runs of a fixed
+  # No new mutations after this time from startup, for runs of a fixed
   # length. 0s never stops.
   stopAfter: 0s
   # Convergence timeouts of kinds that take longer than
@@ -57,29 +59,30 @@ mutation:
     sentinel_image_upgrade: {perPod: 1m}
     reset: {perPod: 1m}
 
-# The chaos lane takes cluster-level actions, one at a time for every
-# instance at once, every interval plus up to jitter, picked by weight from
-# mutation.seed; it stops with mutation.stopAfter. Every mutator pauses,
-# and every instance is in a convergence window, while an action runs.
+# The chaos lane does cluster-level actions, one at a time, on all
+# instances together, every interval plus up to jitter. It picks the kind
+# by weight from mutation.seed, and stops at mutation.stopAfter. While an
+# action runs, all mutators wait and all instances are in a convergence
+# window.
 chaos:
-  # None (the default) switches the lane off.
+  # No kinds (the default) disables the lane.
   kinds:
     # Delete the operator pod.
     operator_restart: 1
-    # helm upgrade the operator to every other version in turn, and back.
+    # helm upgrade the operator to each other version in turn, and back.
     operator_upgrade: 1
     # Cordon and drain a node, hold it, uncordon it.
     node_drain: 1
   interval: 10m
   jitter: 0s
-  # Bounds each wait of an action; by default observer.convergenceTimeout.
+  # The limit of each wait of an action. Default: observer.convergenceTimeout.
   timeout: 10m
   upgrade:
     release: redis-operator
     helm: helm
-    # Added to every upgrade, which otherwise reuses the release's values.
+    # Added to each upgrade. Each upgrade also reuses the values of the release.
     set: [crds.upgradeHook.enabled=true]
-    # The chart's CRD hook Job, by default <release>-crds-upgrade.
+    # The CRD hook Job of the chart. Default: <release>-crds-upgrade.
     hookJob: redis-operator-crds-upgrade
     timeout: 10m
     # An OCI chart with its version, or a chart archive or directory
@@ -94,26 +97,26 @@ chaos:
         version: 4.2.0-rc3
         image: ghcr.io/saremox/redis-operator:4.2.0-rc3
   drain:
-    # The nodes that may be drained; never the tester's own.
+    # The nodes that a drain can pick. Never the node of the tester.
     nodeSelector: "!node-role.kubernetes.io/control-plane"
     # How long the node stays cordoned once drained.
     hold: 1m
     # Evictions a PodDisruptionBudget blocks are retried this long.
     timeout: 5m
 
-# The server versions in the rotation, by names that label the metrics,
-# each pinned to an exact patch tag. server and release, what INFO server
-# reports, default to the image's repository name and the tag up to its
-# first '-'.
+# The server versions in the rotation, by the names that label the
+# metrics, each pinned to an exact patch tag. server and release are what
+# INFO server reports. Their defaults are the repository name of the image,
+# and the tag up to its first '-'.
 versions:
   - {name: redis-7.2, image: "redis:7.2.16-alpine"}
   - {name: valkey-7.2, image: "valkey/valkey:7.2.14-alpine"}
   - {name: valkey-8, image: "valkey/valkey:8.1.10-alpine"}
-# The transition graph. expect is ok, fail or unknown; a change along an
-# edge that isn't ok is observed until it converges, for at most timeout
-# (default the kind's), or for a minute after a pod on the new version
-# couldn't load the data, and then judged. Downgrades are no edges: a
-# chain goes back by a reset.
+# The transition graph. expect is ok, fail or unknown. The tester observes
+# a change along an edge that is not ok until it converges, for a maximum
+# of timeout (default: the timeout of the kind), or for one minute after a
+# pod on the new version could not load the data. It then judges the
+# change. Downgrades are not edges: a chain goes back with a reset.
 edges:
   - {from: redis-7.2, to: valkey-7.2, expect: ok}
   - {from: redis-7.2, to: valkey-8, expect: ok}
@@ -166,8 +169,8 @@ instances:
       # - redis_replicas: spec.redis.replicas, within redisReplicas.
       # - sentinel_replicas (sentinel only): spec.sentinel.replicas, within
       #   sentinelReplicas.
-      # - redis_resources: the redis container's cpu, memory or both, within
-      #   resources.
+      # - redis_resources: the cpu, the memory or both of the redis
+      #   container, within resources.
       # - kill_master, kill_replica, kill_sentinel (sentinel only): delete
       #   one such pod; kill_master gracefully.
       # - kill_master_force: delete the master with GracePeriodSeconds=0.
@@ -185,11 +188,12 @@ instances:
         kill_replica: 1
       # At least 1.
       redisReplicas: {min: 1, max: 5}
-      # Only the requests and limits the RedisFailover already sets are
-      # changed, so the operator can resize the pods in place. cpu is in
-      # millicores and memory in Mi. A request's range must lie below its
-      # limit's, so the QoS class can't change, and a memory limit must be
-      # at least 64Mi, and with data at least twice fill.sizeMi plus 32Mi.
+      # Only the requests and limits that the RedisFailover already sets
+      # change, so the operator can resize the pods in place. cpu is in
+      # millicores and memory in Mi. The range of a request must be below
+      # the range of its limit, so the QoS class cannot change. A memory
+      # limit must be at least 64Mi. With data, it must be at least two
+      # times fill.sizeMi plus 32Mi.
       # On maxMemoryPolicy instances with data only cpu: their memory is
       # redis_memory's.
       resources:
@@ -225,22 +229,22 @@ instances:
       ledger: {}
     mutations:
       kinds:
-        # The redis container's memory limit within redisMemory (Mi), and a
-        # memory request in proportion.
+        # The memory limit of the redis container within redisMemory (Mi),
+        # and the memory request by the same ratio.
         redis_memory: 2
         # spec.redis.maxMemory.policy, to another of maxMemoryPolicies.
         maxmemory_policy: 1
         # spec.redis.maxMemory.percent within maxMemoryPercent (10-95).
         maxmemory_percent: 2
         # Write past maxmemory until rejected, keep trying for
-        # fillBurstHold, then delete the burst's keys. noeviction only.
+        # fillBurstHold, then delete the burst keys. noeviction only.
         fill_burst: 2
       redisMemory: {min: 128, max: 256}
       maxMemoryPolicies: [noeviction, volatile-lru, volatile-ttl]
       maxMemoryPercent: {min: 10, max: 95}
       fillBurstHold: 10s
   # Every client authenticates while the RedisFailover has
-  # spec.auth.secretPath, with the Secret's current password.
+  # spec.auth.secretPath, with the current password of the Secret.
   - name: op-full
     namespace: op-full
     mode: operator
@@ -252,28 +256,29 @@ instances:
       ledger: {}
     mutations:
       kinds:
-        # A new random password in the Secret spec.auth.secretPath names.
+        # A new random password in the Secret that spec.auth.secretPath names.
         password_rotate: 2
         # Set or remove spec.auth.secretPath; auth_add creates authSecret.
         auth_add: 1
         auth_remove: 1
         # Scenario C: rotate while the operator is scaled to 0, expect
         # "unable to apply the configured password", put the previous
-        # password back, expect Healthy, rotate again. It pauses every
-        # other instance's mutations.
+        # password back, expect Healthy, rotate again. The mutations of all
+        # other instances wait meanwhile.
         password_rotate_offline: 1
-  # Replicates from op-basic's master: spec.bootstrapNode.host is the
-  # ClusterIP of rfrm-op-basic. Read-only, so it has no data; it is probed
-  # through rfrs by reading what op-basic's probes write.
+  # Replicates from the master of op-basic: spec.bootstrapNode.host is the
+  # ClusterIP of rfrm-op-basic. It is read-only, so it has no data. Its
+  # rfrs probes read the key that the probes of op-basic write.
   - name: bootstrap
     namespace: bootstrap
     mode: operator
     bootstrap:
       # A configured instance with a ledger.
       source: op-basic
-      # op-basic's ledger keys read from every pod per verification.
+      # The number of op-basic ledger keys that each verification reads
+      # from each pod.
       sampleKeys: 100
-      # Verify when no mutation did for this long.
+      # Verify after this time without a verification after a mutation.
       verifyInterval: 1m
     mutations:
       # Only redis_replicas, redis_resources and kill_replica.
@@ -281,18 +286,19 @@ instances:
         redis_replicas: 1
         kill_replica: 1
       redisReplicas: {min: 1, max: 3}
-  # Made by the tester from a RedisFailover manifest next to this file,
-  # which it creates the instance from if it doesn't exist, and resets it
-  # from. Its namespace must exist.
+  # The tester makes this instance from a RedisFailover manifest next to
+  # this file, if the instance does not exist, and resets it from the
+  # manifest. Its namespace must exist.
   - name: migrate
     namespace: migrate
     mode: sentinel
     template: rf-migrate.yaml
-    # The part of the graph image_upgrade moves the instance through:
-    # starts (in turn per reset), the versions it may run, optionally only
-    # edges of some expectations, and sentinel: follow (the Sentinel image
-    # changes with the redis image), separate (sentinel_image_upgrade moves
-    # it towards the redis image's version) or empty (the template's).
+    # The part of the graph that image_upgrade moves the instance through:
+    # start (in turn for each reset), the versions that it can run,
+    # optionally only the edges of some expectations, and sentinel: follow
+    # (the Sentinel image changes with the redis image), separate
+    # (sentinel_image_upgrade moves it towards the version of the redis
+    # image) or empty (the image of the template).
     # Without a chain, version and sentinelVersion set the images.
     chain:
       start: [redis-7.2]
@@ -303,6 +309,6 @@ instances:
         # Follow an edge of the chain; at its end, reset.
         image_upgrade: 2
         sentinel_image_upgrade: 1
-        # Recreate the instance from its template on the chain's next
-        # start, its volumes and auth Secret too.
+        # Recreate the instance, its volumes and its auth Secret from its
+        # template, on the next start version of the chain.
         reset: 1

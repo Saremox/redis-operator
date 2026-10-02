@@ -48,9 +48,10 @@ type sentinelMaster struct {
 	err    error
 }
 
-// redisReplicasConverged holds once the StatefulSet runs want ready pods on
-// its update revision. Its currentRevision isn't compared: the operator's
-// StatefulSets use OnDelete, for which the controller never advances it.
+// redisReplicasConverged holds when the StatefulSet runs want ready pods on
+// its update revision. It does not compare currentRevision, because the
+// operator StatefulSets use OnDelete, and for OnDelete the controller never
+// advances currentRevision.
 func redisReplicasConverged(want int32) func(state) error {
 	return func(s state) error {
 		if err := statefulSetConverged(s.sts, want); err != nil {
@@ -126,10 +127,10 @@ func resourcesConverged(want corev1.ResourceRequirements, replicas int32) func(s
 	}
 }
 
-// memoryConverged holds once every redis pod runs the new memory and
-// maxmemory is applied. Without an allkeys-* policy, the operator may
-// instead keep maxmemory above a target below the data: then the status
-// says so and no pod shrinks.
+// memoryConverged holds when each redis pod runs the new memory and the
+// operator applied maxmemory. Without an allkeys-* policy, the operator can
+// instead keep maxmemory when the target is below the data: then the status
+// says so, and no pod shrinks.
 func memoryConverged(want corev1.ResourceRequirements, replicas int32, before map[string]int64, target int64, evicts bool) func(state) error {
 	applied := resourcesConverged(want, replicas)
 	return func(s state) error {
@@ -170,9 +171,9 @@ func maxMemoryConverged(replicas int32, changed func(*redisfailoverv1.MaxMemoryS
 	}
 }
 
-// appliedResources returns the redis container's resources as the kubelet
-// reports them, or the pod spec's when it doesn't report them and no resize
-// is in flight.
+// appliedResources returns the redis container resources that the kubelet
+// reports. If the kubelet does not report them and no resize is in progress,
+// it returns the resources of the pod spec.
 func appliedResources(p *corev1.Pod) (corev1.ResourceRequirements, error) {
 	for _, cs := range p.Status.ContainerStatuses {
 		if cs.Name == redisName && cs.Resources != nil {
@@ -286,10 +287,10 @@ func passwordAccepted(s state) error {
 	return errors.Join(errs...)
 }
 
-// authConverged holds once every redis pod accepts the new password, the
-// pods rolled onto the changed Secret, every Sentinel monitors the master
-// without trouble, and the RedisFailover is Healthy. before is the pod
-// template's secret checksum before the change.
+// authConverged holds when each redis pod accepts the new password and rolled
+// onto the changed Secret, each Sentinel monitors the master without problems,
+// and the RedisFailover is Healthy. before is the secret checksum of the pod
+// template before the change.
 func authConverged(before string, replicas int32) func(state) error {
 	return func(s state) error {
 		if err := passwordAccepted(s); err != nil {
@@ -319,8 +320,8 @@ func authConverged(before string, replicas int32) func(state) error {
 	}
 }
 
-// sentinelsMonitor holds once every Sentinel sees the master up and all its
-// replicas, which it can't without the password.
+// sentinelsMonitor holds when each Sentinel sees the master up and all its
+// replicas. A Sentinel cannot do this without the password.
 func sentinelsMonitor(s state, replicas int32) error {
 	var errs []error
 	for _, p := range s.sentinels {
