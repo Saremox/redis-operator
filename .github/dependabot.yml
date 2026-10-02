@@ -12,3 +12,7 @@ updates:
     directory: "/test/soak"
     schedule:
       interval: "daily"
+  - package-ecosystem: "docker"
+    directory: "/test/soak"
+    schedule:
+      interval: "daily"
