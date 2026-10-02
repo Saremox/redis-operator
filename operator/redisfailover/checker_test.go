@@ -514,6 +514,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 	tests := []struct {
 		name        string
 		setup       func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover)
+		masterPod   bool
 		wantErr     bool
 		wantErrIs   error
 		wantState   string
@@ -623,6 +624,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
 			},
+			masterPod:   true,
 			wantErr:     false,
 			wantState:   v1.NotHealthyState,
 			wantMessage: "master unreachable for 0s, failing over after 10s",
@@ -790,6 +792,12 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 
 			config := generateConfig()
 			mk := settledK8sServices()
+			if test.masterPod {
+				pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfr-0"}, Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: master}}
+				mk = &mK8SService.Services{}
+				mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{Items: []corev1.Pod{pod}}, nil)
+				mk.On("UpdatePodAnnotations", rf.Namespace, "rfr-0", mock.Anything).Once().Return(nil)
+			}
 			// CheckAndHeal always defers updateStatus, on every return path.
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfs := &mRFService.RedisFailoverClient{}

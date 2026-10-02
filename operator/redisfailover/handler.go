@@ -36,6 +36,9 @@ const (
 	// only exists outside the object itself, i.e. the cluster_ok metrics
 	// series (see the DeletionTimestamp branch in Handle).
 	redisFailoverFinalizer = "redisfailovers.databases.spotahome.com/finalizer"
+	// masterUnreachableAnnotation holds, on the master pod, when the operator
+	// first saw it not answering (RFC3339). failoverTimeout runs from there.
+	masterUnreachableAnnotation = "redisfailovers.databases.spotahome.com/unreachable-since"
 )
 
 var (
@@ -57,10 +60,10 @@ type RedisFailoverHandler struct {
 	// passwords holds a passwordState per namespace/name, so a changed secret
 	// can be applied with the old password.
 	passwords sync.Map
-	// masterUnreachable holds, per namespace/name, when the master was first
-	// seen not answering.
-	masterUnreachable sync.Map
-	now               func() time.Time
+	// unreachableCleared marks, per namespace/name, that no pod carries the
+	// unreachable-since annotation.
+	unreachableCleared sync.Map
+	now                func() time.Time
 	// requeue reconciles a RedisFailover again after a while.
 	requeue func(key string, after time.Duration)
 }
@@ -97,7 +100,7 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 		}
 		r.mClient.DeleteCluster(rf.Namespace, rf.Name)
 		r.passwords.Delete(passwordKey(rf))
-		r.masterUnreachable.Delete(failoverKey(rf))
+		r.unreachableCleared.Delete(failoverKey(rf))
 		remaining := slices.DeleteFunc(slices.Clone(rf.Finalizers), func(f string) bool {
 			return f == redisFailoverFinalizer
 		})
