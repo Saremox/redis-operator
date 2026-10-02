@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -39,6 +40,13 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 		r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("masterIP", masterIP).Debug("got master IP")
 	}
 	// No performed updates when nodes are syncing, still not connected, etc.
+	// The exception is an unsynced replica on a stale revision, for example on
+	// an image that cannot load the RDB of the master. It has no data to lose,
+	// and a wait for it can be infinite. Its replacement is on the update
+	// revision, so the rollout waits for it and does not replace it again.
+	ssUR := ""
+	var podNames map[string]string
+	var unsyncedStale []string
 	for _, rip := range redises {
 		if rip != masterIP {
 			ready, err := r.rfChecker.CheckRedisSlavesReady(rip, rf)
@@ -46,22 +54,53 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			if err != nil {
 				return err
 			}
-			if !ready {
+			if ready {
+				continue
+			}
+			// Without a known master, rip can be the master. While bootstrapping,
+			// rip can hold the only copy of the data. Do not replace it.
+			if masterIP == "" {
 				wait, err = r.replicaRolloutWait(rf, rip)
 				return err
 			}
+			if podNames == nil {
+				if ssUR, err = r.rfChecker.GetStatefulSetUpdateRevision(rf); err != nil {
+					return err
+				}
+				if podNames, err = r.redisPodNamesByIP(rf); err != nil {
+					return err
+				}
+			}
+			pod, ok := podNames[rip]
+			if !ok {
+				wait, err = r.replicaRolloutWait(rf, rip)
+				return err
+			}
+			revision, err := r.rfChecker.GetRedisRevisionHash(pod, rf)
+			if err != nil {
+				return err
+			}
+			if revision == ssUR {
+				wait, err = r.replicaRolloutWait(rf, rip)
+				return err
+			}
+			unsyncedStale = append(unsyncedStale, pod)
 		}
 	}
 
-	ssUR, err := r.rfChecker.GetStatefulSetUpdateRevision(rf)
-	if err != nil {
-		return err
+	if podNames == nil {
+		if ssUR, err = r.rfChecker.GetStatefulSetUpdateRevision(rf); err != nil {
+			return err
+		}
 	}
 	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("ssUR", ssUR).Debug("got StatefulSet update revision")
 
-	redisesPods, err := r.rfChecker.GetRedisesSlavesPods(rf)
-	if err != nil {
-		return err
+	redisesPods := unsyncedStale
+	if len(redisesPods) == 0 {
+		redisesPods, err = r.rfChecker.GetRedisesSlavesPods(rf)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Update stale pods with a slave role
@@ -76,6 +115,14 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			}
 			if recreate, err := r.resizeInPlace(rf, pod, ssUR); err != nil || !recreate {
 				return err
+			}
+			// A master also fails the sync check, and sentinel can promote the
+			// candidate after GetMasterIP. Read the role again before the delete.
+			if len(unsyncedStale) > 0 {
+				replicas, err := r.rfChecker.GetRedisesSlavesPods(rf)
+				if err != nil || !slices.Contains(replicas, pod) {
+					return err
+				}
 			}
 			//Delete pod and wait next round to check if the new one is synced
 			err = r.rfHealer.DeletePod(pod, rf)
@@ -147,6 +194,22 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 	}
 
 	return nil
+}
+
+// redisPodNamesByIP leaves out terminating pods, because the rollout must not
+// delete a pod two times.
+func (r *RedisFailoverHandler) redisPodNamesByIP(rf *redisfailoverv1.RedisFailover) (map[string]string, error) {
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]string{}
+	for _, pod := range pods.Items {
+		if pod.Status.PodIP != "" && pod.DeletionTimestamp == nil {
+			names[pod.Status.PodIP] = pod.Name
+		}
+	}
+	return names, nil
 }
 
 // resizeInPlace tries to move a stale pod to the update revision without
