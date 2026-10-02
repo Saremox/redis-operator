@@ -12,14 +12,15 @@
 - **mocks**: contains the mocked interfaces for testing the application.
 - **operator**: the main logic. Manages the requests from k8s and creates/updates/deletes the pieces as needed.
 - **service**: services/clients to interact with k8s and redises.
-- **vendor**: vendored packages used by the application.
+- **test**: integration tests. They need a Kubernetes cluster.
 
 ### Non-code folder structure
 
 - **charts**: helm chart to deploy the operator.
 - **docker**: Dockerfiles to generate redis-failover docker images.
+- **docs**: documentation of the controller logic and of development.
 - **example**: yaml files with spec of redis-failover.
-- **hack**: scripts to generate the redis-failover api-client.
+- **manifests**: the CRD manifest and the Kustomize overlays to deploy the operator.
 - **scripts**: scripts used to build and run the app.
 - **.githooks**: versioned git hooks (see "Generated code" below).
 
@@ -49,7 +50,11 @@ You can do the following commands with make:
   `make verify-codegen`
 - Install the pre-commit hook that runs `verify-codegen` locally (one-time per clone).
   `make install-hooks`
-- Run tests.
+- Run the unit tests in the development container.
+  `make unit-test`
+- Run the unit tests on the host. Tests that need `redis-server` skip when it is not on the PATH.
+  `make ci-unit-test`
+- Run the unit, integration and Helm chart tests. The integration tests need a cluster in `$KUBECONFIG` with the CRD applied. The chart tests need `helm`.
   `make test`
 - Build the executable file.
   `make build`
