@@ -105,8 +105,8 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 		return err
 	}
 	for i := range ssp.Items {
-		// A terminating master that is Ready still accepts writes. A new
-		// master at this time gives two writable masters.
+		// A terminating Ready master still accepts writes. Another master
+		// gives two writable masters.
 		if pod := &ssp.Items[i]; pod.DeletionTimestamp != nil && IsMasterPod(pod) && util.PodIsReady(pod) {
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("Master pod %s is stopping, waiting for it to exit before electing a master", pod.Name)
 			return nil
@@ -159,8 +159,8 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 	}
 }
 
-// masterCandidates removes terminating pods, because they stop soon. It puts
-// Ready pods first, because a Ready replica synced from the master recently.
+// masterCandidates removes terminating pods, because they stop soon. Ready
+// pods come first, because a Ready replica synced recently.
 func masterCandidates(items []v1.Pod) []v1.Pod {
 	pods := make([]v1.Pod, 0, len(items))
 	for _, pod := range items {
