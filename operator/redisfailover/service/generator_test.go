@@ -2814,7 +2814,7 @@ func TestSentinelCustomReadinessProbe(t *testing.T) {
 						Command: []string{
 							"sh",
 							"-c",
-							"redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1' && redis-cli -h $(hostname) -p 26379 sentinel ckquorum mymaster | grep -q '^OK'",
+							"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1' && $t redis-cli -h $(hostname) -p 26379 sentinel ckquorum mymaster | grep -q '^OK'",
 						},
 					},
 				},
@@ -3464,10 +3464,10 @@ func TestRedisReadinessScript(t *testing.T) {
 	}
 }
 
-// TestLivenessProbeCommands runs the default Redis and Sentinel liveness
-// commands against a fake redis-cli that answers PONG or hangs like a frozen
-// server, with and without timeout on PATH.
-func TestLivenessProbeCommands(t *testing.T) {
+// TestProbeCommands runs the default Redis and Sentinel liveness commands and
+// the Sentinel readiness command against a fake redis-cli that answers like a
+// healthy server or hangs like a frozen one, with and without timeout on PATH.
+func TestProbeCommands(t *testing.T) {
 	if _, err := exec.LookPath("timeout"); err != nil {
 		t.Skip("timeout is not installed")
 	}
@@ -3477,20 +3477,29 @@ func TestLivenessProbeCommands(t *testing.T) {
 	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Return(nil, nil)
 	ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Return(nil)
 	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
-		probes["redis"] = args.Get(1).(*appsv1.StatefulSet).Spec.Template.Spec.Containers[0].LivenessProbe
+		probes["redis liveness"] = args.Get(1).(*appsv1.StatefulSet).Spec.Template.Spec.Containers[0].LivenessProbe
 	}).Return(nil)
 	ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
-		probes["sentinel"] = args.Get(1).(*appsv1.Deployment).Spec.Template.Spec.Containers[0].LivenessProbe
+		c := args.Get(1).(*appsv1.Deployment).Spec.Template.Spec.Containers[0]
+		probes["sentinel liveness"] = c.LivenessProbe
+		probes["sentinel readiness"] = c.ReadinessProbe
 	}).Return(nil)
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	require.NoError(t, client.EnsureRedisStatefulset(generateRF(), nil, []metav1.OwnerReference{}))
 	require.NoError(t, client.EnsureSentinelDeployment(generateRF(), nil, []metav1.OwnerReference{}))
 
-	fakeCLI := "#!/bin/sh\n[ \"$FAKE_FROZEN\" = 1 ] && exec sleep 10\necho PONG\n"
+	fakeCLI := `#!/bin/sh
+[ "$FAKE_FROZEN" = 1 ] && exec sleep 10
+case "$*" in
+*get-master-addr-by-name*) printf '10.0.0.1\n6379\n' ;;
+*ckquorum*) echo "OK 3 usable Sentinels. Quorum and failover authorization can be reached" ;;
+*) echo PONG ;;
+esac
+`
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "redis-cli"), []byte(fakeCLI), 0o755))
 	bare := t.TempDir()
-	for _, tool := range []string{"sh", "grep", "hostname", "sleep"} {
+	for _, tool := range []string{"sh", "grep", "head", "hostname", "sleep"} {
 		p, err := exec.LookPath(tool)
 		require.NoError(t, err)
 		require.NoError(t, os.Symlink(p, filepath.Join(bare, tool)))
@@ -3507,7 +3516,7 @@ func TestLivenessProbeCommands(t *testing.T) {
 		{name: "frozen", path: dir + ":" + os.Getenv("PATH"), frozen: true},
 		{name: "answers, without timeout", path: bare, alive: true},
 	}
-	for _, component := range []string{"redis", "sentinel"} {
+	for _, component := range []string{"redis liveness", "sentinel liveness", "sentinel readiness"} {
 		probe := probes[component]
 		require.Equal(t, "sh", probe.Exec.Command[0])
 		for _, test := range tests {
