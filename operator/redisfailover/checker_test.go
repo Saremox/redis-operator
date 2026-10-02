@@ -2496,6 +2496,8 @@ func TestSentinelModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) {
 			switch {
 			case test.podsErr != nil:
 				assert.Equal(t, test.podsErr, err)
+				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+				assert.Equal(t, "unable to check whether the master is stopping", rf.Status.Message)
 			case test.wantElect && test.replicas > 1:
 				assert.EqualError(t, err, "stop here")
 			default:
