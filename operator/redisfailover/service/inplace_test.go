@@ -147,9 +147,9 @@ func TestResizePodInPlaceFollowsTheKubelet(t *testing.T) {
 	}
 }
 
-// The kubelet's memory usage includes the page cache, so it can refuse a
-// memory decrease that the recreated pod fits. It refuses it on every retry,
-// so the pod is recreated without waiting for the timeout.
+// The usage includes the page cache, so the kubelet can refuse a memory limit
+// that is sufficient for a recreated pod. Each retry fails, so a wait for the
+// timeout does not help.
 func TestResizePodInPlaceRecreatesForARefusedMemoryDecrease(t *testing.T) {
 	template := func(redis, exporter string) corev1.PodTemplateSpec {
 		t := podTemplate(resources("1", redis))
@@ -212,8 +212,8 @@ func TestPodMemoryLimit(t *testing.T) {
 		"an init container without limit": {pod(func(s *corev1.PodSpec) { s.InitContainers[0].Resources = corev1.ResourceRequirements{} }), 0},
 		"pod-level resources":             {pod(func(s *corev1.PodSpec) { s.Resources = &corev1.ResourceRequirements{} }), 0},
 		"overhead":                        {pod(func(s *corev1.PodSpec) { s.Overhead = memory("10Mi").Limits }), 1098 * mi},
-		// The init container runs next to the sidecar: 1Gi + 64Mi + 256Mi
-		// against 256Mi + 1Gi.
+		// The init container runs at the same time as the sidecar:
+		// max(1Gi + 64Mi + 256Mi, 256Mi + 1Gi).
 		"a native sidecar": {pod(func(s *corev1.PodSpec) {
 			s.InitContainers = append([]corev1.Container{{Name: "sidecar", RestartPolicy: &always, Resources: memory("256Mi")}}, s.InitContainers[0])
 			s.InitContainers[1].Resources = memory("1Gi")
@@ -226,8 +226,8 @@ func TestPodMemoryLimit(t *testing.T) {
 	}
 }
 
-// A refusal left from a superseded request, e.g. for a lower limit, waits for
-// the kubelet to report on the current one.
+// A refusal from a superseded request does not apply to the current request,
+// so the operator waits for a new report from the kubelet.
 func TestResizePodInPlaceIgnoresAStaleMemoryRefusal(t *testing.T) {
 	old, new := resources("1", "2Gi"), resources("1", "1Gi")
 	refusal := func(generation int64, age time.Duration) corev1.PodCondition {
