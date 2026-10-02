@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -36,6 +37,11 @@ type ResizeResult struct {
 // inPlaceResizeTimeout bounds how long a deferred or failing resize is waited
 // for before the pod is recreated instead.
 var inPlaceResizeTimeout = 5 * time.Minute
+
+// memoryBelowUsage is the text that the kubelet error
+// (validateMemoryResizeAction) contains for a refused pod limit and for a
+// refused container limit.
+const memoryBelowUsage = "below current usage"
 
 var resizableResources = []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory}
 
@@ -110,9 +116,10 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 		return waiting("resize of pod %s deferred: %s", podName, c.Message)
 	}
 	if c := podCondition(pod, corev1.PodResizeInProgress); c != nil {
-		// E.g. a memory limit below the usage the kubelet sees, which counts
-		// the page cache.
-		if c.Reason == corev1.PodReasonError && sinceLatest(c.LastTransitionTime.Time) > inPlaceResizeTimeout {
+		// The usage includes the page cache, so the kubelet refuses a memory
+		// limit below the usage again on each retry. Only the message
+		// identifies this error.
+		if c.Reason == corev1.PodReasonError && (refusesDesiredMemory(pod, c, desired) || sinceLatest(c.LastTransitionTime.Time) > inPlaceResizeTimeout) {
 			return recreate("resize failed: " + c.Message)
 		}
 		return waiting("resize of pod %s in progress", podName)
@@ -138,6 +145,66 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 	}
 	logger.Infof("Resized the pod in place")
 	return ResizeResult{Action: ResizeDone}, nil
+}
+
+// refusesDesiredMemory reports whether c refuses a desired memory limit as
+// below the usage. A condition without an observed generation can be from a
+// superseded request, so the refused limit must be a desired limit.
+func refusesDesiredMemory(pod *corev1.Pod, c *corev1.PodCondition, desired map[string]corev1.ResourceRequirements) bool {
+	if !strings.Contains(c.Message, memoryBelowUsage) {
+		return false
+	}
+	if c.ObservedGeneration != 0 {
+		return true
+	}
+	for name, d := range desired {
+		if q, ok := d.Limits[corev1.ResourceMemory]; ok && strings.Contains(c.Message, fmt.Sprintf("container %q memory limit (%d) below", name, q.Value())) {
+			return true
+		}
+	}
+	limit := podMemoryLimit(pod, desired)
+	return limit != 0 && strings.Contains(c.Message, fmt.Sprintf("pod memory limit (%d) below", limit))
+}
+
+// podMemoryLimit returns the pod memory limit for the desired container
+// limits, or 0 for pod-level resources or a container without a memory limit.
+// It copies PodLimits (k8s.io/component-helpers), because the result must
+// equal the number in the kubelet message.
+func podMemoryLimit(pod *corev1.Pod, desired map[string]corev1.ResourceRequirements) int64 {
+	if pod.Spec.Resources != nil {
+		return 0
+	}
+	limit := func(c corev1.Container) int64 {
+		r := c.Resources
+		if d, ok := desired[c.Name]; ok {
+			r = d
+		}
+		return r.Limits.Memory().Value()
+	}
+	var total, sidecars, init int64
+	for _, c := range pod.Spec.Containers {
+		l := limit(c)
+		if l == 0 {
+			return 0
+		}
+		total += l
+	}
+	// An init container runs at the same time as the native sidecars before it.
+	for _, c := range pod.Spec.InitContainers {
+		l := limit(c)
+		if c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways {
+			total += l
+			sidecars += l
+			l = sidecars
+		} else {
+			l += sidecars
+		}
+		if l == 0 {
+			return 0
+		}
+		init = max(init, l)
+	}
+	return max(total, init) + pod.Spec.Overhead.Memory().Value()
 }
 
 func (r *RedisFailoverHealer) markResizeRequested(rf *redisfailoverv1.RedisFailover, podName string) error {
