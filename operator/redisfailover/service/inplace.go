@@ -157,16 +157,53 @@ func refusesDesiredMemory(pod *corev1.Pod, c *corev1.PodCondition, desired map[s
 	if c.ObservedGeneration != 0 {
 		return true
 	}
-	limit := func(name string) int64 {
-		l := desired[name].Limits
-		return l.Memory().Value()
+	for name, d := range desired {
+		if q, ok := d.Limits[corev1.ResourceMemory]; ok && strings.Contains(c.Message, fmt.Sprintf("container %q memory limit (%d) below", name, q.Value())) {
+			return true
+		}
 	}
-	var total int64
-	for _, ctr := range pod.Spec.Containers {
-		total += limit(ctr.Name)
+	limit := podMemoryLimit(pod, desired)
+	return limit != 0 && strings.Contains(c.Message, fmt.Sprintf("pod memory limit (%d) below", limit))
+}
+
+// podMemoryLimit is the pod's memory limit as the kubelet derives it
+// (PodLimits in k8s.io/component-helpers) once the desired container limits
+// apply, or 0 when the pod has none or sets it at the pod level.
+func podMemoryLimit(pod *corev1.Pod, desired map[string]corev1.ResourceRequirements) int64 {
+	if pod.Spec.Resources != nil {
+		return 0
 	}
-	return strings.Contains(c.Message, fmt.Sprintf("pod memory limit (%d) below", total)) ||
-		strings.Contains(c.Message, fmt.Sprintf("container %q memory limit (%d) below", redisContainerName, limit(redisContainerName)))
+	limit := func(c corev1.Container) int64 {
+		r := c.Resources
+		if d, ok := desired[c.Name]; ok {
+			r = d
+		}
+		return r.Limits.Memory().Value()
+	}
+	var total, sidecars, init int64
+	for _, c := range pod.Spec.Containers {
+		l := limit(c)
+		if l == 0 {
+			return 0
+		}
+		total += l
+	}
+	// An init container runs next to the sidecars started before it.
+	for _, c := range pod.Spec.InitContainers {
+		l := limit(c)
+		if c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways {
+			total += l
+			sidecars += l
+			l = sidecars
+		} else {
+			l += sidecars
+		}
+		if l == 0 {
+			return 0
+		}
+		init = max(init, l)
+	}
+	return max(total, init) + pod.Spec.Overhead.Memory().Value()
 }
 
 func (r *RedisFailoverHealer) markResizeRequested(rf *redisfailoverv1.RedisFailover, podName string) error {

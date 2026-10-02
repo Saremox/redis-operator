@@ -151,17 +151,78 @@ func TestResizePodInPlaceFollowsTheKubelet(t *testing.T) {
 // memory decrease that the recreated pod fits. It refuses it on every retry,
 // so the pod is recreated without waiting for the timeout.
 func TestResizePodInPlaceRecreatesForARefusedMemoryDecrease(t *testing.T) {
-	old, new := resources("1", "2Gi"), resources("1", "1Gi")
-	for _, message := range []string{
-		"cannot decrease memory limits: attempting to set pod memory limit (1073741824) below current usage (1181116006)",
-		`cannot decrease memory limits: attempting to set container "redis" memory limit (1073741824) below current usage (1181116006)`,
-	} {
-		c := condition(corev1.PodResizeInProgress, corev1.PodReasonError, 0)
-		c.Message = message
-		result, _, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), stalePod(new, old, c)}, nil)
-		assert.NoError(t, err)
-		assert.Equal(t, ResizeRecreate, result.Action)
-		assert.Equal(t, "resize failed: "+message, result.Message)
+	template := func(redis, exporter string) corev1.PodTemplateSpec {
+		t := podTemplate(resources("1", redis))
+		t.Spec.Containers[1].Resources = corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse(exporter)}}
+		return t
+	}
+	old, new := template("2Gi", "128Mi"), template("1Gi", "64Mi")
+	withSidecar := func(pod *corev1.Pod) *corev1.Pod {
+		pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{Name: "istio-proxy", Resources: withDefaultRequests(resources("100m", "256Mi"))})
+		return pod
+	}
+	tests := map[string]struct {
+		pod     *corev1.Pod
+		message string
+	}{
+		"redis":    {podFrom(new), `cannot decrease memory limits: attempting to set container "redis" memory limit (1073741824) below current usage (1181116006)`},
+		"exporter": {podFrom(new), `cannot decrease memory limits: attempting to set container "exporter" memory limit (67108864) below current usage (70000000)`},
+		// 1Gi + 64Mi
+		"pod": {podFrom(new), "cannot decrease memory limits: attempting to set pod memory limit (1140850688) below current usage (1181116006)"},
+		// 1Gi + 64Mi + 256Mi
+		"pod with an injected sidecar": {withSidecar(podFrom(new)), "cannot decrease memory limits: attempting to set pod memory limit (1409286144) below current usage (1500000000)"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			c := condition(corev1.PodResizeInProgress, corev1.PodReasonError, 0)
+			c.Message = test.message
+			test.pod.Status.Conditions = []corev1.PodCondition{c}
+			result, _, err := runResize(t, resizeCase{fullSupport, old, new, test.pod}, nil)
+			assert.NoError(t, err)
+			assert.Equal(t, ResizeRecreate, result.Action)
+			assert.Equal(t, "resize failed: "+test.message, result.Message)
+		})
+	}
+}
+
+func TestPodMemoryLimit(t *testing.T) {
+	memory := func(size string) corev1.ResourceRequirements {
+		return corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse(size)}}
+	}
+	always := corev1.ContainerRestartPolicyAlways
+	pod := func(change func(*corev1.PodSpec)) *corev1.Pod {
+		p := &corev1.Pod{Spec: corev1.PodSpec{
+			Containers:     []corev1.Container{{Name: redisContainerName, Resources: memory("2Gi")}, {Name: "exporter", Resources: memory("64Mi")}},
+			InitContainers: []corev1.Container{{Name: "init", Resources: memory("32Mi")}},
+		}}
+		if change != nil {
+			change(&p.Spec)
+		}
+		return p
+	}
+	desired := map[string]corev1.ResourceRequirements{redisContainerName: memory("1Gi"), "exporter": memory("64Mi")}
+	mi := int64(1 << 20)
+	tests := map[string]struct {
+		pod  *corev1.Pod
+		want int64
+	}{
+		"containers":                      {pod(nil), 1088 * mi},
+		"a larger init container":         {pod(func(s *corev1.PodSpec) { s.InitContainers[0].Resources = memory("2Gi") }), 2048 * mi},
+		"a container without limit":       {pod(func(s *corev1.PodSpec) { s.Containers = append(s.Containers, corev1.Container{Name: "sidecar"}) }), 0},
+		"an init container without limit": {pod(func(s *corev1.PodSpec) { s.InitContainers[0].Resources = corev1.ResourceRequirements{} }), 0},
+		"pod-level resources":             {pod(func(s *corev1.PodSpec) { s.Resources = &corev1.ResourceRequirements{} }), 0},
+		"overhead":                        {pod(func(s *corev1.PodSpec) { s.Overhead = memory("10Mi").Limits }), 1098 * mi},
+		// The init container runs next to the sidecar: 1Gi + 64Mi + 256Mi
+		// against 256Mi + 1Gi.
+		"a native sidecar": {pod(func(s *corev1.PodSpec) {
+			s.InitContainers = append([]corev1.Container{{Name: "sidecar", RestartPolicy: &always, Resources: memory("256Mi")}}, s.InitContainers[0])
+			s.InitContainers[1].Resources = memory("1Gi")
+		}), 1344 * mi},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, test.want, podMemoryLimit(test.pod, desired))
+		})
 	}
 }
 
