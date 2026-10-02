@@ -1999,6 +1999,7 @@ func TestUpdate(t *testing.T) {
 					mrfc.On("CheckRedisSlavesReady", pod.pod.Status.PodIP, rf).Once().Return(pod.ready, nil)
 				}
 				if !pod.ready {
+					mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return(test.ssVersion, nil)
 					next = false
 					break
 				}
