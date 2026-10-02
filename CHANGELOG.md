@@ -10,6 +10,7 @@ Changes on `main` after 4.2.0-rc2.
 - Re-apply the CRD and upgrade the operator at the same time. Helm does not update the CRD on `helm upgrade` unless `crds.upgradeHook.enabled` is true.
 - The CRD enables the `status` subresource (#207). An older operator loses its status writes against the new CRD. The new operator fails its status writes against the old CRD.
 - The CRD has the schema of k8s.io/api 0.37 (#208). With the old CRD, the API server removes fields such as `httpGet.protocol`, `grpc.mode` and `volumeMounts[].bindMountOptions`.
+- A RedisFailover with a custom pod `securityContext` and no `seccompProfile` now gets the `RuntimeDefault` seccomp profile. Its redis and sentinel pods restart one time (#230).
 - The operator needs `get` and `patch` on `redisfailovers/status` (#207). The chart, the kustomize and the example ClusterRoles grant them. Add them to a ClusterRole that you maintain yourself.
 
 ### Changes
@@ -25,6 +26,7 @@ Changes on `main` after 4.2.0-rc2.
 - Document that a migration to Valkey must start from Redis 7.2. Valkey cannot load the RDB format of Redis 7.4 and later (#202).
 - Pin the base images of the operator image by digest (#221).
 - Build the operator image with Go 1.27 (#222).
+- Keep the default `RuntimeDefault` seccomp profile when a custom pod `securityContext` does not set one (#230).
 
 ## [v1.1.0-rc.3] - 2022-01-19
 ### Changes
