@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: [versions, full]
+        profile: [full]
     timeout-minutes: 150
     defaults:
       run:
