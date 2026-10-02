@@ -314,6 +314,10 @@ func (r *RedisFailoverHandler) unreachableMasterPod(rf *redisfailoverv1.RedisFai
 	})
 }
 
+// masterPodLookupFailed is the status message when the pods can't be listed
+// to find the master pod that doesn't answer.
+const masterPodLookupFailed = "unable to look up the master pod"
+
 func failoverKey(rf *redisfailoverv1.RedisFailover) string {
 	return rf.Namespace + "/" + rf.Name
 }
@@ -332,12 +336,21 @@ func (r *RedisFailoverHandler) masterUnreachableSince(rf *redisfailoverv1.RedisF
 
 // clearMasterUnreachable removes the unreachable-since annotation once the
 // master answers or was replaced. After an operator restart, any pod may
-// still carry one.
-func (r *RedisFailoverHandler) clearMasterUnreachable(rf *redisfailoverv1.RedisFailover) error {
+// still carry one. The master is fine by then, so a failure doesn't make the
+// RedisFailover unhealthy: it is logged, and the next reconcile tries again.
+func (r *RedisFailoverHandler) clearMasterUnreachable(rf *redisfailoverv1.RedisFailover) {
 	key := failoverKey(rf)
 	if _, cleared := r.unreachableCleared.Load(key); cleared {
-		return nil
+		return
 	}
+	if err := r.clearUnreachableAnnotations(rf); err != nil {
+		r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).Warningf("unable to clear the unreachable-since annotation, retrying on the next reconcile: %v", err)
+		return
+	}
+	r.unreachableCleared.Store(key, true)
+}
+
+func (r *RedisFailoverHandler) clearUnreachableAnnotations(rf *redisfailoverv1.RedisFailover) error {
 	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
 	if err != nil {
 		return err
@@ -351,7 +364,6 @@ func (r *RedisFailoverHandler) clearMasterUnreachable(rf *redisfailoverv1.RedisF
 			return err
 		}
 	}
-	r.unreachableCleared.Store(key, true)
 	return nil
 }
 
@@ -360,6 +372,10 @@ func (r *RedisFailoverHandler) clearMasterUnreachable(rf *redisfailoverv1.RedisF
 func (r *RedisFailoverHandler) waitForFailover(rf *redisfailoverv1.RedisFailover, pod *corev1.Pod) (bool, error) {
 	since, err := r.masterUnreachableSince(rf, pod)
 	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to record when the master became unreachable",
+		}
 		return false, err
 	}
 	unreachable := r.now().Sub(since)
@@ -763,6 +779,10 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		// to come back. Without one, there is nothing to wait for.
 		pod, err := r.unreachableMasterPod(rf)
 		if err != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: masterPodLookupFailed,
+			}
 			return err
 		}
 		if pod != nil {
@@ -805,7 +825,8 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 				return err
 			}
 		}
-		return r.clearMasterUnreachable(rf)
+		r.clearMasterUnreachable(rf)
+		return nil
 
 	case 1:
 		// Exactly one master - check its health
@@ -841,6 +862,10 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 			if masterIP != "" {
 				pod, err := r.findRedisPod(rf, func(pod *corev1.Pod) bool { return pod.Status.PodIP == masterIP })
 				if err != nil {
+					rf.Status = redisfailoverv1.RedisFailoverStatus{
+						State:   redisfailoverv1.NotHealthyState,
+						Message: masterPodLookupFailed,
+					}
 					return err
 				}
 				if pod != nil {
@@ -874,11 +899,10 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 				}
 				return err
 			}
-			return r.clearMasterUnreachable(rf)
+			r.clearMasterUnreachable(rf)
+			return nil
 		}
-		if err := r.clearMasterUnreachable(rf); err != nil {
-			return err
-		}
+		r.clearMasterUnreachable(rf)
 
 		master = masterIP
 

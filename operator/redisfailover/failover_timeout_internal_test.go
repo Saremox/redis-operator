@@ -319,17 +319,41 @@ func TestOperatorManagedModeElectsAtOnceWithoutAnUnreachableMasterPod(t *testing
 	}
 }
 
+// healthyMasterReconcile runs a full reconcile at the given offset that finds
+// the master answering and has nothing else to do.
+func (ft *failoverTimeoutTest) healthyMasterReconcile(at time.Duration) error {
+	ft.now = ft.now.Add(at)
+	ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
+	ft.checker.On("GetNumberMasters", ft.rf).Once().Return(1, nil)
+	ft.checker.On("CheckMasterHealth", ft.rf).Once().Return(true, timeoutMaster, nil)
+	ft.checker.On("CheckAllSlavesFromMaster", timeoutMaster, ft.rf).Once().Return(nil)
+	ft.checker.On("GetRedisesIPs", ft.rf).Twice().Return([]string{timeoutMaster}, nil)
+	ft.healer.On("SetRedisCustomConfig", timeoutMaster, ft.rf).Once().Return(nil)
+	ft.checker.On("GetMasterIP", ft.rf).Once().Return(timeoutMaster, nil)
+	ft.checker.On("GetStatefulSetUpdateRevision", ft.rf).Once().Return("1", nil)
+	ft.checker.On("GetRedisesSlavesPods", ft.rf).Once().Return([]string{}, nil)
+	ft.checker.On("GetRedisesMasterPod", ft.rf).Once().Return(timeoutMaster, nil)
+	ft.checker.On("GetRedisRevisionHash", timeoutMaster, ft.rf).Once().Return("1", nil)
+	return ft.handler.CheckAndHeal(ft.rf)
+}
+
 func TestOperatorManagedModeFailoverTimeoutErrors(t *testing.T) {
 	apiErr := errors.New("api err")
+	assertNotHealthy := func(t *testing.T, ft *failoverTimeoutTest, err error, message string) {
+		t.Helper()
+		assert.ErrorIs(t, err, apiErr)
+		assert.Equal(t, redisfailoverv1.NotHealthyState, ft.rf.Status.State)
+		assert.Equal(t, message, ft.rf.Status.Message)
+	}
 
-	t.Run("listing pods for the unreachable master", func(t *testing.T) {
+	t.Run("looking up the pod of a master that doesn't answer", func(t *testing.T) {
 		ft := newFailoverTimeoutTest(nil)
 		ft.listErr = apiErr
-		assert.ErrorIs(t, ft.unhealthyMaster(0, false), apiErr)
+		assertNotHealthy(t, ft, ft.unhealthyMaster(0, false), "unable to look up the master pod")
 		ft.assertExpectations(t)
 	})
 
-	t.Run("listing pods for a not ready master", func(t *testing.T) {
+	t.Run("looking up a not ready master pod", func(t *testing.T) {
 		ft := newFailoverTimeoutTest(nil)
 		// masterPodStopping lists first; the second listing fails.
 		ft.k8s = &mK8SService.Services{}
@@ -339,7 +363,7 @@ func TestOperatorManagedModeFailoverTimeoutErrors(t *testing.T) {
 		ft.restart()
 		ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
 		ft.checker.On("GetNumberMasters", ft.rf).Once().Return(0, nil)
-		assert.ErrorIs(t, ft.handler.CheckAndHeal(ft.rf), apiErr)
+		assertNotHealthy(t, ft, ft.handler.CheckAndHeal(ft.rf), "unable to look up the master pod")
 		ft.assertExpectations(t)
 		ft.k8s.AssertExpectations(t)
 	})
@@ -347,27 +371,53 @@ func TestOperatorManagedModeFailoverTimeoutErrors(t *testing.T) {
 	t.Run("recording the unreachable master", func(t *testing.T) {
 		ft := newFailoverTimeoutTest(nil)
 		ft.patchErr = apiErr
-		assert.ErrorIs(t, ft.unhealthyMaster(0, false), apiErr)
+		assertNotHealthy(t, ft, ft.unhealthyMaster(0, false), "unable to record when the master became unreachable")
 		assert.Empty(t, ft.requeues)
 		ft.assertExpectations(t)
 	})
 
-	t.Run("listing pods to clear the annotation", func(t *testing.T) {
+	// The master is fine again, so a failed clear is only retried.
+	t.Run("clearing once the master answers", func(t *testing.T) {
 		ft := newFailoverTimeoutTest(nil)
-		ft.listErr = apiErr
-		ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
-		ft.checker.On("GetNumberMasters", ft.rf).Once().Return(1, nil)
-		ft.checker.On("CheckMasterHealth", ft.rf).Once().Return(true, timeoutMaster, nil)
-		assert.ErrorIs(t, ft.handler.CheckAndHeal(ft.rf), apiErr)
+		assert.NoError(t, ft.unhealthyMaster(0, false))
+
+		ft.patchErr = apiErr
+		assert.NoError(t, ft.healthyMasterReconcile(5*time.Second))
+		assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
+		assert.NotEmpty(t, ft.unreachableSince())
+
+		ft.patchErr = nil
+		assert.NoError(t, ft.healthyMasterReconcile(time.Second))
+		assert.Empty(t, ft.unreachableSince(), "cleared on the next reconcile")
 		ft.assertExpectations(t)
 	})
 
-	t.Run("clearing the annotation", func(t *testing.T) {
+	t.Run("listing pods to clear once the master answers", func(t *testing.T) {
+		ft := newFailoverTimeoutTest(nil)
+		ft.pods[0].Annotations[masterUnreachableAnnotation] = "2026-10-01T12:00:00Z"
+
+		ft.listErr = apiErr
+		assert.NoError(t, ft.healthyMasterReconcile(0))
+		assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
+
+		ft.listErr = nil
+		assert.NoError(t, ft.healthyMasterReconcile(time.Second))
+		assert.Empty(t, ft.unreachableSince(), "cleared on the next reconcile")
+		ft.assertExpectations(t)
+	})
+
+	t.Run("clearing after a failover", func(t *testing.T) {
 		ft := newFailoverTimeoutTest(nil)
 		assert.NoError(t, ft.unhealthyMaster(0, false))
+
 		ft.patchErr = apiErr
-		assert.ErrorIs(t, ft.unhealthyMaster(10*time.Second, true), apiErr)
-		assert.NotEmpty(t, ft.unreachableSince(), "cleared on a later reconcile")
+		assert.NoError(t, ft.unhealthyMaster(10*time.Second, true))
+		assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
+		assert.NotEmpty(t, ft.unreachableSince())
+
+		ft.patchErr = nil
+		assert.NoError(t, ft.healthyMasterReconcile(time.Second))
+		assert.Empty(t, ft.unreachableSince(), "cleared on the next reconcile")
 		ft.assertExpectations(t)
 	})
 }
