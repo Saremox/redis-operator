@@ -160,7 +160,7 @@ to every redis pod by its IP, and asks every Sentinel pod for
 `observer.replicaReadyWithoutData` is `false`: it is then still evaluated,
 exported as `invariant_ok` and logged, but never a finding, nor in the way
 of a quiet instance. The operator's readiness probe passes such a replica
-until `claude/fix-readiness-link-down` lands, e.g. a Valkey replica that
+until PR #205 (`claude/fix-readiness-link-down`) lands, e.g. a Valkey replica that
 can't read a Redis 7.4 or 8 RDB, so the versions profile switches it off.
 
 The mode the invariants follow is the RedisFailover's `sentinel.enabled`
@@ -805,17 +805,17 @@ drains of pods on volumes), and a follower `auth` outage over 2m.
 ## Known operator issues
 
 The tester found these in 4.2.0-rc2 and current `main`; each has a fix
-branch, with a pull request where one is open:
+branch and an open pull request:
 
 | Issue | Seen as | Fix |
 |---|---|---|
 | A graceful master rollover in operator mode can promote the restarted old master (the same pod, a new UID) instead of a Ready replica: `GetBestReplicaForPromotion` falls back to the highest offset without checking readiness. | Outages of 40-46s on `rfrm`; `failover` from a pod to itself. | PR #203, `claude/fix-promote-ready-replica` |
-| A replica that never completed a sync is Ready (`ready.sh` only fails a full sync in progress), e.g. a Valkey replica that can't read a Redis 7.4/8 RDB: `rfrs` serves empty reads. | `replica_ready_without_data`. | `claude/fix-readiness-link-down` |
-| A scale-down that removes the master in operator mode promotes a replica while the old master still takes writes (case 1 of `checkAndHealOperatorManagedMode` skips `masterPodStopping`). | Writes lost by `redis_replicas` on volumes. | `claude/fix-scale-down-master-race` |
-| Lowering a memory limit below the page cache in use: the kubelet refuses the in-place resize, and the operator waits 5m per pod before recreating it. | `redis_memory` taking over 18m on 3 pods. | `claude/fix-resize-below-usage` |
-| A changed password applies only at the next resync (30s), as nothing watches the auth Secret. | `follower` `auth` outages of up to 30s. | `claude/watch-auth-secret` |
-| The CRD has no status subresource: every status update bumps `metadata.generation`. | A window opened by every status change. | `claude/crd-status-subresource` |
-| A rollout that can never continue, e.g. onto a server that can't load the data, stays `Healthy` with an empty message. | Stuck `unknown` edges reported only by the tester. | `claude/report-stalled-rollout` |
+| A replica that never completed a sync is Ready (`ready.sh` only fails a full sync in progress), e.g. a Valkey replica that can't read a Redis 7.4/8 RDB: `rfrs` serves empty reads. | `replica_ready_without_data`. | PR #205, `claude/fix-readiness-link-down` |
+| A scale-down that removes the master in operator mode promotes a replica while the old master still takes writes (case 1 of `checkAndHealOperatorManagedMode` skips `masterPodStopping`). | Writes lost by `redis_replicas` on volumes. | PR #210, `claude/fix-scale-down-master-race` |
+| Lowering a memory limit below the page cache in use: the kubelet refuses the in-place resize, and the operator waits 5m per pod before recreating it. | `redis_memory` taking over 18m on 3 pods. | PR #204, `claude/fix-resize-below-usage` |
+| A changed password applies only at the next resync (30s), as nothing watches the auth Secret. | `follower` `auth` outages of up to 30s. | PR #212, `claude/watch-auth-secret` |
+| The CRD has no status subresource: every status update bumps `metadata.generation`. | A window opened by every status change. | PR #207, `claude/crd-status-subresource` |
+| A rollout that can never continue, e.g. onto a server that can't load the data, stays `Healthy` with an empty message. | Stuck `unknown` edges reported only by the tester. | PR #206, `claude/report-stalled-rollout` |
 | Before PR #195 (in 4.2.0-rc2), the chart's CRD hook can't install: its ConfigMap holds the 1.09MB CRD YAML. | Every `helm upgrade` to 4.2.0-rc1 with `crds.upgradeHook.enabled` fails. | PR #195, merged |
 
 ## Configuration
