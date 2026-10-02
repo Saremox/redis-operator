@@ -145,6 +145,22 @@ func TestOperatorManagedModeFailoverTimeoutRestartsWhenTheMasterAnswers(t *testi
 	ft.healer.AssertExpectations(t)
 }
 
+// A health check that finds no master at all doesn't wait: the counted
+// master may have restarted or become a replica since.
+func TestOperatorManagedModeNoMasterFoundByHealthCheckFailsOverAtOnce(t *testing.T) {
+	ft := newFailoverTimeoutTest(nil)
+	ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
+	ft.checker.On("GetNumberMasters", ft.rf).Once().Return(1, nil)
+	ft.checker.On("CheckMasterHealth", ft.rf).Once().Return(false, "", nil)
+	ft.expectPromotion()
+
+	assert.NoError(t, ft.handler.CheckAndHeal(ft.rf))
+	assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
+	assert.Empty(t, ft.requeues)
+	ft.checker.AssertExpectations(t)
+	ft.healer.AssertExpectations(t)
+}
+
 func timeoutRedisPod(master, ready bool) corev1.Pod {
 	pod := corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"redisfailovers-role": "slave"}},

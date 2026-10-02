@@ -676,8 +676,9 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		}
 
 		if !healthy {
-			// The master answered just now, so its pod is there.
-			if r.waitForFailover(rf) {
+			// A master that was found but doesn't answer gets the timeout.
+			// With none found it may be gone, so the election isn't delayed.
+			if masterIP != "" && r.waitForFailover(rf) {
 				return nil
 			}
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
