@@ -9,6 +9,7 @@ import (
 
 	"github.com/saremox/redis-operator/service/k8s"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -200,6 +201,49 @@ func (r *RedisFailoverHandler) masterPodStopping(rf *redisfailoverv1.RedisFailov
 		}
 	}
 	return false, nil
+}
+
+// masterPodUnreachable reports whether a pod labelled master is running but
+// not ready. With no master found, it didn't answer as master either.
+func (r *RedisFailoverHandler) masterPodUnreachable(rf *redisfailoverv1.RedisFailover) (bool, error) {
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return false, err
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if rfservice.IsMasterPod(pod) && pod.Status.Phase == corev1.PodRunning && pod.DeletionTimestamp == nil && !util.PodIsReady(pod) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func failoverKey(rf *redisfailoverv1.RedisFailover) string {
+	return rf.Namespace + "/" + rf.Name
+}
+
+// waitForFailover reports whether a master that doesn't answer gets more
+// time, because it hasn't been unreachable for failoverTimeout yet.
+func (r *RedisFailoverHandler) waitForFailover(rf *redisfailoverv1.RedisFailover) bool {
+	now := r.now()
+	since, _ := r.masterUnreachable.LoadOrStore(failoverKey(rf), now)
+	unreachable := now.Sub(since.(time.Time))
+	timeout := rf.GetFailoverTimeoutDuration()
+	if unreachable >= timeout {
+		return false
+	}
+	msg := fmt.Sprintf("master unreachable for %s, failing over after %s", unreachable.Truncate(time.Second), timeout)
+	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).Info(msg)
+	rf.Status = redisfailoverv1.RedisFailoverStatus{
+		State:   redisfailoverv1.NotHealthyState,
+		Message: msg,
+	}
+	// No pod event may come before the timeout runs out.
+	if r.requeue != nil {
+		r.requeue(failoverKey(rf), timeout-unreachable)
+	}
+	return true
 }
 
 // passwordState is the password the Redis pods and the Sentinels were last
@@ -550,6 +594,11 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 
 	nMasters, err := r.rfChecker.GetNumberMasters(rf)
 	if err != nil {
+		// The master may be a ready pod that doesn't answer. Its
+		// failoverTimeout runs from now, while no one is promoted over it.
+		if errors.Is(err, rfservice.ErrRedisNotAnswering) {
+			r.masterUnreachable.LoadOrStore(failoverKey(rf), r.now())
+		}
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: "unable to get number of masters",
@@ -565,6 +614,15 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		// doesn't lose them.
 		if stopping, err := r.masterPodStopping(rf); err != nil || stopping {
 			return err
+		}
+		// A master pod that is there but doesn't answer gets failoverTimeout
+		// to come back. Without one, there is nothing to wait for.
+		unreachable, err := r.masterPodUnreachable(rf)
+		if err != nil {
+			return err
+		}
+		if unreachable && r.waitForFailover(rf) {
+			return nil
 		}
 		// No master available - elect one
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no masters detected"))
@@ -601,6 +659,7 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 				return err
 			}
 		}
+		r.masterUnreachable.Delete(failoverKey(rf))
 		return nil
 
 	case 1:
@@ -617,6 +676,10 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		}
 
 		if !healthy {
+			// The master answered just now, so its pod is there.
+			if r.waitForFailover(rf) {
+				return nil
+			}
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
 				Warningf("Master %s is unhealthy, initiating failover", masterIP)
 
@@ -642,8 +705,10 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 				}
 				return err
 			}
+			r.masterUnreachable.Delete(failoverKey(rf))
 			return nil
 		}
+		r.masterUnreachable.Delete(failoverKey(rf))
 
 		master = masterIP
 

@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"sync"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -56,6 +57,12 @@ type RedisFailoverHandler struct {
 	// passwords holds a passwordState per namespace/name, so a changed secret
 	// can be applied with the old password.
 	passwords sync.Map
+	// masterUnreachable holds, per namespace/name, when the master was first
+	// seen not answering.
+	masterUnreachable sync.Map
+	now               func() time.Time
+	// requeue reconciles a RedisFailover again after a while.
+	requeue func(key string, after time.Duration)
 }
 
 // NewRedisFailoverHandler returns a new RF handler
@@ -68,6 +75,7 @@ func NewRedisFailoverHandler(config Config, rfService rfservice.RedisFailoverCli
 		mClient:    mClient,
 		k8sservice: k8sservice,
 		logger:     logger,
+		now:        time.Now,
 	}
 }
 
@@ -89,6 +97,7 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 		}
 		r.mClient.DeleteCluster(rf.Namespace, rf.Name)
 		r.passwords.Delete(passwordKey(rf))
+		r.masterUnreachable.Delete(failoverKey(rf))
 		remaining := slices.DeleteFunc(slices.Clone(rf.Finalizers), func(f string) bool {
 			return f == redisFailoverFinalizer
 		})

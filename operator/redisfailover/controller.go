@@ -164,6 +164,11 @@ func (c *rfController) enqueue(key string) {
 	c.queue.Add(key)
 }
 
+// enqueueAfter queues key once d has passed.
+func (c *rfController) enqueueAfter(key string, d time.Duration) {
+	time.AfterFunc(d, func() { c.enqueue(key) })
+}
+
 // Run satisfies Controller.
 func (c *rfController) Run(ctx context.Context) error {
 	if c.leRunner == nil {
