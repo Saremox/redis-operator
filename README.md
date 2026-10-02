@@ -54,6 +54,8 @@ kubectl replace -f https://raw.githubusercontent.com/Saremox/redis-operator/${RE
 ```
 helm upgrade redis-operator redis-operator/redis-operator
 ```
+
+The CRD enables the `status` subresource, so status updates no longer bump an RF's `metadata.generation`. When upgrading from a release without it, update the CRD and the operator together (with Helm, kubectl or kustomize): an older operator's status writes are dropped against the new CRD, and the new operator's status writes fail against the old one. Existing RFs keep their status.
 ### Using kubectl
 
 To create the operator, you can directly create it with kubectl:
