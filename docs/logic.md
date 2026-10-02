@@ -14,13 +14,13 @@ The Redis-Operator creates Redis Failovers, with all the needed pieces. When an 
    - Redis shutdown configmap
    - Redis readiness configmap
    - Redis configmap
-   - Redis statefulset and its PodDisruptionBudget
-   - Sentinel service, configmap, deployment, PodDisruptionBudget and service account. Only when Sentinel is on and, in bootstrap mode, `allowSentinels` is true. Otherwise, the operator deletes them.
+   - Redis statefulset, and its PodDisruptionBudget unless `redis.disablePodDisruptionBudget` is true
+   - Sentinel service, configmap and deployment. Only when Sentinel is on and, in bootstrap mode, `allowSentinels` is true. Otherwise, the operator deletes them. With them, the operator also creates a Sentinel PodDisruptionBudget unless `sentinel.disablePodDisruptionBudget` is true, and a Sentinel service account unless `sentinel.serviceAccountName` is set.
 6. Check & Heal: connects to every Redis and Sentinel and moves them to the desired state. First, it applies a changed password, because every later check authenticates. Then it uses one mode, described below.
 
 ## Check & Heal modes
 
-Operator-managed mode and Sentinel mode need a quorum (a majority) of the pods to run, not the full number in the spec. One Pending pod must not block the heal of the others.
+Operator-managed mode and Sentinel mode need a quorum (a majority) of the pods to run, not the full number in the spec. A Pending pod does not block the heal of the others while the running pods are a majority. With 2 replicas, one Pending pod blocks the heal.
 
 A pod rollout updates one stale pod in each reconcile: the replicas first, the master last. It waits until all replicas are in sync.
 
