@@ -45,6 +45,16 @@ jobs:
       - name: Lowercase IMAGE_NAME
         run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
 
+      # Published releases, not git tags: a tag whose release failed must not
+      # hold back the floating tags.
+      - name: Find the floating tags this release moves
+        id: floating
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq '.[] | select(.draft | not) | .tag_name' \
+            | ./scripts/release.sh floating "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
 
@@ -65,10 +75,11 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # Image tags WITHOUT leading 'v' (git tag 4.0.0 -> image tag 4.0.0)
           # Chart version, appVersion and image tag are always the tag name.
+          flavor: latest=${{ steps.floating.outputs.latest }}
           tags: |
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ steps.floating.outputs.minor }}
+            type=semver,pattern={{major}},enable=${{ steps.floating.outputs.major }}
             type=sha
 
       - name: Build and push Docker image
@@ -109,6 +120,8 @@ jobs:
 
       - name: Determine release type
         id: relinfo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
 
@@ -130,6 +143,8 @@ jobs:
             | head -n1 || true)
           echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
           echo "Previous full release: ${PREV_TAG:-<none>}"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq '.[] | select(.draft | not) | .tag_name' \
+            | ./scripts/release.sh floating "$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Generate changelog
         env:
@@ -201,7 +216,7 @@ jobs:
         with:
           body_path: release-notes.md
           prerelease: ${{ steps.relinfo.outputs.prerelease }}
-          make_latest: ${{ steps.relinfo.outputs.prerelease == 'false' }}
+          make_latest: ${{ steps.relinfo.outputs.latest }}
           files: |
             release-artifacts/*
         env:
