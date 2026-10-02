@@ -98,7 +98,7 @@ func (r *RedisFailoverHealer) MakeMaster(ip string, rf *redisfailoverv1.RedisFai
 	return nil
 }
 
-// SetOldestAsMaster puts all redis to the same master, choosen by order of appearance
+// SetOldestAsMaster makes the first pod from masterCandidates the master of all redis pods.
 func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailover) error {
 	ssp, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
