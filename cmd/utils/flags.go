@@ -24,6 +24,7 @@ type CMDFlags struct {
 	SyncInterval                int
 	LogLevel                    string
 	DisconnectClientsOnDemotion bool
+	WatchAuthSecrets            bool
 }
 
 // Init initializes and parse the flags
@@ -42,6 +43,7 @@ func (c *CMDFlags) Init() {
 	flag.IntVar(&c.SyncInterval, "sync-interval", 30, "Number of seconds between checks")
 	flag.StringVar(&c.LogLevel, "log-level", "info", "set log level")
 	flag.BoolVar(&c.DisconnectClientsOnDemotion, "disconnect-clients-on-demotion", true, "Close a redis pod's normal and pub/sub client connections when it stops being the master, so clients reconnect to the new master instead of staying on a replica")
+	flag.BoolVar(&c.WatchAuthSecrets, "watch-auth-secrets", false, "Watch the Secrets named by spec.auth.secretPath, so a password change is applied at once instead of on the next sync. Needs list and watch on secrets cluster-wide, which can read every Secret's data")
 	// Parse flags
 	flag.Parse()
 
@@ -59,5 +61,6 @@ func (c *CMDFlags) ToRedisOperatorConfig() redisfailover.Config {
 		SyncInterval:             c.SyncInterval,
 		SupportedNamespacesRegex: c.SupportedNamespacesRegex,
 		KeepClientsOnDemotion:    !c.DisconnectClientsOnDemotion,
+		WatchAuthSecrets:         c.WatchAuthSecrets,
 	}
 }

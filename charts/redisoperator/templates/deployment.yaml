@@ -46,9 +46,14 @@ spec:
       containers:
       - name: {{ .Chart.Name }}
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion}}"
-        {{- if .Values.image.cli_args }}
+        {{- if or .Values.image.cli_args .Values.watchAuthSecrets }}
         args: 
+        {{- if .Values.image.cli_args }}
         - {{ quote .Values.image.cli_args }}
+        {{- end }}
+        {{- if .Values.watchAuthSecrets }}
+        - --watch-auth-secrets
+        {{- end }}
         {{- end }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:

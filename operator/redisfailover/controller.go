@@ -37,14 +37,14 @@ type Handler interface {
 // rfController reconciles RedisFailovers from one queue keyed by RedisFailover.
 // Events on a RedisFailover's pods queue that RedisFailover, so a pod change
 // (deleted, recreated, ready) drives the next reconcile without waiting for
-// the resync. Events on the Secret named by a RedisFailover's
-// spec.auth.secretPath queue that RedisFailover too, so a password change is
-// applied right away.
+// the resync. With a Secret watch, events on the Secret named by a
+// RedisFailover's spec.auth.secretPath queue that RedisFailover too, so a
+// password change is applied right away.
 type rfController struct {
 	handler        Handler
 	rfInformer     cache.SharedIndexInformer
 	podInformer    cache.SharedIndexInformer
-	secretInformer cache.SharedIndexInformer
+	secretInformer cache.SharedIndexInformer // nil without a Secret watch
 	queue          workqueue.TypedInterface[string]
 	workers        int
 	leRunner       leaderRunner
@@ -64,26 +64,29 @@ func newRFController(handler Handler, rfLW, podLW, secretLW cache.ListerWatcher,
 		workers = 3
 	}
 	c := &rfController{
-		handler:        handler,
-		rfInformer:     cache.NewSharedIndexInformer(rfLW, nil, resync, cache.Indexers{authSecretIndex: authSecretKey}),
-		podInformer:    cache.NewSharedIndexInformer(podLW, &corev1.Pod{}, 0, cache.Indexers{}),
-		secretInformer: cache.NewSharedIndexInformer(secretLW, &metav1.PartialObjectMetadata{}, 0, cache.Indexers{}),
-		queue:          workqueue.NewTyped[string](),
-		workers:        workers,
-		leRunner:       leRunner,
-		metrics:        mrec,
-		logger:         logger,
-		queuedAt:       map[string]time.Time{},
+		handler:     handler,
+		rfInformer:  cache.NewSharedIndexInformer(rfLW, nil, resync, cache.Indexers{authSecretIndex: authSecretKey}),
+		podInformer: cache.NewSharedIndexInformer(podLW, &corev1.Pod{}, 0, cache.Indexers{}),
+		queue:       workqueue.NewTyped[string](),
+		workers:     workers,
+		leRunner:    leRunner,
+		metrics:     mrec,
+		logger:      logger,
+		queuedAt:    map[string]time.Time{},
 	}
 
 	// Only the metrics registration can fail here; the informers are new.
 	_, rfErr := c.rfInformer.AddEventHandlerWithResyncPeriod(c.eventHandler(rfKey), resync)
 	_, podErr := c.podInformer.AddEventHandler(c.eventHandler(c.podOwner))
-	_, secretErr := c.secretInformer.AddEventHandler(c.secretEventHandler())
+	var secretErr error
+	if secretLW != nil {
+		c.secretInformer = cache.NewSharedIndexInformer(secretLW, &metav1.PartialObjectMetadata{}, 0, cache.Indexers{})
+		_, err := c.secretInformer.AddEventHandler(c.secretEventHandler())
+		secretErr = errors.Join(c.secretInformer.SetTransform(secretKeyOnly), err)
+	}
 	queueLen := func(context.Context) int { return c.queue.Len() }
 	if err := errors.Join(
 		c.podInformer.SetTransform(podMetadataOnly),
-		c.secretInformer.SetTransform(secretKeyOnly),
 		rfErr,
 		podErr,
 		secretErr,
@@ -236,7 +239,9 @@ func (c *rfController) run(ctx context.Context) error {
 	c.logger.Infof("starting controller")
 	go c.rfInformer.RunWithContext(ctx)
 	go c.podInformer.RunWithContext(ctx)
-	go c.secretInformer.RunWithContext(ctx)
+	if c.secretInformer != nil {
+		go c.secretInformer.RunWithContext(ctx)
+	}
 	// Pod and Secret events only speed reconciles up, so a watch that can't sync
 	// (e.g. RBAC) must not block reconciling.
 	// The wait only fails once ctx is done, i.e. on shutdown.

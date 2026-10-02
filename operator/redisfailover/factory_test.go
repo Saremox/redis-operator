@@ -246,6 +246,15 @@ func TestNewPropagatesLeaderElectionError(t *testing.T) {
 	mr.AssertExpectations(t)
 }
 
+func TestNewWatchesAuthSecretsOnlyWhenEnabled(t *testing.T) {
+	for _, watch := range []bool{false, true} {
+		cfg := Config{SupportedNamespacesRegex: ".*", WatchAuthSecrets: watch}
+		ctrl, err := New(cfg, &mK8SService.Services{}, fakekubernetes.NewClientset(), fakemetadata.NewSimpleMetadataClient(fakemetadata.NewTestScheme()), "test-namespace", &mRedisService.Client{}, metrics.Dummy, log.Dummy)
+		require.NoError(t, err)
+		assert.Equal(t, watch, ctrl.(*rfController).secretInformer != nil, "WatchAuthSecrets=%t", watch)
+	}
+}
+
 func TestNewPropagatesControllerError(t *testing.T) {
 	ctrl, err := New(Config{SupportedNamespacesRegex: ".*"}, &mK8SService.Services{}, fakekubernetes.NewClientset(), fakemetadata.NewSimpleMetadataClient(fakemetadata.NewTestScheme()), "test-namespace", &mRedisService.Client{}, failingQueueMetrics{metrics.Dummy}, log.Dummy)
 

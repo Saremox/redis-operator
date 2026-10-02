@@ -11,5 +11,6 @@ echo ">> Testing chart ${chart} against kubeVersion ${kube_version}"
 
 helm lint ${chart}
 helm template ${chart} --kube-version ${kube_version}
+helm template ${chart} --kube-version ${kube_version} --set watchAuthSecrets=true
 
 echo "> Chart OK"

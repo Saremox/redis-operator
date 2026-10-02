@@ -250,6 +250,23 @@ func TestRFControllerSecretEventHandler(t *testing.T) {
 	assert.Empty(t, queued())
 }
 
+func TestRFControllerWithoutSecretWatch(t *testing.T) {
+	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)
+	rf := redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}
+	rf.Spec.Auth.SecretPath = "auth"
+	h := &recordingHandler{}
+	c, err := newRFController(h, staticRFs(rf), newPodListWatch(fakekubernetes.NewClientset()), nil, time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	require.NoError(t, err)
+	assert.Nil(t, c.secretInformer)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- c.Run(ctx) }()
+	require.Eventually(t, func() bool { return h.count() == 1 }, 5*time.Second, 10*time.Millisecond)
+	cancel()
+	require.NoError(t, <-done)
+}
+
 func TestAuthSecretKey(t *testing.T) {
 	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}
 	keys, err := authSecretKey(rf)

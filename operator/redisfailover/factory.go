@@ -51,7 +51,11 @@ func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, me
 		return nil, err
 	}
 
-	c, err := newRFController(rfHandler, rfRetriever, newPodListWatch(k8sClient), newSecretListWatch(metaClient), time.Duration(cfg.SyncInterval)*time.Second, cfg.Concurrency, leRunner, metricsRecorder, logger)
+	var secretLW cache.ListerWatcher
+	if cfg.WatchAuthSecrets {
+		secretLW = newSecretListWatch(metaClient)
+	}
+	c, err := newRFController(rfHandler, rfRetriever, newPodListWatch(k8sClient), secretLW, time.Duration(cfg.SyncInterval)*time.Second, cfg.Concurrency, leRunner, metricsRecorder, logger)
 	if err != nil {
 		return nil, err
 	}
