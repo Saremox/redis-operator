@@ -19,12 +19,12 @@ chaos:
     versions:
       - name: previous-rc
         chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
-        version: 4.2.0-rc1
-        image: ghcr.io/saremox/redis-operator:4.2.0-rc1
-      - name: rc
-        chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
         version: 4.2.0-rc2
         image: ghcr.io/saremox/redis-operator:4.2.0-rc2
+      - name: rc
+        chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
+        version: 4.2.0-rc3
+        image: ghcr.io/saremox/redis-operator:4.2.0-rc3
 mutation:
   interval: 2m
   jitter: 1m

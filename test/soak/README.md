@@ -553,7 +553,7 @@ on SIGTERM, are flagged `NOTABLE`), the dataset, memory, OOM, eviction and
 `maxmemory kept`/`lowered` messages, and any findings or timed-out
 windows. The tester's and the operator's logs, the instances' events, the
 bootstrap's lag samples and the last scrape are kept in
-`bin/kind-e2e-artifacts/`. Set `OPERATOR_VERSION=4.2.0-rc1` to install a
+`bin/kind-e2e-artifacts/`. Set `OPERATOR_VERSION=4.2.0-rc2` to install a
 released chart and image instead.
 
 ### The versions profile
@@ -684,14 +684,14 @@ chaos:
   upgrade:
     set: [crds.upgradeHook.enabled=true]
     versions:
-      - name: 4.2.0-rc1
-        chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
-        version: 4.2.0-rc1
-        image: ghcr.io/saremox/redis-operator:4.2.0-rc1
       - name: 4.2.0-rc2
         chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
         version: 4.2.0-rc2
         image: ghcr.io/saremox/redis-operator:4.2.0-rc2
+      - name: 4.2.0-rc3
+        chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
+        version: 4.2.0-rc3
+        image: ghcr.io/saremox/redis-operator:4.2.0-rc3
 ```
 
 Where the cluster can't pull them, give `chart` as a chart archive next
