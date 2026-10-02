@@ -8,6 +8,10 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+  - package-ecosystem: "docker"
+    directory: "/docker/app"
+    schedule:
+      interval: "daily"
   - package-ecosystem: "gomod"
     directory: "/test/soak"
     schedule:

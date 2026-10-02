@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	kubetesting "k8s.io/client-go/testing"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	redisfailoverfake "github.com/saremox/redis-operator/client/k8s/clientset/versioned/fake"
@@ -94,6 +96,24 @@ func TestRedisFailoverServiceUpdateRedisFailoverStatus(t *testing.T) {
 		got, err := crdcli.DatabasesV1().RedisFailovers(testns).Get(context.TODO(), "rf1", metav1.GetOptions{})
 		assert.NoError(t, err)
 		assert.Equal(t, redisfailoverv1.HealthyState, got.Status.State)
+	})
+
+	t.Run("patches through the status subresource, so metadata.generation is not bumped", func(t *testing.T) {
+		crdcli := redisfailoverfake.NewSimpleClientset(rf)
+		service := k8s.NewRedisFailoverService(crdcli, log.Dummy, metrics.Dummy)
+
+		service.UpdateRedisFailoverStatus(context.TODO(), testns, rf, metav1.PatchOptions{})
+
+		var patches []kubetesting.PatchAction
+		for _, action := range crdcli.Actions() {
+			if patch, ok := action.(kubetesting.PatchAction); ok {
+				patches = append(patches, patch)
+			}
+		}
+		if assert.Len(t, patches, 1) {
+			assert.Equal(t, "status", patches[0].GetSubresource())
+			assert.Equal(t, types.MergePatchType, patches[0].GetPatchType())
+		}
 	})
 
 	t.Run("does not panic when patching a non-existent RedisFailover", func(t *testing.T) {
