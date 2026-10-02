@@ -957,6 +957,9 @@ verified_after_failovers() {
 }
 
 echo "--- assertions"
+# The reports, and the chaos profile's monitoring check, take a while: the
+# probes' last successes must be recent at the time of the check.
+scrape
 check "probes" probes_ok
 check "invariants" invariants_ok
 for rf in "${instances[@]}"; do
