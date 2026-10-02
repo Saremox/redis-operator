@@ -332,8 +332,8 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 
 	switch nMasters {
 	case 0:
-		// As in operator-managed mode: a stopping master may still take
-		// writes, and its shutdown script asks Sentinel to fail over.
+		// A stopping master is not counted but can still accept writes, and its
+		// shutdown script asks Sentinel to fail over. An election now can lose writes.
 		stopping, err := r.masterPodStopping(rf)
 		if err != nil {
 			rf.Status = redisfailoverv1.RedisFailoverStatus{

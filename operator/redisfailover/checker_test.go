@@ -2490,7 +2490,7 @@ func TestSentinelModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) {
 			pods:     []corev1.Pod{redisPod("1", true, false), masterPod(redisPod("1", true, true))},
 		},
 		{
-			name:      "single replica, a stopping master that is not ready (lost node) doesn't block",
+			name:      "single replica, a stopping master that is not ready (lost node) does not block",
 			replicas:  1,
 			pods:      []corev1.Pod{redisPod("1", true, false), masterPod(redisPod("1", false, true))},
 			wantElect: true,
@@ -2508,13 +2508,13 @@ func TestSentinelModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) {
 			pods:     []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false), masterPod(redisPod("1", true, true))},
 		},
 		{
-			name:      "no sentinel quorum, a stopping master that is not ready (lost node) doesn't block",
+			name:      "no sentinel quorum, a stopping master that is not ready (lost node) does not block",
 			replicas:  3,
 			pods:      []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false), masterPod(redisPod("1", false, true))},
 			wantElect: true,
 		},
 		{
-			name:      "no sentinel quorum, a stopping replica doesn't block",
+			name:      "no sentinel quorum, a stopping replica does not block",
 			replicas:  3,
 			pods:      []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false), redisPod("1", true, true)},
 			wantElect: true,
@@ -2552,7 +2552,7 @@ func TestSentinelModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) {
 				}
 				mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
 				if test.replicas > 1 {
-					// The election succeeded; stop the rest of the heal right after it.
+					// An error after the election ends CheckAndHeal, so the later checks need no mocks.
 					mrfc.On("GetMasterIP", rf).Once().Return("", errors.New("stop here"))
 				}
 			}
