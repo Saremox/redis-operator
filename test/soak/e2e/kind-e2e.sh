@@ -411,6 +411,7 @@ for t in "$(dirname "$config")"/rf-*.yaml; do
   templates+=("$(basename "$t")")
 done
 extra_resources=""
+components=""
 patches=""
 if [[ $profile == chaos ]]; then
   # The upgrade's versions, with the charts built here next to the config.
@@ -429,6 +430,9 @@ if [[ $profile == chaos ]]; then
     echo ---
   done >"$overlay/rbac-chaos-instances.yaml"
   extra_resources="  - rbac-chaos-instances.yaml"
+  # The lane's rights, which only this profile grants.
+  components="components:
+  - ../../deploy/chaos"
   patches="patches:
   - target: {kind: Deployment, name: soak}
     patch: |-
@@ -439,6 +443,7 @@ cat >"$overlay/kustomization.yaml" <<YAML
 resources:
   - ../../deploy
 $extra_resources
+$components
 images:
   - name: ghcr.io/saremox/redis-operator-soak
     newName: redis-operator-soak

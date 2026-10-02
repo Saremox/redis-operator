@@ -2,8 +2,7 @@
 # reads its leader's Lease. operator_upgrade runs helm upgrade on the
 # operator's release: helm keeps the release in Secrets, manages the
 # chart's objects and runs its CRD hook Job. Namespace and the release
-# must match `operator` and `chaos.upgrade` in config.yaml. Leave this file
-# out with the lane off.
+# must match `operator` and `chaos.upgrade` in config.yaml.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

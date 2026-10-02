@@ -4,11 +4,13 @@ operator:
 observer:
   interval: 5s
   convergenceTimeout: 10m
-# rbac-chaos.yaml grants what the lane needs.
+# The chaos lane is off without kinds. Its rights, as much as
+# cluster-admin, are the opt-in component chaos/: add it to the
+# kustomization's components before enabling a kind.
 chaos:
   kinds:
-    operator_restart: 2
-    node_drain: 1
+    # operator_restart: 2
+    # node_drain: 1
     # Set the two RCs below, and point the release at the first, to also
     # upgrade between them.
     # operator_upgrade: 1

@@ -676,9 +676,9 @@ which make each alert fire, and not fire inside a window.
    `deploy/monitoring/dashboard.json` by hand. Your Prometheus may select
    PrometheusRules and ServiceMonitors by a label, e.g. `release`; add it.
 
-To upgrade between two RCs, enable `operator_upgrade` in
-`deploy/config.yaml` and list both as OCI charts with their images, the
-first being the one installed:
+To upgrade between two RCs, with the `deploy/chaos` component, enable
+`operator_upgrade` in `deploy/config.yaml` and list both as OCI charts
+with their images, the first being the one installed:
 
 ```yaml
 chaos:
@@ -707,12 +707,15 @@ for such a version.
 
 The Role in `deploy/rbac.yaml` must be in the operator's namespace and name
 its Deployment, matching `operator` in `deploy/config.yaml`.
-`deploy/rbac-chaos.yaml` grants the chaos lane its rights: the operator's
-pods, Lease and helm release in its namespace, and cluster-wide the
-chart's ClusterRoles, the CRD, nodes and evictions. helm can only create
-the chart's ClusterRoles holding what they grant, or with `escalate` and
-`bind`, which this grants: as much as cluster-admin, for a cluster that
-exists for the soak. Leave the file out with the lane off. A ClusterRole
+The chaos lane is off in `deploy/config.yaml`, and its rights are
+opt-in: the kustomize component `deploy/chaos` grants the operator's pods,
+Lease and helm release in its namespace, and cluster-wide the chart's
+ClusterRoles, the CRD, nodes and evictions. helm can only create the
+chart's ClusterRoles holding what they grant, or with `escalate` and
+`bind`, which the component grants: **as much as cluster-admin**, so only
+use it on a cluster that exists for the soak. To enable the lane, add
+`components: [chaos]` to `deploy/kustomization.yaml` (or a kustomization
+of your own over `deploy`), and then the chaos kinds in `config.yaml`. A ClusterRole
 lets the observer read pods, EndpointSlices and RedisFailovers in the
 instances' namespaces.
 

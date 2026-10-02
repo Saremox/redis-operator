@@ -1,13 +1,13 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 # No global namespace: the Role lives in the operator's namespace and the
-# mutator's RoleBindings in the instances'.
+# mutator's RoleBindings in the instances'. The chaos lane's rights are the
+# opt-in component chaos/: add it under components to enable the lane.
 resources:
   - namespace.yaml
   - serviceaccount.yaml
   - rbac.yaml
   - rbac-instances.yaml
-  - rbac-chaos.yaml
   - deployment.yaml
   - service.yaml
 configMapGenerator:
