@@ -29,6 +29,15 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - -config=/etc/soak/config.yaml
+          env:
+            # A drain never picks the tester's own node.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # helm's cache and config, for operator_upgrade.
+            - name: HOME
+              value: /tmp
           ports:
             - name: metrics
               containerPort: 9090
@@ -54,7 +63,11 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/soak
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: config
           configMap:
             name: soak-config
+        - name: tmp
+          emptyDir: {}

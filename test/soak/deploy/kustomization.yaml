@@ -7,6 +7,7 @@ resources:
   - serviceaccount.yaml
   - rbac.yaml
   - rbac-instances.yaml
+  - rbac-chaos.yaml
   - deployment.yaml
   - service.yaml
 configMapGenerator:

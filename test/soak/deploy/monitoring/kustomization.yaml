@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# For a Prometheus Operator and Grafana: the ServiceMonitor, the alerts,
+# and the dashboard as a ConfigMap that Grafana's dashboard sidecar picks
+# up by its grafana_dashboard label. Apply it after ../.
+resources:
+  - servicemonitor.yaml
+  - prometheusrule.yaml
+configMapGenerator:
+  - name: redis-soak-dashboard
+    namespace: redis-soak
+    files:
+      - dashboard.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"

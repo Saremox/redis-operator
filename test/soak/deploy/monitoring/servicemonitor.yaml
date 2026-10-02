@@ -1,0 +1,18 @@
+# Scrapes the tester for a Prometheus Operator. honorLabels keeps the
+# tester's namespace and pod labels, which name an instance's namespace and
+# its redis pods, over the target's own.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redis-soak
+  namespace: redis-soak
+  labels:
+    app.kubernetes.io/name: redis-soak
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis-soak
+  endpoints:
+    - port: metrics
+      interval: 15s
+      honorLabels: true
