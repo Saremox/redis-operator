@@ -130,6 +130,9 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 			mu.total.WithLabelValues(string(k), r)
 		}
 	}
+	if inst != nil {
+		mu.findings.WithLabelValues(invResetIncomplete)
+	}
 	return mu
 }
 
@@ -269,6 +272,11 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 			bound, hold = timeout, 2*timeout
 		}
 	}
+	// A reset that failed can leave no RedisFailover. Then the observer
+	// does not end the window.
+	if kind == config.Reset {
+		bound = 2 * timeout
+	}
 	// A rejected mutation changed nothing, so its window only waits for
 	// the invariants.
 	var applied, rejected atomic.Bool
@@ -311,6 +319,10 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 		return ""
 	}
 	d := time.Since(start)
+	if kind == config.Reset && !converged && time.Since(appliedAt) >= bound {
+		m.findings.WithLabelValues(invResetIncomplete).Inc()
+		log.Warn("reset did not complete", "finding", true, "bound_seconds", bound.Seconds())
+	}
 
 	result := resultTimeout
 	var exp expectation

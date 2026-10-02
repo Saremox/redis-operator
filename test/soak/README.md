@@ -479,7 +479,9 @@ Each finding increments `findings_total{invariant}` once. An OOM kill is a
 finding of `oom_killed` also inside a window: the 32Mi reserve of the
 operator exists so that no data size that the operator allows causes an
 OOM kill. The tester also opens a window when it first sees an instance,
-because a change can be in progress.
+because a change can be in progress. A `reset` whose window did not end
+within twice its timeout is a finding of `reset_incomplete`. This occurs
+when the reset could not create the RedisFailover again.
 
 Pod kills open a window as all mutations do, so the failover after a
 master kill is not a finding. A pod that something else killed, or a
@@ -788,8 +790,8 @@ Outside a window, the alerts report it.
 **Findings** are what an RC must not do. Each finding counts in
 `findings_total` and fires `RedisSoakFinding`. A finding is a violation
 outside a window, a violation still open at the window timeout, an OOM
-kill, a `failed_unsafe` version change, or `replica_ready_without_data`
-(unless it is off). See [Findings](#findings).
+kill, a `failed_unsafe` version change, a `reset_incomplete` reset, or
+`replica_ready_without_data` (unless it is off). See [Findings](#findings).
 
 These are also not expected, and have their own alerts:
 
@@ -850,7 +852,7 @@ changes its mode.
 | `redis_soak_outage_duration_seconds` | histogram | `path`, `client`, `event` (the chaos kind or the mutation kind of the instance when the outage started, or `none`) |
 | `redis_soak_invariant_ok` | gauge (0/1) | `invariant` |
 | `redis_soak_invariant_violation_seconds` | histogram | `invariant` |
-| `redis_soak_findings_total` | counter | `invariant` (also `oom_killed` and `version_transition`) |
+| `redis_soak_findings_total` | counter | `invariant` (also `oom_killed`, `version_transition` and `reset_incomplete`) |
 | `redis_soak_window_open` | gauge (0/1) | |
 | `redis_soak_masters` | gauge | |
 | `redis_soak_failovers_total` | counter | |
