@@ -124,8 +124,8 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			// just 404 against it - and the operator's own election logic in
 			// checkAndHealOperatorManagedMode (the "no master" branch) already
 			// takes over on the very next reconcile once this delete leaves the
-			// RedisFailover without a master, using the same replication-offset
-			// based selection this gate exists to protect.
+			// RedisFailover without a master, and picks the synced replica with
+			// the highest replication offset (GetBestReplicaForPromotion).
 			if !rf.OperatorManagedFailover() {
 				sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
 				if err != nil {

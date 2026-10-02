@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -30,8 +31,10 @@ type ReplicaInfo struct {
 	IP                string
 	PodName           string
 	ReplicationOffset int64
-	IsReady           bool
-	PodReady          bool
+	// Synced is true when the replica's link to its master is up and not syncing.
+	Synced bool
+	// PodReady is true when Kubernetes reports the replica's pod Ready.
+	PodReady bool
 }
 
 // RedisFailoverCheck defines the interface able to check the correct status of redis failover
@@ -659,10 +662,10 @@ func (r *RedisFailoverChecker) CheckMasterHealth(rf *redisfailoverv1.RedisFailov
 }
 
 // GetBestReplicaForPromotion returns the best replica to promote as master.
-// Replicas whose pod is Ready are preferred, so the new master is in the
-// master Service right away, then replicas with a synced replication link.
-// Among equally ready replicas the highest replication offset wins to
-// minimize data loss.
+// A synced replica is preferred, then the highest replication offset to
+// minimize data loss. Among equal offsets a replica whose pod is Ready wins,
+// so the new master is in the master Service right away; readiness never
+// overrides a higher offset.
 func (r *RedisFailoverChecker) GetBestReplicaForPromotion(rf *redisfailoverv1.RedisFailover) (*ReplicaInfo, error) {
 	replicas, err := r.GetReplicaReplicationOffsets(rf)
 	if err != nil {
@@ -673,28 +676,31 @@ func (r *RedisFailoverChecker) GetBestReplicaForPromotion(rf *redisfailoverv1.Re
 		return nil, errors.New("no replicas available for promotion")
 	}
 
-	var best *ReplicaInfo
+	candidates := make([]string, 0, len(replicas))
+	best := &replicas[0]
 	for i := range replicas {
 		replica := &replicas[i]
-		if best == nil || promotionRank(replica) > promotionRank(best) ||
-			(promotionRank(replica) == promotionRank(best) && replica.ReplicationOffset > best.ReplicationOffset) {
+		candidates = append(candidates, fmt.Sprintf("%s (pod: %s, pod ready: %t, synced: %t, offset: %d)",
+			replica.IP, replica.PodName, replica.PodReady, replica.Synced, replica.ReplicationOffset))
+		if betterPromotionCandidate(replica, best) {
 			best = replica
 		}
 	}
+	r.logger.Infof("Promotion candidates: %s", strings.Join(candidates, ", "))
 
 	r.logger.Infof("Selected replica %s (pod: %s, pod ready: %t, offset: %d) for promotion", best.IP, best.PodName, best.PodReady, best.ReplicationOffset)
 	return best, nil
 }
 
-func promotionRank(replica *ReplicaInfo) int {
-	rank := 0
-	if replica.PodReady {
-		rank += 2
+// betterPromotionCandidate reports whether a ranks strictly above b.
+func betterPromotionCandidate(a, b *ReplicaInfo) bool {
+	if a.Synced != b.Synced {
+		return a.Synced
 	}
-	if replica.IsReady {
-		rank++
+	if a.ReplicationOffset != b.ReplicationOffset {
+		return a.ReplicationOffset > b.ReplicationOffset
 	}
-	return rank
+	return a.PodReady && !b.PodReady
 }
 
 // GetReplicaReplicationOffsets returns replication offset information for all replicas
@@ -728,14 +734,11 @@ func (r *RedisFailoverChecker) GetReplicaReplicationOffsets(rf *redisfailoverv1.
 			continue
 		}
 
-		// Check if replica is ready (not syncing, link up)
-		isReady := !replInfo.SyncInProgress && replInfo.MasterLinkStatus == "up"
-
 		replicas = append(replicas, ReplicaInfo{
 			IP:                rp.Status.PodIP,
 			PodName:           rp.Name,
 			ReplicationOffset: replInfo.SlaveReplOffset,
-			IsReady:           isReady,
+			Synced:            !replInfo.SyncInProgress && replInfo.MasterLinkStatus == "up",
 			PodReady:          util.PodIsReady(&rp),
 		})
 	}
