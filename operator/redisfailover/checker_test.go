@@ -2467,11 +2467,16 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 		synced             bool
 	}
 	master := redis{name: "master", ip: "10.0.0.1", revision: "new"}
+	unsyncedStale := []redis{master, {"r1", "10.0.0.2", "new", true}, {"r2", "10.0.0.3", "old", false}}
 	tests := []struct {
-		name       string
-		redises    []redis
-		noMaster   bool
-		unsettled  bool
+		name          string
+		redises       []redis
+		noMaster      bool
+		bootstrapping bool
+		unsettled     bool
+		// editR2 changes r2's pod as GetStatefulSetPods lists it.
+		editR2     func(*corev1.Pod)
+		errOn      string
 		wantDelete string
 	}{
 		{
@@ -2499,14 +2504,49 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 		},
 		{
 			name:      "the last replacement has to settle first",
-			redises:   []redis{master, {"r1", "10.0.0.2", "new", true}, {"r2", "10.0.0.3", "old", false}},
+			redises:   unsyncedStale,
 			unsettled: true,
+		},
+		{
+			name:          "an unsynced stale replica is replaced while bootstrapping",
+			redises:       []redis{{"r0", "10.0.0.1", "new", true}, {"r1", "10.0.0.2", "new", true}, {"r2", "10.0.0.3", "old", false}},
+			noMaster:      true,
+			bootstrapping: true,
+			wantDelete:    "r2",
+		},
+		{
+			name:    "an unsynced replica without a pod is waited for",
+			redises: unsyncedStale,
+			editR2:  func(p *corev1.Pod) { p.Status.PodIP = "" },
+		},
+		{
+			name:    "an unsynced replica whose pod is terminating is waited for",
+			redises: unsyncedStale,
+			editR2:  func(p *corev1.Pod) { p.DeletionTimestamp = &metav1.Time{Time: time.Now()} },
+		},
+		{
+			name:    "getting the update revision fails",
+			redises: unsyncedStale,
+			errOn:   "GetStatefulSetUpdateRevision",
+		},
+		{
+			name:    "listing the pods fails",
+			redises: unsyncedStale,
+			errOn:   "GetStatefulSetPods",
+		},
+		{
+			name:    "getting the replica's revision fails",
+			redises: unsyncedStale,
+			errOn:   "GetRedisRevisionHash",
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			rf := operatorManagedRF()
+			if test.bootstrapping {
+				rf = generateRF(false, true)
+			}
 			rf.Spec.Redis.Replicas = int32(len(test.redises))
 			if test.unsettled {
 				rf.Spec.Redis.Replicas++
@@ -2517,6 +2557,15 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 			masterIP := master.ip
 			if test.noMaster {
 				masterIP = ""
+			}
+			errBoom := errors.New(test.errOn + " err")
+			switch test.errOn {
+			case "GetStatefulSetUpdateRevision":
+				mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("", errBoom)
+			case "GetStatefulSetPods":
+				mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(nil, errBoom)
+			case "GetRedisRevisionHash":
+				mrfc.On("GetRedisRevisionHash", "r2", rf).Once().Return("", errBoom)
 			}
 			ips, replicas, pods := []string{}, []string{}, []corev1.Pod{}
 			for _, r := range test.redises {
@@ -2531,10 +2580,13 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 				pod := redisPod(r.revision, true, false)
 				pod.Name = r.name
 				pod.Status.PodIP = r.ip
+				if r.name == "r2" && test.editR2 != nil {
+					test.editR2(&pod)
+				}
 				pods = append(pods, pod)
 			}
 			mrfc.On("GetRedisesIPs", rf).Once().Return(ips, nil)
-			mrfc.On("GetMasterIP", rf).Once().Return(masterIP, nil)
+			mrfc.On("GetMasterIP", rf).Maybe().Return(masterIP, nil)
 			mrfc.On("GetStatefulSetUpdateRevision", rf).Maybe().Return("new", nil)
 			mrfc.On("GetRedisesSlavesPods", rf).Maybe().Return(replicas, nil)
 			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Maybe().Return(&corev1.PodList{Items: pods}, nil)
@@ -2545,8 +2597,14 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 			}
 
 			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
-			assert.NoError(t, handler.UpdateRedisesPods(rf))
+			if test.errOn != "" {
+				assert.Equal(t, errBoom, handler.UpdateRedisesPods(rf))
+			} else {
+				assert.NoError(t, handler.UpdateRedisesPods(rf))
+			}
+			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
+			mk.AssertExpectations(t)
 		})
 	}
 }
