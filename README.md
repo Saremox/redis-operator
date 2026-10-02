@@ -70,6 +70,12 @@ kubectl apply -f https://raw.githubusercontent.com/Saremox/redis-operator/${REDI
 
 This will create a deployment named `redisoperator`.
 
+The manifests at a release tag deploy the operator image of that tag. The release workflow stops a release when they do not agree. In tags 4.2.0-rc2, 4.1.2 and older, the manifests deploy an older operator image. For these tags, set the image after the install:
+
+```
+kubectl set image deployment/redisoperator app=ghcr.io/saremox/redis-operator:${REDIS_OPERATOR_VERSION}
+```
+
 The manifest also contains a `ServiceMonitor` and a `PodMonitor`. Without the Prometheus Operator CRDs, `kubectl apply` reports an error for these two resources. It still creates the other resources.
 
 ### Using kustomize
@@ -91,6 +97,14 @@ It's always a good practice to pin the version of the operator in your configura
 
 ```shell
 kustomize build github.com/Saremox/redis-operator/manifests/kustomize/overlays/default?ref=<release-tag>
+```
+
+The `?ref=<release-tag>` also pins the operator image. In tags 4.2.0-rc2, 4.1.2 and older, the overlays deploy operator `v1.4.0`. For these tags, add the image to your `kustomization.yaml`:
+
+```yaml
+images:
+  - name: ghcr.io/saremox/redis-operator
+    newTag: <release-tag>
 ```
 
 You can create your own config by creating a `kustomization.yaml` file
