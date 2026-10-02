@@ -361,6 +361,12 @@ When `allowSentinels` is provided and `spec.sentinel.enabled` is `true`, the Ope
 ### Default versions
 
 The image versions deployed by the operator can be found on the [defaults file](api/redisfailover/v1/defaults.go).
+
+### Migrating to Valkey
+
+Valkey images ship `redis-server` and `redis-cli`, so switching `redis.image` and `sentinel.image` to a Valkey image is an ordinary rolling update.
+
+Migrate from Redis 7.2 only. Valkey forked from Redis 7.2 and can't load the data of Redis 7.4 or later (`Can't handle RDB format version 12`). The first replica on Valkey then never syncs, so the operator doesn't replace the master: the RedisFailover keeps running on Redis, but the rollout never completes.
 ## Cleanup
 
 ### Operator and CRD
