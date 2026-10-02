@@ -79,8 +79,9 @@ func generateSentinelService(rf *redisfailoverv1.RedisFailover, labels map[strin
 		},
 	}
 
-	// The sentinel exporter sidecar listens on sentinelExporterPort, but without
-	// a matching service port there is no way to scrape it through the service.
+	// The sentinel exporter sidecar listens on sentinelExporterListenPort, but
+	// without a matching service port there is no way to scrape it through the
+	// service.
 	if rf.Spec.Sentinel.Exporter.Enabled {
 		port := sentinelExporterListenPort(rf)
 		svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{
@@ -1019,10 +1020,6 @@ func getSecurityContext(secctx *corev1.PodSecurityContext) *corev1.PodSecurityCo
 	return merged
 }
 
-// getContainerSecurityContext returns the operator's default container security
-// context, with any field the user set on secctx taking precedence. A partial
-// user context only overrides the fields it specifies instead of dropping all
-// the defaults.
 // createRDBTempfileCleanupContainer removes stale RDB tempfiles before Redis
 // starts.
 //
@@ -1066,6 +1063,10 @@ func createRDBTempfileCleanupContainer(rf *redisfailoverv1.RedisFailover) corev1
 	}
 }
 
+// getContainerSecurityContext returns the operator's default container security
+// context, with any field the user set on secctx taking precedence. A partial
+// user context only overrides the fields it specifies instead of dropping all
+// the defaults.
 func getContainerSecurityContext(secctx *corev1.SecurityContext) *corev1.SecurityContext {
 	capabilities := &corev1.Capabilities{
 		Add: []corev1.Capability{},
