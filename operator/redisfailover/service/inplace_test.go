@@ -165,6 +165,37 @@ func TestResizePodInPlaceRecreatesForARefusedMemoryDecrease(t *testing.T) {
 	}
 }
 
+// A refusal left from a superseded request, e.g. for a lower limit, waits for
+// the kubelet to report on the current one.
+func TestResizePodInPlaceIgnoresAStaleMemoryRefusal(t *testing.T) {
+	old, new := resources("1", "2Gi"), resources("1", "1Gi")
+	refusal := func(generation int64, age time.Duration) corev1.PodCondition {
+		c := condition(corev1.PodResizeInProgress, corev1.PodReasonError, age)
+		c.Message = `cannot decrease memory limits: [attempting to set pod memory limit (536870912) below current usage (1181116006), attempting to set container "redis" memory limit (536870912) below current usage (1181116006)]`
+		c.ObservedGeneration = generation
+		return c
+	}
+	tests := map[string]struct {
+		condition  corev1.PodCondition
+		generation int64
+		action     ResizeAction
+	}{
+		"without a generation":               {refusal(0, 0), 2, ResizeWaiting},
+		"without a generation, for too long": {refusal(0, time.Hour), 2, ResizeRecreate},
+		"superseded":                         {refusal(1, 0), 2, ResizeWaiting},
+		"of the current generation":          {refusal(2, 0), 2, ResizeRecreate},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			pod := stalePod(new, old, test.condition)
+			pod.Generation = test.generation
+			result, _, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), pod}, nil)
+			assert.NoError(t, err)
+			assert.Equal(t, test.action, result.Action)
+		})
+	}
+}
+
 // A resize that the kubelet neither applies nor reports on in time falls back
 // to recreating the pod.
 func TestResizePodInPlaceTimesOutWithoutCondition(t *testing.T) {

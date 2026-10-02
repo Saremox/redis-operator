@@ -118,7 +118,7 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 		// A memory limit below the usage the kubelet sees, which counts the
 		// page cache, is refused on every retry while the usage stays, so it
 		// is not waited for. Only the message tells it apart from other errors.
-		if c.Reason == corev1.PodReasonError && (strings.Contains(c.Message, memoryBelowUsage) || sinceLatest(c.LastTransitionTime.Time) > inPlaceResizeTimeout) {
+		if c.Reason == corev1.PodReasonError && (refusesDesiredMemory(pod, c, desired) || sinceLatest(c.LastTransitionTime.Time) > inPlaceResizeTimeout) {
 			return recreate("resize failed: " + c.Message)
 		}
 		return waiting("resize of pod %s in progress", podName)
@@ -144,6 +144,29 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 	}
 	logger.Infof("Resized the pod in place")
 	return ResizeResult{Action: ResizeDone}, nil
+}
+
+// refusesDesiredMemory reports whether c is the kubelet refusing the desired
+// memory limits as below the current usage. Without an observed generation,
+// the condition may be left from a superseded request, so the refused limit
+// in the message has to be the desired one.
+func refusesDesiredMemory(pod *corev1.Pod, c *corev1.PodCondition, desired map[string]corev1.ResourceRequirements) bool {
+	if !strings.Contains(c.Message, memoryBelowUsage) {
+		return false
+	}
+	if c.ObservedGeneration != 0 {
+		return true
+	}
+	limit := func(name string) int64 {
+		l := desired[name].Limits
+		return l.Memory().Value()
+	}
+	var total int64
+	for _, ctr := range pod.Spec.Containers {
+		total += limit(ctr.Name)
+	}
+	return strings.Contains(c.Message, fmt.Sprintf("pod memory limit (%d) below", total)) ||
+		strings.Contains(c.Message, fmt.Sprintf("container %q memory limit (%d) below", redisContainerName, limit(redisContainerName)))
 }
 
 func (r *RedisFailoverHealer) markResizeRequested(rf *redisfailoverv1.RedisFailover, podName string) error {
