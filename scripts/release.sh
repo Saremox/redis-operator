@@ -4,7 +4,7 @@
 #   scripts/release.sh set-version <version>
 #   scripts/release.sh check-version <version>
 #   scripts/release.sh chart-values <chart-dir> <repository> <version>
-#   git tag --list | scripts/release.sh floating <version>
+#   <published release tags> | scripts/release.sh floating <version>
 #
 # A release workflow runs after its tag exists, so it cannot change the files
 # at the tag. Users pin a tag in the raw manifest URLs and in the kustomize
@@ -109,7 +109,7 @@ chart_values() {
 # Prints, for GITHUB_OUTPUT, which floating tags a release moves: latest, the
 # major tag and the major.minor tag. A release moves a tag only when it is the
 # highest full release that the tag covers. Otherwise a patch on an older line
-# moves the tag back. Reads the existing tags on stdin.
+# moves the tag back. Reads the tags of the published releases on stdin.
 floating() {
     local version=$1 major minor rest releases
     releases=$( (cat; echo "$version") | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -u -V)
