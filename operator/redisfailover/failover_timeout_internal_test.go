@@ -212,6 +212,22 @@ func TestOperatorManagedModeElectsAtOnceWithoutAnUnreachableMasterPod(t *testing
 	}
 }
 
+func TestOperatorManagedModeUnreachableMasterPodListError(t *testing.T) {
+	ft := newFailoverTimeoutTest(nil)
+	listErr := errors.New("list err")
+	// masterPodStopping lists first; the second listing fails.
+	ft.k8s.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(ft.rf)).Once().Return(&corev1.PodList{}, nil)
+	ft.k8s.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(ft.rf)).Once().Return(nil, listErr)
+	ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
+	ft.checker.On("GetNumberMasters", ft.rf).Once().Return(0, nil)
+
+	assert.ErrorIs(t, ft.handler.CheckAndHeal(ft.rf), listErr)
+	assert.False(t, ft.tracked())
+	ft.checker.AssertExpectations(t)
+	ft.healer.AssertExpectations(t)
+	ft.k8s.AssertExpectations(t)
+}
+
 func TestFailoverTimeoutForgottenOnDeletion(t *testing.T) {
 	ft := newFailoverTimeoutTest(nil)
 	assert.NoError(t, ft.unhealthyMaster(t, 0, false))
