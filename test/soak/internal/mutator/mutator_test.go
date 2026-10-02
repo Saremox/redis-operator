@@ -10,6 +10,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -117,4 +118,31 @@ func (noMasterData) Verify(ctx context.Context, _ string, _ int) (int, error) {
 // the global lock forever.
 func TestVerifyBounded(t *testing.T) {
 	mutateWithin(t, failedResetMutator(t, noMasterData{}), config.Reset)
+}
+
+// The findings alert uses increase(), which does not see a series that
+// starts at 1. So New creates the series of each finding a mutation can
+// count.
+func TestNewCreatesFindingSeries(t *testing.T) {
+	m := failedResetMutator(t, fakeData{})
+	ch := make(chan prometheus.Metric, 16)
+	m.findings.Collect(ch)
+	close(ch)
+	var got []string
+	for metric := range ch {
+		var d dto.Metric
+		if err := metric.Write(&d); err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range d.GetLabel() {
+			if l.GetName() == "invariant" {
+				got = append(got, l.GetValue())
+			}
+		}
+	}
+	for _, want := range []string{invResetIncomplete, invVersionTransition} {
+		if !slices.Contains(got, want) {
+			t.Errorf("finding series = %v, want %s", got, want)
+		}
+	}
 }

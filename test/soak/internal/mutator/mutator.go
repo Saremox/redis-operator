@@ -130,6 +130,9 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 			mu.total.WithLabelValues(string(k), r)
 		}
 	}
+	if in.Chain != nil {
+		mu.findings.WithLabelValues(invVersionTransition)
+	}
 	if inst != nil {
 		mu.findings.WithLabelValues(invResetIncomplete)
 	}
