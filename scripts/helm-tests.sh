@@ -16,7 +16,8 @@ hook_image() {
         | grep -A1 'name: crds-upgrade$' | sed -n 's/^ *image: //p'
 }
 release_chart=$(mktemp -d)
-trap 'rm -rf "${release_chart}"' EXIT
+check_tree=$(mktemp -d)
+trap 'rm -rf "${release_chart}" "${check_tree}"' EXIT
 cp -r ${chart} "${release_chart}/"
 ./scripts/release.sh chart-values "${release_chart}/redisoperator" ghcr.io/example/redis-operator 9.9.9
 want=$(hook_image ${chart})
@@ -30,7 +31,20 @@ helm template "${release_chart}/redisoperator" --kube-version ${kube_version} \
     || { echo "Release chart: operator image is not ghcr.io/example/redis-operator:9.9.9." >&2; exit 1; }
 
 # Find a version bump that misses a file before a release tag exists.
-./scripts/release.sh check-version "$(sed -n 's/^version: //p' ${chart}/Chart.yaml)"
+version=$(sed -n 's/^version: //p' ${chart}/Chart.yaml)
+./scripts/release.sh check-version "${version}"
+
+# A version field that the check cannot find must fail the check. If not, a
+# release with a renamed image repository pins no operator version.
+tar -cf - scripts/release.sh example/operator manifests/kustomize ${chart}/Chart.yaml \
+    | tar -xf - -C "${check_tree}"
+"${check_tree}/scripts/release.sh" check-version "${version}" >/dev/null
+sed -i 's|ghcr.io/saremox/redis-operator:|ghcr.io/example/redis-operator:|' \
+    "${check_tree}/example/operator/operator.yaml"
+if "${check_tree}/scripts/release.sh" check-version "${version}" >/dev/null 2>&1; then
+    echo "check-version passed with a renamed image in example/operator/operator.yaml." >&2
+    exit 1
+fi
 
 helm lint ${chart}
 helm template ${chart} --kube-version ${kube_version}

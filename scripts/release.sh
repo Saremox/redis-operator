@@ -13,13 +13,19 @@
 
 set -eu
 
-version_files=(
-    example/operator/all-redis-operator-resources.yaml
-    example/operator/operator.yaml
-    manifests/kustomize/base/deployment.yaml
-    manifests/kustomize/components/version/kustomization.yaml
-    charts/redisoperator/Chart.yaml
+# The fields that must carry the version, as "file|pattern". A substitution
+# that matches nothing changes nothing, so without this list a removed or
+# renamed field passes the check.
+version_fields=(
+    "example/operator/all-redis-operator-resources.yaml|image: ghcr\.io/saremox/redis-operator:"
+    "example/operator/operator.yaml|image: ghcr\.io/saremox/redis-operator:"
+    "manifests/kustomize/base/deployment.yaml|image: ghcr\.io/saremox/redis-operator:"
+    "manifests/kustomize/components/version/kustomization.yaml|^\s*newTag:"
+    "manifests/kustomize/components/version/kustomization.yaml|^\s*app\.kubernetes\.io/version:"
+    "charts/redisoperator/Chart.yaml|^version:"
+    "charts/redisoperator/Chart.yaml|^appVersion:"
 )
+mapfile -t version_files < <(printf '%s\n' "${version_fields[@]%%|*}" | uniq)
 
 usage() {
     sed -n '3,6p' "$0" | sed 's/^# *//' >&2
@@ -45,8 +51,23 @@ with_version() {
         "$file"
 }
 
+require_fields() {
+    local field missing=0
+    for field in "${version_fields[@]}"; do
+        if ! grep -qE "${field#*|}" "${field%%|*}"; then
+            echo "${field%%|*}: no line matches '${field#*|}'." >&2
+            missing=1
+        fi
+    done
+    if [ "$missing" -ne 0 ]; then
+        echo "Put the field back, or update version_fields and with_version in scripts/release.sh." >&2
+        exit 1
+    fi
+}
+
 set_version() {
     local version=$1 file tmp
+    require_fields
     for file in "${version_files[@]}"; do
         tmp=$(mktemp)
         with_version "$file" "$version" >"$tmp"
@@ -57,6 +78,7 @@ set_version() {
 
 check_version() {
     local version=$1 file failed=0
+    require_fields
     for file in "${version_files[@]}"; do
         if ! with_version "$file" "$version" | diff -u --label "$file" --label "$file (${version})" "$file" -; then
             failed=1
