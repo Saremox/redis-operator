@@ -250,3 +250,13 @@ func TestDrainable(t *testing.T) {
 		t.Errorf("drainable %v", got)
 	}
 }
+
+func TestDeletedAt(t *testing.T) {
+	deleted := time.Now().Truncate(time.Second)
+	p := operatorPod("op", "op", "redis-operator:a", true)
+	p.DeletionTimestamp = &metav1.Time{Time: deleted.Add(30 * time.Second)}
+	p.DeletionGracePeriodSeconds = new(int64(30))
+	if got := deletedAt(&p); !got.Equal(deleted) {
+		t.Errorf("deleted at %s, want %s", got, deleted)
+	}
+}

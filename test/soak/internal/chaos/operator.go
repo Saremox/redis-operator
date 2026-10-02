@@ -399,7 +399,7 @@ func (l *Lane) watchUpgrade(ctx context.Context, w *watch, old *corev1.Pod) {
 			p, err := l.kube.CoreV1().Pods(ns).Get(ctx, old.Name, metav1.GetOptions{})
 			switch {
 			case err == nil && p.UID == old.UID && p.DeletionTimestamp != nil:
-				w.leaderStopped = p.DeletionTimestamp.Time
+				w.leaderStopped = deletedAt(p)
 			case apierrors.IsNotFound(err) || err == nil && p.UID != old.UID:
 				w.leaderStopped = time.Now()
 			}
@@ -410,6 +410,16 @@ func (l *Lane) watchUpgrade(ctx context.Context, w *watch, old *corev1.Pod) {
 		case <-t.C:
 		}
 	}
+}
+
+// deletedAt returns when a pod was deleted: its deletionTimestamp is when
+// its grace period ends.
+func deletedAt(p *corev1.Pod) time.Time {
+	t := p.DeletionTimestamp.Time
+	if p.DeletionGracePeriodSeconds != nil {
+		t = t.Add(-time.Duration(*p.DeletionGracePeriodSeconds) * time.Second)
+	}
+	return t
 }
 
 // tail returns the last n lines of s.
