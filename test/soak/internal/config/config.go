@@ -319,11 +319,11 @@ func (c *Config) validate() error {
 		if err := c.validateFlip(in); err != nil {
 			return fmt.Errorf("instance %q: mutations: %w", in.Name, err)
 		}
-		key := in.Namespace + "/" + in.Name
-		if seen[key] {
-			return fmt.Errorf("instance %s is configured twice", key)
+		// Every instance is known by its name alone, e.g. as a source.
+		if seen[in.Name] {
+			return fmt.Errorf("instance %s is configured twice: names must be unique across namespaces", in.Name)
 		}
-		seen[key] = true
+		seen[in.Name] = true
 	}
 	return nil
 }

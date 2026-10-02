@@ -127,7 +127,9 @@ func TestInvalid(t *testing.T) {
 		"bad mode":      "instances: [{name: a, namespace: ns, mode: cluster}]",
 		"bad port":      "instances: [{name: a, namespace: ns, port: 70000}]",
 		"duplicate":     "instances: [{name: a, namespace: ns}, {name: a, namespace: ns}]",
-		"bad duration":  "probe: {interval: soon}\ninstances: [{name: a, namespace: ns}]",
+		// The tester keys every instance by name, as a bootstrap's source.
+		"duplicate name": "instances: [{name: a, namespace: ns1}, {name: a, namespace: ns2}]",
+		"bad duration":   "probe: {interval: soon}\ninstances: [{name: a, namespace: ns}]",
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {
