@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -103,6 +104,14 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			}
 			if recreate, err := r.resizeInPlace(rf, pod, ssUR); err != nil || !recreate {
 				return err
+			}
+			// A master fails the sync check too, and sentinel may have promoted
+			// an unsynced stale replica since GetMasterIP.
+			if len(unsyncedStale) > 0 {
+				replicas, err := r.rfChecker.GetRedisesSlavesPods(rf)
+				if err != nil || !slices.Contains(replicas, pod) {
+					return err
+				}
 			}
 			//Delete pod and wait next round to check if the new one is synced
 			err = r.rfHealer.DeletePod(pod, rf)

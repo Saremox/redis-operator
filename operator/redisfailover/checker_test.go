@@ -2475,7 +2475,9 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 		bootstrapping bool
 		unsettled     bool
 		// editR2 changes r2's pod as GetStatefulSetPods lists it.
-		editR2     func(*corev1.Pod)
+		editR2 func(*corev1.Pod)
+		// promoted makes r2 a master by the time it would be deleted.
+		promoted   bool
 		errOn      string
 		wantDelete string
 	}{
@@ -2539,6 +2541,16 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 			redises: unsyncedStale,
 			errOn:   "GetRedisRevisionHash",
 		},
+		{
+			name:     "an unsynced stale replica promoted since is not replaced",
+			redises:  unsyncedStale,
+			promoted: true,
+		},
+		{
+			name:    "the replica's role can't be read before it is replaced",
+			redises: unsyncedStale,
+			errOn:   "GetRedisesSlavesPods",
+		},
 	}
 
 	for _, test := range tests {
@@ -2566,11 +2578,13 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 				mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(nil, errBoom)
 			case "GetRedisRevisionHash":
 				mrfc.On("GetRedisRevisionHash", "r2", rf).Once().Return("", errBoom)
+			case "GetRedisesSlavesPods":
+				mrfc.On("GetRedisesSlavesPods", rf).Once().Return(nil, errBoom)
 			}
 			ips, replicas, pods := []string{}, []string{}, []corev1.Pod{}
 			for _, r := range test.redises {
 				ips = append(ips, r.ip)
-				if r.name != "master" {
+				if r.name != "master" && (r.name != "r2" || !test.promoted) {
 					replicas = append(replicas, r.name)
 				}
 				if r.ip != masterIP {
@@ -2591,8 +2605,8 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 			mrfc.On("GetRedisesSlavesPods", rf).Maybe().Return(replicas, nil)
 			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Maybe().Return(&corev1.PodList{Items: pods}, nil)
 			// Any other DeletePod would panic the mock.
+			mrfh.On("ResizePodInPlace", rf, mock.Anything, "new").Maybe().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
 			if test.wantDelete != "" {
-				mrfh.On("ResizePodInPlace", rf, test.wantDelete, "new").Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
 				mrfh.On("DeletePod", test.wantDelete, rf).Once().Return(nil)
 			}
 
