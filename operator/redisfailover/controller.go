@@ -164,7 +164,7 @@ func (c *rfController) enqueue(key string) {
 	c.queue.Add(key)
 }
 
-// enqueueAfter queues key once d has passed.
+// enqueueAfter uses a timer, because the queue has no delay.
 func (c *rfController) enqueueAfter(key string, d time.Duration) {
 	time.AfterFunc(d, func() { c.enqueue(key) })
 }

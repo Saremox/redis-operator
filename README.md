@@ -121,7 +121,11 @@ kubectl create -f https://raw.githubusercontent.com/Saremox/redis-operator/${RED
 
 Starting with `4.0.0`, Sentinel is disabled by default and failover is managed by the operator. Set `spec.sentinel.enabled: true` to deploy Sentinel resources, or use `spec.sentinel.failoverTimeout` to tune operator-managed failover.
 
-`spec.sentinel.failoverTimeout` (default `10s`, `0s` disables it) is how long the operator waits for a master that stopped answering while its pod is still running before it promotes a replica, so a short stall (GC pause, slow fork, network hiccup) doesn't cost a failover. The time counts from the first check the master missed, which the operator records on the master pod as the `redisfailovers.databases.spotahome.com/unreachable-since` annotation, so an operator restart or a new leader keeps the deadline; `status.message` shows the wait. A master that doesn't answer at all is also not replaced while its pod is still ready; once Kubernetes marks the pod not ready, the operator promotes as soon as the timeout has run out. When no master is found any more, for example because its pod is gone, the operator elects one at once; a master pod that is being deleted is waited for until it has exited.
+`spec.sentinel.failoverTimeout` is the time that the operator waits for a master that does not answer while its pod runs. The default is `10s`, and `0s` disables the wait. The wait prevents a failover after a short stall, for example a GC pause or a slow fork. A failover makes all replicas resync and can lose writes.
+
+The wait starts at the first check that the master misses. The operator records this time on the master pod in the `redisfailovers.databases.spotahome.com/unreachable-since` annotation, so an operator restart or a new leader keeps the deadline. During the wait, `status.message` shows how long the master did not answer.
+
+The operator does not replace a master that answers no check while its pod is ready. Such a master can still be alive, and a promotion then gives two masters. When Kubernetes marks the pod not ready, the operator promotes a replica after the timeout. When the operator finds no master, for example because the master pod is gone, it elects a master immediately. A master pod in deletion that is still ready can still accept writes, so the operator waits until the pod is not ready.
 
 This redis-failover will be managed by the operator, resulting in the following elements created inside Kubernetes:
 

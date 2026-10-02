@@ -25,8 +25,8 @@ import (
 // failure as "no master".
 var ErrAmbiguousMasterCount = errors.New("number of redis nodes known as master is different than 1")
 
-// ErrRedisNotAnswering is returned by GetNumberMasters when no pod answers as
-// master and a ready pod doesn't answer at all.
+// ErrRedisNotAnswering tells that no pod answered as master and a ready pod
+// did not answer, so that pod can still be the master.
 var ErrRedisNotAnswering = errors.New("ready redis pod did not answer")
 
 // ReplicaInfo holds information about a Redis replica for failover decisions

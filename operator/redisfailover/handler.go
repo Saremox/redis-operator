@@ -36,8 +36,8 @@ const (
 	// only exists outside the object itself, i.e. the cluster_ok metrics
 	// series (see the DeletionTimestamp branch in Handle).
 	redisFailoverFinalizer = "redisfailovers.databases.spotahome.com/finalizer"
-	// masterUnreachableAnnotation holds, on the master pod, when the operator
-	// first saw it not answering (RFC3339). failoverTimeout runs from there.
+	// masterUnreachableAnnotation holds, on the master pod, the RFC3339 time
+	// of the first check that the master missed. failoverTimeout counts from it.
 	masterUnreachableAnnotation = "redisfailovers.databases.spotahome.com/unreachable-since"
 )
 
@@ -63,11 +63,13 @@ type RedisFailoverHandler struct {
 	// rolloutWaits holds, per namespace/name, the rolloutWait the redis pod
 	// rollout waits on and since when.
 	rolloutWaits sync.Map
-	// unreachableCleared marks, per namespace/name, that no pod carries the
-	// unreachable-since annotation.
+	// unreachableCleared records, per namespace/name, that no pod has the
+	// unreachable-since annotation, so a healthy reconcile does not list the
+	// pods each time.
 	unreachableCleared sync.Map
 	now                func() time.Time
-	// requeue reconciles a RedisFailover again after a while.
+	// requeue queues a RedisFailover again after a delay. It is a field,
+	// because the handler exists before the controller that supplies it.
 	requeue func(key string, after time.Duration)
 }
 

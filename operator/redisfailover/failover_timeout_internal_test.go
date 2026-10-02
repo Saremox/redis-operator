@@ -39,8 +39,8 @@ type failoverTimeoutTest struct {
 	handler  *RedisFailoverHandler
 }
 
-// newFailoverTimeoutTest serves three running, ready pods, the first one
-// labelled master, and keeps the annotations the handler sets on them.
+// newFailoverTimeoutTest keeps the pod annotations that the handler sets, so
+// a test can read them back.
 func newFailoverTimeoutTest(timeout *metav1.Duration) *failoverTimeoutTest {
 	ft := &failoverTimeoutTest{
 		rf: &redisfailoverv1.RedisFailover{
@@ -83,7 +83,8 @@ func newFailoverTimeoutTest(timeout *metav1.Duration) *failoverTimeoutTest {
 	return ft
 }
 
-// restart replaces the handler, as an operator restart or a new leader would.
+// restart creates a new handler to simulate an operator restart or a new
+// leader.
 func (ft *failoverTimeoutTest) restart() {
 	ft.handler = NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, ft.checker, ft.healer, ft.k8s, metrics.Dummy, log.Dummy)
 	ft.handler.now = func() time.Time { return ft.now }
@@ -113,8 +114,8 @@ func (ft *failoverTimeoutTest) unreachableSince() string {
 	return ft.pods[0].Annotations[masterUnreachableAnnotation]
 }
 
-// unhealthyMaster runs a reconcile at the given offset that finds the master
-// counted but not answering, expecting a promotion or not.
+// unhealthyMaster moves the clock by at and runs a reconcile in which the
+// counted master does not answer.
 func (ft *failoverTimeoutTest) unhealthyMaster(at time.Duration, wantPromote bool) error {
 	ft.now = ft.now.Add(at)
 	ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
@@ -126,8 +127,8 @@ func (ft *failoverTimeoutTest) unhealthyMaster(at time.Duration, wantPromote boo
 	return ft.handler.CheckAndHeal(ft.rf)
 }
 
-// healthyMaster runs a reconcile at the given offset that finds the master
-// answering. The rest of the reconcile doesn't matter.
+// healthyMaster moves the clock by at and runs a reconcile in which the
+// master answers. The reconcile stops after the master check.
 func (ft *failoverTimeoutTest) healthyMaster(at time.Duration) error {
 	ft.now = ft.now.Add(at)
 	ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
@@ -188,7 +189,6 @@ func TestOperatorManagedModeZeroFailoverTimeoutFailsOverAtOnce(t *testing.T) {
 	ft.assertExpectations(t)
 }
 
-// An operator restart or a new leader keeps the deadline recorded on the pod.
 func TestOperatorManagedModeFailoverTimeoutSurvivesARestart(t *testing.T) {
 	ft := newFailoverTimeoutTest(&metav1.Duration{Duration: 30 * time.Second})
 	ft.pods[0].Annotations[masterUnreachableAnnotation] = ft.now.Add(-25 * time.Second).Format(time.RFC3339)
@@ -221,7 +221,7 @@ func TestOperatorManagedModeFailoverTimeoutRestartsWhenTheMasterAnswers(t *testi
 	assert.Error(t, ft.healthyMaster(8*time.Second))
 	assert.Empty(t, ft.unreachableSince(), "cleared when the master answers")
 
-	// A new blip gets the full timeout again.
+	// A new stall gets the full timeout again.
 	assert.NoError(t, ft.unhealthyMaster(4*time.Second, false))
 	assert.Equal(t, "master unreachable for 0s, failing over after 10s", ft.rf.Status.Message)
 	assert.NoError(t, ft.unhealthyMaster(9*time.Second, false))
@@ -230,8 +230,8 @@ func TestOperatorManagedModeFailoverTimeoutRestartsWhenTheMasterAnswers(t *testi
 	ft.assertExpectations(t)
 }
 
-// After a restart the handler doesn't know whether a pod still carries the
-// annotation, so the first healthy reconcile looks once.
+// After a restart, the handler does not know if a pod has the annotation.
+// Thus, the first healthy reconcile examines the pods one time.
 func TestOperatorManagedModeClearsALeftoverAnnotationAfterARestart(t *testing.T) {
 	ft := newFailoverTimeoutTest(nil)
 	ft.pods[0].Annotations[masterUnreachableAnnotation] = "2026-10-01T12:00:00Z"
@@ -245,8 +245,8 @@ func TestOperatorManagedModeClearsALeftoverAnnotationAfterARestart(t *testing.T)
 	ft.assertExpectations(t)
 }
 
-// A health check that finds no master at all doesn't wait: the counted
-// master may have restarted or become a replica since.
+// When the health check finds no master, the counted master can be restarted
+// or a replica now. A wait only makes the outage longer.
 func TestOperatorManagedModeNoMasterFoundByHealthCheckFailsOverAtOnce(t *testing.T) {
 	ft := newFailoverTimeoutTest(nil)
 	ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
@@ -268,9 +268,9 @@ func TestOperatorManagedModeUnhealthyMasterWithoutAPodFailsOverAtOnce(t *testing
 	ft.assertExpectations(t)
 }
 
-// With no master answering, a master pod that is still there gets the
-// timeout. Its clock starts while a ready pod doesn't answer, which itself
-// blocks any promotion.
+// When no pod answers as master, a master pod that is not ready gets the
+// timeout. The wait starts at the ErrRedisNotAnswering error, while the pod
+// is still ready.
 func TestOperatorManagedModeWaitsForAnUnreachableMasterPod(t *testing.T) {
 	ft := newFailoverTimeoutTest(nil)
 
@@ -319,8 +319,8 @@ func TestOperatorManagedModeElectsAtOnceWithoutAnUnreachableMasterPod(t *testing
 	}
 }
 
-// healthyMasterReconcile runs a full reconcile at the given offset that finds
-// the master answering and has nothing else to do.
+// healthyMasterReconcile moves the clock by at and runs a full reconcile in
+// which the master answers and no other change is necessary.
 func (ft *failoverTimeoutTest) healthyMasterReconcile(at time.Duration) error {
 	ft.now = ft.now.Add(at)
 	ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
@@ -355,7 +355,7 @@ func TestOperatorManagedModeFailoverTimeoutErrors(t *testing.T) {
 
 	t.Run("looking up a not ready master pod", func(t *testing.T) {
 		ft := newFailoverTimeoutTest(nil)
-		// masterPodStopping lists first; the second listing fails.
+		// The first listing is for masterPodStopping. The second listing fails.
 		ft.k8s = &mK8SService.Services{}
 		ft.k8s.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 		ft.k8s.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(ft.rf)).Once().Return(&corev1.PodList{}, nil)
@@ -376,7 +376,8 @@ func TestOperatorManagedModeFailoverTimeoutErrors(t *testing.T) {
 		ft.assertExpectations(t)
 	})
 
-	// The master is fine again, so a failed clear is only retried.
+	// The master answers again, so a failed clear does not make the
+	// RedisFailover unhealthy.
 	t.Run("clearing once the master answers", func(t *testing.T) {
 		ft := newFailoverTimeoutTest(nil)
 		assert.NoError(t, ft.unhealthyMaster(0, false))

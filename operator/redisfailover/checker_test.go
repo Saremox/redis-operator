@@ -617,7 +617,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 			wantMessage: "unable to check master health",
 		},
 		{
-			// No promotion expectations: promoting would fail the mock.
+			// The mocks expect no promotion, so a promotion fails the test.
 			name: "single master - unhealthy, waits for the failover timeout",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
 				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
@@ -2457,7 +2457,7 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeFailover(t *testing.T) 
 			wantElect: true,
 		},
 		{
-			// After failoverTimeout, 0s here.
+			// It fails over because failoverTimeout is 0s here.
 			name:     "an unreachable master on a live pod fails over",
 			masterIP: "10.0.0.1",
 			pods: []corev1.Pod{{

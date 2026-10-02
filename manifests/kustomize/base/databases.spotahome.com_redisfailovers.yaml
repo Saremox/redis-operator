@@ -14290,10 +14290,10 @@ spec:
                     type: array
                   failoverTimeout:
                     description: |-
-                      FailoverTimeout is how long operator-managed failover (sentinel.enabled=false)
-                      waits for a master that stopped answering while its pod is still running
-                      before promoting a replica. A master that is gone or no longer found is
-                      replaced without waiting. Defaults to 10s; 0s fails over at once.
+                      FailoverTimeout is the time that operator-managed failover (sentinel.enabled=false)
+                      waits for a master that does not answer while its pod runs, so that a short
+                      stall does not cause a failover. A master that is gone or not found gets no
+                      wait. Defaults to 10s; 0s disables the wait.
                     type: string
                   hostNetwork:
                     type: boolean

@@ -290,8 +290,7 @@ func (r *RedisFailoverHandler) masterPodStopping(rf *redisfailoverv1.RedisFailov
 	return false, nil
 }
 
-// findRedisPod returns the first running redis pod, not being deleted, that
-// matches, or nil.
+// findRedisPod ignores a pod in deletion, because that pod does not come back.
 func (r *RedisFailoverHandler) findRedisPod(rf *redisfailoverv1.RedisFailover, match func(*corev1.Pod) bool) (*corev1.Pod, error) {
 	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
 	if err != nil {
@@ -306,25 +305,24 @@ func (r *RedisFailoverHandler) findRedisPod(rf *redisfailoverv1.RedisFailover, m
 	return nil, nil
 }
 
-// unreachableMasterPod returns the pod labelled master if it is not ready.
-// With no master found, it didn't answer as master either.
+// unreachableMasterPod returns the pod labelled master only when it is not
+// ready. When no pod answers as master, a ready master pod answered as a
+// replica, or GetNumberMasters returned ErrRedisNotAnswering.
 func (r *RedisFailoverHandler) unreachableMasterPod(rf *redisfailoverv1.RedisFailover) (*corev1.Pod, error) {
 	return r.findRedisPod(rf, func(pod *corev1.Pod) bool {
 		return rfservice.IsMasterPod(pod) && !util.PodIsReady(pod)
 	})
 }
 
-// masterPodLookupFailed is the status message when the pods can't be listed
-// to find the master pod that doesn't answer.
 const masterPodLookupFailed = "unable to look up the master pod"
 
 func failoverKey(rf *redisfailoverv1.RedisFailover) string {
 	return rf.Namespace + "/" + rf.Name
 }
 
-// masterUnreachableSince returns when the master pod was first seen not
-// answering. The first time, it records now on the pod, so the deadline
-// survives an operator restart or a new leader.
+// masterUnreachableSince returns the time of the first check that the master
+// pod missed. It stores that time on the pod, so an operator restart or a new
+// leader keeps the deadline.
 func (r *RedisFailoverHandler) masterUnreachableSince(rf *redisfailoverv1.RedisFailover, pod *corev1.Pod) (time.Time, error) {
 	if since, err := time.Parse(time.RFC3339, pod.Annotations[masterUnreachableAnnotation]); err == nil {
 		return since, nil
@@ -334,10 +332,10 @@ func (r *RedisFailoverHandler) masterUnreachableSince(rf *redisfailoverv1.RedisF
 	return now, r.k8sservice.UpdatePodAnnotations(rf.Namespace, pod.Name, map[string]string{masterUnreachableAnnotation: now.UTC().Format(time.RFC3339)})
 }
 
-// clearMasterUnreachable removes the unreachable-since annotation once the
-// master answers or was replaced. After an operator restart, any pod may
-// still carry one. The master is fine by then, so a failure doesn't make the
-// RedisFailover unhealthy: it is logged, and the next reconcile tries again.
+// clearMasterUnreachable removes the unreachable-since annotation from all
+// redis pods, because an old annotation ends the wait of the next stall too
+// early. A failure is only logged, because the master answers again or was
+// replaced.
 func (r *RedisFailoverHandler) clearMasterUnreachable(rf *redisfailoverv1.RedisFailover) {
 	key := failoverKey(rf)
 	if _, cleared := r.unreachableCleared.Load(key); cleared {
@@ -367,8 +365,8 @@ func (r *RedisFailoverHandler) clearUnreachableAnnotations(rf *redisfailoverv1.R
 	return nil
 }
 
-// waitForFailover reports whether the master pod, which doesn't answer, gets
-// more time, because it hasn't been unreachable for failoverTimeout yet.
+// waitForFailover reports whether the master pod still has time to answer
+// before failoverTimeout ends.
 func (r *RedisFailoverHandler) waitForFailover(rf *redisfailoverv1.RedisFailover, pod *corev1.Pod) (bool, error) {
 	since, err := r.masterUnreachableSince(rf, pod)
 	if err != nil {
@@ -389,7 +387,7 @@ func (r *RedisFailoverHandler) waitForFailover(rf *redisfailoverv1.RedisFailover
 		State:   redisfailoverv1.NotHealthyState,
 		Message: msg,
 	}
-	// No pod event may come before the timeout runs out.
+	// The deadline can pass without a pod event, so queue a reconcile for it.
 	if r.requeue != nil {
 		r.requeue(failoverKey(rf), timeout-unreachable)
 	}
@@ -744,8 +742,9 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 
 	nMasters, err := r.rfChecker.GetNumberMasters(rf)
 	if err != nil {
-		// The master may be a ready pod that doesn't answer. Its
-		// failoverTimeout runs from now, while no one is promoted over it.
+		// The master can be a ready pod that does not answer. Its wait starts
+		// now, at the first missed check, and not when the pod becomes not
+		// ready. Errors are ignored, because this reconcile fails already.
 		if errors.Is(err, rfservice.ErrRedisNotAnswering) {
 			if pod, _ := r.findRedisPod(rf, rfservice.IsMasterPod); pod != nil {
 				_, _ = r.masterUnreachableSince(rf, pod)
@@ -775,8 +774,8 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		if stopping {
 			return nil
 		}
-		// A master pod that is there but doesn't answer gets failoverTimeout
-		// to come back. Without one, there is nothing to wait for.
+		// A master pod that does not answer gets failoverTimeout to recover.
+		// Without a master pod, a wait only makes the outage longer.
 		pod, err := r.unreachableMasterPod(rf)
 		if err != nil {
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -857,8 +856,8 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 					return nil
 				}
 			}
-			// A master that was found but doesn't answer gets the timeout.
-			// With none found it may be gone, so the election isn't delayed.
+			// Only a master that was found gets the wait. A master that was
+			// not found can be gone, and a wait only makes the outage longer.
 			if masterIP != "" {
 				pod, err := r.findRedisPod(rf, func(pod *corev1.Pod) bool { return pod.Status.PodIP == masterIP })
 				if err != nil {
