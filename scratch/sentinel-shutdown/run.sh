@@ -177,7 +177,10 @@ for _ in $(seq 1 60); do k get statefulset rfr-$rf >/dev/null 2>&1 && break; sle
 k wait --for=jsonpath='{.status.readyReplicas}'=3 statefulset/rfr-$rf --timeout=300s || die "redis not ready"
 k wait --for=jsonpath='{.status.readyReplicas}'=3 deployment/rfs-$rf --timeout=300s || die "sentinel not ready"
 
-k run writer --image=sentloss:ci --image-pull-policy=Never --restart=Never --command -- \
+# A shared PID namespace makes the pause container PID 1, so it reaps the
+# processes that busybox timeout orphans; sentloss would leave them as zombies.
+k run writer --image=sentloss:ci --image-pull-policy=Never --restart=Never \
+  --overrides='{"apiVersion":"v1","spec":{"shareProcessNamespace":true}}' --command -- \
   sh -c "exec sentloss write -rfrm rfrm-$rf:6379 -sentinel rfs-$rf:26379 -rate 20 >/tmp/w.log 2>&1" >/dev/null
 k wait --for=condition=Ready pod/writer --timeout=120s || die "writer not ready"
 
