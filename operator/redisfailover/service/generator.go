@@ -272,13 +272,27 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	// The redis pods have no service links, so the script finds Sentinel
 	// through the DNS name of the Sentinel Service.
 	// The kubelet stops the hook at the end of the grace period (30s by
-	// default), and then the script cannot SAVE. Thus each sentinel call has a
-	// 2s limit, and the Sentinel part ends after at most 18s: the wait for the
-	// new master stops at 15s, and its last poll takes at most 3s.
+	// default), and then the script cannot SAVE. Thus each call has a 2s
+	// limit, and the Sentinel part ends before 19s: the last failover request
+	// or poll starts before the 12s deadline and ends before 15s, and
+	// REPLICAOF and CLIENT UNPAUSE add a maximum of 4s.
+	// Until Sentinel promotes a replica, the master still accepts writes, and
+	// the promotion loses those that did not reach the replica. Thus the script
+	// pauses the writes, and makes the old master a replica of the new master
+	// before it ends the pause: the clients then get READONLY and not a lost
+	// OK. The pause stops 6s after the deadline, also if the script stops.
+	// Sentinel has no password, so only the local calls send REDIS_PASSWORD.
 	shutdownContent := ""
 	if rf.SentinelsAllowed() {
 		shutdownContent = fmt.Sprintf(`t=; command -v timeout >/dev/null 2>&1 && t="timeout 2"
-deadline=$(($(date +%%s) + 15))
+local_cli() {
+	if [ -n "${REDIS_PASSWORD}" ]; then
+		REDISCLI_AUTH="${REDIS_PASSWORD}" $t redis-cli -p %[2]v "$@"
+	else
+		$t redis-cli -p %[2]v "$@"
+	fi
+}
+deadline=$(($(date +%%s) + 12))
 self=$(hostname -i)
 master=""
 retries=0
@@ -293,9 +307,13 @@ if [ -z "$master" ]; then
 	echo "shutdown.sh: could not resolve the master from sentinel after $retries attempts" >&2
 fi
 if [ "$master" = "$self" ]; then
+  paused=$(local_cli CLIENT PAUSE $(((deadline + 6 - $(date +%%s)) * 1000)) WRITE)
+  if [ "$paused" != "OK" ]; then
+  	echo "shutdown.sh: could not pause the writes (CLIENT PAUSE WRITE needs Redis 6.2): $paused" >&2
+  fi
   failover=""
   retries=0
-  while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ]; do
+  while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ] && [ "$(date +%%s)" -lt "$deadline" ]; do
   	retries=$((retries + 1))
   	failover=$($t redis-cli -h %[1]v -p 26379 SENTINEL failover mymaster)
   	if [ "$failover" != "OK" ]; then
@@ -304,16 +322,20 @@ if [ "$master" = "$self" ]; then
   done
   if [ "$failover" != "OK" ]; then
   	echo "shutdown.sh: sentinel did not accept the failover after $retries attempts: $failover" >&2
+  else
+  	while { [ -z "$master" ] || [ "$master" = "$self" ]; } && [ "$(date +%%s)" -lt "$deadline" ]; do
+  		sleep 1
+  		master=$($t redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+  	done
+  	if [ -z "$master" ] || [ "$master" = "$self" ]; then
+  		echo "shutdown.sh: sentinel did not report a new master before the deadline" >&2
+  	else
+  		local_cli REPLICAOF "$master" %[2]v
+  	fi
   fi
-  while { [ -z "$master" ] || [ "$master" = "$self" ]; } && [ "$(date +%%s)" -lt "$deadline" ]; do
-  	sleep 1
-  	master=$($t redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
-  done
-  if [ -z "$master" ] || [ "$master" = "$self" ]; then
-  	echo "shutdown.sh: sentinel did not report a new master before the deadline" >&2
-  fi
+  local_cli CLIENT UNPAUSE
 fi
-`, GetSentinelName(rf))
+`, GetSentinelName(rf), port)
 	}
 	shutdownContent += fmt.Sprintf(`cmd="redis-cli -p %v"
 if [ ! -z "${REDIS_PASSWORD}" ]; then
