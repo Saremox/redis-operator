@@ -306,8 +306,8 @@ func (r *RedisFailoverHandler) findRedisPod(rf *redisfailoverv1.RedisFailover, m
 }
 
 // unreachableMasterPod returns the pod labelled master only when it is not
-// ready. When no pod answers as master, a ready master pod answered as a
-// replica, or GetNumberMasters returned ErrRedisNotAnswering.
+// ready. A ready master pod answered as a replica, or GetNumberMasters
+// returned ErrRedisNotAnswering.
 func (r *RedisFailoverHandler) unreachableMasterPod(rf *redisfailoverv1.RedisFailover) (*corev1.Pod, error) {
 	return r.findRedisPod(rf, func(pod *corev1.Pod) bool {
 		return rfservice.IsMasterPod(pod) && !util.PodIsReady(pod)
@@ -333,9 +333,8 @@ func (r *RedisFailoverHandler) masterUnreachableSince(rf *redisfailoverv1.RedisF
 }
 
 // clearMasterUnreachable removes the unreachable-since annotation from all
-// redis pods, because an old annotation ends the wait of the next stall too
-// early. A failure is only logged, because the master answers again or was
-// replaced.
+// redis pods, because an old annotation shortens the wait of the next stall.
+// A failure is only logged, because the master answers again or was replaced.
 func (r *RedisFailoverHandler) clearMasterUnreachable(rf *redisfailoverv1.RedisFailover) {
 	key := failoverKey(rf)
 	if _, cleared := r.unreachableCleared.Load(key); cleared {
@@ -743,8 +742,8 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 	nMasters, err := r.rfChecker.GetNumberMasters(rf)
 	if err != nil {
 		// The master can be a ready pod that does not answer. Its wait starts
-		// now, at the first missed check, and not when the pod becomes not
-		// ready. Errors are ignored, because this reconcile fails already.
+		// at this first missed check. Errors are ignored, because this
+		// reconcile fails already.
 		if errors.Is(err, rfservice.ErrRedisNotAnswering) {
 			if pod, _ := r.findRedisPod(rf, rfservice.IsMasterPod); pod != nil {
 				_, _ = r.masterUnreachableSince(rf, pod)

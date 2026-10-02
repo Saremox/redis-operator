@@ -64,12 +64,10 @@ type RedisFailoverHandler struct {
 	// rollout waits on and since when.
 	rolloutWaits sync.Map
 	// unreachableCleared records, per namespace/name, that no pod has the
-	// unreachable-since annotation, so a healthy reconcile does not list the
-	// pods each time.
+	// unreachable-since annotation, so a healthy reconcile does not list pods.
 	unreachableCleared sync.Map
 	now                func() time.Time
-	// requeue queues a RedisFailover again after a delay. It is a field,
-	// because the handler exists before the controller that supplies it.
+	// requeue is nil until New connects the controller.
 	requeue func(key string, after time.Duration)
 }
 
