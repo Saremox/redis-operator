@@ -104,6 +104,14 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 	if err != nil {
 		return err
 	}
+	for i := range ssp.Items {
+		// A stopping master still takes writes; electing another pod now
+		// would leave two writable masters.
+		if pod := &ssp.Items[i]; pod.DeletionTimestamp != nil && IsMasterPod(pod) && util.PodIsReady(pod) {
+			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("Master pod %s is stopping, waiting for it to exit before electing a master", pod.Name)
+			return nil
+		}
+	}
 	pods := masterCandidates(ssp.Items)
 	if len(pods) < 1 {
 		return errors.New("number of redis pods are 0")

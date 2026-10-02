@@ -201,12 +201,36 @@ func TestSetOldestAsMasterCandidates(t *testing.T) {
 		return p
 	}
 
+	master := func(p corev1.Pod) corev1.Pod {
+		p.Labels = map[string]string{"redisfailovers-role": "master"}
+		return p
+	}
+
 	tests := []struct {
 		name       string
 		pods       []corev1.Pod
 		wantMaster string
 		wantSlaves []string
+		wantErr    bool
 	}{
+		{
+			name: "ready terminating master blocks the election",
+			pods: []corev1.Pod{
+				pod("0.0.0.0", 3*time.Hour, true, false),
+				master(pod("1.1.1.1", 2*time.Hour, true, true)),
+				pod("2.2.2.2", time.Hour, true, false),
+			},
+		},
+		{
+			name: "not ready terminating master does not block the election",
+			pods: []corev1.Pod{
+				master(pod("0.0.0.0", 3*time.Hour, false, true)),
+				pod("1.1.1.1", 2*time.Hour, true, false),
+				pod("2.2.2.2", time.Hour, true, false),
+			},
+			wantMaster: "1.1.1.1",
+			wantSlaves: []string{"2.2.2.2"},
+		},
 		{
 			name: "terminating oldest pod is skipped",
 			pods: []corev1.Pod{
@@ -252,6 +276,7 @@ func TestSetOldestAsMasterCandidates(t *testing.T) {
 				pod("0.0.0.0", 2*time.Hour, true, true),
 				pod("1.1.1.1", time.Hour, true, true),
 			},
+			wantErr: true,
 		},
 	}
 
@@ -271,7 +296,7 @@ func TestSetOldestAsMasterCandidates(t *testing.T) {
 			err := healer.SetOldestAsMaster(rf)
 
 			if test.wantMaster == "" {
-				assert.Error(err)
+				assert.Equal(test.wantErr, err != nil)
 				mr.AssertNotCalled(t, "MakeMaster", mock.Anything, mock.Anything, mock.Anything)
 				mr.AssertNotCalled(t, "MakeSlaveOfWithPort", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 				return
