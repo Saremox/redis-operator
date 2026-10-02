@@ -45,7 +45,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install controller-gen
-        run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+        run: make install-controller-gen
       - run: make verify-codegen
 
   unit-test:

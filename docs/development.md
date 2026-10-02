@@ -25,11 +25,11 @@
 
 ## Generated code
 
-Two files are generated from `api/redisfailover/v1`'s type definitions and must stay in sync with them: `api/redisfailover/v1/zz_generated.deepcopy.go` and the CRD manifest (`manifests/databases.spotahome.com_redisfailovers.yaml`, mirrored into `manifests/kustomize/base/` and `charts/redisoperator/crds/`). Both are produced by [`controller-gen`](https://github.com/kubernetes-sigs/controller-tools) (`go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest`), no Docker required.
+Two files are generated from `api/redisfailover/v1`'s type definitions and must stay in sync with them: `api/redisfailover/v1/zz_generated.deepcopy.go` and the CRD manifest (`manifests/databases.spotahome.com_redisfailovers.yaml`, mirrored into `manifests/kustomize/base/` and `charts/redisoperator/crds/`). Both are produced by [`controller-gen`](https://github.com/kubernetes-sigs/controller-tools) (install the pinned version with `make install-controller-gen`), no Docker required.
 
-- After changing a type in `api/redisfailover/v1`, run `make generate-api` and commit the result.
+- After changing a type in `api/redisfailover/v1` or bumping `k8s.io/api` in `go.mod` (the CRD embeds core types such as `PodSpec`), run `make generate-api` and commit the result.
 - `make verify-codegen` regenerates and fails if that produces any diff - this is what CI runs, so a PR that changed the types without regenerating fails there if nothing else catches it first.
-- Run `make install-hooks` once per clone to also run `verify-codegen` locally as a pre-commit hook (only when a commit touches `api/**/*.go`, so it adds no overhead to unrelated commits).
+- Run `make install-hooks` once per clone to also run `verify-codegen` locally as a pre-commit hook (only when a commit touches `api/**/*.go` or `go.mod`, so it adds no overhead to unrelated commits).
 
 (The typed clientset in `client/k8s/clientset` is separate: it still comes from the Docker-based `make update-codegen`, changes far less often, and isn't covered by `verify-codegen`.)
 
