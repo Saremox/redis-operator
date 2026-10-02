@@ -60,6 +60,9 @@ type RedisFailoverHandler struct {
 	// passwords holds a passwordState per namespace/name, so a changed secret
 	// can be applied with the old password.
 	passwords sync.Map
+	// rolloutWaits holds, per namespace/name, the rolloutWait the redis pod
+	// rollout waits on and since when.
+	rolloutWaits sync.Map
 	// unreachableCleared marks, per namespace/name, that no pod carries the
 	// unreachable-since annotation.
 	unreachableCleared sync.Map
@@ -100,6 +103,7 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 		}
 		r.mClient.DeleteCluster(rf.Namespace, rf.Name)
 		r.passwords.Delete(passwordKey(rf))
+		r.rolloutWaits.Delete(passwordKey(rf))
 		r.unreachableCleared.Delete(failoverKey(rf))
 		remaining := slices.DeleteFunc(slices.Clone(rf.Finalizers), func(f string) bool {
 			return f == redisFailoverFinalizer
