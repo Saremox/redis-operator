@@ -31,6 +31,7 @@ type ReplicaInfo struct {
 	PodName           string
 	ReplicationOffset int64
 	IsReady           bool
+	PodReady          bool
 }
 
 // RedisFailoverCheck defines the interface able to check the correct status of redis failover
@@ -658,7 +659,10 @@ func (r *RedisFailoverChecker) CheckMasterHealth(rf *redisfailoverv1.RedisFailov
 }
 
 // GetBestReplicaForPromotion returns the best replica to promote as master.
-// Selection is based on replication offset (highest wins) to minimize data loss.
+// Replicas whose pod is Ready are preferred, so the new master is in the
+// master Service right away, then replicas with a synced replication link.
+// Among equally ready replicas the highest replication offset wins to
+// minimize data loss.
 func (r *RedisFailoverChecker) GetBestReplicaForPromotion(rf *redisfailoverv1.RedisFailover) (*ReplicaInfo, error) {
 	replicas, err := r.GetReplicaReplicationOffsets(rf)
 	if err != nil {
@@ -669,34 +673,28 @@ func (r *RedisFailoverChecker) GetBestReplicaForPromotion(rf *redisfailoverv1.Re
 		return nil, errors.New("no replicas available for promotion")
 	}
 
-	// Find replica with highest replication offset that is ready
 	var best *ReplicaInfo
 	for i := range replicas {
 		replica := &replicas[i]
-		if !replica.IsReady {
-			continue
-		}
-		if best == nil || replica.ReplicationOffset > best.ReplicationOffset {
+		if best == nil || promotionRank(replica) > promotionRank(best) ||
+			(promotionRank(replica) == promotionRank(best) && replica.ReplicationOffset > best.ReplicationOffset) {
 			best = replica
 		}
 	}
 
-	// If no ready replica found, fall back to any replica with highest offset
-	if best == nil {
-		for i := range replicas {
-			replica := &replicas[i]
-			if best == nil || replica.ReplicationOffset > best.ReplicationOffset {
-				best = replica
-			}
-		}
-	}
-
-	if best == nil {
-		return nil, errors.New("no suitable replica found for promotion")
-	}
-
-	r.logger.Infof("Selected replica %s (offset: %d) for promotion", best.IP, best.ReplicationOffset)
+	r.logger.Infof("Selected replica %s (pod: %s, pod ready: %t, offset: %d) for promotion", best.IP, best.PodName, best.PodReady, best.ReplicationOffset)
 	return best, nil
+}
+
+func promotionRank(replica *ReplicaInfo) int {
+	rank := 0
+	if replica.PodReady {
+		rank += 2
+	}
+	if replica.IsReady {
+		rank++
+	}
+	return rank
 }
 
 // GetReplicaReplicationOffsets returns replication offset information for all replicas
@@ -738,6 +736,7 @@ func (r *RedisFailoverChecker) GetReplicaReplicationOffsets(rf *redisfailoverv1.
 			PodName:           rp.Name,
 			ReplicationOffset: replInfo.SlaveReplOffset,
 			IsReady:           isReady,
+			PodReady:          util.PodIsReady(&rp),
 		})
 	}
 
