@@ -2005,15 +2005,15 @@ func TestGetBestReplicaForPromotionRanking(t *testing.T) {
 		expected string
 	}{
 		{
-			// A master restarted in place holds writes the Ready replica
-			// never got: promoting the replica would drop them.
+			// A master that restarted in place can have writes that the
+			// Ready replica did not get. A promotion of that replica drops them.
 			name:     "higher offset wins over a ready pod",
 			replicas: []replica{{ready: false, offset: 900}, {ready: true, offset: 800}},
 			expected: "1.1.1.1",
 		},
 		{
-			// After a graceful shutdown the restarted old master's offset
-			// equals its replica's.
+			// After a graceful shutdown, the restarted old master has the
+			// same offset as its replica.
 			name:     "ready pod wins at equal offset",
 			replicas: []replica{{ready: false, offset: 800}, {ready: true, offset: 800}},
 			expected: "1.1.1.2",

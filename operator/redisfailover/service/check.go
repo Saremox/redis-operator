@@ -31,9 +31,8 @@ type ReplicaInfo struct {
 	IP                string
 	PodName           string
 	ReplicationOffset int64
-	// Synced is true when the replica's link to its master is up and not syncing.
-	Synced bool
-	// PodReady is true when Kubernetes reports the replica's pod Ready.
+	// Synced is true when `master_link_status` is `up` and no sync is in progress.
+	Synced   bool
 	PodReady bool
 }
 
@@ -661,11 +660,10 @@ func (r *RedisFailoverChecker) CheckMasterHealth(rf *redisfailoverv1.RedisFailov
 	return isMaster, masterIP, nil
 }
 
-// GetBestReplicaForPromotion returns the best replica to promote as master.
-// A synced replica is preferred, then the highest replication offset to
-// minimize data loss. Among equal offsets a replica whose pod is Ready wins,
-// so the new master is in the master Service right away; readiness never
-// overrides a higher offset.
+// GetBestReplicaForPromotion prefers a synced replica, then the highest
+// replication offset, to lose the fewest writes. Pod readiness decides only
+// between equal offsets, because the master Service sends traffic only to
+// Ready pods.
 func (r *RedisFailoverChecker) GetBestReplicaForPromotion(rf *redisfailoverv1.RedisFailover) (*ReplicaInfo, error) {
 	replicas, err := r.GetReplicaReplicationOffsets(rf)
 	if err != nil {
