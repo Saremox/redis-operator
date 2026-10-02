@@ -8,6 +8,7 @@ rules:
     resources:
       - redisfailovers
       - redisfailovers/finalizers
+      - redisfailovers/status
     verbs:
       - "*"
   - apiGroups:
