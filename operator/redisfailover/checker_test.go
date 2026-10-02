@@ -2000,8 +2000,8 @@ func TestUpdate(t *testing.T) {
 					mrfc.On("CheckRedisSlavesReady", pod.pod.Status.PodIP, rf).Once().Return(pod.ready, nil)
 				}
 				if !pod.ready {
-					// A replica syncing on the update revision is waited for,
-					// and the wait is reported.
+					// The report of the wait reads the update revision and
+					// the pods a second time.
 					mrfc.On("GetStatefulSetUpdateRevision", rf).Twice().Return(test.ssVersion, nil)
 					mrfc.On("GetRedisRevisionHash", pod.pod.Name, rf).Once().Return(pod.pod.Labels[appsv1.ControllerRevisionHashLabelKey], nil)
 					mk = &mK8SService.Services{}
@@ -2527,8 +2527,8 @@ func TestUpdateRedisesPodsResizeError(t *testing.T) {
 	mrfh.AssertExpectations(t)
 }
 
-// A replica on a stale revision that can't sync, e.g. after reverting an image
-// its replica can't sync with, is replaced instead of being waited for.
+// A wait for an unsynced replica on a stale revision can be infinite, for
+// example after an image revert. The rollout replaces such a replica.
 func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 	type redis struct {
 		name, ip, revision string
@@ -2542,9 +2542,9 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 		noMaster      bool
 		bootstrapping bool
 		unsettled     bool
-		// editR2 changes r2's pod as GetStatefulSetPods lists it.
+		// editR2 changes the r2 pod in the GetStatefulSetPods result.
 		editR2 func(*corev1.Pod)
-		// promoted makes r2 a master by the time it would be deleted.
+		// promoted makes r2 a master before the delete.
 		promoted   bool
 		errOn      string
 		wantDelete string
@@ -2689,7 +2689,7 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 				mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(nil, errBoom)
 			}
 			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Maybe().Return(&corev1.PodList{Items: pods}, nil)
-			// Any other DeletePod would panic the mock.
+			// The mock panics on any other DeletePod.
 			mrfh.On("ResizePodInPlace", rf, mock.Anything, "new").Maybe().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
 			if test.wantDelete != "" {
 				mrfh.On("DeletePod", test.wantDelete, rf).Once().Return(nil)

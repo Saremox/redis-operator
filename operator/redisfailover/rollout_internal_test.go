@@ -164,8 +164,8 @@ func TestUpdateRedisesPodsReportsAStalledReplacement(t *testing.T) {
 	}
 }
 
-// A replica reported as stalled on the update revision becomes stale when the
-// change is reverted. It is then replaced, and the wait starts over.
+// A revert makes a stalled replica stale. The rollout replaces it, and the
+// stall time starts again.
 func TestUpdateRedisesPodsResetsTheWaitOnAReplacedStaleReplica(t *testing.T) {
 	rt := newRolloutTest(t)
 	key := passwordKey(rt.rf)
@@ -174,7 +174,7 @@ func TestUpdateRedisesPodsResetsTheWaitOnAReplacedStaleReplica(t *testing.T) {
 	time.Sleep(2 * rolloutStallTimeout)
 	assert.Equal(t, "rollout waiting on pod rfr-test-1 for more than 0m: not synced with the master", rt.update(""))
 
-	// Reverted: the replica that never synced is now on a stale revision.
+	// The revert puts the unsynced replica on a stale revision.
 	rt.pods[1].Labels[appsv1.ControllerRevisionHashLabelKey] = "old"
 	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new").Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
 	rt.heal.On("DeletePod", "rfr-test-1", rt.rf).Once().Return(nil)
@@ -182,7 +182,7 @@ func TestUpdateRedisesPodsResetsTheWaitOnAReplacedStaleReplica(t *testing.T) {
 	_, tracked := rt.handler.rolloutWaits.Load(key)
 	assert.False(t, tracked)
 
-	// Its replacement is waited for from now on, not from the first wait.
+	// The stall time of the replacement starts at this wait.
 	rt.pods[1].UID = "r2"
 	rt.pods[1].Labels[appsv1.ControllerRevisionHashLabelKey] = "new"
 	assert.Empty(t, rt.update(""))

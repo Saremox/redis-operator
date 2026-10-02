@@ -40,11 +40,10 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 		r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("masterIP", masterIP).Debug("got master IP")
 	}
 	// No performed updates when nodes are syncing, still not connected, etc.
-	// A replica that isn't synced but is on a stale revision is the exception:
-	// it has nothing the master lacks and is due for replacement anyway, e.g. a
-	// replica that can't load the master's RDB after a reverted image change.
-	// It is replaced first instead of being waited for forever. Its
-	// replacement is on the update revision, so it is waited for.
+	// The exception is an unsynced replica on a stale revision, for example on
+	// an image that cannot load the RDB of the master. It has no data to lose,
+	// and a wait for it can be infinite. Its replacement is on the update
+	// revision, so the rollout waits for it and does not replace it again.
 	ssUR := ""
 	var podNames map[string]string
 	var unsyncedStale []string
@@ -58,7 +57,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			if ready {
 				continue
 			}
-			// Without a known master, rip may be the master.
+			// Without a known master, rip can be the master. Do not replace it.
 			if masterIP == "" && !rf.Bootstrapping() {
 				wait, err = r.replicaRolloutWait(rf, rip)
 				return err
@@ -116,8 +115,8 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			if recreate, err := r.resizeInPlace(rf, pod, ssUR); err != nil || !recreate {
 				return err
 			}
-			// A master fails the sync check too, and sentinel may have promoted
-			// an unsynced stale replica since GetMasterIP.
+			// A master also fails the sync check, and sentinel can promote the
+			// candidate after GetMasterIP. Read the role again before the delete.
 			if len(unsyncedStale) > 0 {
 				replicas, err := r.rfChecker.GetRedisesSlavesPods(rf)
 				if err != nil || !slices.Contains(replicas, pod) {
@@ -198,7 +197,8 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 	return nil
 }
 
-// redisPodNamesByIP maps the IPs of the redis pods to their names.
+// redisPodNamesByIP leaves out terminating pods, because the rollout must not
+// delete a pod two times.
 func (r *RedisFailoverHandler) redisPodNamesByIP(rf *redisfailoverv1.RedisFailover) (map[string]string, error) {
 	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
 	if err != nil {
