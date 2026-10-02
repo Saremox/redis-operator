@@ -4,6 +4,7 @@
 #   scripts/release.sh set-version <version>
 #   scripts/release.sh check-version <version>
 #   scripts/release.sh chart-values <chart-dir> <repository> <version>
+#   git tag --list | scripts/release.sh floating <version>
 #
 # A release workflow runs after its tag exists, so it cannot change the files
 # at the tag. Users pin a tag in the raw manifest URLs and in the kustomize
@@ -28,7 +29,7 @@ version_fields=(
 mapfile -t version_files < <(printf '%s\n' "${version_fields[@]%%|*}" | uniq)
 
 usage() {
-    sed -n '3,6p' "$0" | sed 's/^# *//' >&2
+    sed -n '3,7p' "$0" | sed 's/^# *//' >&2
     exit 2
 }
 
@@ -105,6 +106,22 @@ chart_values() {
         "${chart}/values.yaml"
 }
 
+# Prints, for GITHUB_OUTPUT, which floating tags a release moves: latest, the
+# major tag and the major.minor tag. A release moves a tag only when it is the
+# highest full release that the tag covers. Otherwise a patch on an older line
+# moves the tag back. Reads the existing tags on stdin.
+floating() {
+    local version=$1 major minor rest releases
+    releases=$( (cat; echo "$version") | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -u -V)
+    IFS=. read -r major minor rest <<<"$version"
+    highest_is() {
+        [ "$(grep -E "^$1" <<<"$releases" | tail -n1)" = "$version" ] && echo true || echo false
+    }
+    echo "latest=$(highest_is '')"
+    echo "major=$(highest_is "${major}\.")"
+    echo "minor=$(highest_is "${major}\.${minor}\.")"
+}
+
 root=$(dirname "$0")/..
 
 case "${1:-}" in
@@ -124,6 +141,11 @@ chart-values)
     [ $# -eq 4 ] || usage
     validate_version "$4"
     chart_values "$2" "$3" "$4"
+    ;;
+floating)
+    [ $# -eq 2 ] || usage
+    validate_version "$2"
+    floating "$2"
     ;;
 *)
     usage

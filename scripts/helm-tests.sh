@@ -46,6 +46,19 @@ if "${check_tree}/scripts/release.sh" check-version "${version}" >/dev/null 2>&1
     exit 1
 fi
 
+# A patch on an older release line must not move latest or the major tag.
+floating_tags() {
+    printf '4.1.2\n4.2.0-rc2\n4.2.0\n' | ./scripts/release.sh floating "$1" | tr '\n' ' '
+}
+for want in "4.1.3:latest=false major=false minor=true " "4.2.1:latest=true major=true minor=true " \
+    "4.3.0-rc1:latest=false major=false minor=false "; do
+    got=$(floating_tags "${want%%:*}")
+    if [ "${got}" != "${want#*:}" ]; then
+        echo "Floating tags of ${want%%:*}: '${got}', want '${want#*:}'." >&2
+        exit 1
+    fi
+done
+
 helm lint ${chart}
 helm template ${chart} --kube-version ${kube_version}
 
