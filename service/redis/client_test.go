@@ -289,6 +289,24 @@ func TestMakeSlaveOfWithPort_ConnectionError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestMakeSlaveOf_ConnectionError covers the MakeSlaveOf wrapper where
+// TestMakeSlaveOf skips: on a CI runner the redis-server package runs a Redis
+// on 127.0.0.1:6379. This test uses 127.0.0.2, which that Redis does not
+// bind, and checks that the wrapper connects to the target on redisPort.
+func TestMakeSlaveOf_ConnectionError(t *testing.T) {
+	const target = "127.0.0.2"
+	addr := net.JoinHostPort(target, redisPort)
+	if conn, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
+		_ = conn.Close()
+		t.Skipf("a server listens on %s; skipping so the test does not change it", addr)
+	}
+	c := newTestClient()
+
+	err := c.MakeSlaveOf(target, "10.0.0.1", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), addr)
+}
+
 func TestMakeMaster(t *testing.T) {
 	requireRedisServer(t)
 	master := startRedisProcess(t)

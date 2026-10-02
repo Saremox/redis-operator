@@ -869,6 +869,42 @@ func TestGetNumberMastersReadyPodUnanswered(t *testing.T) {
 	}
 }
 
+// A pod that is not running or that is terminating is not asked, and does not
+// make the count unknown.
+func TestGetNumberMastersSkipsPodsNotRunningOrTerminating(t *testing.T) {
+	ready := []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "redis-0"},
+				Status:     corev1.PodStatus{PodIP: "0.0.0.0", Phase: corev1.PodRunning, Conditions: ready},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "redis-1"},
+				Status:     corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodPending},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "redis-2", DeletionTimestamp: &metav1.Time{Time: time.Now()}},
+				Status:     corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodRunning, Conditions: ready},
+			},
+		},
+	}
+
+	rf := generateRF()
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	// The mock panics if IsMaster is called for redis-1 or redis-2.
+	mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(false, nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	n, err := checker.GetNumberMasters(rf)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, n)
+	mr.AssertExpectations(t)
+}
+
 func TestGetNumberMasters(t *testing.T) {
 	assert := assert.New(t)
 
