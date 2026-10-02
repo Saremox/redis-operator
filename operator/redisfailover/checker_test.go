@@ -2396,6 +2396,10 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) 
 			err := handler.CheckAndHeal(rf)
 
 			assert.Equal(t, test.podsErr, err)
+			if test.podsErr != nil {
+				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+				assert.Equal(t, "unable to check whether the master is stopping", rf.Status.Message)
+			}
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
 			mk.AssertExpectations(t)
@@ -2463,6 +2467,10 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeFailover(t *testing.T) 
 			err := handler.CheckAndHeal(rf)
 
 			assert.Equal(t, test.podsErr, err)
+			if test.podsErr != nil {
+				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+				assert.Equal(t, "unable to check whether the master is stopping", rf.Status.Message)
+			}
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
 			mk.AssertExpectations(t)
