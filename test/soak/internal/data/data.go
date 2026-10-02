@@ -118,8 +118,16 @@ func (d *Data) Filled() bool { return d.filled.Load() }
 func (d *Data) Begin() { d.mutating.Store(true) }
 
 // Refill makes Filled false until the filler reached its target again,
-// after the instance was recreated empty.
-func (d *Data) Refill() { d.filled.Store(false) }
+// after the instance was recreated empty, and forgets every write so far.
+func (d *Data) Refill() {
+	d.filled.Store(false)
+	if d.ledger != nil {
+		d.ledger.forget()
+	}
+	d.fillMu.Lock()
+	d.fillAck.dropBelow(d.fillNext)
+	d.fillMu.Unlock()
+}
 
 // Verify verifies the data after a mutation, at the mutator's step, and
 // ends the mutation. event is the mutation's kind, or config.EventReset for

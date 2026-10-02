@@ -327,6 +327,40 @@ func TestVerifyAfterReset(t *testing.T) {
 	}
 }
 
+// A reset recreates the instance empty on purpose: only the writes since
+// count.
+func TestVerifyRefilled(t *testing.T) {
+	d, m, _, mt := newTestData(t, true)
+	ctx := context.Background()
+	write := func(n int) {
+		for range n {
+			seq := d.ledger.begin()
+			key := LedgerKey("x", seq)
+			d.ledger.end(seq, d.client.Set(ctx, key, Value(key, 64), 0).Err() == nil)
+		}
+	}
+	write(100)
+	d.writeFill(ctx, 1000)
+	if _, err := d.verify(ctx, config.EventPeriodic, 0); err != nil {
+		t.Fatal(err)
+	}
+	write(30)
+	m.FlushAll()
+	d.Refill()
+	if d.Filled() {
+		t.Error("filled after the reset")
+	}
+	write(10)
+	d.writeFill(ctx, 10)
+	m.Del(LedgerKey("x", 135))
+	if n, err := d.verify(ctx, config.EventReset, 3); err != nil || n != 1 {
+		t.Errorf("verify = %d, %v, want 1 lost", n, err)
+	}
+	if got := testutil.ToFloat64(mt.LostWrites.WithLabelValues("x", "ns", "operator", config.EventReset)); got != 1 {
+		t.Errorf("lost %v, want 1", got)
+	}
+}
+
 func TestVerifyEvictable(t *testing.T) {
 	d, m, fi, mt := newTestData(t, false)
 	ctx := context.Background()

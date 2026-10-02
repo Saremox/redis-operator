@@ -91,6 +91,14 @@ func (l *ledger) agedOut(s span) {
 	l.acked.dropBelow(l.aged)
 }
 
+// forget forgets every write so far, as if verified and aged out.
+func (l *ledger) forget() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.verified, l.aged = l.next, l.next
+	l.acked.dropBelow(l.next)
+}
+
 // recentSample returns up to k of the writes acknowledged since the last
 // verification. Their keys are deleted only after two more verifications.
 func (l *ledger) recentSample(rnd *rand.Rand, k int) []int64 {
