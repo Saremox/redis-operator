@@ -2487,7 +2487,6 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeFailover(t *testing.T) 
 			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Return(&corev1.PodList{Items: test.pods}, test.podsErr)
 			if test.masterIP != "" {
 				rf.Spec.Sentinel.FailoverTimeout = &metav1.Duration{}
-				mk.On("UpdatePodAnnotations", rf.Namespace, "rfr-0", mock.Anything).Return(nil)
 			}
 			if test.wantElect {
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: "10.0.0.2"}, nil)

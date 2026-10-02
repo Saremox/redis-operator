@@ -367,6 +367,12 @@ func (r *RedisFailoverHandler) clearUnreachableAnnotations(rf *redisfailoverv1.R
 // waitForFailover reports whether the master pod still has time to answer
 // before failoverTimeout ends.
 func (r *RedisFailoverHandler) waitForFailover(rf *redisfailoverv1.RedisFailover, pod *corev1.Pod) (bool, error) {
+	timeout := rf.GetFailoverTimeoutDuration()
+	// Without a wait there is no deadline to keep, so a failed annotation
+	// write must not stop the failover.
+	if timeout <= 0 {
+		return false, nil
+	}
 	since, err := r.masterUnreachableSince(rf, pod)
 	if err != nil {
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -376,7 +382,6 @@ func (r *RedisFailoverHandler) waitForFailover(rf *redisfailoverv1.RedisFailover
 		return false, err
 	}
 	unreachable := r.now().Sub(since)
-	timeout := rf.GetFailoverTimeoutDuration()
 	if unreachable >= timeout {
 		return false, nil
 	}

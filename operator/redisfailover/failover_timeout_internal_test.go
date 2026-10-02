@@ -186,6 +186,16 @@ func TestOperatorManagedModeZeroFailoverTimeoutFailsOverAtOnce(t *testing.T) {
 	ft.assertExpectations(t)
 }
 
+// A failed annotation write can't stop a failover without a wait.
+func TestOperatorManagedModeZeroFailoverTimeoutDoesNotPatchThePod(t *testing.T) {
+	ft := newFailoverTimeoutTest(&metav1.Duration{})
+	ft.patchErr = errors.New("api err")
+	assert.NoError(t, ft.unhealthyMaster(0, true))
+	assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
+	ft.k8s.AssertNotCalled(t, "UpdatePodAnnotations", mock.Anything, mock.Anything, mock.Anything)
+	ft.assertExpectations(t)
+}
+
 func TestOperatorManagedModeFailoverTimeoutSurvivesARestart(t *testing.T) {
 	ft := newFailoverTimeoutTest(&metav1.Duration{Duration: 30 * time.Second})
 	ft.pods[0].Annotations[masterUnreachableAnnotation] = ft.now.Add(-25 * time.Second).Format(time.RFC3339)
