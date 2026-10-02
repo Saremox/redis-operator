@@ -99,3 +99,22 @@ func TestResetNotCreated(t *testing.T) {
 		t.Errorf("rejected resets = %v, want 1", got)
 	}
 }
+
+// noMasterData is the data of an instance without a single master: a
+// verification ends only when its ctx is done. A ctx with a deadline is
+// done at once, so that the test need not wait for verifyBound.
+type noMasterData struct{ fakeData }
+
+func (noMasterData) Verify(ctx context.Context, _ string, _ int) (int, error) {
+	if _, ok := ctx.Deadline(); ok {
+		return 0, context.DeadlineExceeded
+	}
+	<-ctx.Done()
+	return 0, ctx.Err()
+}
+
+// A verification after a mutation that left no single master must not hold
+// the global lock forever.
+func TestVerifyBounded(t *testing.T) {
+	mutateWithin(t, failedResetMutator(t, noMasterData{}), config.Reset)
+}
