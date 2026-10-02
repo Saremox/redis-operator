@@ -200,10 +200,10 @@ func (r *Replica) verifyPod(ctx context.Context, p observer.PodAddr, seqs []int6
 	return len(lost), err
 }
 
-// caughtUp reports whether a replica's INFO replication shows it has
-// replicated as far as at. Offsets of different streams can't be
-// compared: after the source's master was replaced, a replica that hasn't
-// synced with the new one yet may be far ahead in the old stream.
+// caughtUp reports whether INFO replication of a replica shows that it
+// replicated as far as at. Offsets of different streams are not comparable:
+// after a new source master starts, a replica that did not sync with it yet
+// can be far ahead in the old stream.
 func caughtUp(info map[string]string, at position) bool {
 	offset, err := strconv.ParseInt(info["slave_repl_offset"], 10, 64)
 	return err == nil && info["master_link_status"] == "up" && info["master_replid"] == at.replID && offset >= at.offset

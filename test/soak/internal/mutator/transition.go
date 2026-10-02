@@ -43,9 +43,9 @@ func (m *Mutator) judge(ctx context.Context, t *transition, converged bool, lost
 	return result
 }
 
-// observe gathers what a version change that didn't converge left behind:
-// the master, its version and whether it takes writes, and for every pod
-// of the changed image its state and any log line about loading the data.
+// observe collects what a version change that did not converge left behind:
+// the master, its version and whether it accepts writes, and for each pod of
+// the changed image its state and any log line about the data load.
 func (m *Mutator) observe(ctx context.Context, t *transition) observation {
 	var o observation
 	s, err := m.fetch(ctx, fetchOpts{servers: true})
@@ -91,8 +91,8 @@ func (m *Mutator) writable(ctx context.Context, addr string) error {
 	return c.Set(ctx, "soak:"+m.in.Name+":version:writable", time.Now().Unix(), 0).Err()
 }
 
-// loadError returns a line of the container's log, or of its previous
-// run's, saying it couldn't load the data.
+// loadError returns a line of the container log, or of the log of its previous
+// run, that says that it could not load the data.
 func (m *Mutator) loadError(ctx context.Context, p *corev1.Pod, container string) string {
 	restarted := false
 	for _, cs := range p.Status.ContainerStatuses {

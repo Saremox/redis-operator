@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/name: redis-soak
 spec:
   replicas: 1
-  # Two testers would write the same probe keys.
+  # A second tester writes the same probe keys.
   strategy:
     type: Recreate
   selector:
@@ -30,12 +30,12 @@ spec:
           args:
             - -config=/etc/soak/config.yaml
           env:
-            # A drain never picks the tester's own node.
+            # A drain never picks the node of the tester.
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            # helm's cache and config, for operator_upgrade.
+            # The helm cache and config, for operator_upgrade.
             - name: HOME
               value: /tmp
           ports:

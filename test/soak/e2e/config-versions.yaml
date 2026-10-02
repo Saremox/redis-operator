@@ -1,17 +1,18 @@
-# kind-e2e's config for E2E_PROFILE=versions: only the server version and
-# fork instances, made by the tester from the rf-*.yaml templates next to
-# this file, with 2 redis pods and small fills. Seed 9 takes every edge
-# within edge's first 14 steps (7 edges, each reset after), every chain
-# completes and resets within its first 6, and every instance runs every
-# enabled kind within its first 16. kind-e2e sets stopAfter to DURATION.
+# The kind-e2e config for E2E_PROFILE=versions: only the server version
+# and fork instances. The tester makes them from the rf-*.yaml templates
+# next to this file, with 2 redis pods and small fills. Seed 9 takes each
+# edge within the first 14 steps of edge (7 edges, each followed by a
+# reset). Each chain completes and resets within its first 6 steps, and
+# each instance runs each enabled kind within its first 16 steps. kind-e2e
+# sets stopAfter to DURATION.
 operator:
   namespace: redis-operator
   deployment: redis-operator
 observer:
   interval: 5s
   convergenceTimeout: 6m
-  # Only reported: on the operator without the readiness fix, edge's
-  # replicas that can't load the master's RDB stay Ready.
+  # Report only: on an operator without the readiness fix (PR #205), the
+  # replicas of edge that cannot load the RDB of the master stay Ready.
   replicaReadyWithoutData: false
 mutation:
   interval: 10s
@@ -19,12 +20,13 @@ mutation:
   minDwell: 15s
   seed: 9
   stopAfter: 3000s
-  # Every redis pod is replaced in turn and starts and syncs.
+  # perPod, because the operator replaces each redis pod in turn, and
+  # each new pod starts and syncs.
   timeouts:
     image_upgrade: {base: 3m, perPod: 90s}
     sentinel_image_upgrade: {base: 3m, perPod: 30s}
     reset: {base: 3m, perPod: 60s}
-# Exact patch tags, pulled from Docker Hub on 2026-10-01.
+# Exact patch tags, from Docker Hub on 2026-10-01.
 versions:
   - {name: redis-7.2, image: "redis:7.2.16-alpine"}
   - {name: redis-7.4, image: "redis:7.4.11-alpine"}
@@ -41,9 +43,9 @@ edges:
   - {from: redis-7.2, to: valkey-7.2, expect: ok}
   - {from: redis-7.2, to: valkey-8, expect: ok}
   - {from: redis-7.2, to: valkey-9, expect: ok}
-  # Redis moved its RDB format on after the fork. A change along these
-  # is judged a minute after a pod on the new version couldn't load the
-  # data, or when it converges.
+  # Redis changed its RDB format after the fork. The tester judges a
+  # change along these edges when it converges, or one minute after a pod
+  # on the new version could not load the data.
   - {from: redis-7.4, to: valkey-7.2, expect: unknown}
   - {from: redis-7.4, to: valkey-8, expect: unknown}
   - {from: redis-7.4, to: valkey-9, expect: unknown}
@@ -107,8 +109,8 @@ instances:
       kinds:
         image_upgrade: 1
         sentinel_image_upgrade: 1
-  # Redis 7.4 or 8, in turn per reset, and only the unknown edges into
-  # Valkey.
+  # Starts on Redis 7.4 or 8, in turn for each reset, and takes only the
+  # unknown edges into Valkey.
   - name: edge
     namespace: edge
     mode: operator
@@ -123,7 +125,8 @@ instances:
     mutations:
       kinds:
         image_upgrade: 1
-  # Valkey 9 with maxMemory allkeys-lfu: the filler only.
+  # Valkey 9 with maxMemory allkeys-lfu. Filler only, because allkeys-*
+  # can evict ledger keys.
   - name: valkey-op
     namespace: valkey-op
     mode: operator

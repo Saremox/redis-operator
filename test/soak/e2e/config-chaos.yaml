@@ -1,11 +1,11 @@
-# kind-e2e's config for E2E_PROFILE=chaos: the chaos lane on a control
-# plane and two workers, against four small instances the tester creates
+# The kind-e2e config for E2E_PROFILE=chaos: the chaos lane on a control
+# plane and two workers, with four small instances that the tester creates
 # from the rf-chaos-*.yaml and rf-mixed-sent.yaml templates. Seed 54 takes
 # operator_restart, operator_upgrade, a node_drain of the second worker,
-# another operator_upgrade and a drain of the first, one per 60-90s and
-# each once the last converged; mixed-sent flips its Sentinel image
-# between Valkey 9 and Redis 7.2 meanwhile. kind-e2e fills in the upgrade's
-# versions and sets stopAfter to DURATION.
+# operator_upgrade again and a drain of the first worker. Each action
+# starts 60-90s after the previous one converged. At the same time,
+# mixed-sent flips its Sentinel image between Valkey 9 and Redis 7.2.
+# kind-e2e sets the upgrade versions and sets stopAfter to DURATION.
 operator:
   namespace: redis-operator
   deployment: redis-operator
@@ -28,7 +28,7 @@ chaos:
   timeout: 5m
   upgrade:
     timeout: 5m
-    # kind-e2e replaces both with the versions it built, or the RCs.
+    # kind-e2e replaces both with the versions that it built, or with the RCs.
     versions:
       - {name: from, chart: chart-from.tgz, image: "redis-operator:from"}
       - {name: to, chart: chart-to.tgz, image: "redis-operator:to"}
@@ -48,8 +48,8 @@ instances:
     data:
       fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
       ledger: {writesPerSecond: 10}
-  # Three pods on volumes that move with them, with auth: its budget lets
-  # a drain evict one pod at a time.
+  # Three pods with auth, on volumes that move with the pods. Its budget
+  # lets a drain evict one pod at a time.
   - name: chaos-pvc
     namespace: chaos-pvc
     mode: operator

@@ -6,14 +6,13 @@ import (
 	"time"
 )
 
-// tracker follows each invariant's violations and the convergence window
-// they are judged against. While a window is open, the instance is expected
-// to be converging after a change, so a violation that starts then is not a
-// finding. A window closes once every invariant holds, or after the
-// convergence timeout; violations still open at the timeout become findings.
-// A window held by a mutation also needs the mutation to have converged and
-// the minimum dwell to have passed before it closes, and times out its own
-// timeout after the mutation was applied.
+// tracker follows the violations of each invariant and the convergence window
+// that judges them. A violation that starts while a window is open is not a
+// finding, because the instance converges after a change. A window closes when
+// all invariants hold, or at the convergence timeout; violations still open at
+// the timeout become findings. A window that a mutation holds also needs the
+// mutation to converge and the minimum dwell to pass. Its timeout starts when
+// the mutation is applied.
 type tracker struct {
 	timeout time.Duration
 	dwell   time.Duration
@@ -58,9 +57,9 @@ func newTracker(timeout, dwell time.Duration) *tracker {
 }
 
 // openWindow starts a convergence window, or restarts the open one, for a
-// change of the RedisFailover's generation. A held window is left as it is:
-// the operator bumps the generation with every status update, which must
-// neither extend nor restart a mutation's timeout.
+// change of the RedisFailover generation. It does not change a held window: an
+// operator without the status subresource increases the generation with each
+// status update, which must not extend or restart the timeout of a mutation.
 func (t *tracker) openWindow(now time.Time) {
 	if t.isHeld() {
 		return

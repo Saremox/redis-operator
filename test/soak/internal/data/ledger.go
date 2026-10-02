@@ -5,10 +5,10 @@ import (
 	"sync"
 )
 
-// ledger records the sequence numbers of acknowledged writes. Every write
-// acknowledged since the previous verification is checked at the next one,
-// and a sample of those the previous verification checked. Older ones are
-// aged out: their keys are deleted and they are forgotten.
+// ledger records the sequence numbers of acknowledged writes. A verification
+// checks all writes acknowledged since the previous verification, and a sample
+// of the writes that the previous verification checked. Older writes age out:
+// the tester deletes their keys and forgets them.
 type ledger struct {
 	mu sync.Mutex
 	// next is the next sequence number to write, inflight the one being

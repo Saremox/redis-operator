@@ -4,15 +4,15 @@ operator:
 observer:
   interval: 5s
   convergenceTimeout: 10m
-# The chaos lane is off without kinds. Its rights, as much as
-# cluster-admin, are the opt-in component chaos/: add it to the
-# kustomization's components before enabling a kind.
+# Without kinds, the chaos lane is off. Its rights are equal to
+# cluster-admin, so they are in the opt-in component chaos/. Add that
+# component to the kustomization before you enable a kind.
 chaos:
   kinds:
     # operator_restart: 2
     # node_drain: 1
-    # Set the two RCs below, and point the release at the first, to also
-    # upgrade between them.
+    # To also test an upgrade between two RCs, set the two RCs below. The
+    # installed release must be the first one.
     # operator_upgrade: 1
   interval: 30m
   jitter: 10m
@@ -31,12 +31,13 @@ mutation:
   interval: 2m
   jitter: 1m
   minDwell: 15s
-  # Every redis pod is replaced in turn and starts and syncs.
+  # perPod, because the operator replaces each redis pod in turn, and
+  # each new pod starts and syncs.
   timeouts:
     image_upgrade: {base: 5m, perPod: 2m}
     sentinel_image_upgrade: {base: 5m, perPod: 1m}
     reset: {base: 5m, perPod: 1m}
-# Exact patch tags, pulled from Docker Hub on 2026-10-01.
+# Exact patch tags, from Docker Hub on 2026-10-01.
 versions:
   - {name: redis-7.2, image: "redis:7.2.16-alpine"}
   - {name: redis-7.4, image: "redis:7.4.11-alpine"}
@@ -53,7 +54,7 @@ edges:
   - {from: redis-7.2, to: valkey-7.2, expect: ok}
   - {from: redis-7.2, to: valkey-8, expect: ok}
   - {from: redis-7.2, to: valkey-9, expect: ok}
-  # Redis moved its RDB format on after the fork.
+  # Redis changed its RDB format after the fork.
   - {from: redis-7.4, to: valkey-7.2, expect: unknown}
   - {from: redis-7.4, to: valkey-8, expect: unknown}
   - {from: redis-7.4, to: valkey-9, expect: unknown}
@@ -131,8 +132,8 @@ instances:
       redisMemory: {min: 128, max: 256}
       maxMemoryPolicies: [noeviction, volatile-lru, volatile-ttl]
       maxMemoryPercent: {min: 10, max: 95}
-  # With PVCs and auth (secret op-full-auth): the password is rotated,
-  # removed and added, and changed while the operator is stopped.
+  # PVCs and auth (secret op-full-auth). The mutator rotates, removes and
+  # adds the password, and changes it while the operator is stopped.
   - name: op-full
     namespace: op-full
     mode: operator
@@ -165,7 +166,7 @@ instances:
         sentinel_replicas: 1
       sentinelReplicas: {min: 3, max: 5}
       forceDeleteProbability: 0.5
-  # Created without Sentinel; Sentinel is switched on and off.
+  # Starts without Sentinel. sentinel_toggle switches Sentinel on and off.
   - name: toggle
     namespace: toggle
     mode: operator
@@ -243,8 +244,8 @@ instances:
       kinds:
         image_upgrade: 1
         sentinel_image_upgrade: 1
-  # Redis 7.4 or 8, in turn per reset, and only the unknown edges into
-  # Valkey.
+  # Starts on Redis 7.4 or 8, in turn for each reset, and takes only the
+  # unknown edges into Valkey.
   - name: edge
     namespace: edge
     mode: operator
@@ -259,7 +260,8 @@ instances:
     mutations:
       kinds:
         image_upgrade: 1
-  # Valkey 9 with maxMemory allkeys-lfu: the filler only.
+  # Valkey 9 with maxMemory allkeys-lfu. Filler only, because allkeys-*
+  # can evict ledger keys.
   - name: valkey-op
     namespace: valkey-op
     mode: operator

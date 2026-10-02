@@ -1,6 +1,6 @@
-# Reads the operator Deployment's image tag for redis_soak_build_info, and
-# scales it to 0 and back for password_rotate_offline. Namespace and
-# resourceNames must match `operator` in config.yaml.
+# Reads the image tag of the operator Deployment for redis_soak_build_info,
+# and scales the Deployment to 0 and back for password_rotate_offline. The
+# namespace and resourceNames must match `operator` in config.yaml.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -30,8 +30,8 @@ subjects:
     name: soak
     namespace: redis-soak
 ---
-# The observer reads every instance's RedisFailover, pods and the rfrm
-# EndpointSlices. The instances live in namespaces of their own.
+# The observer reads the RedisFailover, the pods and the rfrm
+# EndpointSlices of each instance, in the namespace of the instance.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -60,27 +60,27 @@ subjects:
     name: soak
     namespace: redis-soak
 ---
-# The mutator's rules, and the auth Secrets every client reads its password
-# from. They are granted only in the instances' namespaces, by the
-# RoleBindings in rbac-instances.yaml: a ClusterRole keeps one copy of the
-# rules for every namespace.
+# The rules of the mutator, and the auth Secrets that give each client its
+# password. The RoleBindings in rbac-instances.yaml grant them only in the
+# instance namespaces. A ClusterRole keeps one copy of the rules for all
+# namespaces.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: redis-soak-mutator
 rules:
-  # Instances with a template are created, and reset, by the tester.
+  # The tester creates and resets the instances that have a template.
   - apiGroups: ["databases.spotahome.com"]
     resources: ["redisfailovers"]
     verbs: ["patch", "create", "delete"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
-  # A version change that didn't converge is judged by its pods' logs.
+  # The tester judges a version change that did not converge by the pod logs.
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
-  # A reset deletes the instance's volumes.
+  # A reset deletes the volumes of the instance.
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["list", "delete"]
@@ -90,8 +90,8 @@ rules:
   - apiGroups: [""]
     resources: ["services", "configmaps"]
     verbs: ["get"]
-  # auth_add creates the Secret it names; a reset deletes and recreates
-  # the one its template names.
+  # auth_add creates the Secret that it names. A reset deletes and
+  # recreates the Secret that its template names.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

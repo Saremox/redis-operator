@@ -122,8 +122,8 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		mixedSeconds:    m.VersionMixed.MustCurryWith(labels),
 		findings:        m.Findings.MustCurryWith(labels),
 	}
-	// Alerts take the increase of mutation_total, which a series that
-	// first appears at 1 wouldn't show.
+	// Alerts use the increase of mutation_total, which does not show a series
+	// that starts at 1.
 	for _, k := range in.MutationKinds() {
 		mu.inProgress.WithLabelValues(string(k)).Set(0)
 		for _, r := range []string{resultConverged, resultTimeout, resultRejected, resultSkipped} {
@@ -169,8 +169,8 @@ func (m *Mutator) Run(ctx context.Context) {
 			continue
 		}
 		next := m.mutate(ctx, step, r, kind)
-		// A version change that didn't converge is reset at once, while
-		// its window is still held.
+		// Reset a version change that did not converge immediately, while its
+		// window is still held.
 		for next != "" && ctx.Err() == nil {
 			step++
 			next = m.mutate(ctx, step, stepRand(m.cfg.Seed, m.in, step), next)
@@ -219,12 +219,12 @@ func (m *Mutator) waitQuiet(ctx context.Context) bool {
 	return true
 }
 
-// expectation is a mutation step whose expected outcome didn't come
-// within its bound: the mutation timed out.
+// expectation is a mutation step whose expected result did not occur within
+// its limit: the mutation timed out.
 type expectation struct{ error }
 
 // mutate applies one mutation and waits until it converged. It returns
-// config.Reset when the mutation was a version change that didn't, so the
+// config.Reset after a version change that did not converge, because the
 // instance must be reset next.
 func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind config.Kind) config.Kind {
 	s, err := m.fetch(ctx, fetchOpts{})
@@ -389,16 +389,15 @@ func (m *Mutator) plan(r *rand.Rand, kind config.Kind, s state) plan {
 	return newPlan(r, kind, m.in.Mutations, s, m.observer.Master(), m.data)
 }
 
-// stuckGrace is how long a change along an edge that may fail is still
-// observed once a pod on the new version couldn't load the data, for what
-// the operator does next.
+// stuckGrace is how long the mutator still observes a change along an edge
+// that can fail, after a pod on the new version could not load the data. It
+// shows what the operator does next.
 const stuckGrace = time.Minute
 
-// await waits until the window closes, or for at most bound if set, and
-// samples the mixed window meanwhile. A watched change also ends
-// stuckGrace after a pod on its new version couldn't load the data. It
-// reports whether the mutation converged, and false for ok if ctx was
-// done.
+// await waits until the window closes, or for a maximum of bound if bound is
+// set, and samples the mixed window. A watched change also ends stuckGrace
+// after a pod on its new version could not load the data. It reports whether
+// the mutation converged; ok is false if ctx is done.
 func (m *Mutator) await(ctx context.Context, h *observer.Hold, bound time.Duration, watch *transition) (converged, ok bool) {
 	var limit <-chan time.Time
 	if bound > 0 {
@@ -436,9 +435,9 @@ func (m *Mutator) await(ctx context.Context, h *observer.Hold, bound time.Durati
 	}
 }
 
-// sample follows the open mixed window, and records it once it ended. For
-// a watched change it returns a pod on the new version whose log says it
-// couldn't load the data, and that line.
+// sample follows the open mixed window, and records it when it ended. For a
+// watched change, it returns a pod on the new version whose log says that it
+// could not load the data, and that log line.
 func (m *Mutator) sample(ctx context.Context, watch *transition) (pod, line string) {
 	if m.mixed == nil && watch == nil {
 		return "", ""
@@ -505,8 +504,8 @@ func (m *Mutator) apply(ctx context.Context, p plan, log *slog.Logger) error {
 	return nil
 }
 
-// setPassword sets the password of the instance's Secret name, creating
-// the Secret if it doesn't exist.
+// setPassword sets the password in the Secret name of the instance. It creates
+// the Secret if the Secret does not exist.
 func (m *Mutator) setPassword(ctx context.Context, name, password string) error {
 	secrets := m.kube.CoreV1().Secrets(m.in.Namespace)
 	secret, err := secrets.Get(ctx, name, metav1.GetOptions{})
@@ -540,7 +539,7 @@ func (m *Mutator) fetch(ctx context.Context, opts fetchOpts) (state, error) {
 		return state{}, err
 	}
 	m.auth.Update(rf)
-	// Validate fills in the operator's defaults.
+	// Validate applies the operator defaults.
 	_ = rf.Validate()
 	s := state{rf: rf, password: m.auth.Password(), authSecret: m.in.AuthSecret}
 	pods, err := m.kube.CoreV1().Pods(m.in.Namespace).List(ctx, metav1.ListOptions{

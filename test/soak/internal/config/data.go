@@ -31,7 +31,7 @@ type Fill struct {
 	// SizeMi is the used_memory the filler keeps without maxmemory.
 	SizeMi     int64 `json:"sizeMi"`
 	ValueBytes int   `json:"valueBytes"`
-	// KeysPerSecond limits the filler, so it doesn't swamp the node.
+	// KeysPerSecond limits the filler, so that it does not overload the node.
 	KeysPerSecond int `json:"keysPerSecond"`
 	// Batch is the number of keys per pipeline.
 	Batch int `json:"batch"`
@@ -133,8 +133,8 @@ func (in Instance) validateData() error {
 	case l.VerifyInterval.Duration < 0:
 		return errors.New("data.ledger.verifyInterval: negative duration")
 	}
-	// Ledger keys must never be evicted, or their loss couldn't be told
-	// from an eviction.
+	// Ledger keys must never be evicted, because the tester cannot tell their
+	// loss from an eviction.
 	for _, p := range in.Policies() {
 		if strings.HasPrefix(p, "allkeys-") {
 			return fmt.Errorf("data.ledger: policy %s can evict ledger keys; allkeys-* instances run only the filler", p)

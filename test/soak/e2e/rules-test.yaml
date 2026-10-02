@@ -1,5 +1,5 @@
-# promtool unit tests of deploy/monitoring/prometheusrule.yaml's alerts;
-# check-monitoring.sh runs them against its rules.
+# promtool unit tests of the alerts in deploy/monitoring/prometheusrule.yaml.
+# make check-monitoring runs them.
 rule_files: [rules.yaml]
 evaluation_interval: 15s
 tests:

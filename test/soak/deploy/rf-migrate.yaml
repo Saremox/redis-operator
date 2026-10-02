@@ -1,5 +1,5 @@
-# The migrate instance's RedisFailover; the tester sets its name, namespace
-# and images, and creates or resets it from this template.
+# The RedisFailover template of the migrate instance. The tester sets its
+# name, namespace and images.
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover
 metadata:

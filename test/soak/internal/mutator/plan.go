@@ -72,7 +72,7 @@ func pickOther(r *rand.Rand, rg config.Range, current int64) int64 {
 // plan is one picked mutation.
 type plan struct {
 	kind config.Kind
-	// skip is why the mutation can't be applied now.
+	// skip is why the mutator cannot apply the mutation now.
 	skip   string
 	params string
 	// patch is a JSON merge patch of the RedisFailover.
@@ -107,8 +107,8 @@ type secretChange struct {
 	password string
 }
 
-// newPassword returns a random password. It never appears in logs, so a
-// step can't be replayed with it, which doesn't matter.
+// newPassword returns a random password. Logs never show it, so a replayed
+// step uses a different password. This has no effect on the test.
 func newPassword() string {
 	return crand.Text()
 }
@@ -290,10 +290,8 @@ func planKill(kind config.Kind, p corev1.Pod, force bool, converged func(string,
 	}
 }
 
-// planAuth changes the password, adds auth or removes it. Every one
-// converges once every redis pod accepts the new password, or needs none,
-// the pods rolled onto the Secret, and with Sentinel every Sentinel
-// monitors the master without trouble.
+// planAuth changes the password, adds auth or removes auth. Each converges as
+// authConverged says.
 func planAuth(kind config.Kind, s state) plan {
 	path := s.rf.Spec.Auth.SecretPath
 	p := plan{kind: kind}

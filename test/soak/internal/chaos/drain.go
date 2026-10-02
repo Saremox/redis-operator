@@ -35,8 +35,8 @@ func stays(p *corev1.Pod) bool {
 		slices.ContainsFunc(p.OwnerReferences, func(o metav1.OwnerReference) bool { return o.Kind == "DaemonSet" })
 }
 
-// evictable returns the pods a drain evicts: those it doesn't leave, and
-// that aren't going already.
+// evictable returns the pods that a drain evicts: the pods that it does not
+// leave, and that are not already in deletion.
 func evictable(pods []corev1.Pod) []corev1.Pod {
 	var out []corev1.Pod
 	for i := range pods {
@@ -79,9 +79,10 @@ func drainable(nodes []corev1.Node, self string) []string {
 	return out
 }
 
-// drain cordons a node and evicts its pods, respecting PodDisruptionBudgets,
-// waits until every instance converged on the other nodes, holds the node
-// cordoned, uncordons it, and waits until every instance is quiet again.
+// drain cordons a node, evicts its pods within the PodDisruptionBudgets, and
+// waits until all instances converged on the other nodes. It then keeps the
+// node cordoned for the hold, uncordons it, and waits until all instances are
+// quiet.
 func (l *Lane) drain(ctx context.Context, a *action) outcome {
 	nodes, err := l.kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: l.cfg.Drain.NodeSelector})
 	if err != nil {

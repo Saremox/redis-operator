@@ -1,6 +1,6 @@
-# Alerts on what the soak tester measures. "Outside a window" is
-# redis_soak_window_open == 0: no mutation, chaos action or spec change of
-# the instance is converging, so a violation is not expected.
+# "Outside a window" is redis_soak_window_open == 0: no mutation, chaos
+# action or spec change of the instance is in progress, so a violation is
+# not expected.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -22,8 +22,8 @@ spec:
           annotations:
             summary: "{{ $labels.namespace }}/{{ $labels.rf }} has not been writable through {{ $labels.path }} ({{ $labels.client }} client) for over 1m outside a convergence window."
         - alert: RedisSoakMasters
-          # A bootstrapping instance, the only one probed through rfrs, has
-          # no master of its own.
+          # Only a bootstrapping instance has the rfrs path, and it has no
+          # master.
           expr: |
             (redis_soak_masters != 1)
             unless on (rf, namespace) (redis_soak_window_open == 1)
@@ -52,10 +52,10 @@ spec:
           annotations:
             summary: "A {{ $labels.kind }} chaos action ended {{ $labels.result }}: the instances or the operator didn't converge in time, or the action failed."
         - alert: RedisSoakLostWritesLossless
-          # Events that should lose no acknowledged write: auth changes, a
-          # Sentinel toggle or image flip, and the chaos actions, whose
-          # evictions are graceful. A drain that evicts the only pod of an
-          # instance without a volume counts as a reset instead.
+          # Events that must lose no acknowledged write: auth changes, a
+          # Sentinel toggle or image flip, and the chaos actions, because
+          # their evictions are graceful. A drain that evicts the only pod
+          # of an instance without a volume counts as a reset.
           expr: |
             increase(redis_soak_lost_writes_total{event=~"password_rotate|password_rotate_offline|auth_add|auth_remove|sentinel_toggle|sentinel_image_flip|operator_restart|operator_upgrade|node_drain"}[15m]) > 0
           labels:
@@ -63,8 +63,8 @@ spec:
           annotations:
             summary: "{{ $labels.namespace }}/{{ $labels.rf }} lost acknowledged writes in a {{ $labels.event }}, which should lose none."
         - alert: RedisSoakFollowerAuthOutage
-          # The follower client takes a changed password at once: failing
-          # auth for this long means the operator hasn't applied it.
+          # The follower client uses a changed password immediately. Auth
+          # failures for this long mean that the operator did not apply it.
           expr: increase(redis_soak_probe_total{client="follower", op="set", result="auth"}[1m]) > 0
           for: 2m
           labels:
@@ -72,8 +72,8 @@ spec:
           annotations:
             summary: "{{ $labels.namespace }}/{{ $labels.rf }} has refused the current password through {{ $labels.path }} for over 2m."
         - alert: RedisSoakVersionTransitionUnsafe
-          # Stays until the tester restarts: an unsafe transition is rare,
-          # and every one needs a look.
+          # Fires until the tester restarts, because an unsafe transition is
+          # rare and each one needs an investigation.
           expr: redis_soak_version_transition_total{result="failed_unsafe"} > 0
           labels:
             severity: critical

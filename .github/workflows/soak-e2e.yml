@@ -1,10 +1,10 @@
 name: Soak E2E
 
-# The soak tester's kind e2e against a released operator: it installs the
-# chart and image of operator_version from ghcr.io, runs the tester for
-# the profile's duration and asserts from its metrics and logs. It takes
-# about an hour, so it only runs by hand, never on pull requests. The
-# chaos profile upgrades from upgrade_from to operator_version and back.
+# The kind e2e of the soak tester against a released operator. It installs
+# the chart and image of operator_version from ghcr.io, runs the tester for
+# the duration of the profile, and asserts from its metrics and logs. It
+# takes about an hour, so it runs only on demand, never on pull requests.
+# The chaos profile upgrades from upgrade_from to operator_version and back.
 on:
   workflow_dispatch:
     inputs:
@@ -42,7 +42,7 @@ jobs:
           cache: false
 
       - name: Install kind and the jq-based yq
-        # The e2e scripts use yq's jq syntax.
+        # The e2e scripts use the jq syntax of yq.
         run: |
           go install sigs.k8s.io/kind@v0.31.0
           pip install --user yq

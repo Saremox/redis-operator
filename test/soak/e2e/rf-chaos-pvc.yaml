@@ -1,6 +1,6 @@
-# The chaos-pvc instance's RedisFailover. kind-e2e's shared-path
-# StorageClass keeps its volumes on a directory every node mounts, so its
-# pods move to another node like on network storage.
+# The RedisFailover template of the chaos-pvc instance. The kind-e2e
+# shared-path StorageClass keeps its volumes in a directory that all nodes
+# mount, so its pods move to a different node as on network storage.
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover
 metadata:

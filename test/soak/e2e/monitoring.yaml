@@ -1,8 +1,8 @@
-# Prometheus and Grafana for kind-e2e's check of the dashboard and alerts.
-# Prometheus scrapes the tester like deploy/monitoring's ServiceMonitor,
-# honouring its labels, and loads the PrometheusRule's groups, which
-# kind-e2e puts into the prometheus ConfigMap as rules.yaml. Both run on
-# the control plane, which no drain picks.
+# Prometheus and Grafana for the kind-e2e check of the dashboard and the
+# alerts. Prometheus scrapes the tester as the deploy/monitoring
+# ServiceMonitor does, with honor_labels. It loads the PrometheusRule
+# groups, which kind-e2e puts into the prometheus ConfigMap as rules.yaml.
+# Both run on the control plane, because no drain picks it.
 apiVersion: v1
 kind: Namespace
 metadata:

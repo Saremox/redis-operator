@@ -13,18 +13,18 @@ import (
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 )
 
-// passwordNotApplied is the status message of an operator that can't bring
-// the pods onto the Secret's password.
+// passwordNotApplied is the status message of an operator that cannot move the
+// pods to the password of the Secret.
 const passwordNotApplied = "unable to apply the configured password"
 
 // operatorStopped is why every instance is in a window while scenario C
 // stops the operator.
 const operatorStopped = "operator stopped"
 
-// offline is scenario C: the password changes while the operator is
-// stopped, so the restarted operator can't apply it. The documented
-// recovery is to put the previous password back, wait for Healthy, and
-// change it again.
+// offline is scenario C: the password changes while the operator is stopped,
+// so the restarted operator cannot apply it. The documented recovery is to set
+// the previous password again, wait for Healthy, and change the password
+// again.
 type offline struct {
 	secret string
 	// previous is the password before; first is the one the stopped
@@ -32,10 +32,9 @@ type offline struct {
 	previous, first, second string
 }
 
-// rotateOffline runs scenario C up to the second change, whose
-// convergence is the mutation's. Every other instance's mutations are
-// paused meanwhile, and every instance is in a window while the operator
-// is stopped.
+// rotateOffline runs scenario C up to the second change, whose convergence is
+// the convergence of the mutation. The mutations of all other instances wait,
+// and all instances are in a window while the operator is stopped.
 func (m *Mutator) rotateOffline(ctx context.Context, o *offline, log *slog.Logger) (err error) {
 	n := 0
 	phase := func(name string, f func() error) error {

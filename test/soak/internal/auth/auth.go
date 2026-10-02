@@ -1,5 +1,5 @@
-// Package auth follows the password of an instance's auth Secret, so every
-// connection the tester makes authenticates like an application would.
+// Package auth follows the password in the auth Secret of an instance, so that
+// each connection of the tester authenticates as an application does.
 package auth
 
 import (
@@ -32,8 +32,8 @@ func New(lookup Lookup) *Source {
 	return &Source{lookup: lookup}
 }
 
-// Update follows rf's spec.auth.secretPath. An rf older than one seen
-// before is ignored, so a read from before a change can't undo it.
+// Update follows the spec.auth.secretPath of rf. It ignores an rf older than
+// one that it saw before, so that a stale read cannot undo a change.
 func (s *Source) Update(rf *redisfailoverv1.RedisFailover) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

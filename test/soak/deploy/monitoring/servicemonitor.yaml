@@ -1,6 +1,6 @@
-# Scrapes the tester for a Prometheus Operator. honorLabels keeps the
-# tester's namespace and pod labels, which name an instance's namespace and
-# its redis pods, over the target's own.
+# honorLabels keeps the namespace and pod labels of the tester, because
+# they identify the namespace and the redis pods of an instance, not the
+# scrape target.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

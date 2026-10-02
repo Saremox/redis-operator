@@ -1,8 +1,8 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# No global namespace: the Role lives in the operator's namespace and the
-# mutator's RoleBindings in the instances'. The chaos lane's rights are the
-# opt-in component chaos/: add it under components to enable the lane.
+# No global namespace: the Role is in the operator namespace, and the
+# mutator RoleBindings are in the instance namespaces. To enable the chaos
+# lane, add the opt-in component chaos/ under components.
 resources:
   - namespace.yaml
   - serviceaccount.yaml
@@ -15,7 +15,7 @@ configMapGenerator:
     namespace: redis-soak
     files:
       - config.yaml
-      # The templates of the instances the tester creates and resets.
+      # The templates of the instances that the tester creates and resets.
       - rf-redis-chain.yaml
       - rf-redis-chain-sent.yaml
       - rf-migrate.yaml
