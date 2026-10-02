@@ -326,6 +326,11 @@ ROLE_MASTER="role:master"
 ROLE_SLAVE="role:slave"
 IN_SYNC="master_sync_in_progress:1"
 NO_MASTER="master_host:127.0.0.1"
+LINK_UP="master_link_status:up"
+LINK_DOWN_SINCE="master_link_down_since_seconds:"
+# A replica stays ready this long after losing its master, so it outlasts a
+# failover, during which every replica's link is down.
+MAX_LINK_DOWN_SECONDS=60
 
 cmd="redis-cli -p %[1]v"
 if [ ! -z "${REDIS_PASSWORD}" ]; then
@@ -349,7 +354,19 @@ check_slave(){
 		in_sync=$(echo "${cmd} | grep ${IN_SYNC} | tr -d \"\\r\" | tr -d \"\\n\"" | xargs -0 sh -c)
 		no_master=$(echo "${cmd} | grep ${NO_MASTER} | tr -d \"\\r\" | tr -d \"\\n\"" |  xargs -0 sh -c)
 
-		if [ -z "$in_sync" ] && [ -z "$no_master" ]; then
+		if [ -n "$in_sync" ] || [ -n "$no_master" ]; then
+				exit 1
+		fi
+
+		link_up=$(echo "${cmd} | grep ${LINK_UP} | tr -d \"\\r\" | tr -d \"\\n\"" | xargs -0 sh -c)
+		if [ -n "$link_up" ]; then
+				exit 0
+		fi
+
+		# -1 means the link has not been up since redis started: this replica
+		# has never loaded the master's data, e.g. it can't read its RDB format.
+		down_since=$(echo "${cmd} | grep ${LINK_DOWN_SINCE} | cut -d: -f2 | tr -d \"\\r\" | tr -d \"\\n\"" | xargs -0 sh -c)
+		if [ "$down_since" -ge 0 ] 2>/dev/null && [ "$down_since" -le "$MAX_LINK_DOWN_SECONDS" ]; then
 				exit 0
 		fi
 

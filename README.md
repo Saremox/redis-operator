@@ -362,6 +362,8 @@ url: rfrm-<NAME>
 port: <redis-port> # defaults to 6379
 ```
 
+Reads can also go to the replicas through `rfrs-<NAME>`. A replica is ready, and so behind that service, only while it has the master's data. It is not ready during a full sync, until its first sync since it started has completed (a replica that can't load the master's RDB format never gets there), and once its link to the master has been down for more than 60 seconds. A failover takes less than that, so the replicas stay ready through it.
+
 ### Enabling redis auth
 
 To enable auth, create a secret with a password field:
