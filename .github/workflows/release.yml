@@ -111,6 +111,14 @@ jobs:
       - name: Lowercase IMAGE_NAME
         run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
 
+      - name: Find the floating tags this release moves
+        id: floating
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq '.[] | select(.draft | not) | .tag_name' \
+            | ./scripts/release.sh floating "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
 
@@ -131,10 +139,11 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-soak
           # The tags of the operator image, so that each release has a tester
           # built against its spec.
+          flavor: latest=${{ steps.floating.outputs.latest }}
           tags: |
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ steps.floating.outputs.minor }}
+            type=semver,pattern={{major}},enable=${{ steps.floating.outputs.major }}
             type=sha
 
       - name: Build and push Docker image
