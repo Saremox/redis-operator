@@ -449,10 +449,12 @@ configMapGenerator:
     behavior: replace
     files:
       - config.yaml
-$(printf '      - %s\n' "${templates[@]}")
+$(for t in "${templates[@]}"; do echo "      - $t"; done)
 $patches
 YAML
-kubectl apply -k "$overlay"
+# Server-side: with the chaos profile's charts, the ConfigMap is too large
+# for a client-side apply's last-applied annotation.
+kubectl apply --server-side --force-conflicts -k "$overlay"
 kubectl -n redis-soak rollout status deployment/soak --timeout=180s
 started=$(date +%s)
 [[ $profile != full ]] && wait_instances
