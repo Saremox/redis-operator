@@ -44,6 +44,8 @@ pre-releases; Helm skips them by default unless you pass `--version` or `--devel
 
 #### Update helm chart
 
+Read the [release notes](https://github.com/Saremox/redis-operator/releases) before an upgrade. If a release needs manual steps, its notes start with a warning that links to a guide in [docs/migrations](docs/migrations).
+
 Helm chart only manages the creation of CRD in the first installation. To update the CRD, you will need to apply it directly.
 
 ```
