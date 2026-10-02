@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -25,12 +26,18 @@ import (
 // failure as "no master".
 var ErrAmbiguousMasterCount = errors.New("number of redis nodes known as master is different than 1")
 
+// ErrRedisNotAnswering tells that no pod answered as master and a ready pod
+// did not answer, so that pod can still be the master.
+var ErrRedisNotAnswering = errors.New("ready redis pod did not answer")
+
 // ReplicaInfo holds information about a Redis replica for failover decisions
 type ReplicaInfo struct {
 	IP                string
 	PodName           string
 	ReplicationOffset int64
-	IsReady           bool
+	// Synced is true when `master_link_status` is `up` and no sync is in progress.
+	Synced   bool
+	PodReady bool
 }
 
 // RedisFailoverCheck defines the interface able to check the correct status of redis failover
@@ -383,10 +390,9 @@ func (r *RedisFailoverChecker) GetMasterIP(rf *redisfailoverv1.RedisFailover) (s
 	return masters[0], nil
 }
 
-// GetNumberMasters returns the number of redis nodes that are working as a master.
-// A ready pod that does not answer may still be the master, so if no pod
-// answers as master it returns an error rather than zero, and callers don't
-// promote over it. A pod Kubernetes has marked not ready is skipped.
+// GetNumberMasters counts the Running, non-terminating redis pods that answer
+// as master. If no pod answers as master and a ready pod does not answer, it
+// returns an error and not zero, because that pod can still be the master.
 func (r *RedisFailoverChecker) GetNumberMasters(rf *redisfailoverv1.RedisFailover) (int, error) {
 	nMasters := 0
 	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
@@ -412,7 +418,7 @@ func (r *RedisFailoverChecker) GetNumberMasters(rf *redisfailoverv1.RedisFailove
 		if err != nil {
 			r.logger.Errorf("Get redis info failed, maybe this node is not ready, pod ip: %s", rp.Status.PodIP)
 			if unanswered == nil && util.PodIsReady(rp) {
-				unanswered = fmt.Errorf("ready redis pod %s did not answer: %w", rp.Name, err)
+				unanswered = fmt.Errorf("%w: %s: %w", ErrRedisNotAnswering, rp.Name, err)
 			}
 			continue
 		}
@@ -505,7 +511,7 @@ func (r *RedisFailoverChecker) GetRedisesSlavesPods(rf *redisfailoverv1.RedisFai
 	return redises, nil
 }
 
-// GetRedisesMasterPod returns pods names of the Redis secondary nodes
+// GetRedisesMasterPod returns the name of the redis pod that answers as master.
 func (r *RedisFailoverChecker) GetRedisesMasterPod(rFailover *redisfailoverv1.RedisFailover) (string, error) {
 	rps, err := r.k8sService.GetStatefulSetPods(rFailover.Namespace, GetRedisName(rFailover))
 	if err != nil {
@@ -532,8 +538,8 @@ func (r *RedisFailoverChecker) GetRedisesMasterPod(rFailover *redisfailoverv1.Re
 	return "", errors.New("redis nodes known as master not found")
 }
 
-// GetStatefulSetUpdateRevision returns the current version for the statefulSet
-// If the label doesn't exist, we return an empty value and no error, so previous versions don't break
+// GetStatefulSetUpdateRevision returns `status.updateRevision` of the redis
+// StatefulSet. The rollout updates each pod whose revision label differs.
 func (r *RedisFailoverChecker) GetStatefulSetUpdateRevision(rFailover *redisfailoverv1.RedisFailover) (string, error) {
 	ss, err := r.k8sService.GetStatefulSet(rFailover.Namespace, GetRedisName(rFailover))
 	if err != nil {
@@ -547,7 +553,9 @@ func (r *RedisFailoverChecker) GetStatefulSetUpdateRevision(rFailover *redisfail
 	return ss.Status.UpdateRevision, nil
 }
 
-// GetRedisRevisionHash returns the statefulset uid for the pod
+// GetRedisRevisionHash returns the controller-revision-hash label of the pod.
+// It returns "" while an in-place resize is pending, so the rollout treats the
+// pod as stale until the resize is applied.
 func (r *RedisFailoverChecker) GetRedisRevisionHash(podName string, rFailover *redisfailoverv1.RedisFailover) (string, error) {
 	pod, err := r.k8sService.GetPod(rFailover.Namespace, podName)
 	if err != nil {
@@ -657,8 +665,10 @@ func (r *RedisFailoverChecker) CheckMasterHealth(rf *redisfailoverv1.RedisFailov
 	return isMaster, masterIP, nil
 }
 
-// GetBestReplicaForPromotion returns the best replica to promote as master.
-// Selection is based on replication offset (highest wins) to minimize data loss.
+// GetBestReplicaForPromotion prefers a synced replica, then the highest
+// replication offset, to lose the fewest writes. Pod readiness decides only
+// between equal offsets, because the master Service sends traffic only to
+// Ready pods.
 func (r *RedisFailoverChecker) GetBestReplicaForPromotion(rf *redisfailoverv1.RedisFailover) (*ReplicaInfo, error) {
 	replicas, err := r.GetReplicaReplicationOffsets(rf)
 	if err != nil {
@@ -669,34 +679,31 @@ func (r *RedisFailoverChecker) GetBestReplicaForPromotion(rf *redisfailoverv1.Re
 		return nil, errors.New("no replicas available for promotion")
 	}
 
-	// Find replica with highest replication offset that is ready
-	var best *ReplicaInfo
+	candidates := make([]string, 0, len(replicas))
+	best := &replicas[0]
 	for i := range replicas {
 		replica := &replicas[i]
-		if !replica.IsReady {
-			continue
-		}
-		if best == nil || replica.ReplicationOffset > best.ReplicationOffset {
+		candidates = append(candidates, fmt.Sprintf("%s (pod: %s, pod ready: %t, synced: %t, offset: %d)",
+			replica.IP, replica.PodName, replica.PodReady, replica.Synced, replica.ReplicationOffset))
+		if betterPromotionCandidate(replica, best) {
 			best = replica
 		}
 	}
+	r.logger.Infof("Promotion candidates: %s", strings.Join(candidates, ", "))
 
-	// If no ready replica found, fall back to any replica with highest offset
-	if best == nil {
-		for i := range replicas {
-			replica := &replicas[i]
-			if best == nil || replica.ReplicationOffset > best.ReplicationOffset {
-				best = replica
-			}
-		}
-	}
-
-	if best == nil {
-		return nil, errors.New("no suitable replica found for promotion")
-	}
-
-	r.logger.Infof("Selected replica %s (offset: %d) for promotion", best.IP, best.ReplicationOffset)
+	r.logger.Infof("Selected replica %s (pod: %s, pod ready: %t, offset: %d) for promotion", best.IP, best.PodName, best.PodReady, best.ReplicationOffset)
 	return best, nil
+}
+
+// betterPromotionCandidate reports whether a ranks strictly above b.
+func betterPromotionCandidate(a, b *ReplicaInfo) bool {
+	if a.Synced != b.Synced {
+		return a.Synced
+	}
+	if a.ReplicationOffset != b.ReplicationOffset {
+		return a.ReplicationOffset > b.ReplicationOffset
+	}
+	return a.PodReady && !b.PodReady
 }
 
 // GetReplicaReplicationOffsets returns replication offset information for all replicas
@@ -730,14 +737,12 @@ func (r *RedisFailoverChecker) GetReplicaReplicationOffsets(rf *redisfailoverv1.
 			continue
 		}
 
-		// Check if replica is ready (not syncing, link up)
-		isReady := !replInfo.SyncInProgress && replInfo.MasterLinkStatus == "up"
-
 		replicas = append(replicas, ReplicaInfo{
 			IP:                rp.Status.PodIP,
 			PodName:           rp.Name,
 			ReplicationOffset: replInfo.SlaveReplOffset,
-			IsReady:           isReady,
+			Synced:            !replInfo.SyncInProgress && replInfo.MasterLinkStatus == "up",
+			PodReady:          util.PodIsReady(&rp),
 		})
 	}
 

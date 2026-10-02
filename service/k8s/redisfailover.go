@@ -35,7 +35,7 @@ type RedisFailoverService struct {
 	metricsRecorder metrics.Recorder
 }
 
-// NewRedisFailoverService returns a new Workspace KubeService.
+// NewRedisFailoverService returns a new RedisFailover KubeService.
 func NewRedisFailoverService(k8scli redisfailoverclientset.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *RedisFailoverService {
 	logger = logger.With("service", "k8s.redisfailover")
 	return &RedisFailoverService{
@@ -80,7 +80,9 @@ func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, na
 	}
 	patchBytes, _ := json.Marshal(patch)
 
-	_, err := r.k8sCli.DatabasesV1().RedisFailovers(namespace).Patch(ctx, rf.Name, types.MergePatchType, patchBytes, opts)
+	// Through the status subresource, so a status change doesn't bump
+	// metadata.generation.
+	_, err := r.k8sCli.DatabasesV1().RedisFailovers(namespace).Patch(ctx, rf.Name, types.MergePatchType, patchBytes, opts, "status")
 	if err != nil {
 		recordMetrics(namespace, "RedisFailover", metrics.NOT_APPLICABLE, "PATCH", err, r.metricsRecorder)
 		r.logger.Errorf("Error while patching RedisFailover status %s/%s : %s", rf.Namespace, rf.Name, err.Error())

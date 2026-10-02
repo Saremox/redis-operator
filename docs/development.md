@@ -12,24 +12,25 @@
 - **mocks**: contains the mocked interfaces for testing the application.
 - **operator**: the main logic. Manages the requests from k8s and creates/updates/deletes the pieces as needed.
 - **service**: services/clients to interact with k8s and redises.
-- **vendor**: vendored packages used by the application.
+- **test**: integration tests. They need a Kubernetes cluster.
 
 ### Non-code folder structure
 
 - **charts**: helm chart to deploy the operator.
 - **docker**: Dockerfiles to generate redis-failover docker images.
+- **docs**: documentation of the controller logic and of development.
 - **example**: yaml files with spec of redis-failover.
-- **hack**: scripts to generate the redis-failover api-client.
+- **manifests**: the CRD manifest and the Kustomize overlays to deploy the operator.
 - **scripts**: scripts used to build and run the app.
 - **.githooks**: versioned git hooks (see "Generated code" below).
 
 ## Generated code
 
-Two files are generated from `api/redisfailover/v1`'s type definitions and must stay in sync with them: `api/redisfailover/v1/zz_generated.deepcopy.go` and the CRD manifest (`manifests/databases.spotahome.com_redisfailovers.yaml`, mirrored into `manifests/kustomize/base/` and `charts/redisoperator/crds/`). Both are produced by [`controller-gen`](https://github.com/kubernetes-sigs/controller-tools) (`go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest`), no Docker required.
+Two files are generated from `api/redisfailover/v1`'s type definitions and must stay in sync with them: `api/redisfailover/v1/zz_generated.deepcopy.go` and the CRD manifest (`manifests/databases.spotahome.com_redisfailovers.yaml`, mirrored into `manifests/kustomize/base/` and `charts/redisoperator/crds/`). Both are produced by [`controller-gen`](https://github.com/kubernetes-sigs/controller-tools) (install the pinned version with `make install-controller-gen`), no Docker required.
 
-- After changing a type in `api/redisfailover/v1`, run `make generate-api` and commit the result.
+- After changing a type in `api/redisfailover/v1` or bumping `k8s.io/api` in `go.mod` (the CRD embeds core types such as `PodSpec`), run `make generate-api` and commit the result.
 - `make verify-codegen` regenerates and fails if that produces any diff - this is what CI runs, so a PR that changed the types without regenerating fails there if nothing else catches it first.
-- Run `make install-hooks` once per clone to also run `verify-codegen` locally as a pre-commit hook (only when a commit touches `api/**/*.go`, so it adds no overhead to unrelated commits).
+- Run `make install-hooks` once per clone to also run `verify-codegen` locally as a pre-commit hook (only when a commit touches `api/**/*.go` or `go.mod`, so it adds no overhead to unrelated commits).
 
 (The typed clientset in `client/k8s/clientset` is separate: it still comes from the Docker-based `make update-codegen`, changes far less often, and isn't covered by `verify-codegen`.)
 
@@ -49,7 +50,11 @@ You can do the following commands with make:
   `make verify-codegen`
 - Install the pre-commit hook that runs `verify-codegen` locally (one-time per clone).
   `make install-hooks`
-- Run tests.
+- Run the unit tests in the development container.
+  `make unit-test`
+- Run the unit tests on the host. Tests that need `redis-server` skip when it is not on the PATH.
+  `make ci-unit-test`
+- Run the unit, integration and Helm chart tests. The integration tests need a cluster in `$KUBECONFIG` with the CRD applied. The chart tests need `helm`.
   `make test`
 - Build the executable file.
   `make build`

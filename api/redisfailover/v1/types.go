@@ -16,6 +16,7 @@ import (
 // +kubebuilder:printcolumn:name="SENTINELS",type="integer",JSONPath=".spec.sentinel.replicas"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:resource:singular=redisfailover,path=redisfailovers,shortName=rf,scope=Namespaced
+// +kubebuilder:subresource:status
 type RedisFailover struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -40,14 +41,18 @@ type RedisCommandRename struct {
 
 // RedisSettings defines the specification of the redis cluster
 type RedisSettings struct {
-	Image                         string                            `json:"image,omitempty"`
-	ImagePullPolicy               corev1.PullPolicy                 `json:"imagePullPolicy,omitempty"`
-	Replicas                      int32                             `json:"replicas,omitempty"`
-	Port                          int32                             `json:"port,omitempty"`
-	Resources                     corev1.ResourceRequirements       `json:"resources,omitempty"`
-	Env                           []corev1.EnvVar                   `json:"env,omitempty"`
-	CustomConfig                  []string                          `json:"customConfig,omitempty"`
-	CustomCommandRenames          []RedisCommandRename              `json:"customCommandRenames,omitempty"`
+	Image                string                      `json:"image,omitempty"`
+	ImagePullPolicy      corev1.PullPolicy           `json:"imagePullPolicy,omitempty"`
+	Replicas             int32                       `json:"replicas,omitempty"`
+	Port                 int32                       `json:"port,omitempty"`
+	Resources            corev1.ResourceRequirements `json:"resources,omitempty"`
+	Env                  []corev1.EnvVar             `json:"env,omitempty"`
+	CustomConfig         []string                    `json:"customConfig,omitempty"`
+	CustomCommandRenames []RedisCommandRename        `json:"customCommandRenames,omitempty"`
+	// Command replaces the default redis command. With auth.secretPath, the
+	// default passes the password to redis-server, so a custom command must
+	// pass --requirepass and --masterauth from $REDIS_PASSWORD itself.
+	// Otherwise Redis runs with no password.
 	Command                       []string                          `json:"command,omitempty"`
 	ShutdownConfigMap             string                            `json:"shutdownConfigMap,omitempty"`
 	StartupConfigMap              string                            `json:"startupConfigMap,omitempty"`
@@ -85,10 +90,14 @@ type RedisSettings struct {
 	PodDisruptionBudgetMinAvailable *intstr.IntOrString `json:"podDisruptionBudgetMinAvailable,omitempty"`
 	// MaxMemory lets the operator set maxmemory and maxmemory-policy from the
 	// redis container's memory limit. Values set in customConfig take precedence.
+	// It needs a memory limit of at least 64Mi. It uses the smallest limit of
+	// all redis pods, because a failover can promote any replica. It sets
+	// replica-ignore-maxmemory yes, so customConfig cannot set it to no.
 	MaxMemory *MaxMemorySettings `json:"maxMemory,omitempty"`
 	// InPlaceResize controls whether redis pods whose update only changes
 	// container resources are resized in place instead of being recreated.
-	// Defaults to Enabled.
+	// It needs Kubernetes 1.33 or later, and 1.35 to lower a memory limit.
+	// Otherwise the pods are recreated. Defaults to Enabled.
 	// +kubebuilder:validation:Enum=Enabled;Disabled
 	InPlaceResize string `json:"inPlaceResize,omitempty"`
 }
@@ -111,8 +120,10 @@ type SentinelSettings struct {
 	// manages failover instead of Sentinel. Defaults to false (operator-managed
 	// failover) since v4.0.0.
 	Enabled *bool `json:"enabled,omitempty"`
-	// FailoverTimeout is how long to wait before promoting a replica when
-	// operator-managed failover is used (sentinel.enabled=false). Defaults to 10s.
+	// FailoverTimeout is the time that operator-managed failover (sentinel.enabled=false)
+	// waits for a master that does not answer while its pod runs, so that a short
+	// stall does not cause a failover. A master that is gone or not found gets no
+	// wait. Defaults to 10s; 0s disables the wait.
 	FailoverTimeout            *metav1.Duration                  `json:"failoverTimeout,omitempty"`
 	Image                      string                            `json:"image,omitempty"`
 	ImagePullPolicy            corev1.PullPolicy                 `json:"imagePullPolicy,omitempty"`

@@ -1,19 +1,28 @@
 package service_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -1123,6 +1132,7 @@ func TestRedisShutdownConfigMapRetries(t *testing.T) {
 	assert := assert.New(t)
 
 	rf := generateRF()
+	rf.Spec.Sentinel.Enabled = ptr.To(true)
 
 	var script string
 	ms := &mK8SService.Services{}
@@ -2594,7 +2604,7 @@ func TestRedisCustomLivenessProbe(t *testing.T) {
 						Command: []string{
 							"sh",
 							"-c",
-							"redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep PONG",
+							"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep PONG",
 						},
 					},
 				},
@@ -2674,7 +2684,7 @@ func TestSentinelCustomLivenessProbe(t *testing.T) {
 						Command: []string{
 							"sh",
 							"-c",
-							"redis-cli -h $(hostname) -p 26379 ping",
+							"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 ping",
 						},
 					},
 				},
@@ -2821,7 +2831,7 @@ func TestSentinelCustomReadinessProbe(t *testing.T) {
 						Command: []string{
 							"sh",
 							"-c",
-							"redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1' && redis-cli -h $(hostname) -p 26379 sentinel ckquorum mymaster | grep -q '^OK'",
+							"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1' && $t redis-cli -h $(hostname) -p 26379 sentinel ckquorum mymaster | grep -q '^OK'",
 						},
 					},
 				},
@@ -3279,28 +3289,225 @@ sentinel parallel-syncs mymaster 2`
 // ---------------------------------------------------------------------------
 
 func TestEnsureRedisShutdownConfigMapGenerated(t *testing.T) {
-	assert := assert.New(t)
-	rf := generateRF()
-	rf.Name = "my-redis"
-	rf.Spec.Redis.Port = 6379
+	tests := []struct {
+		name         string
+		sentinel     *bool
+		bootstrap    *redisfailoverv1.BootstrapSettings
+		wantSentinel bool
+	}{
+		{name: "sentinel enabled", sentinel: ptr.To(true), wantSentinel: true},
+		{name: "sentinel disabled", sentinel: ptr.To(false)},
+		{name: "sentinel unset", sentinel: nil},
+		{
+			name:         "bootstrap with sentinels allowed",
+			sentinel:     ptr.To(true),
+			bootstrap:    &redisfailoverv1.BootstrapSettings{Host: "127.0.0.1", AllowSentinels: true},
+			wantSentinel: true,
+		},
+		{
+			name:      "bootstrap without sentinels",
+			sentinel:  ptr.To(true),
+			bootstrap: &redisfailoverv1.BootstrapSettings{Host: "127.0.0.1"},
+		},
+	}
 
-	var gotCM *corev1.ConfigMap
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF()
+			rf.Name = "my-redis"
+			rf.Spec.Redis.Port = 6379
+			rf.Spec.Sentinel.Enabled = test.sentinel
+			rf.Spec.BootstrapNode = test.bootstrap
+
+			var gotCM *corev1.ConfigMap
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				gotCM = args.Get(1).(*corev1.ConfigMap)
+			}).Return(nil)
+
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
+
+			assert.NoError(err)
+			if assert.NotNil(gotCM) {
+				content := gotCM.Data["shutdown.sh"]
+				// The redis pods have no service links, so the script must
+				// not depend on the RFS_<NAME>_SERVICE_* variables.
+				assert.NotContains(content, "RFS_")
+				assert.Contains(content, "redis-cli -p 6379")
+				assert.True(strings.HasSuffix(content, "eval $save_command"))
+				if test.wantSentinel {
+					assert.Contains(content, "redis-cli -h rfs-my-redis -p 26379 --csv SENTINEL get-master-addr-by-name mymaster")
+					assert.Contains(content, "redis-cli -h rfs-my-redis -p 26379 SENTINEL failover mymaster")
+					// The script must end inside the default 30s grace period.
+					assert.NotContains(content, "sleep 3")
+					assert.Contains(content, "deadline=$(($(date +%s) + 12))")
+					assert.Contains(content, "CLIENT PAUSE")
+					assert.Contains(content, `[ "$(date +%s)" -lt "$deadline" ]`)
+				} else {
+					assert.NotContains(content, "SENTINEL")
+					assert.NotContains(content, "26379")
+					assert.NotContains(content, "CLIENT PAUSE")
+					assert.True(strings.HasPrefix(content, `cmd="redis-cli -p 6379"`))
+				}
+			}
+		})
+	}
+}
+
+func TestRedisShutdownScriptEndsInsideGracePeriod(t *testing.T) {
+	if _, err := exec.LookPath("timeout"); err != nil {
+		t.Skip("timeout is not installed")
+	}
+
+	rf := generateRF()
+	rf.Spec.Redis.Port = 6379
+	rf.Spec.Sentinel.Enabled = ptr.To(true)
+	var script string
 	ms := &mK8SService.Services{}
 	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
-		gotCM = args.Get(1).(*corev1.ConfigMap)
+		script = args.Get(1).(*corev1.ConfigMap).Data["shutdown.sh"]
 	}).Return(nil)
-
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-	err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
+	require.NoError(t, client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{}))
 
-	assert.NoError(err)
-	if assert.NotNil(gotCM) {
-		content := gotCM.Data["shutdown.sh"]
-		// rf.Name "my-redis" is upper-cased and its dashes replaced with
-		// underscores to build the RFS_<NAME>_SERVICE_* env var names.
-		assert.Contains(content, "RFS_MY_REDIS_SERVICE_HOST")
-		assert.Contains(content, "RFS_MY_REDIS_SERVICE_PORT_SENTINEL")
-		assert.Contains(content, "redis-cli -p 6379")
+	// The fake Sentinel reports this pod (10.0.0.1) as the master on the
+	// first query and 10.0.0.2 after it. The fake local Redis answers OK.
+	fakeCLI := `#!/bin/sh
+echo "auth=$REDISCLI_AUTH $*" >>"$FAKE_LOG"
+case "$*" in
+*"-h "*) ;;
+*"CLIENT PAUSE"*) echo "${FAKE_PAUSE:-OK}"; exit 0 ;;
+*) echo OK; exit 0 ;;
+esac
+[ "$FAKE_FROZEN" = 1 ] && exec sleep 30
+case "$*" in
+*get-master-addr-by-name*)
+	if [ "$FAKE_STUCK" != 1 ] && [ "$(grep -c get-master-addr-by-name "$FAKE_LOG")" -gt 1 ]; then
+		echo '"10.0.0.2","6379"'
+	else
+		echo '"10.0.0.1","6379"'
+	fi ;;
+*failover*) echo "${FAKE_FAILOVER:-OK}" ;;
+esac
+`
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "redis-cli"), []byte(fakeCLI), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hostname"), []byte("#!/bin/sh\necho 10.0.0.1\n"), 0o755))
+
+	sentinel := "auth= -h " + rfservice.GetSentinelName(rf) + " -p 26379 "
+	lookup := sentinel + "--csv SENTINEL get-master-addr-by-name mymaster"
+	failover := sentinel + "SENTINEL failover mymaster"
+	tests := []struct {
+		name      string
+		env       []string
+		wantCalls []string
+		maxTime   time.Duration
+	}{
+		{
+			name: "master moves",
+			env:  []string{"REDIS_PASSWORD=secret"},
+			wantCalls: []string{
+				lookup,
+				"auth=secret -p 6379 CLIENT PAUSE <ms> WRITE",
+				failover,
+				lookup,
+				"auth=secret -p 6379 REPLICAOF 10.0.0.2 6379",
+				"auth=secret -p 6379 CLIENT UNPAUSE",
+				"auth=secret -p 6379 save",
+			},
+			maxTime: 5 * time.Second,
+		},
+		{
+			// Redis before 6.2 has no CLIENT PAUSE WRITE.
+			name: "pause fails",
+			env:  []string{"FAKE_PAUSE=ERR syntax error"},
+			wantCalls: []string{
+				lookup,
+				"auth= -p 6379 CLIENT PAUSE <ms> WRITE",
+				failover,
+				lookup,
+				"auth= -p 6379 REPLICAOF 10.0.0.2 6379",
+				"auth= -p 6379 CLIENT UNPAUSE",
+				"auth= -p 6379 save",
+			},
+			maxTime: 5 * time.Second,
+		},
+		{
+			name: "failover fails",
+			env:  []string{"FAKE_FAILOVER=NOGOODSLAVE No suitable replica to promote"},
+			wantCalls: []string{
+				lookup,
+				"auth= -p 6379 CLIENT PAUSE <ms> WRITE",
+				failover,
+				failover,
+				failover,
+				"auth= -p 6379 CLIENT UNPAUSE",
+				"auth= -p 6379 save",
+			},
+			maxTime: 6 * time.Second,
+		},
+		{
+			// The poll stops at the 12s deadline.
+			name:    "no new master",
+			env:     []string{"FAKE_STUCK=1"},
+			maxTime: 16 * time.Second,
+		},
+		{
+			// Three lookups of at most 2s each, and a 1s sleep after each.
+			name: "frozen sentinel",
+			env:  []string{"FAKE_FROZEN=1"},
+			wantCalls: []string{
+				lookup,
+				lookup,
+				lookup,
+				"auth= -p 6379 save",
+			},
+			maxTime: 12 * time.Second,
+		},
+	}
+	pause := regexp.MustCompile(`CLIENT PAUSE (\d+) WRITE`)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			logFile := filepath.Join(t.TempDir(), "calls")
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "sh", "-c", script)
+			cmd.WaitDelay = time.Second
+			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "FAKE_LOG="+logFile, "REDIS_PASSWORD=")
+			cmd.Env = append(cmd.Env, test.env...)
+			start := time.Now()
+			out, err := cmd.CombinedOutput()
+			elapsed := time.Since(start)
+			require.NoError(t, err, string(out))
+			assert.Less(t, elapsed, test.maxTime)
+			raw, err := os.ReadFile(logFile)
+			require.NoError(t, err)
+			calls := strings.Split(strings.TrimSpace(string(raw)), "\n")
+			for i, call := range calls {
+				if m := pause.FindStringSubmatch(call); m != nil {
+					// The pause ends 6s after the 12s deadline.
+					ms, err := strconv.Atoi(m[1])
+					require.NoError(t, err)
+					assert.GreaterOrEqual(t, ms, 17000)
+					assert.LessOrEqual(t, ms, 18000)
+					calls[i] = pause.ReplaceAllString(call, "CLIENT PAUSE <ms> WRITE")
+				}
+			}
+			if test.wantCalls != nil {
+				assert.Equal(t, test.wantCalls, calls)
+				return
+			}
+			// The poll repeats the lookup until the deadline.
+			require.GreaterOrEqual(t, len(calls), 6)
+			assert.Equal(t, []string{lookup, "auth= -p 6379 CLIENT PAUSE <ms> WRITE", failover}, calls[:3])
+			for _, call := range calls[3 : len(calls)-2] {
+				assert.Equal(t, lookup, call)
+			}
+			assert.Equal(t, []string{"auth= -p 6379 CLIENT UNPAUSE", "auth= -p 6379 save"}, calls[len(calls)-2:])
+		})
 	}
 }
 
@@ -3357,6 +3564,248 @@ func TestEnsureRedisReadinessConfigMap(t *testing.T) {
 	if assert.NotNil(gotCM) {
 		content := gotCM.Data["ready.sh"]
 		assert.Contains(content, "redis-cli -p 6380")
+	}
+}
+
+// TestRedisReadinessScript runs ready.sh against a fake redis-cli that prints
+// INFO replication as Redis 7.2-8 and Valkey 8-9 report it, or hangs like a
+// frozen server that accepts the connection but never replies. Each case runs
+// with and without timeout on PATH.
+func TestRedisReadinessScript(t *testing.T) {
+	if _, err := exec.LookPath("timeout"); err != nil {
+		t.Skip("timeout is not installed")
+	}
+	replica := func(fields ...string) string {
+		return strings.Join(append([]string{"# Replication", "role:slave"}, fields...), "\r\n") + "\r\n"
+	}
+	tests := []struct {
+		name  string
+		info  string
+		ready bool
+	}{
+		{
+			name:  "master",
+			info:  "# Replication\r\nrole:master\r\nconnected_slaves:2\r\n",
+			ready: true,
+		},
+		{
+			name:  "refused password",
+			info:  "NOAUTH Authentication required.\n",
+			ready: true,
+		},
+		{
+			name:  "replica of the config placeholder",
+			info:  replica("master_host:127.0.0.1", "master_link_status:down", "master_sync_in_progress:0", "master_link_down_since_seconds:-1"),
+			ready: false,
+		},
+		{
+			name:  "full sync in progress",
+			info:  replica("master_host:10.0.0.1", "master_link_status:down", "master_sync_in_progress:1", "master_link_down_since_seconds:-1"),
+			ready: false,
+		},
+		{
+			name:  "link up",
+			info:  replica("master_host:10.0.0.1", "master_link_status:up", "master_last_io_seconds_ago:1", "master_sync_in_progress:0"),
+			ready: true,
+		},
+		{
+			name:  "never synced since start, e.g. unreadable RDB format",
+			info:  replica("master_host:10.0.0.1", "master_link_status:down", "master_last_io_seconds_ago:-1", "master_sync_in_progress:0", "master_link_down_since_seconds:-1"),
+			ready: false,
+		},
+		{
+			name:  "link down briefly, e.g. during a failover",
+			info:  replica("master_host:10.0.0.1", "master_link_status:down", "master_last_io_seconds_ago:-1", "master_sync_in_progress:0", "master_link_down_since_seconds:8"),
+			ready: true,
+		},
+		{
+			name:  "link down too long",
+			info:  replica("master_host:10.0.0.1", "master_link_status:down", "master_last_io_seconds_ago:-1", "master_sync_in_progress:0", "master_link_down_since_seconds:71"),
+			ready: false,
+		},
+		{
+			name:  "frozen server",
+			ready: false,
+		},
+	}
+
+	rf := generateRF()
+	var gotCM *corev1.ConfigMap
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		gotCM = args.Get(1).(*corev1.ConfigMap)
+	}).Return(nil)
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	require.NoError(t, client.EnsureRedisReadinessConfigMap(rf, nil, []metav1.OwnerReference{}))
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "ready.sh")
+	require.NoError(t, os.WriteFile(script, []byte(gotCM.Data["ready.sh"]), 0o644))
+	fakeCLI := "#!/bin/sh\n[ -s \"$FAKE_INFO\" ] || exec sleep 10\ncat \"$FAKE_INFO\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "redis-cli"), []byte(fakeCLI), 0o755))
+
+	// An image with the script's other tools but no timeout.
+	bare := t.TempDir()
+	for _, tool := range []string{"sh", "xargs", "grep", "tr", "cut", "cat", "sleep"} {
+		p, err := exec.LookPath(tool)
+		require.NoError(t, err)
+		require.NoError(t, os.Symlink(p, filepath.Join(bare, tool)))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(bare, "redis-cli"), []byte(fakeCLI), 0o755))
+
+	paths := []struct{ name, path string }{
+		{"", dir + ":" + os.Getenv("PATH")},
+		{", without timeout", bare},
+	}
+	for _, test := range tests {
+		for _, p := range paths {
+			// Without timeout a frozen server still hangs the script.
+			if test.info == "" && p.name != "" {
+				continue
+			}
+			t.Run(test.name+p.name, func(t *testing.T) {
+				info := filepath.Join(t.TempDir(), "info")
+				require.NoError(t, os.WriteFile(info, []byte(test.info), 0o644))
+
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, "sh", script)
+				cmd.Env = append(os.Environ(), "PATH="+p.path, "FAKE_INFO="+info)
+				cmd.WaitDelay = time.Second
+				start := time.Now()
+				out, err := cmd.CombinedOutput()
+				assert.Equal(t, test.ready, err == nil, "ready.sh output: %s", out)
+				// The kubelet's probe timeout is 5s, and some runtimes don't
+				// enforce it while a child still holds the output open.
+				assert.Less(t, time.Since(start), 5*time.Second, "ready.sh must finish within the probe timeout")
+			})
+		}
+	}
+}
+
+// TestProbeCommands runs the default Redis and Sentinel liveness commands and
+// the Sentinel readiness command against a fake redis-cli that answers like a
+// healthy server or hangs like a frozen one, with and without timeout on PATH.
+func TestProbeCommands(t *testing.T) {
+	if _, err := exec.LookPath("timeout"); err != nil {
+		t.Skip("timeout is not installed")
+	}
+
+	probes := map[string]*corev1.Probe{}
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Return(nil, nil)
+	ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Return(nil)
+	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		probes["redis liveness"] = args.Get(1).(*appsv1.StatefulSet).Spec.Template.Spec.Containers[0].LivenessProbe
+	}).Return(nil)
+	ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		c := args.Get(1).(*appsv1.Deployment).Spec.Template.Spec.Containers[0]
+		probes["sentinel liveness"] = c.LivenessProbe
+		probes["sentinel readiness"] = c.ReadinessProbe
+	}).Return(nil)
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	require.NoError(t, client.EnsureRedisStatefulset(generateRF(), nil, []metav1.OwnerReference{}))
+	require.NoError(t, client.EnsureSentinelDeployment(generateRF(), nil, []metav1.OwnerReference{}))
+
+	fakeCLI := `#!/bin/sh
+[ "$FAKE_FROZEN" = 1 ] && exec sleep 10
+case "$*" in
+*get-master-addr-by-name*) printf '10.0.0.1\n6379\n' ;;
+*ckquorum*) echo "OK 3 usable Sentinels. Quorum and failover authorization can be reached" ;;
+*) echo PONG ;;
+esac
+`
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "redis-cli"), []byte(fakeCLI), 0o755))
+	bare := t.TempDir()
+	for _, tool := range []string{"sh", "grep", "head", "hostname", "sleep"} {
+		p, err := exec.LookPath(tool)
+		require.NoError(t, err)
+		require.NoError(t, os.Symlink(p, filepath.Join(bare, tool)))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(bare, "redis-cli"), []byte(fakeCLI), 0o755))
+
+	tests := []struct {
+		name   string
+		path   string
+		frozen bool
+		alive  bool
+	}{
+		{name: "answers", path: dir + ":" + os.Getenv("PATH"), alive: true},
+		{name: "frozen", path: dir + ":" + os.Getenv("PATH"), frozen: true},
+		{name: "answers, without timeout", path: bare, alive: true},
+	}
+	for _, component := range []string{"redis liveness", "sentinel liveness", "sentinel readiness"} {
+		probe := probes[component]
+		require.Equal(t, "sh", probe.Exec.Command[0])
+		for _, test := range tests {
+			t.Run(component+", "+test.name, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, "sh", probe.Exec.Command[1:]...)
+				cmd.Env = append(os.Environ(), "PATH="+test.path)
+				if test.frozen {
+					cmd.Env = append(cmd.Env, "FAKE_FROZEN=1")
+				}
+				cmd.WaitDelay = time.Second
+				start := time.Now()
+				out, err := cmd.CombinedOutput()
+				assert.Equal(t, test.alive, err == nil, "output: %s", out)
+				assert.Less(t, time.Since(start), time.Duration(probe.TimeoutSeconds)*time.Second, "must finish within the probe timeout")
+			})
+		}
+	}
+}
+
+// TestRedisReadinessLinkDownWindow checks that a replica stays ready through
+// the configured failover: the window is 60s plus the failover's timing.
+func TestRedisReadinessLinkDownWindow(t *testing.T) {
+	tests := []struct {
+		name   string
+		modify func(rf *redisfailoverv1.RedisFailover)
+		window string
+	}{
+		{
+			name:   "operator mode, default failoverTimeout",
+			modify: func(rf *redisfailoverv1.RedisFailover) {},
+			window: "70",
+		},
+		{
+			name: "operator mode, custom failoverTimeout",
+			modify: func(rf *redisfailoverv1.RedisFailover) {
+				rf.Spec.Sentinel.FailoverTimeout = &metav1.Duration{Duration: 2 * time.Minute}
+			},
+			window: "180",
+		},
+		{
+			name: "sentinel mode, default config",
+			modify: func(rf *redisfailoverv1.RedisFailover) {
+				rf.Spec.Sentinel.Enabled = ptr.To(true)
+			},
+			window: "75",
+		},
+		{
+			name: "sentinel mode, customConfig",
+			modify: func(rf *redisfailoverv1.RedisFailover) {
+				rf.Spec.Sentinel.Enabled = ptr.To(true)
+				rf.Spec.Sentinel.CustomConfig = []string{"down-after-milliseconds 120000", "parallel-syncs 1", "failover-timeout 30000"}
+			},
+			window: "210",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			test.modify(rf)
+			var gotCM *corev1.ConfigMap
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				gotCM = args.Get(1).(*corev1.ConfigMap)
+			}).Return(nil)
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			require.NoError(t, client.EnsureRedisReadinessConfigMap(rf, nil, []metav1.OwnerReference{}))
+			assert.Contains(t, gotCM.Data["ready.sh"], "\nMAX_LINK_DOWN_SECONDS="+test.window+"\n")
+		})
 	}
 }
 
