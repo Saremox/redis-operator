@@ -15,6 +15,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/saremox/redis-operator/test/soak/internal/observer"
 )
 
 // mirrorAnnotation marks the API server's copy of a static pod.
@@ -99,8 +101,10 @@ func (l *Lane) drain(ctx context.Context, a *action) outcome {
 		return outcome{err: err}
 	}
 	var o outcome
-	blocked, err := l.evictAll(ctx, node, log)
-	evicted := time.Since(start)
+	reports := l.reports()
+	blocked, evicted, err := l.evictAll(ctx, node, log)
+	a.resets = l.resets(evicted, reports)
+	evictedAfter := time.Since(start)
 	switch {
 	case errors.Is(err, errBlocked):
 		o.timeout = fmt.Errorf("evicting: %w", err)
@@ -123,7 +127,7 @@ func (l *Lane) drain(ctx context.Context, a *action) outcome {
 		} else {
 			d := time.Since(start)
 			o.converged = append(o.converged, d)
-			log.Info("node drained", "evict_seconds", evicted.Seconds(), "converge_seconds", d.Seconds(), "pdb_blocked", blocked,
+			log.Info("node drained", "evict_seconds", evictedAfter.Seconds(), "converge_seconds", d.Seconds(), "pdb_blocked", blocked,
 				"hold_seconds", l.cfg.Drain.Hold.Seconds())
 			select {
 			case <-ctx.Done():
@@ -150,14 +154,33 @@ func (l *Lane) cordon(ctx context.Context, node string, on bool) error {
 	return err
 }
 
+// resets returns the instances whose only redis pod, without a volume, a
+// drain evicted.
+func (l *Lane) resets(evicted []corev1.Pod, reports map[string]observer.Report) map[string]bool {
+	out := map[string]bool{}
+	for _, in := range l.instances {
+		if !reports[in.Name].Ephemeral {
+			continue
+		}
+		for _, p := range evicted {
+			if p.Namespace == in.Namespace && p.Labels["app.kubernetes.io/name"] == in.Name &&
+				p.Labels["app.kubernetes.io/component"] == "redis" {
+				out[in.Name] = true
+			}
+		}
+	}
+	return out
+}
+
 // evictAll evicts every evictable pod on the node at once, each retried
 // while a PodDisruptionBudget blocks it, until the drain timeout. It
-// returns how often a budget blocked an eviction.
-func (l *Lane) evictAll(ctx context.Context, node string, log *slog.Logger) (int, error) {
+// returns how often a budget blocked an eviction, and the pods evicted.
+func (l *Lane) evictAll(ctx context.Context, node string, log *slog.Logger) (int, []corev1.Pod, error) {
 	list, err := l.kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "spec.nodeName=" + node})
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
+	var evicted []corev1.Pod
 	deadline := time.Now().Add(l.cfg.Drain.Timeout.Duration)
 	var mu sync.Mutex
 	var errs []error
@@ -176,11 +199,13 @@ func (l *Lane) evictAll(ctx context.Context, node string, log *slog.Logger) (int
 			}
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s/%s: %w", p.Namespace, p.Name, err))
+			} else {
+				evicted = append(evicted, p)
 			}
 		})
 	}
 	wg.Wait()
-	return blocked, errors.Join(errs...)
+	return blocked, evicted, errors.Join(errs...)
 }
 
 // evict evicts a pod, retrying while a PodDisruptionBudget blocks it, and

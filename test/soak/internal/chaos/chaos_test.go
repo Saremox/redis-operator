@@ -22,14 +22,15 @@ import (
 
 // fakeObserver reports a quiet instance, observed now, unless failing.
 type fakeObserver struct {
-	mu      sync.Mutex
-	failing []string
+	mu        sync.Mutex
+	failing   []string
+	ephemeral bool
 }
 
 func (f *fakeObserver) Report() observer.Report {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return observer.Report{At: time.Now(), Quiet: len(f.failing) == 0, Failing: f.failing}
+	return observer.Report{At: time.Now(), Quiet: len(f.failing) == 0, Failing: f.failing, Ephemeral: f.ephemeral}
 }
 
 type fakeData struct {

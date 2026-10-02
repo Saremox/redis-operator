@@ -47,8 +47,9 @@ type Data interface {
 
 // Instance is an instance every action disturbs.
 type Instance struct {
-	Name     string
-	Observer Watched
+	Name      string
+	Namespace string
+	Observer  Watched
 	// Data is nil for an instance without data.
 	Data Data
 }
@@ -168,6 +169,9 @@ type action struct {
 	// begin marks the start of the disruption for every instance's data;
 	// an action calls it once it is sure to disturb them.
 	begin func()
+	// resets are the instances the action reset: it deleted the only redis
+	// pod of an instance without a volume, which loses the data by design.
+	resets map[string]bool
 }
 
 // outcome is what an action did.
@@ -250,7 +254,7 @@ func (l *Lane) act(ctx context.Context, step int, r *rand.Rand, kind config.Chao
 		log.Info("chaos done")
 	}
 	if began {
-		l.verify(ctx, kind, step, log)
+		l.verify(ctx, a, log)
 	}
 }
 
@@ -273,8 +277,8 @@ func (l *Lane) waitQuiet(ctx context.Context) []string {
 }
 
 // verify verifies every instance's data after the action, event being its
-// kind.
-func (l *Lane) verify(ctx context.Context, kind config.ChaosKind, step int, log *slog.Logger) {
+// kind, or config.EventReset for an instance it reset.
+func (l *Lane) verify(ctx context.Context, a *action, log *slog.Logger) {
 	ctx, cancel := context.WithTimeout(ctx, l.cfg.Timeout.Duration)
 	defer cancel()
 	var mu sync.Mutex
@@ -284,8 +288,12 @@ func (l *Lane) verify(ctx context.Context, kind config.ChaosKind, step int, log 
 		if in.Data == nil {
 			continue
 		}
+		event := string(a.kind)
+		if a.resets[in.Name] {
+			event = config.EventReset
+		}
 		wg.Go(func() {
-			n, err := in.Data.Verify(ctx, string(kind), step)
+			n, err := in.Data.Verify(ctx, event, a.step)
 			if err != nil {
 				log.Warn("verifying the data after chaos", "rf", in.Name, "error", err.Error())
 				return

@@ -20,7 +20,7 @@ func TestLoadExample(t *testing.T) {
 }
 
 func TestShippedConfigsParse(t *testing.T) {
-	for _, path := range []string{"../../deploy/config.yaml", "../../e2e/config.yaml", "../../e2e/config-versions.yaml"} {
+	for _, path := range []string{"../../deploy/config.yaml", "../../e2e/config.yaml", "../../e2e/config-versions.yaml", "../../e2e/config-chaos.yaml"} {
 		b, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)

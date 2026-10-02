@@ -132,7 +132,7 @@ func run(configPath, listen string, log *slog.Logger) error {
 			return mu.Current()
 		})
 		wg.Go(func() { r.Run(ctx, func() []string { return prober.Names(in, o.SentinelPath()) }) })
-		lane = append(lane, chaos.Instance{Name: in.Name, Observer: o, Data: d})
+		lane = append(lane, chaos.Instance{Name: in.Name, Namespace: in.Namespace, Observer: o, Data: d})
 	}
 	if cfg.ChaosOn() {
 		l := chaos.New(cfg, kube, lock, lane, os.Getenv("NODE_NAME"), m, log)

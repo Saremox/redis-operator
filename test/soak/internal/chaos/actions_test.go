@@ -340,3 +340,37 @@ func TestDrainBlocked(t *testing.T) {
 		t.Errorf("w1 still cordoned: %v", err)
 	}
 }
+
+// A drain that evicted the only redis pod of an instance without a volume
+// reset it: its data is verified as a reset's, every other's as the
+// drain's.
+func TestDrainResets(t *testing.T) {
+	w1 := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "w1"},
+		Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}}
+	redis := func(rf string) *corev1.Pod {
+		p := nodePod(rf, "rfr-"+rf+"-0", "w1", func(p *corev1.Pod) {
+			p.Labels = map[string]string{"app.kubernetes.io/name": rf, "app.kubernetes.io/component": "redis"}
+		})
+		return &p
+	}
+	l, kube, _, _ := fakeLane(t, "chaos: {kinds: {node_drain: 1}, timeout: 2s, drain: {hold: 10ms}}", w1, redis("single"), redis("pvc"))
+	single, pvc := &fakeData{}, &fakeData{}
+	l.instances = []Instance{
+		{Name: "single", Namespace: "single", Observer: &fakeObserver{ephemeral: true}, Data: single},
+		{Name: "pvc", Namespace: "pvc", Observer: &fakeObserver{}, Data: pvc},
+	}
+	kube.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if action.GetSubresource() != "eviction" {
+			return false, nil, nil
+		}
+		ev := action.(k8stesting.CreateAction).GetObject().(interface{ GetName() string })
+		return true, nil, kube.Tracker().Delete(schema.GroupVersionResource{Version: "v1", Resource: "pods"}, action.GetNamespace(), ev.GetName())
+	})
+	l.act(context.Background(), 1, stepRand(1, 1), config.NodeDrain)
+	if got := strings.Join(single.calls, ","); got != "begin,verify reset" {
+		t.Errorf("single: %s", got)
+	}
+	if got := strings.Join(pvc.calls, ","); got != "begin,verify node_drain" {
+		t.Errorf("pvc: %s", got)
+	}
+}
