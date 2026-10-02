@@ -630,6 +630,13 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		}
 
 		if !healthy {
+			// The master counted above may have started stopping since; then
+			// it is no longer found but may still take writes, as in case 0.
+			if masterIP == "" {
+				if stopping, err := r.masterPodStopping(rf); err != nil || stopping {
+					return err
+				}
+			}
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
 				Warningf("Master %s is unhealthy, initiating failover", masterIP)
 
