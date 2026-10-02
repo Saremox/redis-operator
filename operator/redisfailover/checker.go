@@ -108,13 +108,11 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			// is available via the reachable majority.
 			//
 			// This gate only applies when Sentinel is actually managing
-			// failover. In operator-managed mode (sentinel.enabled: false)
-			// there is no Sentinel Deployment to query - GetSentinelsIPs would
-			// just 404 against it - and the operator's own election logic in
-			// checkAndHealOperatorManagedMode (the "no master" branch) already
-			// takes over on the very next reconcile once this delete leaves the
-			// RedisFailover without a master, using the same replication-offset
-			// based selection this gate exists to protect.
+			// failover. In operator-managed mode (sentinel.enabled: false), no
+			// Sentinel Deployment exists, so GetSentinelsIPs would fail with a
+			// 404. After this delete, the next reconcile finds no master, and
+			// the "no master" branch of checkAndHealOperatorManagedMode elects
+			// a replica.
 			if !rf.OperatorManagedFailover() {
 				sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
 				if err != nil {
