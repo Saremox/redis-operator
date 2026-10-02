@@ -999,7 +999,7 @@ if [[ $profile == full ]]; then
   race=$(race_losses | xargs)
   [[ -z $race ]] || echo "KNOWN RACE (excluded): a scale-down removed the master and lost writes: $race"
   check "evicted_keys_total{rf=op-maxmem} = 0" gt "$(value redis_soak_evicted_keys_total 'rf="op-maxmem"')" 0
-else
+elif [[ $profile == versions ]]; then
   # Every edge was taken; every ok edge ended ok; none failed unsafely.
   while read -r from to expect; do
     l=("from=\"$from\"" "to=\"$to\"")
