@@ -54,6 +54,7 @@ func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, lo
 	if err != nil {
 		return nil, err
 	}
+	rfHandler.requeue = c.enqueueAfter
 	return c, nil
 }
 

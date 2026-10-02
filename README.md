@@ -53,6 +53,8 @@ REDIS_OPERATOR_VERSION=<release-tag>
 kubectl replace -f https://raw.githubusercontent.com/Saremox/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
 ```
 
+The chart can also apply its CRD before each install and upgrade. Set `crds.upgradeHook.enabled=true`. A Helm hook Job then runs `kubectl apply` with its own ServiceAccount, which can change the RedisFailover CRD. The hook is off by default because of this permission. The charts of 4.2.0-rc2 and earlier run the hook with the operator image, which has no `kubectl`. Use the hook only with a later release.
+
 ```
 helm upgrade redis-operator redis-operator/redis-operator
 ```
@@ -138,6 +140,12 @@ kubectl create -f https://raw.githubusercontent.com/Saremox/redis-operator/${RED
 ```
 
 Starting with `4.0.0`, Sentinel is disabled by default and failover is managed by the operator. Set `spec.sentinel.enabled: true` to deploy Sentinel resources, or use `spec.sentinel.failoverTimeout` to tune operator-managed failover.
+
+`spec.sentinel.failoverTimeout` (default `10s`, `0s` disables it) is the time that the operator waits for a master that does not answer while its pod runs. The wait prevents a failover after a short stall, for example a GC pause, because a failover makes all replicas resync and can lose writes.
+
+The wait starts at the first missed check. The operator records this time on the master pod in the `redisfailovers.databases.spotahome.com/unreachable-since` annotation, so an operator restart or a new leader keeps the deadline. `status.message` shows the wait.
+
+The operator does not replace a master that answers no check while its pod is ready, because a promotion can then give two masters. When the pod becomes not ready, the operator promotes a replica after the timeout. When the operator finds no master, for example because its pod is gone, it elects a master immediately. A master pod in deletion gets a wait while it is ready, because it can still accept writes.
 
 This redis-failover will be managed by the operator, resulting in the following elements created inside Kubernetes:
 

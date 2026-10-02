@@ -26,6 +26,10 @@ import (
 // failure as "no master".
 var ErrAmbiguousMasterCount = errors.New("number of redis nodes known as master is different than 1")
 
+// ErrRedisNotAnswering tells that no pod answered as master and a ready pod
+// did not answer, so that pod can still be the master.
+var ErrRedisNotAnswering = errors.New("ready redis pod did not answer")
+
 // ReplicaInfo holds information about a Redis replica for failover decisions
 type ReplicaInfo struct {
 	IP                string
@@ -414,7 +418,7 @@ func (r *RedisFailoverChecker) GetNumberMasters(rf *redisfailoverv1.RedisFailove
 		if err != nil {
 			r.logger.Errorf("Get redis info failed, maybe this node is not ready, pod ip: %s", rp.Status.PodIP)
 			if unanswered == nil && util.PodIsReady(rp) {
-				unanswered = fmt.Errorf("ready redis pod %s did not answer: %w", rp.Name, err)
+				unanswered = fmt.Errorf("%w: %s: %w", ErrRedisNotAnswering, rp.Name, err)
 			}
 			continue
 		}
