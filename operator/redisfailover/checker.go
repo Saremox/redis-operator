@@ -57,8 +57,9 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			if ready {
 				continue
 			}
-			// Without a known master, rip can be the master. Do not replace it.
-			if masterIP == "" && !rf.Bootstrapping() {
+			// Without a known master, rip can be the master. While bootstrapping,
+			// rip can hold the only copy of the data. Do not replace it.
+			if masterIP == "" {
 				wait, err = r.replicaRolloutWait(rf, rip)
 				return err
 			}

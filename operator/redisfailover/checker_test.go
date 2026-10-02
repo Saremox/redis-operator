@@ -2001,11 +2001,17 @@ func TestUpdate(t *testing.T) {
 				}
 				if !pod.ready {
 					// The report of the wait reads the update revision and
-					// the pods a second time.
-					mrfc.On("GetStatefulSetUpdateRevision", rf).Twice().Return(test.ssVersion, nil)
-					mrfc.On("GetRedisRevisionHash", pod.pod.Name, rf).Once().Return(pod.pod.Labels[appsv1.ControllerRevisionHashLabelKey], nil)
+					// the pods a second time. Without a master, only the
+					// report reads them.
+					reads := 2
+					if test.bootstrapping {
+						reads = 1
+					} else {
+						mrfc.On("GetRedisRevisionHash", pod.pod.Name, rf).Once().Return(pod.pod.Labels[appsv1.ControllerRevisionHashLabelKey], nil)
+					}
+					mrfc.On("GetStatefulSetUpdateRevision", rf).Times(reads).Return(test.ssVersion, nil)
 					mk = &mK8SService.Services{}
-					mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Twice().Return(&corev1.PodList{Items: []corev1.Pod{pod.pod}}, nil)
+					mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Times(reads).Return(&corev1.PodList{Items: []corev1.Pod{pod.pod}}, nil)
 					next = false
 					break
 				}
@@ -2578,11 +2584,10 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 			unsettled: true,
 		},
 		{
-			name:          "an unsynced stale replica is replaced while bootstrapping",
+			name:          "an unsynced stale replica is waited for while bootstrapping",
 			redises:       []redis{{"r0", "10.0.0.1", "new", true}, {"r1", "10.0.0.2", "new", true}, {"r2", "10.0.0.3", "old", false}},
 			noMaster:      true,
 			bootstrapping: true,
-			wantDelete:    "r2",
 		},
 		{
 			name:    "an unsynced replica without a pod is waited for",
