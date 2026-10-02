@@ -133,11 +133,13 @@ This redis-failover will be managed by the operator, resulting in the following 
 - `rfr-s-<NAME>`: Redis shutdown script configmap (if `redis.shutdownConfigMap` is not set)
 - `rfr-readiness-<NAME>`: Redis readiness script configmap
 - `rfr-<NAME>`: Redis PodDisruptionBudget (if `redis.disablePodDisruptionBudget` is not `true`)
-- `rfs-<NAME>`: Sentinel configmap (if `spec.sentinel.enabled` is `true`)
-- `rfs-<NAME>`: Sentinel deployment (if `spec.sentinel.enabled` is `true`)
-- `rfs-<NAME>`: Sentinel service (if `spec.sentinel.enabled` is `true`)
-- `rfs-<NAME>`: Sentinel PodDisruptionBudget (if `spec.sentinel.enabled` is `true` and `sentinel.disablePodDisruptionBudget` is not `true`)
-- `rfs-sa-<NAME>`: Sentinel service account (if `spec.sentinel.enabled` is `true` and `sentinel.serviceAccountName` is not set)
+- `rfs-<NAME>`: Sentinel configmap (if Sentinels run, see below)
+- `rfs-<NAME>`: Sentinel deployment (if Sentinels run, see below)
+- `rfs-<NAME>`: Sentinel service (if Sentinels run, see below)
+- `rfs-<NAME>`: Sentinel PodDisruptionBudget (if Sentinels run and `sentinel.disablePodDisruptionBudget` is not `true`)
+- `rfs-sa-<NAME>`: Sentinel service account (if Sentinels run and `sentinel.serviceAccountName` is not set)
+
+Sentinels run when `spec.sentinel.enabled` is `true`. With `bootstrapNode`, they also need `bootstrapNode.allowSentinels: true`.
 
 **NOTE**: `NAME` is the named provided when creating the RedisFailover.
 **IMPORTANT**: the name of the redis-failover to be created cannot be longer than 48 characters, due to prepend of redis/sentinel identification and statefulset limitation.
@@ -260,7 +262,14 @@ By default, redis and sentinel will be called with the basic command, giving the
 
 If necessary, this command can be changed with the `command` option inside redis/sentinel spec. An example can be found in the [custom command example file](example/redisfailover/custom-command.yaml).
 
-**Important**: a custom `redis.command` replaces the default command. With `auth.secretPath`, the default command passes `--requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD"` to `redis-server`. The password is not in `redis.conf`, so a custom command must pass these flags itself. Otherwise Redis starts without a password.
+**Important**: a custom `redis.command` replaces the default command. With `auth.secretPath`, the default command passes `--requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD"` to `redis-server`. The password is not in `redis.conf`, so a custom command must pass these flags itself. Otherwise Redis starts without a password. Kubernetes does not expand `$REDIS_PASSWORD` in a command, so use a shell:
+
+```yaml
+command:
+  - sh
+  - -c
+  - exec redis-server /redis/redis.conf --requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD"
+```
 
 ### Custom environment variables
 
