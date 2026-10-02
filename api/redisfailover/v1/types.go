@@ -41,14 +41,18 @@ type RedisCommandRename struct {
 
 // RedisSettings defines the specification of the redis cluster
 type RedisSettings struct {
-	Image                         string                            `json:"image,omitempty"`
-	ImagePullPolicy               corev1.PullPolicy                 `json:"imagePullPolicy,omitempty"`
-	Replicas                      int32                             `json:"replicas,omitempty"`
-	Port                          int32                             `json:"port,omitempty"`
-	Resources                     corev1.ResourceRequirements       `json:"resources,omitempty"`
-	Env                           []corev1.EnvVar                   `json:"env,omitempty"`
-	CustomConfig                  []string                          `json:"customConfig,omitempty"`
-	CustomCommandRenames          []RedisCommandRename              `json:"customCommandRenames,omitempty"`
+	Image                string                      `json:"image,omitempty"`
+	ImagePullPolicy      corev1.PullPolicy           `json:"imagePullPolicy,omitempty"`
+	Replicas             int32                       `json:"replicas,omitempty"`
+	Port                 int32                       `json:"port,omitempty"`
+	Resources            corev1.ResourceRequirements `json:"resources,omitempty"`
+	Env                  []corev1.EnvVar             `json:"env,omitempty"`
+	CustomConfig         []string                    `json:"customConfig,omitempty"`
+	CustomCommandRenames []RedisCommandRename        `json:"customCommandRenames,omitempty"`
+	// Command replaces the default redis command. With auth.secretPath, the
+	// default passes the password to redis-server, so a custom command must
+	// pass --requirepass and --masterauth from $REDIS_PASSWORD itself.
+	// Otherwise Redis runs with no password.
 	Command                       []string                          `json:"command,omitempty"`
 	ShutdownConfigMap             string                            `json:"shutdownConfigMap,omitempty"`
 	StartupConfigMap              string                            `json:"startupConfigMap,omitempty"`
@@ -86,10 +90,14 @@ type RedisSettings struct {
 	PodDisruptionBudgetMinAvailable *intstr.IntOrString `json:"podDisruptionBudgetMinAvailable,omitempty"`
 	// MaxMemory lets the operator set maxmemory and maxmemory-policy from the
 	// redis container's memory limit. Values set in customConfig take precedence.
+	// It needs a memory limit of at least 64Mi. It uses the smallest limit of
+	// all redis pods, because a failover can promote any replica. It sets
+	// replica-ignore-maxmemory yes, so customConfig cannot set it to no.
 	MaxMemory *MaxMemorySettings `json:"maxMemory,omitempty"`
 	// InPlaceResize controls whether redis pods whose update only changes
 	// container resources are resized in place instead of being recreated.
-	// Defaults to Enabled.
+	// It needs Kubernetes 1.33 or later, and 1.35 to lower a memory limit.
+	// Otherwise the pods are recreated. Defaults to Enabled.
 	// +kubebuilder:validation:Enum=Enabled;Disabled
 	InPlaceResize string `json:"inPlaceResize,omitempty"`
 }

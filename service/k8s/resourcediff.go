@@ -149,9 +149,8 @@ func configMapUpToDate(stored, desired *corev1.ConfigMap) bool {
 // podDisruptionBudgetUpToDate is statefulSetUpToDate's counterpart for
 // PodDisruptionBudget. See its doc comment for the general comparison
 // strategy. Unlike StatefulSet/Deployment/Service, no normalization is
-// needed here: MaxAvailable and UnhealthyPodEvictionPolicy are the only
-// fields the API server is known to default, and generatePodDisruptionBudget
-// never sets either.
+// needed here, because the API server defaults no policy/v1
+// PodDisruptionBudget spec field.
 func podDisruptionBudgetUpToDate(stored, desired *policyv1.PodDisruptionBudget) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false

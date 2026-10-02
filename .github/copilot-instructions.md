@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This repository is a Kubernetes operator that creates, configures, and manages Redis Failover clusters (Redis + Sentinel) on Kubernetes. It is a fork of `spotahome/redis-operator`.
+This repository is a Kubernetes operator that creates, configures, and manages Redis Failover clusters on Kubernetes. By default, the operator manages failover itself. With `sentinel.enabled: true`, Redis Sentinel does the failover. It is a fork of `spotahome/redis-operator`.
 
 - **Language**: Go (module: `github.com/saremox/redis-operator`)
 - **Go version**: See `go.mod` for the current version
@@ -57,7 +57,7 @@ make helm-test
 
 - The `RedisFailover` CRD spec is defined in `api/redisfailover/v1/types.go`
 - Default values are set in `api/redisfailover/v1/defaults.go`
-- After changing the API types, regenerate the CRD manifest: `make generate-crd`
+- After changing the API types, regenerate the DeepCopy code and the CRD manifests: `make generate-api`. Then run `make verify-codegen`, the same check that CI runs
 - After changing the API types, regenerate the client: `make update-codegen`
 - Keep backwards compatibility when changing the CRD spec; use optional fields with defaults
 
@@ -73,10 +73,10 @@ make helm-test
 
 - Chart source is in `charts/redisoperator/`
 - CRDs are in `charts/redisoperator/crds/`
-- After changing the CRD, copy the updated manifest into `charts/redisoperator/crds/` and `manifests/kustomize/base/`
+- `make generate-crd` (part of `make generate-api`) copies the CRD manifest into `charts/redisoperator/crds/` and `manifests/kustomize/base/`. Do not edit these copies by hand
 
 ## CI / Workflow
 
-- CI is defined in `.github/workflows/ci.yaml`
-- All PRs must pass: build, lint (golangci-lint), unit tests, integration tests (multi-version Kubernetes matrix), and Helm chart tests
+- CI is defined in `.github/workflows/ci.yaml` and `.github/workflows/e2e.yml`
+- All PRs must pass: build, lint (golangci-lint), verify-codegen, unit tests, integration tests (multi-version Kubernetes matrix), Helm chart tests, the Docker build, and the e2e test (minikube, operator-managed mode)
 - Docker images are built for `linux/amd64` and `linux/arm64`

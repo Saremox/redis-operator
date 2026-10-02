@@ -13,7 +13,7 @@ Redis Operator creates/configures/manages redis-failovers atop Kubernetes.
 Kubernetes version: 1.32 or higher
 Redis version: 6 or higher
 
-Redis operator is being tested against kubernetes 1.32.0, 1.33.1, 1.34.0, 1.35.1 and redis 6,7; Valkey 8
+CI runs the integration tests on Kubernetes 1.35.8, 1.36.4 and 1.37.0, and the end-to-end test on Kubernetes 1.32.0. Both use Redis 7.2.
 
 ## Operator deployment on Kubernetes
 
@@ -44,6 +44,8 @@ pre-releases; Helm skips them by default unless you pass `--version` or `--devel
 
 #### Update helm chart
 
+Read the [release notes](https://github.com/Saremox/redis-operator/releases) before an upgrade. If a release needs manual steps, its notes start with a warning that links to a guide in [docs/migrations](docs/migrations).
+
 Helm chart only manages the creation of CRD in the first installation. To update the CRD, you will need to apply it directly.
 
 ```
@@ -68,6 +70,14 @@ kubectl apply -f https://raw.githubusercontent.com/Saremox/redis-operator/${REDI
 
 This will create a deployment named `redisoperator`.
 
+The manifests at a release tag deploy the operator image of that tag. The release workflow stops a release when they do not agree. In tags 4.2.0-rc2, 4.1.2 and older, the manifests deploy an older operator image. For these tags, set the image after the install:
+
+```
+kubectl set image deployment/redisoperator app=ghcr.io/saremox/redis-operator:${REDIS_OPERATOR_VERSION}
+```
+
+The manifest also contains a `ServiceMonitor` and a `PodMonitor`. Without the Prometheus Operator CRDs, `kubectl apply` reports an error for these two resources. It still creates the other resources.
+
 ### Using kustomize
 
 The kustomize setup included in this repo is highly customizable using [components](https://kubectl.docs.kubernetes.io/guides/config_management/components/),
@@ -79,7 +89,7 @@ To install the operator with default settings and every necessary resource (incl
 kustomize build github.com/Saremox/redis-operator/manifests/kustomize/overlays/default
 ```
 
-If you would like to customize RBAC or the service account used, you can install the `minimal` overlay.
+The `minimal` overlay is the `default` overlay without the resource limits. It also creates the RBAC and the service account. To use your own RBAC or service account, use the `base` and the [components](manifests/kustomize/components) in your own kustomization.
 
 Finally, you can install the `full` overlay if you want everything this operator has to offer, including Prometheus ServiceMonitor resources.
 
@@ -87,6 +97,14 @@ It's always a good practice to pin the version of the operator in your configura
 
 ```shell
 kustomize build github.com/Saremox/redis-operator/manifests/kustomize/overlays/default?ref=<release-tag>
+```
+
+The `?ref=<release-tag>` also pins the operator image. In tags 4.2.0-rc2, 4.1.2 and older, the overlays deploy operator `v1.4.0`. For these tags, add the image to your `kustomization.yaml`:
+
+```yaml
+images:
+  - name: ghcr.io/saremox/redis-operator
+    newTag: <release-tag>
 ```
 
 You can create your own config by creating a `kustomization.yaml` file
@@ -128,9 +146,16 @@ This redis-failover will be managed by the operator, resulting in the following 
 - `rfr-<NAME>`: Redis service (if redis-exporter is enabled)
 - `rfrm-<NAME>`: Redis master service
 - `rfrs-<NAME>`: Redis slave service
-- `rfs-<NAME>`: Sentinel configmap (if `spec.sentinel.enabled` is `true`)
-- `rfs-<NAME>`: Sentinel deployment (if `spec.sentinel.enabled` is `true`)
-- `rfs-<NAME>`: Sentinel service (if `spec.sentinel.enabled` is `true`)
+- `rfr-s-<NAME>`: Redis shutdown script configmap (if `redis.shutdownConfigMap` is not set)
+- `rfr-readiness-<NAME>`: Redis readiness script configmap
+- `rfr-<NAME>`: Redis PodDisruptionBudget (if `redis.disablePodDisruptionBudget` is not `true`)
+- `rfs-<NAME>`: Sentinel configmap (if Sentinels run, see below)
+- `rfs-<NAME>`: Sentinel deployment (if Sentinels run, see below)
+- `rfs-<NAME>`: Sentinel service (if Sentinels run, see below)
+- `rfs-<NAME>`: Sentinel PodDisruptionBudget (if Sentinels run and `sentinel.disablePodDisruptionBudget` is not `true`)
+- `rfs-sa-<NAME>`: Sentinel service account (if Sentinels run and `sentinel.serviceAccountName` is not set)
+
+Sentinels run when `spec.sentinel.enabled` is `true`. With `bootstrapNode`, they also need `bootstrapNode.allowSentinels: true`.
 
 **NOTE**: `NAME` is the named provided when creating the RedisFailover.
 **IMPORTANT**: the name of the redis-failover to be created cannot be longer than 48 characters, due to prepend of redis/sentinel identification and statefulset limitation.
@@ -176,7 +201,7 @@ You can use NodeAffinity and Tolerations to deploy Pods to isolated groups of No
 
 ## Topology Spread Constraints
 
-You can use the `topologySpreadContraints` to ensure the pods of a type(redis or sentinel) are evenly distributed across zones/nodes. Examples are for using [topology spread constraints](example/redisfailover/topology-spread-contraints.yaml). Further document on how `topologySpreadConstraints` work could be found [here](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/).
+You can use the `topologySpreadConstraints` to ensure the pods of a type(redis or sentinel) are evenly distributed across zones/nodes. Examples are for using [topology spread constraints](example/redisfailover/topology-spread-contraints.yaml). Further document on how `topologySpreadConstraints` work could be found [here](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/).
 
 ### Custom configurations
 
@@ -187,7 +212,7 @@ To have the ability of this configuration to be changed "on the fly," without th
 **Important**: in the Sentinel options, there are some "conversions" to be made:
 
 - Configuration on the `sentinel.conf`: `sentinel down-after-milliseconds mymaster 2000`
-- Configuration on the `configOptions`: `down-after-milliseconds 2000`
+- Configuration on the `customConfig`: `down-after-milliseconds 2000`
 
 **Important 2**: do **NOT** change the options used for control the redis/sentinel such as `port`, `bind`, `dir`, etc.
 
@@ -212,25 +237,52 @@ For small instances, the default `client-output-buffer-limit` for `pubsub` (32mb
 
 ### Pod updates
 
-A changed spec replaces the redis pods one at a time, replicas first and the master last, each once the previous one is ready and every replica is synced with the master. When the rollout waits on the same pod for more than 10 minutes, e.g. on a new image that can't load the master's data, the status message names the pod and the reason, e.g. `rollout waiting on pod rfr-<NAME>-1 for more than 10m: not synced with the master`. The state stays `Healthy`, as the master still serves, and the message clears once the rollout moves on.
+A changed spec replaces the redis pods one at a time, replicas first and the master last, each once the previous one is ready and every replica is synced with the master. The operator replaces an unsynced replica that is not on the current spec first, because that replica has no data to lose. When the rollout waits on the same pod for more than 10 minutes, e.g. on a new image that can't load the master's data, the status message names the pod and the reason, e.g. `rollout waiting on pod rfr-<NAME>-1 for more than 10m: not synced with the master`. The state stays `Healthy`, as the master still serves, and the message clears once the rollout moves on.
 
 ### In-place resize
 
 On Kubernetes 1.33 or later, an update that only changes container cpu or memory resizes the redis pods in place instead of recreating them, so no data is reloaded and the master does not fail over. Pods are resized one at a time, replicas first. Lowering a memory limit in place needs Kubernetes 1.35. Set `redis.inPlaceResize: Disabled` to always recreate the pods.
 
-A pod is still recreated when the update changes anything else, adds or removes requests or limits, or changes the pod's QoS class, when the node's kubelet does not support in-place resize, and when the kubelet reports the resize as infeasible, defers it or fails it for more than 5 minutes, or does not apply it within 5 minutes without reporting why. The operator needs `patch` on `pods/resize` and `get` on `controllerrevisions`, which the chart, the kustomize and the example manifests grant; without them the pods are recreated.
+The operator recreates a pod instead of a resize in place in these cases:
+
+- The update changes more than container cpu and memory, adds or removes a request or a limit, or changes the QoS class.
+- The kubelet does not support in-place resize, or reports the resize as infeasible.
+- The kubelet refuses a memory limit below the current usage. The usage includes the page cache, so a retry also fails and the operator does not wait.
+- The kubelet defers or fails the resize for more than 5 minutes, or does not apply it in 5 minutes.
+
+The operator needs `patch` on `pods/resize` and `get` on `controllerrevisions`, which the chart, the kustomize and the example manifests grant. Without them, the operator recreates the pods.
 
 ### Custom shutdown script
 
-By default, a custom shutdown file is given. This file makes redis to `SAVE` it's data, and when Sentinel is enabled and redis is master, it'll call sentinel to ask for failover.
+By default, the operator gives each redis pod a shutdown script. The script makes redis `SAVE` its data before it stops. When Sentinel runs and the pod is the master, the script first asks Sentinel to fail over. Thus Sentinel moves the master immediately and does not wait for `down-after-milliseconds`. The redis pods have no service links, so the script finds Sentinel through the Service name `rfs-<NAME>` on port 26379.
+
+During the failover, the script pauses the writes on the old master, and then makes it a replica of the new master. This prevents the loss of writes that the old master acknowledged, because the clients get `READONLY` instead. The pause needs Redis 6.2 or later. On an earlier version, the script continues without the pause. The script waits a maximum of 12 seconds for the new master. Thus the script ends inside the default 30-second grace period, and the `SAVE` can run.
 
 This behavior is configurable, creating a configmap and indicating to use it. An example about how to use this option can be found in the [shutdown example file](example/redisfailover/custom-shutdown.yaml).
 
 **Important**: the configmap has to be in the same namespace. The configmap has to have a `shutdown.sh` data, containing the script.
 
+### Sentinel failover and write loss
+
+Sentinel does not stop writes on the old master in a failover. If the old master still runs, it accepts writes until Sentinel makes it a replica. With the default timings, this occurs about 10 seconds after the promotion. The old master then copies the data of the new master, and the writes that it acknowledged in that interval are lost. The interval ends earlier if the operator moves the master label or makes the old master a replica first. In a test on kind, a `SENTINEL FAILOVER` lost 11 seconds of writes through `rfrm-<NAME>`.
+
+The default shutdown script prevents this loss when the master pod is deleted. Before it requests the failover, it pauses the writes on the master (`CLIENT PAUSE ... WRITE`). After the promotion, it makes the old master a replica of the new master. Thus clients get an error, not an acknowledgement that is lost. In 3 deletions on kind, no acknowledged write was lost, and the new master was ready after about 1 second. The pause needs Redis 6.2 or later. On an older Redis, the script requests the failover without the pause.
+
+A custom shutdown script that requests a failover without this pause causes the loss. In a test without the pause, 2 deletions lost 8 seconds and 0.1 seconds of writes through `rfrm-<NAME>`.
+
+The loss can still occur when Sentinel fails over for another reason, for example when the master stops to answer but its pod continues to run.
+
+To lose fewer writes:
+
+- Use a Sentinel client. It gets the new master from Sentinel, and lost 1 to 6 seconds of writes in the tests, not 11 seconds.
+- Send `WAIT 1 <timeout>` after an important write, and treat a result of `0` as a failed write. On the old master, `WAIT` returns `0`, because its replicas replicate from the new master. `WAIT` does not undo the write and does not prevent all loss in a failover. It only lets the client detect this case.
+- Set `min-replicas-to-write 1` in `redis.customConfig`. The old master then refuses writes when its replicas disconnect. In a test with plain Redis, this reduced the loss from 11 seconds to 0.9 seconds. The master also refuses writes when no replica is connected.
+
+**Known limitation**: the wait for a master pod that stops finds the pod by its `redisfailovers-role=master` label. The operator sets this label only after it counts exactly one master. Sentinel can promote a pod that already stops. An example is a scale-down from 3 to 1 that removes two pods at the same time (`Parallel` pod management). That pod does not have the label yet, so nothing waits for it.
+
 ### Custom SecurityContext
 
-By default, Kubernetes will run containers as the user specified in the Dockerfile (or the root user if not specified); this is not always desirable.
+By default, the operator runs the pods as user and group `1000` with `runAsNonRoot: true`, `fsGroup: 1000` and the `RuntimeDefault` seccomp profile.
 If you need the containers to run as a specific user (or provide any other PodSecurityContext options), then you can specify a custom `securityContext` in the
 `redisfailover` object. See the [SecurityContext example file](example/redisfailover/security-context.yaml) for an example. You can visit kubernetes documentation for detailed docs about [security context](https://kubernetes.io/docs/tasks/configure-pod-container/security-context/)
 
@@ -238,8 +290,8 @@ A custom `securityContext` is merged on top of the operator defaults: fields you
 
 ### Custom containerSecurityContext at container level
 
-By default, Kubernetes will run containers with default docker capabilities, for example; this is not always desirable.
-If you need the containers to run with specific capabilities or with read-only root file system (or provide any other securityContext options), then you can specify a custom `containerSecurityContext` in the
+By default, the operator runs the containers as user and group `1000` with `runAsNonRoot: true`, drops `ALL` capabilities, and sets `privileged: false`, `allowPrivilegeEscalation: false` and `readOnlyRootFilesystem: true`.
+If you need the containers to run with specific capabilities or with a writable root file system (or provide any other securityContext options), then you can specify a custom `containerSecurityContext` in the
 `redisfailover` object. See the [ContainerSecurityContext example file](example/redisfailover/container-security-context.yaml) for an example. Keys available under containerSecurityContext are detailed [here](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#securitycontext-v1-core)
 
 A custom `containerSecurityContext` is merged on top of the operator defaults: fields you set win, and any field you leave unset keeps its default (e.g. the dropped `ALL` capabilities and `allowPrivilegeEscalation: false` are retained unless you override them).
@@ -253,6 +305,15 @@ By default, redis and sentinel will be called with the basic command, giving the
 
 If necessary, this command can be changed with the `command` option inside redis/sentinel spec. An example can be found in the [custom command example file](example/redisfailover/custom-command.yaml).
 
+**Important**: a custom `redis.command` replaces the default command. With `auth.secretPath`, the default command passes `--requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD"` to `redis-server`. The password is not in `redis.conf`, so a custom command must pass these flags itself. Otherwise Redis starts without a password. Kubernetes does not expand `$REDIS_PASSWORD` in a command, so use a shell:
+
+```yaml
+command:
+  - sh
+  - -c
+  - exec redis-server /redis/redis.conf --requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD"
+```
+
 ### Custom environment variables
 
 Extra environment variables can be injected into the redis and sentinel **main** containers via
@@ -264,14 +325,14 @@ user-supplied variable that reuses one of those names cannot override it.
 To use a custom Kubernetes [Priority Class](https://kubernetes.io/docs/concepts/configuration/pod-priority-preemption/#priorityclass) for Redis and/or Sentinel pods, you can set the `priorityClassName` in the redis/sentinel spec, this attribute has no default and depends on the specific cluster configuration. **Note:** the operator doesn't create the referenced `Priority Class` resource.
 
 ### Custom Service Account
-To use a custom Kubernetes [Service Account](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/) for Redis and/or Sentinel pods, you can set the `serviceAccountName` in the redis/sentinel spec, if not specified the `default` Service Account will be used. **Note:** the operator doesn't create the referenced `Service Account` resource.
+To use a custom Kubernetes [Service Account](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/) for Redis and/or Sentinel pods, you can set the `serviceAccountName` in the redis/sentinel spec. If not specified, the Redis pods use the `default` Service Account, and the Sentinel pods use the `rfs-sa-<NAME>` Service Account that the operator creates. **Note:** the operator doesn't create the referenced `Service Account` resource.
 
 ### Custom Pod Annotations
-By default, no pod annotations will be applied to Redis nor Sentinel pods.
+By default, the Sentinel pods have no annotations. The Redis pods have the `redisfailovers.databases.spotahome.com/secret-checksum` annotation. The operator changes it when the password changes, so that the Redis pods restart.
 
 To apply custom pod Annotations, you can provide the `podAnnotations` option inside redis/sentinel spec. An example can be found in the [custom annotations example file](example/redisfailover/custom-annotations.yaml).
 ### Custom Service Annotations
-By default, no service annotations will be applied to the Redis nor Sentinel services.
+By default, the `rfr-<NAME>` service has the `prometheus.io/scrape`, `prometheus.io/port` and `prometheus.io/path` annotations. The other services have no annotations.
 
 To apply custom service Annotations, you can provide the `serviceAnnotations` option inside redis/sentinel spec. An example can be found in the [custom annotations example file](example/redisfailover/custom-annotations.yaml).
 
@@ -294,6 +355,7 @@ app.kubernetes.io/component
 app.kubernetes.io/managed-by
 app.kubernetes.io/name
 app.kubernetes.io/part-of
+redisfailovers-role
 redisfailovers.databases.spotahome.com/name
 ```
 
@@ -397,11 +459,13 @@ Rotating the password (updating the `password` key of that same Secret in place)
 
 Until a pod restarts, whatever reads the password from its environment keeps the old one: the exporter sidecar can't authenticate, the pre-stop `SAVE` fails, and so do custom probes using `$REDIS_PASSWORD`.
 
+Until a pod restarts, the default readiness probe also reports the pod Ready without a replication check. The probe uses the old password, which Redis refuses. A refused password says nothing about replication, so the probe does not fail the pod for it. During this time, `rfrs-<NAME>` can send reads to a replica that is not synced.
+
 The operator knows the old password only from memory. If it restarted between the change and its next check, it can't switch the pods. The RedisFailover then reports `unable to apply the configured password`. Put the previous password back in the Secret, wait for the RedisFailover to become healthy, then change it again.
 
 The password is read from that Secret and passed to `redis-server` via `--requirepass`/`--masterauth`
 sourced from an environment variable; it is **not** written into the redis ConfigMap, so it never
-appears in plaintext in a ConfigMap or in the pod spec.
+appears in plaintext in a ConfigMap or in the pod spec. A custom `redis.command` must pass these flags itself.
 
 ### Bootstrapping from pre-existing Redis Instance(s)
 If you are wanting to migrate off of a pre-existing Redis instance, you can provide a `bootstrapNode` to your `RedisFailover` resource spec.
@@ -417,7 +481,7 @@ This `bootstrapNode` can be configured as follows:
 When a `bootstrapNode` is provided, the Operator will always set all the defined Redis instances to replicate from the provided `bootstrapNode` host value.
 This allows for defining a `RedisFailover` that replicates from an existing Redis instance to ease cutover from one instance to another.
 
-**Note: Redis instance will always be configured with `replica-priority 0`. This means that these Redis instances can _never_ be promoted to a `master`.**
+**Note: by default, the Redis instances get `replica-priority 0`, so that Sentinel never promotes them to `master`. A `replica-priority` entry in `redis.customConfig` replaces this value.**
 
 Depending on the configuration provided, the Operator will launch the `RedisFailover` in two bootstrapping states: without sentinels and with sentinels.
 
@@ -437,7 +501,7 @@ The image versions deployed by the operator can be found on the [defaults file](
 
 Valkey images ship `redis-server` and `redis-cli`, so switching `redis.image` and `sentinel.image` to a Valkey image is an ordinary rolling update.
 
-Migrate from Redis 7.2 only. Valkey forked from Redis 7.2 and can't load the data of Redis 7.4 or later (`Can't handle RDB format version 12`). The first replica on Valkey then never syncs, so the operator doesn't replace the master: the RedisFailover keeps running on Redis, but the rollout never completes.
+Migrate from Redis 7.2 only. Valkey forked from Redis 7.2 and can't load the data of Redis 7.4 or later (`Can't handle RDB format version 12`). The first replica on Valkey then never syncs, so the operator doesn't replace the master: the RedisFailover keeps running on Redis, but the rollout never completes. To end the migration, revert `redis.image`. The operator then replaces the unsynced Valkey replica, because that replica has no data to lose.
 ## Cleanup
 
 ### Operator and CRD

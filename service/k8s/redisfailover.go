@@ -35,7 +35,7 @@ type RedisFailoverService struct {
 	metricsRecorder metrics.Recorder
 }
 
-// NewRedisFailoverService returns a new Workspace KubeService.
+// NewRedisFailoverService returns a new RedisFailover KubeService.
 func NewRedisFailoverService(k8scli redisfailoverclientset.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *RedisFailoverService {
 	logger = logger.With("service", "k8s.redisfailover")
 	return &RedisFailoverService{

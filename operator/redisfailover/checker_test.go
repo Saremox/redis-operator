@@ -1994,12 +1994,24 @@ func TestUpdate(t *testing.T) {
 				mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
 			}
 
+			mk := settledK8sServices()
 			for _, pod := range test.pods {
 				if !pod.master {
 					mrfc.On("CheckRedisSlavesReady", pod.pod.Status.PodIP, rf).Once().Return(pod.ready, nil)
 				}
 				if !pod.ready {
-					mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return(test.ssVersion, nil)
+					// The report of the wait reads the update revision and
+					// the pods a second time. Without a master, only the
+					// report reads them.
+					reads := 2
+					if test.bootstrapping {
+						reads = 1
+					} else {
+						mrfc.On("GetRedisRevisionHash", pod.pod.Name, rf).Once().Return(pod.pod.Labels[appsv1.ControllerRevisionHashLabelKey], nil)
+					}
+					mrfc.On("GetStatefulSetUpdateRevision", rf).Times(reads).Return(test.ssVersion, nil)
+					mk = &mK8SService.Services{}
+					mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Times(reads).Return(&corev1.PodList{Items: []corev1.Pod{pod.pod}}, nil)
 					next = false
 					break
 				}
@@ -2057,8 +2069,6 @@ func TestUpdate(t *testing.T) {
 					}
 				}
 			}
-
-			mk := settledK8sServices()
 
 			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 			err := handler.UpdateRedisesPods(rf)
@@ -2396,6 +2406,10 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) 
 			err := handler.CheckAndHeal(rf)
 
 			assert.Equal(t, test.podsErr, err)
+			if test.podsErr != nil {
+				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+				assert.Equal(t, "unable to check whether the master is stopping", rf.Status.Message)
+			}
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
 			mk.AssertExpectations(t)
@@ -2463,6 +2477,118 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeFailover(t *testing.T) 
 			err := handler.CheckAndHeal(rf)
 
 			assert.Equal(t, test.podsErr, err)
+			if test.podsErr != nil {
+				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+				assert.Equal(t, "unable to check whether the master is stopping", rf.Status.Message)
+			}
+			mrfc.AssertExpectations(t)
+			mrfh.AssertExpectations(t)
+			mk.AssertExpectations(t)
+		})
+	}
+}
+
+func TestSentinelModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) {
+	tests := []struct {
+		name      string
+		replicas  int32
+		firstBoot bool
+		pods      []corev1.Pod
+		podsErr   error
+		wantElect bool
+	}{
+		{
+			name:      "single replica, no pod is stopping",
+			replicas:  1,
+			pods:      []corev1.Pod{redisPod("1", true, false)},
+			wantElect: true,
+		},
+		{
+			name:     "single replica, the old master is stopping and still ready",
+			replicas: 1,
+			pods:     []corev1.Pod{redisPod("1", true, false), masterPod(redisPod("1", true, true))},
+		},
+		{
+			name:      "single replica, a stopping master that is not ready (lost node) does not block",
+			replicas:  1,
+			pods:      []corev1.Pod{redisPod("1", true, false), masterPod(redisPod("1", false, true))},
+			wantElect: true,
+		},
+		{
+			name:      "first boot",
+			replicas:  3,
+			firstBoot: true,
+			pods:      []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false), redisPod("1", true, false)},
+			wantElect: true,
+		},
+		{
+			name:     "no sentinel quorum, the old master is stopping and still ready",
+			replicas: 3,
+			pods:     []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false), masterPod(redisPod("1", true, true))},
+		},
+		{
+			name:      "no sentinel quorum, a stopping master that is not ready (lost node) does not block",
+			replicas:  3,
+			pods:      []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false), masterPod(redisPod("1", false, true))},
+			wantElect: true,
+		},
+		{
+			name:      "no sentinel quorum, a stopping replica does not block",
+			replicas:  3,
+			pods:      []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false), redisPod("1", true, true)},
+			wantElect: true,
+		},
+		{
+			name:     "listing pods fails",
+			replicas: 3,
+			podsErr:  errors.New("list err"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF(false, false)
+			rf.Spec.Redis.Replicas = test.replicas
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mk := &mK8SService.Services{}
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+			mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
+			mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
+			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: test.pods}, test.podsErr)
+			if test.wantElect {
+				if test.replicas > 1 {
+					mrfc.On("GetMaxRedisPodTime", rf).Once().Return(time.Minute, nil)
+					if test.firstBoot {
+						mrfc.On("CheckSentinelQuorum", rf).Once().Return(0, nil)
+						mrfc.On("CheckIfMasterLocalhost", rf).Once().Return(true, nil)
+					} else {
+						mrfc.On("CheckSentinelQuorum", rf).Once().Return(3, errors.New("no quorum"))
+					}
+				}
+				mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
+				if test.replicas > 1 {
+					// An error after the election ends CheckAndHeal, so the later checks need no mocks.
+					mrfc.On("GetMasterIP", rf).Once().Return("", errors.New("stop here"))
+				}
+			}
+
+			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+			err := handler.CheckAndHeal(rf)
+
+			switch {
+			case test.podsErr != nil:
+				assert.Equal(t, test.podsErr, err)
+				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+				assert.Equal(t, "unable to check whether the master is stopping", rf.Status.Message)
+			case test.wantElect && test.replicas > 1:
+				assert.EqualError(t, err, "stop here")
+			default:
+				assert.NoError(t, err)
+			}
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
 			mk.AssertExpectations(t)
@@ -2521,4 +2647,184 @@ func TestUpdateRedisesPodsResizeError(t *testing.T) {
 	handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, settledK8sServices(), metrics.Dummy, log.Dummy)
 	assert.EqualError(t, handler.UpdateRedisesPods(rf), "resize err")
 	mrfh.AssertExpectations(t)
+}
+
+// A wait for an unsynced replica on a stale revision can be infinite, for
+// example after an image revert. The rollout replaces such a replica.
+func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
+	type redis struct {
+		name, ip, revision string
+		synced             bool
+	}
+	master := redis{name: "master", ip: "10.0.0.1", revision: "new"}
+	unsyncedStale := []redis{master, {"r1", "10.0.0.2", "new", true}, {"r2", "10.0.0.3", "old", false}}
+	tests := []struct {
+		name          string
+		redises       []redis
+		noMaster      bool
+		bootstrapping bool
+		unsettled     bool
+		// editR2 changes the r2 pod in the GetStatefulSetPods result.
+		editR2 func(*corev1.Pod)
+		// promoted makes r2 a master before the delete.
+		promoted   bool
+		errOn      string
+		wantDelete string
+	}{
+		{
+			name:       "an unsynced stale replica is replaced",
+			redises:    []redis{master, {"r1", "10.0.0.2", "new", true}, {"r2", "10.0.0.3", "old", false}},
+			wantDelete: "r2",
+		},
+		{
+			name:       "unsynced stale replicas go before synced ones",
+			redises:    []redis{master, {"r1", "10.0.0.2", "old", true}, {"r2", "10.0.0.3", "old", false}},
+			wantDelete: "r2",
+		},
+		{
+			name:    "a replica syncing on the update revision is waited for",
+			redises: []redis{master, {"r1", "10.0.0.2", "old", true}, {"r2", "10.0.0.3", "new", false}},
+		},
+		{
+			name:    "a replica syncing on the update revision is waited for before an unsynced stale one is replaced",
+			redises: []redis{master, {"r1", "10.0.0.2", "old", false}, {"r2", "10.0.0.3", "new", false}},
+		},
+		{
+			name:     "the master is never replaced",
+			redises:  []redis{{"master", "10.0.0.1", "old", false}, {"r1", "10.0.0.2", "new", true}, {"r2", "10.0.0.3", "new", true}},
+			noMaster: true,
+		},
+		{
+			name:      "the last replacement has to settle first",
+			redises:   unsyncedStale,
+			unsettled: true,
+		},
+		{
+			name:          "an unsynced stale replica is waited for while bootstrapping",
+			redises:       []redis{{"r0", "10.0.0.1", "new", true}, {"r1", "10.0.0.2", "new", true}, {"r2", "10.0.0.3", "old", false}},
+			noMaster:      true,
+			bootstrapping: true,
+		},
+		{
+			name:    "an unsynced replica without a pod is waited for",
+			redises: unsyncedStale,
+			editR2:  func(p *corev1.Pod) { p.Status.PodIP = "" },
+		},
+		{
+			name:    "an unsynced replica whose pod is terminating is waited for",
+			redises: unsyncedStale,
+			editR2:  func(p *corev1.Pod) { p.DeletionTimestamp = &metav1.Time{Time: time.Now()} },
+		},
+		{
+			name:    "getting the update revision fails",
+			redises: unsyncedStale,
+			errOn:   "GetStatefulSetUpdateRevision",
+		},
+		{
+			name:    "listing the pods fails",
+			redises: unsyncedStale,
+			errOn:   "GetStatefulSetPods",
+		},
+		{
+			name:    "getting the replica's revision fails",
+			redises: unsyncedStale,
+			errOn:   "GetRedisRevisionHash",
+		},
+		{
+			name:     "an unsynced stale replica promoted since is not replaced",
+			redises:  unsyncedStale,
+			promoted: true,
+		},
+		{
+			name:    "the replica's role can't be read before it is replaced",
+			redises: unsyncedStale,
+			errOn:   "GetRedisesSlavesPods",
+		},
+		{
+			name:    "getting the update revision fails while reporting the wait",
+			redises: []redis{master, {"r1", "10.0.0.2", "new", true}, {"r2", "10.0.0.3", "new", false}},
+			errOn:   "second GetStatefulSetUpdateRevision",
+		},
+		{
+			name:    "listing the pods fails while reporting the wait",
+			redises: []redis{master, {"r1", "10.0.0.2", "new", true}, {"r2", "10.0.0.3", "new", false}},
+			errOn:   "second GetStatefulSetPods",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := operatorManagedRF()
+			if test.bootstrapping {
+				rf = generateRF(false, true)
+			}
+			rf.Spec.Redis.Replicas = int32(len(test.redises))
+			if test.unsettled {
+				rf.Spec.Redis.Replicas++
+			}
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mk := &mK8SService.Services{}
+			masterIP := master.ip
+			if test.noMaster {
+				masterIP = ""
+			}
+			errBoom := errors.New(test.errOn + " err")
+			switch test.errOn {
+			case "GetStatefulSetUpdateRevision":
+				mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("", errBoom)
+			case "GetStatefulSetPods":
+				mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(nil, errBoom)
+			case "GetRedisRevisionHash":
+				mrfc.On("GetRedisRevisionHash", "r2", rf).Once().Return("", errBoom)
+			case "GetRedisesSlavesPods":
+				mrfc.On("GetRedisesSlavesPods", rf).Once().Return(nil, errBoom)
+			case "second GetStatefulSetUpdateRevision":
+				mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("new", nil)
+				mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("", errBoom)
+			}
+			ips, replicas, pods := []string{}, []string{}, []corev1.Pod{}
+			for _, r := range test.redises {
+				ips = append(ips, r.ip)
+				if r.name != "master" && (r.name != "r2" || !test.promoted) {
+					replicas = append(replicas, r.name)
+				}
+				if r.ip != masterIP {
+					mrfc.On("CheckRedisSlavesReady", r.ip, rf).Maybe().Return(r.synced, nil)
+				}
+				mrfc.On("GetRedisRevisionHash", r.name, rf).Maybe().Return(r.revision, nil)
+				pod := redisPod(r.revision, true, false)
+				pod.Name = r.name
+				pod.Status.PodIP = r.ip
+				if r.name == "r2" && test.editR2 != nil {
+					test.editR2(&pod)
+				}
+				pods = append(pods, pod)
+			}
+			mrfc.On("GetRedisesIPs", rf).Once().Return(ips, nil)
+			mrfc.On("GetMasterIP", rf).Maybe().Return(masterIP, nil)
+			mrfc.On("GetStatefulSetUpdateRevision", rf).Maybe().Return("new", nil)
+			mrfc.On("GetRedisesSlavesPods", rf).Maybe().Return(replicas, nil)
+			if test.errOn == "second GetStatefulSetPods" {
+				mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: pods}, nil)
+				mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(nil, errBoom)
+			}
+			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Maybe().Return(&corev1.PodList{Items: pods}, nil)
+			// The mock panics on any other DeletePod.
+			mrfh.On("ResizePodInPlace", rf, mock.Anything, "new").Maybe().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
+			if test.wantDelete != "" {
+				mrfh.On("DeletePod", test.wantDelete, rf).Once().Return(nil)
+			}
+
+			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+			if test.errOn != "" {
+				assert.Equal(t, errBoom, handler.UpdateRedisesPods(rf))
+			} else {
+				assert.NoError(t, handler.UpdateRedisesPods(rf))
+			}
+			mrfc.AssertExpectations(t)
+			mrfh.AssertExpectations(t)
+			mk.AssertExpectations(t)
+		})
+	}
 }

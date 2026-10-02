@@ -45,6 +45,10 @@ endif
 
 PROJECT_PACKAGE := github.com/saremox/redis-operator
 CODEGEN_IMAGE := ghcr.io/slok/kube-code-generator:v1.27.0
+CONTROLLER_GEN_VERSION := v0.20.1
+CRD_MANIFESTS := manifests/databases.spotahome.com_redisfailovers.yaml \
+	manifests/kustomize/base/databases.spotahome.com_redisfailovers.yaml \
+	charts/redisoperator/crds/databases.spotahome.com_redisfailovers.yaml
 PORT := 9710
 
 # CMDs
@@ -213,8 +217,14 @@ update-codegen:
 	-e GENERATION_TARGETS="client" \
 	$(CODEGEN_IMAGE)
 
-# Generate CRD using controller-gen (requires controller-gen v0.20.0+ for Go 1.25+)
-# Install: go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+# controller-gen version the committed DeepCopy code and CRD manifests are
+# generated with. verify-codegen compares byte for byte, so CI and the
+# pre-commit hook need this exact version.
+.PHONY: install-controller-gen
+install-controller-gen:
+	go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+
+# Generate CRD using controller-gen (install it with `make install-controller-gen`)
 .PHONY: generate-crd
 generate-crd:
 	controller-gen crd paths=./api/... output:crd:dir=./manifests
@@ -235,23 +245,27 @@ generate-deepcopy:
 .PHONY: generate-api
 generate-api: generate-deepcopy generate-crd
 
-# Fails if the API types changed without regenerating DeepCopy - i.e.
-# `make generate-deepcopy`'s output doesn't match what's committed. Run by
-# CI (see .github/workflows/ci.yaml) and the pre-commit hook (see
-# .githooks/pre-commit); both call this instead of duplicating the check.
+# Fails if the API types changed without regenerating DeepCopy or the CRD
+# manifests - i.e. `make generate-api`'s output doesn't match what's
+# committed. Run by CI (see .github/workflows/ci.yaml) and the pre-commit
+# hook (see .githooks/pre-commit); both call this instead of duplicating the
+# check.
 #
-# Deliberately does NOT also verify the CRD manifest generate-crd produces:
-# that embeds the full schema of every corev1 type RedisFailover references
-# (PodSpec, Volume, ...), which shifts on any controller-gen or k8s.io/api
-# version bump regardless of whether RedisFailover's own fields changed -
-# gating commits on that would fail for reasons unrelated to the change
-# being made. generate-crd stays a manually-run step.
+# The CRD embeds the schema of every corev1 type RedisFailover references
+# (PodSpec, Volume, ...), so a k8s.io/api bump in go.mod changes it too.
+# Such a bump needs `make generate-crd` as well, or the API server prunes
+# the new fields from RedisFailovers.
 .PHONY: verify-codegen
-verify-codegen: generate-deepcopy
+verify-codegen: generate-deepcopy generate-crd
 	@git diff --exit-code -- api/ || \
 		(echo ""; \
 		echo "Generated DeepCopy code is out of date."; \
 		echo "Run 'make generate-deepcopy' and commit the result."; \
+		exit 1)
+	@git diff --exit-code -- $(CRD_MANIFESTS) || \
+		(echo ""; \
+		echo "Generated CRD manifests are out of date."; \
+		echo "Run 'make generate-crd' with controller-gen $(CONTROLLER_GEN_VERSION) and commit the result."; \
 		exit 1)
 
 # One-time setup per clone: git hooks under .git/hooks aren't version
@@ -259,4 +273,4 @@ verify-codegen: generate-deepcopy
 .PHONY: install-hooks
 install-hooks:
 	git config core.hooksPath .githooks
-	@echo "Git hooks installed from .githooks/. verify-codegen now runs before each commit that touches api/."
+	@echo "Git hooks installed from .githooks/. verify-codegen now runs before each commit that touches api/ or go.mod."
