@@ -573,7 +573,7 @@ if [[ $profile == versions ]]; then
   jq -rs '
     def ts: capture("^(?<s>[^.Z]+)(?<f>\\.[0-9]+)?") | ((.s + "Z") | fromdateiso8601) + ((.f // "0") | tonumber);
     (map(select(.msg == "mutating"))) as $starts
-    | .[] | select(.msg == "failover" and .from == .to) | . as $f | ($f.time | ts) as $t
+    | .[] | select(.msg == "failover" and .from == .to and .event != "reset") | . as $f | ($f.time | ts) as $t
     | ([$starts[] | select(.rf == $f.rf and (.time | ts) <= $t)] | last) as $m
     | "old master promoted: \($f.rf) \($f.from) at \($f.time), during step \($m.step // "-") \($m.kind // "-") \($m.params // "")"' \
     "$artifacts/soak.jsonl"
