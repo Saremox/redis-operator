@@ -2379,3 +2379,109 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeFailover(t *testing.T) 
 		})
 	}
 }
+
+func TestSentinelModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) {
+	tests := []struct {
+		name      string
+		replicas  int32
+		firstBoot bool
+		pods      []corev1.Pod
+		podsErr   error
+		wantElect bool
+	}{
+		{
+			name:      "single replica, no pod is stopping",
+			replicas:  1,
+			pods:      []corev1.Pod{redisPod("1", true, false)},
+			wantElect: true,
+		},
+		{
+			name:     "single replica, the old master is stopping and still ready",
+			replicas: 1,
+			pods:     []corev1.Pod{redisPod("1", true, false), masterPod(redisPod("1", true, true))},
+		},
+		{
+			name:      "single replica, a stopping master that is not ready (lost node) does not block",
+			replicas:  1,
+			pods:      []corev1.Pod{redisPod("1", true, false), masterPod(redisPod("1", false, true))},
+			wantElect: true,
+		},
+		{
+			name:      "first boot",
+			replicas:  3,
+			firstBoot: true,
+			pods:      []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false), redisPod("1", true, false)},
+			wantElect: true,
+		},
+		{
+			name:     "no sentinel quorum, the old master is stopping and still ready",
+			replicas: 3,
+			pods:     []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false), masterPod(redisPod("1", true, true))},
+		},
+		{
+			name:      "no sentinel quorum, a stopping master that is not ready (lost node) does not block",
+			replicas:  3,
+			pods:      []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false), masterPod(redisPod("1", false, true))},
+			wantElect: true,
+		},
+		{
+			name:      "no sentinel quorum, a stopping replica does not block",
+			replicas:  3,
+			pods:      []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false), redisPod("1", true, true)},
+			wantElect: true,
+		},
+		{
+			name:     "listing pods fails",
+			replicas: 3,
+			podsErr:  errors.New("list err"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF(false, false)
+			rf.Spec.Redis.Replicas = test.replicas
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mk := &mK8SService.Services{}
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+			mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
+			mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
+			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: test.pods}, test.podsErr)
+			if test.wantElect {
+				if test.replicas > 1 {
+					mrfc.On("GetMaxRedisPodTime", rf).Once().Return(time.Minute, nil)
+					if test.firstBoot {
+						mrfc.On("CheckSentinelQuorum", rf).Once().Return(0, nil)
+						mrfc.On("CheckIfMasterLocalhost", rf).Once().Return(true, nil)
+					} else {
+						mrfc.On("CheckSentinelQuorum", rf).Once().Return(3, errors.New("no quorum"))
+					}
+				}
+				mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
+				if test.replicas > 1 {
+					// An error after the election ends CheckAndHeal, so the later checks need no mocks.
+					mrfc.On("GetMasterIP", rf).Once().Return("", errors.New("stop here"))
+				}
+			}
+
+			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+			err := handler.CheckAndHeal(rf)
+
+			switch {
+			case test.podsErr != nil:
+				assert.Equal(t, test.podsErr, err)
+				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+				assert.Equal(t, "unable to check whether the master is stopping", rf.Status.Message)
+			case test.wantElect && test.replicas > 1:
+				assert.EqualError(t, err, "stop here")
+			default:
+				assert.NoError(t, err)
+			}
+			mrfc.AssertExpectations(t)
+			mrfh.AssertExpectations(t)
+			mk.AssertExpectations(t)
+		})
+	}
+}

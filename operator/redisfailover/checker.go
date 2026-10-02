@@ -340,6 +340,19 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 
 	switch nMasters {
 	case 0:
+		// A stopping master is not counted but can still accept writes, and its
+		// shutdown script asks Sentinel to fail over. An election now can lose writes.
+		stopping, err := r.masterPodStopping(rf)
+		if err != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: "unable to check whether the master is stopping",
+			}
+			return err
+		}
+		if stopping {
+			return nil
+		}
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no masters detected"))
 		//when number of redis replicas is 1 , the redis is configured for standalone master mode
 		//Configure to master
