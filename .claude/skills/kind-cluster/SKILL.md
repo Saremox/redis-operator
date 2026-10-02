@@ -42,9 +42,11 @@ The script:
 ## Several clusters at once
 
 Give each cluster its own name and subnet octet, e.g. `a … 181` and
-`b … 185`. The pod subnets must differ, or the host routes collide. The
-registry is shared. The machine has 4 CPUs, so two single-node clusters is
-the practical limit.
+`b … 185`. A cluster uses `10.SUBNET.0.0/16` for pods and
+`10.SUBNET+1.0.0/16` for services, where SUBNET is the third argument.
+Keep the octets at least 2 apart. Overlapping pod subnets make the host
+routes collide. The registry is shared. The machine has 4 CPUs, so two
+single-node clusters is the practical limit.
 
 ## Integration tests
 
@@ -73,7 +75,9 @@ helm upgrade --install redis-operator ./charts/redisoperator \
 
 ## Debugging a failed create
 
-Add `--retain` to keep the node. Then read
+`kind-up.sh` does not pass `--retain` to kind, so kind deletes a failed
+node. To keep it, run the `kind create cluster` command from `kind-up.sh`
+by hand with `--retain` and `--config /tmp/kind-NAME/kind.yaml`. Then read
 `docker exec NAME-control-plane journalctl -u kubelet --no-pager` and
 `journalctl -u containerd`.
 
