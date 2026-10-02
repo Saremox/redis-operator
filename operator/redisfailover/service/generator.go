@@ -271,34 +271,47 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	// and shut the master down anyway, so both sentinel calls are retried.
 	// The redis pods have no service links, so the script finds Sentinel
 	// through the DNS name of the Sentinel Service.
+	// The kubelet stops the hook at the end of the grace period (30s by
+	// default), and then the script cannot SAVE. Thus each sentinel call has a
+	// 2s limit, and the Sentinel part ends after at most 18s: the wait for the
+	// new master stops at 15s, and its last poll takes at most 3s.
 	shutdownContent := ""
 	if rf.SentinelsAllowed() {
-		shutdownContent = fmt.Sprintf(`master=""
+		shutdownContent = fmt.Sprintf(`t=; command -v timeout >/dev/null 2>&1 && t="timeout 2"
+deadline=$(($(date +%%s) + 15))
+self=$(hostname -i)
+master=""
 retries=0
 while [ -z "$master" ] && [ "$retries" -lt 3 ]; do
 	retries=$((retries + 1))
-	master=$(redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+	master=$($t redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
 	if [ -z "$master" ]; then
-		sleep 3
+		sleep 1
 	fi
 done
 if [ -z "$master" ]; then
 	echo "shutdown.sh: could not resolve the master from sentinel after $retries attempts" >&2
 fi
-if [ "$master" = "$(hostname -i)" ]; then
+if [ "$master" = "$self" ]; then
   failover=""
   retries=0
   while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ]; do
   	retries=$((retries + 1))
-  	failover=$(redis-cli -h %[1]v -p 26379 SENTINEL failover mymaster)
+  	failover=$($t redis-cli -h %[1]v -p 26379 SENTINEL failover mymaster)
   	if [ "$failover" != "OK" ]; then
-  		sleep 3
+  		sleep 1
   	fi
   done
   if [ "$failover" != "OK" ]; then
   	echo "shutdown.sh: sentinel did not accept the failover after $retries attempts: $failover" >&2
   fi
-  sleep 31
+  while { [ -z "$master" ] || [ "$master" = "$self" ]; } && [ "$(date +%%s)" -lt "$deadline" ]; do
+  	sleep 1
+  	master=$($t redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+  done
+  if [ -z "$master" ] || [ "$master" = "$self" ]; then
+  	echo "shutdown.sh: sentinel did not report a new master before the deadline" >&2
+  fi
 fi
 `, GetSentinelName(rf))
 	}

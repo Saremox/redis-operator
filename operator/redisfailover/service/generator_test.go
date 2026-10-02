@@ -3338,12 +3338,107 @@ func TestEnsureRedisShutdownConfigMapGenerated(t *testing.T) {
 				if test.wantSentinel {
 					assert.Contains(content, "redis-cli -h rfs-my-redis -p 26379 --csv SENTINEL get-master-addr-by-name mymaster")
 					assert.Contains(content, "redis-cli -h rfs-my-redis -p 26379 SENTINEL failover mymaster")
+					// The script must end inside the default 30s grace period.
+					assert.NotContains(content, "sleep 3")
+					assert.Contains(content, "deadline=$(($(date +%s) + 15))")
+					assert.Contains(content, `[ "$(date +%s)" -lt "$deadline" ]`)
 				} else {
 					assert.NotContains(content, "SENTINEL")
 					assert.NotContains(content, "26379")
 					assert.True(strings.HasPrefix(content, `cmd="redis-cli -p 6379"`))
 				}
 			}
+		})
+	}
+}
+
+func TestRedisShutdownScriptEndsInsideGracePeriod(t *testing.T) {
+	if _, err := exec.LookPath("timeout"); err != nil {
+		t.Skip("timeout is not installed")
+	}
+
+	rf := generateRF()
+	rf.Spec.Redis.Port = 6379
+	rf.Spec.Sentinel.Enabled = ptr.To(true)
+	var script string
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		script = args.Get(1).(*corev1.ConfigMap).Data["shutdown.sh"]
+	}).Return(nil)
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	require.NoError(t, client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{}))
+
+	// The fake Sentinel reports this pod (10.0.0.1) as the master on the
+	// first query and 10.0.0.2 after it. A frozen Sentinel never answers.
+	fakeCLI := `#!/bin/sh
+echo "$*" >>"$FAKE_LOG"
+case "$*" in
+*save*) echo OK; exit 0 ;;
+esac
+[ "$FAKE_FROZEN" = 1 ] && exec sleep 30
+case "$*" in
+*get-master-addr-by-name*)
+	if [ "$(grep -c get-master-addr-by-name "$FAKE_LOG")" -le 1 ]; then
+		echo '"10.0.0.1","6379"'
+	else
+		echo '"10.0.0.2","6379"'
+	fi ;;
+*failover*) echo OK ;;
+esac
+`
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "redis-cli"), []byte(fakeCLI), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hostname"), []byte("#!/bin/sh\necho 10.0.0.1\n"), 0o755))
+
+	sentinel := "-h " + rfservice.GetSentinelName(rf) + " -p 26379 "
+	tests := []struct {
+		name      string
+		frozen    bool
+		wantCalls []string
+		maxTime   time.Duration
+	}{
+		{
+			name: "master moves",
+			wantCalls: []string{
+				sentinel + "--csv SENTINEL get-master-addr-by-name mymaster",
+				sentinel + "SENTINEL failover mymaster",
+				sentinel + "--csv SENTINEL get-master-addr-by-name mymaster",
+				"-p 6379 save",
+			},
+			maxTime: 5 * time.Second,
+		},
+		{
+			// Three lookups of at most 2s each, and a 1s sleep after each.
+			name:   "frozen sentinel",
+			frozen: true,
+			wantCalls: []string{
+				sentinel + "--csv SENTINEL get-master-addr-by-name mymaster",
+				sentinel + "--csv SENTINEL get-master-addr-by-name mymaster",
+				sentinel + "--csv SENTINEL get-master-addr-by-name mymaster",
+				"-p 6379 save",
+			},
+			maxTime: 12 * time.Second,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			logFile := filepath.Join(t.TempDir(), "calls")
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "sh", "-c", script)
+			cmd.WaitDelay = time.Second
+			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "FAKE_LOG="+logFile)
+			if test.frozen {
+				cmd.Env = append(cmd.Env, "FAKE_FROZEN=1")
+			}
+			start := time.Now()
+			out, err := cmd.CombinedOutput()
+			elapsed := time.Since(start)
+			require.NoError(t, err, string(out))
+			assert.Less(t, elapsed, test.maxTime)
+			calls, err := os.ReadFile(logFile)
+			require.NoError(t, err)
+			assert.Equal(t, test.wantCalls, strings.Split(strings.TrimSpace(string(calls)), "\n"))
 		})
 	}
 }
