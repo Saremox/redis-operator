@@ -353,7 +353,7 @@ wait_instances() {
     kubectl -n "$rf" wait --for=jsonpath='{.status.readyReplicas}'="$replicas" "statefulset/rfr-$rf" --timeout=300s
   done
   for rf in "${instances[@]}"; do
-    [[ ${paths[$rf]} == *sentinel* ]] || continue
+    [[ ${paths[$rf]:-} == *sentinel* ]] || continue
     until kubectl -n "$rf" get deployment "rfs-$rf" >/dev/null 2>&1; do sleep 2; done
     kubectl -n "$rf" wait --for=jsonpath='{.status.readyReplicas}'=3 "deployment/rfs-$rf" --timeout=300s
   done
