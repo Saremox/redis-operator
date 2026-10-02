@@ -245,9 +245,11 @@ This behavior is configurable, creating a configmap and indicating to use it. An
 
 Sentinel does not stop writes on the old master in a failover. If the old master still runs, it accepts writes until Sentinel makes it a replica. With the default timings, this occurs about 10 seconds after the promotion. The old master then copies the data of the new master, and the writes that it acknowledged in that interval are lost. The interval ends earlier if the operator moves the master label or makes the old master a replica first. In a test on kind, a `SENTINEL FAILOVER` lost 11 seconds of writes through `rfrm-<NAME>`.
 
-The default shutdown script does not cause this loss when the master pod is deleted. The script cannot reach Sentinel, because the pods do not get the `RFS_<NAME>_SERVICE_*` variables (`enableServiceLinks: false`). Thus no failover starts before Redis stops. Redis stops at the end of the script or of the grace period, and it waits for its replicas first. Sentinel then promotes a replica. In 3 deletions and 1 pod update on kind, no acknowledged write was lost, and clients got write errors for about 7 to 13 seconds.
+The default shutdown script prevents this loss when the master pod is deleted. Before it requests the failover, it pauses the writes on the master (`CLIENT PAUSE ... WRITE`). After the promotion, it makes the old master a replica of the new master. Thus clients get an error, not an acknowledgement that is lost. In 3 deletions on kind, no acknowledged write was lost, and the new master was ready after about 1 second. The pause needs Redis 6.2 or later. On an older Redis, the script requests the failover without the pause.
 
-A shutdown script that requests a failover before Redis stops causes the loss. In the test, the default script with the Sentinel address added lost 8 seconds and 0.1 seconds of writes through `rfrm-<NAME>`, in 2 deletions.
+A custom shutdown script that requests a failover without this pause causes the loss. In a test without the pause, 2 deletions lost 8 seconds and 0.1 seconds of writes through `rfrm-<NAME>`.
+
+The loss can still occur when Sentinel fails over for another reason, for example when the master stops to answer but its pod continues to run.
 
 To lose fewer writes:
 
