@@ -213,6 +213,66 @@ func TestRFControllerSecretEventsReconcileTheRedisFailoversUsingIt(t *testing.T)
 	assert.Empty(t, cached.(*metav1.PartialObjectMetadata).Annotations)
 }
 
+func TestRFControllerSecretEventHandler(t *testing.T) {
+	c, err := newRFController(&recordingHandler{}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	require.NoError(t, err)
+	withAuth := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}
+	withAuth.Spec.Auth.SecretPath = "auth"
+	require.NoError(t, c.rfInformer.GetIndexer().Add(withAuth))
+	require.NoError(t, c.rfInformer.GetIndexer().Add(&redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "none", Namespace: "ns"}}))
+	secret := func(resourceVersion string) *metav1.PartialObjectMetadata {
+		return &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "ns", ResourceVersion: resourceVersion}}
+	}
+	queued := func() []string {
+		var keys []string
+		for c.queue.Len() > 0 {
+			key, _ := c.queue.Get()
+			c.queue.Done(key)
+			keys = append(keys, key)
+		}
+		return keys
+	}
+	h := c.secretEventHandler()
+
+	h.OnAdd(secret("1"), false)
+	assert.Equal(t, []string{"ns/rf"}, queued())
+
+	h.OnUpdate(secret("1"), secret("1"))
+	assert.Empty(t, queued(), "a relist redelivers an unchanged Secret")
+
+	h.OnUpdate(secret("1"), secret("2"))
+	assert.Equal(t, []string{"ns/rf"}, queued())
+
+	h.OnDelete(cache.DeletedFinalStateUnknown{Key: "ns/auth", Obj: secret("2")})
+	assert.Equal(t, []string{"ns/rf"}, queued())
+
+	h.OnAdd("not an object", false)
+	assert.Empty(t, queued())
+}
+
+func TestAuthSecretKey(t *testing.T) {
+	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}
+	keys, err := authSecretKey(rf)
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+
+	rf.Spec.Auth.SecretPath = "auth"
+	keys, err = authSecretKey(rf)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ns/auth"}, keys)
+
+	keys, err = authSecretKey(&corev1.Pod{})
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+}
+
+func TestSecretKeyOnlyKeepsOtherObjects(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p"}}
+	got, err := secretKeyOnly(pod)
+	require.NoError(t, err)
+	assert.Same(t, pod, got)
+}
+
 func TestRFControllerNeverReconcilesARedisFailoverConcurrently(t *testing.T) {
 	rf := redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}
 	kube := fakekubernetes.NewClientset()
