@@ -152,6 +152,14 @@ to every redis pod by its IP, and asks every Sentinel pod for
 | `healthy` | The RedisFailover's `status.state` is `Healthy`. |
 | `config` | `CONFIG GET` on every redis pod with an IP returns what `spec.redis.customConfig` sets, and with Sentinel `SENTINEL MASTER mymaster` on every Sentinel returns what `spec.sentinel.customConfig` sets. With `spec.redis.maxMemory`, `maxmemory` and `maxmemory-policy` equal what the operator sets, see below. |
 | `oom_killed` | No container of a redis or Sentinel pod reports an `OOMKilled` termination. |
+| `replica_ready_without_data` | No redis pod that Kubernetes reports Ready is a replica whose link is down and hasn't been up since the server started (`master_link_down_since_seconds:-1`): it never completed a sync, and `rfrs-<name>` would route reads to it without the master's data. |
+
+`replica_ready_without_data` is a finding like the others unless
+`observer.replicaReadyWithoutData` is `false`: it is then still evaluated,
+exported as `invariant_ok` and logged, but never a finding, nor in the way
+of a quiet instance. The operator's readiness probe passes such a replica
+until `claude/fix-readiness-link-down` lands, e.g. a Valkey replica that
+can't read a Redis 7.4 or 8 RDB, so the versions profile switches it off.
 
 The mode the invariants follow is the RedisFailover's `sentinel.enabled`
 and `bootstrapNode`, with the operator's defaults applied. An invariant the
@@ -227,6 +235,7 @@ instance one mutation at a time:
 | `image_upgrade` | (Chain instances) Merge-patches `spec.redis.image`, and `spec.sentinel.image` where the chain's Sentinels follow, along one of the chain's edges from the current version, picked by the step's random source. At the end of the chain it is a `sentinel_image_upgrade` instead while separate Sentinels lag behind, and then a `reset`. | Every redis pod (and changed Sentinel pod) runs the new image and reports its server and version in `INFO server`; the StatefulSet (and Deployment) is converged; the RedisFailover is `Healthy`. See Versions for edges that may fail. |
 | `sentinel_image_upgrade` | (Chains with `sentinel: separate`) Merge-patches `spec.sentinel.image` along an edge from the Sentinels' version that leads to the redis image's version; once they run it, an `image_upgrade` instead. | As for `image_upgrade`, for the Sentinel pods. |
 | `reset` | (Instances with a template) Deletes the RedisFailover, waits until it, its StatefulSet, Sentinel Deployment and pods are gone, deletes its PersistentVolumeClaims and the auth Secret its template names, and creates both again, the Secret with a new password, on the chain's next start version. | The RedisFailover has a new UID, every pod runs the start version as for `image_upgrade`, it is `Healthy`, and the filler reached its target again. |
+| `sentinel_image_flip` | (Sentinel only) Merge-patches only `spec.sentinel.image` to another of `sentinelImages`, e.g. between a Redis and a Valkey version for a mixed pair like `mixed-sent`. It is no edge of the graph: Sentinels hold no data. Its mixed window counts as `version_mixed_seconds{component="sentinel"}`. | Every Sentinel pod runs the new image and reports its version in `INFO server`; the Deployment and StatefulSet are converged; the RedisFailover is `Healthy`. |
 | `sentinel_toggle` | Merge-patches `spec.sentinel.enabled` to the other value. | Switched on: the Sentinel Deployment is converged as for `sentinel_replicas`, and the `rfs-<name>` Service and ConfigMap exist. Switched off: the Deployment, Service, ConfigMap and every Sentinel pod are gone. Either way all redis pods are Ready and the RedisFailover is `Healthy`. |
 
 `redis_memory`, `maxmemory_policy`, `maxmemory_percent` and `fill_burst`
@@ -356,6 +365,56 @@ started between its `mutating` and its `version transition`, and
 `lost_writes_total{event="image_upgrade"}` (or
 `sentinel_image_upgrade`, and `reset` for the reset after it).
 
+### Chaos
+
+The chaos lane (`chaos` in the config) takes cluster-level actions, one at
+a time for every instance at once: every `chaos.interval` plus up to
+`chaos.jitter`, it picks a kind by weight from `mutation.seed` and its
+step, and stops with `mutation.stopAfter`. For each action it:
+
+1. takes the global lock exclusively: it waits until every running
+   mutation is done, and every mutator waits until it is;
+2. waits until every instance is quiet, for at most `chaos.timeout`, and
+   logs the instances that weren't as `in_flight` (the lock should leave
+   none);
+3. marks every instance's data as in a change, and disturbs every
+   instance while the action runs: the observers hold their windows open,
+   as for scenario C;
+4. runs the action, which waits for its own convergence, each wait for at
+   most `chaos.timeout`;
+5. verifies every instance's data, with the kind as the `event`, or as a
+   `reset` for an instance whose only redis pod, without a volume, the
+   action deleted.
+
+| Kind | Action | Converged when |
+|---|---|---|
+| `operator_restart` | Deletes the operator's pods, gracefully. | A Ready pod that wasn't there holds the operator's Lease (`operator.lease`); then, undisturbed, every instance is quiet: every invariant holds, `healthy` included. |
+| `operator_upgrade` | `helm upgrade` of `chaos.upgrade.release` to every other version in `chaos.upgrade.versions` in turn, and back to the one the operator ran. Each runs with `--reset-then-reuse-values`, the version's image as `image.repository` and `image.tag`, and `chaos.upgrade.set`, and `--wait`. helm runs the chart's pre-upgrade CRD hook first, and fails the upgrade if the hook fails. | Each upgrade: helm succeeded, the Deployment rolled out the version's image with nothing else left, and a pod on it holds the Lease; then every instance is quiet. |
+| `node_drain` | Picks a Ready, schedulable node of `chaos.drain.nodeSelector` (by default every node but the control plane), never the tester's own, cordons it and evicts every pod `kubectl drain --ignore-daemonsets` would, at once, each retried every 2s while a PodDisruptionBudget refuses it, for at most `chaos.drain.timeout`. It holds the node cordoned for `chaos.drain.hold`, then uncordons it. | Drained: no such pod is left on the node and every invariant of every instance holds, on the other nodes; after the uncordon, every instance is quiet again. |
+
+A restart's or an upgrade's time without an operator runs from the old
+leader's deletion until a new one acquired the Lease
+(`chaos_operator_down_seconds`). An upgrade logs `operator upgraded` per
+version, with `helm_seconds`, the hook's result (`succeeded`, `failed`,
+`not seen`) and duration, from its Job, which helm deletes once it
+succeeded, and the CRD's generation and resourceVersion before and after
+it. A drain logs `eviction blocked` and `eviction unblocked` per pod with
+`blocked_seconds` (`chaos_eviction_blocked_seconds`), `node drained` with
+the time the evictions took, the convergence and how many evictions a
+budget blocked, and `node uncordoned`.
+
+`result` (`chaos_total`, logged as `chaos done`) is `converged`,
+`timeout` (the operator or an instance didn't converge in time, or a
+budget still blocked an eviction at the drain timeout), `failed` (an API
+call or helm failed) or `skipped` (no operator pod, no node to drain, or
+the operator runs no configured version). `chaos_converge_seconds` runs
+from a restart's delete, each upgrade's start, or a drain's cordon until
+every instance converged; a drain's hold isn't in it.
+
+On node-local volumes (kind's default StorageClass, local disks), an
+evicted pod can only come back on its node: a drain then can't converge
+until the uncordon, and its first wait times out.
+
 ### Findings
 
 A violation is expected while the instance converges after a change, and a
@@ -377,8 +436,9 @@ A violation is expected while the instance converges after a change, and a
   or after the convergence timeout; a later change restarts it.
 - **Something outside the instance** holds a window open, restarted on
   every check (a mutation's window: its timeout), for as long as it
-  lasts: `password_rotate_offline` stopped the operator (every
-  instance), or a bootstrapping instance's source is
+  lasts: `password_rotate_offline` stopped the operator, or a chaos
+  action disturbs the cluster (every instance), or a bootstrapping
+  instance's source is
   in a window or has no single master, as its replication link breaks
   when the source fails over. The window then closes once every invariant
   holds. A bootstrapping instance's window also opens when the source's
@@ -423,6 +483,8 @@ make build test lint      # binary in bin/soak
 make image                # ghcr.io/saremox/redis-operator-soak:<git describe>
 make kind-e2e             # kind cluster, operator, instances, mutating tester, assertions
 make kind-e2e E2E_PROFILE=versions   # the server version and fork instances only
+make kind-e2e E2E_PROFILE=chaos      # the chaos lane on three nodes, with Prometheus and Grafana
+make check-monitoring                # promtool on the alerts, and their unit tests
 ```
 
 `kind-e2e` reuses `.claude/skills/kind-cluster/`, installs the operator from
@@ -532,6 +594,60 @@ pods' `redis-server`/`redis-cli` links and pid 1, `server_info`, the
 probe results other than `ok` and the probe events on the Valkey
 instances, and the known operator issues it saw.
 
+### The chaos profile
+
+`E2E_PROFILE=chaos` runs the chaos lane of
+[`e2e/config-chaos.yaml`](e2e/config-chaos.yaml) on a control plane and
+two workers (the skill's `kind-up.sh` makes one node, so the script
+creates the cluster the same way with workers). Every node mounts one
+host directory as `/shared`, and a clone of kind's local-path provisioner
+serves the `shared-path` StorageClass from it, so a pod moves to another
+node with its volume, as on network storage. CoreDNS gets a budget of
+one, as in most clusters.
+
+The operator is built from source twice, `UPGRADE_FROM` (default
+`4.2.0-rc2`) and `UPGRADE_TO` (default `origin/main`), each image served
+through the local registry and its chart packaged into the tester's
+ConfigMap, since ghcr.io can't be pulled in the sandbox; the first is
+installed with the CRD hook. With `OPERATOR_VERSION`, both are released
+OCI charts and images instead: `UPGRADE_FROM` and `OPERATOR_VERSION`. The
+operator, the tester, Prometheus and Grafana run on the control plane,
+which no drain picks.
+
+| Instance | Mode | Storage, auth | Mutations |
+|---|---|---|---|
+| `chaos-op` | operator | emptyDir, 2 pods | none |
+| `chaos-pvc` | operator | `shared-path` volumes, auth, 3 pods: its budget lets one go at a time | none |
+| `chaos-sent` | Sentinel | emptyDir, 2 pods, 3 Sentinels | none |
+| `mixed-sent` | Sentinel | emptyDir, Redis 7.2 and Valkey 9 Sentinels | `sentinel_image_flip` between Valkey 9 and Redis 7.2 |
+
+Each has 8Mi of data and a ledger at 10 writes/s. Seed 54 restarts the
+operator, upgrades and back, drains the second worker, upgrades again and
+drains the first, one action every 60-90s after the last converged. The
+script asserts that every kind converged and none timed out or failed,
+that no action found a change in flight, that there were no findings,
+every invariant holds and every path and client style works, that
+`sentinel_image_flip` converged, and that no restart or upgrade lost a
+write, nor a drain of `chaos-pvc`. It reports every action, the time
+without an operator per restart and upgrade, the CRD hook's duration and
+the CRD before and after it, the drains with every blocked eviction, the
+outages per instance, event, path and client style, the data verified
+after each action, the flips with their mixed windows, and any
+`replica_ready_without_data` violations.
+
+It then checks `deploy/monitoring` against the Prometheus and Grafana it
+deployed before the tester: `e2e/check-monitoring.py` requires every
+alert rule to load healthy and none to have fired, every alert, panel,
+template variable and annotation expression to evaluate without error,
+every metric they select to have data, and every panel expression to
+return data per instance wherever its series have data (one ending in a
+filter like `> 0` only before the filter). It imports the dashboard into
+Grafana and runs every panel query through Grafana's Prometheus data
+source. `make check-monitoring` runs `promtool check rules` and the
+alerts' unit tests in [`e2e/rules-test.yaml`](e2e/rules-test.yaml),
+which make each alert fire, and not fire inside a window.
+
+
 ### Pointing it at an RC
 
 1. Install the RC:
@@ -547,8 +663,54 @@ instances, and the known operator issues it saw.
    kubectl apply -k deploy
    ```
 
+   `release.yml` pushes `ghcr.io/saremox/redis-operator-soak:<tag>` from
+   every tag, built against exactly that tag's spec. The CRD only gains
+   fields, so a tester of a newer tag can drive an older RC.
+4. With a Prometheus Operator and Grafana's dashboard sidecar, apply the
+   ServiceMonitor, the alerts and the dashboard:
+   `kubectl apply -k deploy/monitoring`. The ServiceMonitor honours the
+   tester's labels: its `namespace` and `pod` name an instance's
+   namespace and redis pods, not the tester's. Without the sidecar, import
+   `deploy/monitoring/dashboard.json` by hand. Your Prometheus may select
+   PrometheusRules and ServiceMonitors by a label, e.g. `release`; add it.
+
+To upgrade between two RCs, enable `operator_upgrade` in
+`deploy/config.yaml` and list both as OCI charts with their images, the
+first being the one installed:
+
+```yaml
+chaos:
+  kinds: {operator_restart: 2, operator_upgrade: 1, node_drain: 1}
+  upgrade:
+    set: [crds.upgradeHook.enabled=true]
+    versions:
+      - name: 4.2.0-rc1
+        chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
+        version: 4.2.0-rc1
+        image: ghcr.io/saremox/redis-operator:4.2.0-rc1
+      - name: 4.2.0-rc2
+        chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
+        version: 4.2.0-rc2
+        image: ghcr.io/saremox/redis-operator:4.2.0-rc2
+```
+
+Where the cluster can't pull them, give `chart` as a chart archive next
+to the config (e.g. `helm package charts/redisoperator` of each tag, put
+into the config's ConfigMap) and `image` as a copy the nodes can pull;
+that is what the chaos profile does. A chart before PR #195 (4.2.0-rc1)
+can't run its CRD hook: its ConfigMap holds the 1.09MB CRD YAML, over the
+1MiB a ConfigMap takes, so with `crds.upgradeHook.enabled` every upgrade
+to it fails. Upgrade between 4.2.0-rc2 and later, or leave the hook off
+for such a version.
+
 The Role in `deploy/rbac.yaml` must be in the operator's namespace and name
-its Deployment, matching `operator` in `deploy/config.yaml`. A ClusterRole
+its Deployment, matching `operator` in `deploy/config.yaml`.
+`deploy/rbac-chaos.yaml` grants the chaos lane its rights: the operator's
+pods, Lease and helm release in its namespace, and cluster-wide the
+chart's ClusterRoles, the CRD, nodes and evictions. helm can only create
+the chart's ClusterRoles holding what they grant, or with `escalate` and
+`bind`, which this grants: as much as cluster-admin, for a cluster that
+exists for the soak. Leave the file out with the lane off. A ClusterRole
 lets the observer read pods, EndpointSlices and RedisFailovers in the
 instances' namespaces.
 
@@ -562,6 +724,97 @@ in every instance namespace. Keep that file in step with the instances in
 `config.yaml`, and create the namespaces before applying the manifests.
 `password_rotate_offline` scales the operator through its Deployment's
 `scale` subresource, which the Role in the operator's namespace allows.
+
+## Reading the dashboard
+
+`deploy/monitoring/dashboard.json` ("Redis operator soak") starts with a
+global row, then repeats one row per instance of the `Instance` variable.
+
+- **Global row**: a key to the labels; `build_info` (the operator version
+  is its Deployment's image tag, so an upgrade shows here); findings in
+  the time range per instance and invariant, which should be empty; how
+  many windows are open and invariants violated now; chaos actions as a
+  timeline and by kind and result; their mean and p95 convergence and the
+  mean time without an operator; evictions a budget blocked; and per
+  instance the outages and lost writes of each chaos kind. Chaos actions
+  are also annotations on every panel.
+- **Instance row**: `writable` and `readable` per path and client style;
+  every invariant over time; the window, the number of masters, failovers
+  and `Healthy`; probe failures by classified result and probe latency;
+  outages and lost writes in the range by `event`; mutations by kind and
+  result with their mean convergence; replication lag per pod; the
+  servers and versions the pods run; memory, keys, OOM rejections,
+  evictions and `WAIT`; version transitions and mixed windows.
+
+The paths are `sentinel` (through the Sentinels, as a Sentinel-aware
+client), `rfrm` (the master Service) and `rfrs` (a bootstrapping
+instance's replica Service, read-only). The client styles are `pooled`,
+`retrying`, `fresh` and `follower` (see Probes): `follower` takes a changed
+password at once, so its `auth` failures are how long the operator takes to
+apply it. `mode` is the instance's configured mode, not its current one:
+its series stay the same when `sentinel_toggle` switches it.
+
+Read a red stretch in `writable` together with the window and the
+`event` of the outage: inside a window, during the event that caused it,
+it is the cost of that change; outside one it is what the alerts are for.
+
+## Findings and expected behaviour
+
+**Findings** are what an RC must not do. Each counts in `findings_total`
+and fires `RedisSoakFinding`:
+
+- an invariant violated while no window is open: a failover nobody asked
+  for, two masters, a master Service on the wrong pod, a replica that
+  lost its link, Sentinels that disagree, `NotHealthy` or a `config`
+  drift while nothing changes;
+- a violation still open when its window times out: a change the
+  operator didn't converge;
+- any OOM kill of a redis or Sentinel pod;
+- a version change that failed unsafely (`version_transition`);
+- `replica_ready_without_data` (unless switched off).
+
+Also not expected, with their own alerts: a mutation or chaos action that
+timed out or failed, writes lost in an event that should lose none (auth
+changes, Sentinel toggles and flips, operator restarts and upgrades,
+drains of pods on volumes), and a follower `auth` outage over 2m.
+
+**Expected** behaviour, which is measured but not a finding:
+
+- violations inside a window: pods restarting, a failover after a master
+  kill or a drain, `NotHealthy` while the operator converges;
+- outages during a change, and their length per path and client style:
+  `fresh` and `retrying` clients ride over a failover sooner than `pooled`
+  ones; a pooled client on a demoted master sees its connections closed;
+- writes lost to asynchronous replication in a forced kill or a failover
+  (`lost_writes_total{event="kill_master_force"}` or `failover`), and every
+  write of an instance whose only pod without a volume was replaced
+  (`reset`);
+- a change along an `unknown` or `fail` edge that stopped safely
+  (`failed_safe`);
+- `OOM` rejections under `noeviction` and evictions under `allkeys-*`;
+- the documented auth limitations: until each pod restarts, its exporter
+  and pre-stop `SAVE` use the old password, and an operator restarted
+  between a Secret change and its next reconcile reports `unable to apply
+  the configured password` until the documented recovery
+  (`password_rotate_offline` runs it);
+- a drain blocked by a PodDisruptionBudget for as long as the pods it
+  waits for take to be Ready elsewhere.
+
+## Known operator issues
+
+The tester found these in 4.2.0-rc2 and current `main`; each has a fix
+branch, with a pull request where one is open:
+
+| Issue | Seen as | Fix |
+|---|---|---|
+| A graceful master rollover in operator mode can promote the restarted old master (the same pod, a new UID) instead of a Ready replica: `GetBestReplicaForPromotion` falls back to the highest offset without checking readiness. | Outages of 40-46s on `rfrm`; `failover` from a pod to itself. | PR #203, `claude/fix-promote-ready-replica` |
+| A replica that never completed a sync is Ready (`ready.sh` only fails a full sync in progress), e.g. a Valkey replica that can't read a Redis 7.4/8 RDB: `rfrs` serves empty reads. | `replica_ready_without_data`. | `claude/fix-readiness-link-down` |
+| A scale-down that removes the master in operator mode promotes a replica while the old master still takes writes (case 1 of `checkAndHealOperatorManagedMode` skips `masterPodStopping`). | Writes lost by `redis_replicas` on volumes. | `claude/fix-scale-down-master-race` |
+| Lowering a memory limit below the page cache in use: the kubelet refuses the in-place resize, and the operator waits 5m per pod before recreating it. | `redis_memory` taking over 18m on 3 pods. | `claude/fix-resize-below-usage` |
+| A changed password applies only at the next resync (30s), as nothing watches the auth Secret. | `follower` `auth` outages of up to 30s. | `claude/watch-auth-secret` |
+| The CRD has no status subresource: every status update bumps `metadata.generation`. | A window opened by every status change. | `claude/crd-status-subresource` |
+| A rollout that can never continue, e.g. onto a server that can't load the data, stays `Healthy` with an empty message. | Stuck `unknown` edges reported only by the tester. | `claude/report-stalled-rollout` |
+| Before PR #195 (in 4.2.0-rc2), the chart's CRD hook can't install: its ConfigMap holds the 1.09MB CRD YAML. | Every `helm upgrade` to 4.2.0-rc1 with `crds.upgradeHook.enabled` fails. | PR #195, merged |
 
 ## Configuration
 
@@ -581,10 +834,11 @@ configured one, so an instance's series stay the same when
 | `redis_soak_probe_duration_seconds` | histogram | `path`, `client`, `op` |
 | `redis_soak_writable`, `redis_soak_readable` | gauge (0/1) | `path`, `client` |
 | `redis_soak_last_success_timestamp_seconds` | gauge | `path`, `client`, `op` |
-| `redis_soak_outage_duration_seconds` | histogram | `path`, `client` |
+| `redis_soak_outage_duration_seconds` | histogram | `path`, `client`, `event` (the chaos kind or the instance's mutation kind running when it started, or `none`) |
 | `redis_soak_invariant_ok` | gauge (0/1) | `invariant` |
 | `redis_soak_invariant_violation_seconds` | histogram | `invariant` |
 | `redis_soak_findings_total` | counter | `invariant` (also `oom_killed` and `version_transition`) |
+| `redis_soak_window_open` | gauge (0/1) | |
 | `redis_soak_masters` | gauge | |
 | `redis_soak_failovers_total` | counter | |
 | `redis_soak_replication_lag_bytes` | gauge | `pod` |
@@ -600,10 +854,15 @@ configured one, so an instance's series stay the same when
 | `redis_soak_used_memory_bytes`, `redis_soak_maxmemory_bytes` | gauge | |
 | `redis_soak_oom_rejections_total` | counter | |
 | `redis_soak_evicted_keys_total` | counter | |
-| `redis_soak_lost_writes_total` | counter | `event` (a mutation kind, `failover`, `reset` or `periodic`) |
+| `redis_soak_lost_writes_total` | counter | `event` (a mutation or chaos kind, `failover`, `reset` or `periodic`) |
 | `redis_soak_ledger_verified_total` | counter | `event` |
 | `redis_soak_version_transition_total` | counter | `from`, `to` (version names), `expect`, `result` (`ok`/`failed_safe`/`failed_unsafe`) |
-| `redis_soak_version_mixed_seconds` | histogram | `from`, `to` |
+| `redis_soak_version_mixed_seconds` | histogram | `from`, `to`, `component` (`redis`/`sentinel`) |
+| `redis_soak_chaos_total` | counter | `kind`, `result` (`converged`/`timeout`/`failed`/`skipped`); no instance labels |
+| `redis_soak_chaos_converge_seconds` | histogram | `kind` |
+| `redis_soak_chaos_in_progress` | gauge (0/1) | `kind` |
+| `redis_soak_chaos_operator_down_seconds` | histogram | `kind` |
+| `redis_soak_chaos_eviction_blocked_seconds` | histogram | |
 
 `result` is one of `ok`, `timeout`, `refused`, `readonly`, `loading`, `auth`,
 `oom`, `masterdown`, `noreplicas`, `dns`, `closed` and `other`. Server errors
@@ -612,7 +871,8 @@ Valkey count the same way. `closed` is a connection closed or reset by the
 server, such as the operator disconnecting clients from a demoted master.
 
 An outage runs from the first failed probe to the next successful one, per
-path and client style. A path's series are deleted when the path goes
+path and client style, and counts for the `event` that ran when it
+started. A path's series are deleted when the path goes
 away.
 
 `masters` is the number of redis pods reporting the master role: 1 is right,
@@ -629,6 +889,12 @@ are on its stream.
 The per-pod series exist only while the pod answers `INFO`, and disappear
 with the pod. `operator_version` is the image tag of the operator
 Deployment, re-read every 30 seconds.
+
+`window_open` is 1 while the instance's convergence window is open: a
+violation then is expected, not a finding. The alerts' "outside a window"
+is `window_open == 0`. `findings_total`, `mutation_total`, `chaos_total`
+and `lost_writes_total` start at 0 for every invariant, kind, result and
+event the instance can have, so their `increase()` shows the first one.
 
 `mutation_converge_seconds` runs from applying a converged mutation to its
 window closing. The window is judged on observer ticks and stays open for
