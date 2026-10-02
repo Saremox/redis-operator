@@ -12,6 +12,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/redis/go-redis/v9"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -42,8 +43,12 @@ func TestProbe(t *testing.T) {
 	if v, _ := s.Get("soak:op-basic:rfrm:fresh:seq"); v != "2" {
 		t.Errorf("seq = %q, want 2", v)
 	}
+	// The outage counts for the event that ran when it started.
+	event := "operator_restart"
+	p.event = func() string { return event }
 	s.SetError("READONLY You can't write against a read only replica.")
 	run()
+	event = EventNone
 	run()
 	s.SetError("")
 	run()
@@ -80,8 +85,17 @@ redis_soak_writable` + labels + ` 1
 	}
 	for _, mf := range mfs {
 		if mf.GetName() == "redis_soak_outage_duration_seconds" {
-			if n := mf.GetMetric()[0].GetHistogram().GetSampleCount(); n != 1 {
+			if n := len(mf.GetMetric()); n != 1 {
+				t.Fatalf("%d outage series, want 1", n)
+			}
+			metric := mf.GetMetric()[0]
+			if n := metric.GetHistogram().GetSampleCount(); n != 1 {
 				t.Errorf("outages = %d, want 1", n)
+			}
+			if !slices.ContainsFunc(metric.GetLabel(), func(l *dto.LabelPair) bool {
+				return l.GetName() == "event" && l.GetValue() == "operator_restart"
+			}) {
+				t.Errorf("outage labels %v", metric.GetLabel())
 			}
 		}
 	}

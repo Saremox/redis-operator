@@ -4,6 +4,27 @@ operator:
 observer:
   interval: 5s
   convergenceTimeout: 10m
+# rbac-chaos.yaml grants what the lane needs.
+chaos:
+  kinds:
+    operator_restart: 2
+    node_drain: 1
+    # Set the two RCs below, and point the release at the first, to also
+    # upgrade between them.
+    # operator_upgrade: 1
+  interval: 30m
+  jitter: 10m
+  upgrade:
+    set: [crds.upgradeHook.enabled=true]
+    versions:
+      - name: previous-rc
+        chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
+        version: 4.2.0-rc1
+        image: ghcr.io/saremox/redis-operator:4.2.0-rc1
+      - name: rc
+        chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
+        version: 4.2.0-rc2
+        image: ghcr.io/saremox/redis-operator:4.2.0-rc2
 mutation:
   interval: 2m
   jitter: 1m
@@ -292,4 +313,6 @@ instances:
         kill_master: 1
         kill_replica: 1
         kill_sentinel: 1
+        sentinel_image_flip: 1
       forceDeleteProbability: 0.5
+      sentinelImages: [valkey-9, redis-7.2]

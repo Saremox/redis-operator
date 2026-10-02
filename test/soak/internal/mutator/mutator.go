@@ -82,6 +82,8 @@ type Mutator struct {
 	resets   int
 	mixed    *mixedWindow
 	resetWhy string
+	// current is the kind of the mutation running, "" between mutations.
+	current atomic.Pointer[config.Kind]
 
 	total        *prometheus.CounterVec
 	converge     prometheus.ObserverVec
@@ -120,13 +122,23 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		mixedSeconds:    m.VersionMixed.MustCurryWith(labels),
 		findings:        m.Findings.MustCurryWith(labels),
 	}
-	for _, k := range in.Mutations.Sorted() {
+	// Alerts take the increase of mutation_total, which a series that
+	// first appears at 1 wouldn't show.
+	for _, k := range in.MutationKinds() {
 		mu.inProgress.WithLabelValues(string(k)).Set(0)
-	}
-	if _, ok := in.Mutations.Kinds[config.ImageUpgrade]; ok && inst != nil {
-		mu.inProgress.WithLabelValues(string(config.Reset)).Set(0)
+		for _, r := range []string{resultConverged, resultTimeout, resultRejected, resultSkipped} {
+			mu.total.WithLabelValues(string(k), r)
+		}
 	}
 	return mu
+}
+
+// Current returns the kind of the mutation running, "" if none is.
+func (m *Mutator) Current() string {
+	if k := m.current.Load(); k != nil {
+		return string(*k)
+	}
+	return ""
 }
 
 func (m *Mutator) Run(ctx context.Context) {
@@ -236,11 +248,18 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 
 	inProgress := m.inProgress.WithLabelValues(string(kind))
 	inProgress.Set(1)
-	defer inProgress.Set(0)
+	m.current.Store(&kind)
+	defer func() {
+		inProgress.Set(0)
+		m.current.Store(nil)
+	}()
 	// An edge that may fail is observed for its timeout only, or until it
 	// is stuck, and its window held on, for the reset that follows.
 	bound := time.Duration(0)
 	hold := timeout
+	if p.flip != nil {
+		m.mixed = &mixedWindow{t: p.flip}
+	}
 	if p.edge != nil {
 		m.mixed = &mixedWindow{t: p.edge}
 		if d := p.edge.edge.Timeout.Duration; d > 0 {
@@ -358,6 +377,8 @@ func (m *Mutator) plan(r *rand.Rand, kind config.Kind, s state) plan {
 		return m.planImage(r, s)
 	case config.SentinelImageUpgrade:
 		return m.planSentinelImage(r, s)
+	case config.SentinelImageFlip:
+		return m.planSentinelFlip(r, s)
 	case config.Reset:
 		why := "picked"
 		if m.resetWhy != "" {
@@ -453,7 +474,7 @@ func (m *Mutator) sample(ctx context.Context, watch *transition) (pod, line stri
 func (m *Mutator) recordMixed(d time.Duration) {
 	t := m.mixed.t
 	m.mixed = nil
-	m.mixedSeconds.WithLabelValues(t.edge.From, t.edge.To).Observe(d.Seconds())
+	m.mixedSeconds.WithLabelValues(t.edge.From, t.edge.To, t.container()).Observe(d.Seconds())
 	m.log.Info("mixed versions", "from", t.edge.From, "to", t.edge.To, "sentinel", t.sentinel, "duration_seconds", d.Seconds())
 }
 

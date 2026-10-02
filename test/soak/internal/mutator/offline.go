@@ -17,6 +17,10 @@ import (
 // the pods onto the Secret's password.
 const passwordNotApplied = "unable to apply the configured password"
 
+// operatorStopped is why every instance is in a window while scenario C
+// stops the operator.
+const operatorStopped = "operator stopped"
+
 // offline is scenario C: the password changes while the operator is
 // stopped, so the restarted operator can't apply it. The documented
 // recovery is to put the previous password back, wait for Healthy, and
@@ -46,14 +50,14 @@ func (m *Mutator) rotateOffline(ctx context.Context, o *offline, log *slog.Logge
 		}
 		return err
 	}
-	m.lock.SetOperatorDown(true)
+	m.lock.Disturb(operatorStopped)
 	running := false
 	defer func() {
 		if !running {
 			// Never leave the operator stopped.
 			err = errors.Join(err, m.scaleOperator(context.WithoutCancel(ctx), 1))
 		}
-		m.lock.SetOperatorDown(false)
+		m.lock.Disturb("")
 	}()
 	if err := phase("stop the operator", func() error { return m.scaleOperator(ctx, 0) }); err != nil {
 		return err
@@ -65,7 +69,7 @@ func (m *Mutator) rotateOffline(ctx context.Context, o *offline, log *slog.Logge
 		return err
 	}
 	running = true
-	m.lock.SetOperatorDown(false)
+	m.lock.Disturb("")
 
 	var failed error
 	if err := phase("expect "+passwordNotApplied, func() error {

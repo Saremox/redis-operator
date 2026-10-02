@@ -124,6 +124,12 @@ func TestInvalidVersions(t *testing.T) {
 		"version and chain": graph +
 			"instances: [{name: a, namespace: ns, template: a.yaml, version: redis-7.4, chain: {start: [redis-7.2], versions: [redis-7.2, redis-7.4]}}]",
 		"bad timeout": "mutation: {timeouts: {kill_all: {base: 1m}}}\ninstances: [{name: a, namespace: ns}]",
+		"flip on one version": graph +
+			"instances: [{name: a, namespace: ns, mode: sentinel, mutations: {kinds: {sentinel_image_flip: 1}, sentinelImages: [redis-8, redis-8]}}]",
+		"flip to an unknown version": graph +
+			"instances: [{name: a, namespace: ns, mode: sentinel, mutations: {kinds: {sentinel_image_flip: 1}, sentinelImages: [redis-8, valkey-6]}}]",
+		"flip without Sentinel": graph +
+			"instances: [{name: a, namespace: ns, mutations: {kinds: {sentinel_image_flip: 1}, sentinelImages: [redis-8, valkey-8]}}]",
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {

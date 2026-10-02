@@ -111,6 +111,19 @@ func TestEvaluate(t *testing.T) {
 		{"sentinel unreachable", true, func(s *snapshot) {
 			s.sentinels[2].err = errors.New("i/o timeout")
 		}, []string{invSentinelAgreement}},
+		{"ready replica that never synced", false, func(s *snapshot) {
+			s.redis[1].info["master_link_status"] = "down"
+			s.redis[1].info["master_link_down_since_seconds"] = "-1"
+		}, []string{invReplication, invReplicaReadyWithoutData}},
+		{"replica that never synced, not ready", false, func(s *snapshot) {
+			s.redis[1].Ready = false
+			s.redis[1].info["master_link_status"] = "down"
+			s.redis[1].info["master_link_down_since_seconds"] = "-1"
+		}, []string{invPods, invReplication}},
+		{"ready replica whose link just dropped", false, func(s *snapshot) {
+			s.redis[1].info["master_link_status"] = "down"
+			s.redis[1].info["master_link_down_since_seconds"] = "8"
+		}, []string{invReplication}},
 		{"not healthy", false, func(s *snapshot) {
 			s.state, s.message = "NotHealthy", "unable to apply the configured password"
 		}, []string{invHealthy}},
@@ -168,5 +181,25 @@ func TestLags(t *testing.T) {
 	want := map[string]int64{"rfr-x-1": 10, "rfr-x-2": 0}
 	if !maps.Equal(got, want) {
 		t.Errorf("lags = %v, want %v", got, want)
+	}
+}
+
+// A Valkey 9 replica that can't load a Redis 8 RDB retries its full sync
+// forever; between attempts INFO reports its link down since it started.
+func TestReplicaReadyWithoutDataRealInfo(t *testing.T) {
+	s := snapshot{redisReplicas: 2, port: 6379, state: "Healthy", endpoints: []string{"10.0.0.10"}}
+	replica := parseInfo("# Replication\r\nrole:slave\r\nmaster_host:10.0.0.10\r\nmaster_port:6379\r\n" +
+		"master_link_status:down\r\nmaster_last_io_seconds_ago:-1\r\nmaster_sync_in_progress:0\r\n" +
+		"slave_read_repl_offset:0\r\nslave_repl_offset:0\r\nmaster_link_down_since_seconds:-1\r\n")
+	s.redis = []redisPod{
+		{pod: pod{Name: "rfr-x-0", IP: "10.0.0.10", Ready: true}, info: replicationInfo("master", "", "", "1000")},
+		{pod: pod{Name: "rfr-x-1", IP: "10.0.0.11", Ready: true}, info: replica},
+	}
+	if got := violated(evaluate(s)); !slices.Equal(got, []string{invReplication, invReplicaReadyWithoutData}) {
+		t.Errorf("violated %v", got)
+	}
+	s.redis[1].Ready = false
+	if got := violated(evaluate(s)); !slices.Equal(got, []string{invPods, invReplication}) {
+		t.Errorf("not ready: violated %v", got)
 	}
 }

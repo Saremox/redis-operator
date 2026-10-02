@@ -20,6 +20,10 @@ const (
 	invSentinelAgreement = "sentinel_agreement"
 	invHealthy           = "healthy"
 	invConfig            = "config"
+	// invReplicaReadyWithoutData is a Ready replica whose link is down and
+	// hasn't been up since it started: Kubernetes routes reads to a pod
+	// without the master's data.
+	invReplicaReadyWithoutData = "replica_ready_without_data"
 	// invOOMKilled is judged apart from the others: every OOM kill is a
 	// finding, in a convergence window too.
 	invOOMKilled = "oom_killed"
@@ -107,6 +111,7 @@ func evaluate(s snapshot) []check {
 			checks = append(checks, check{invSentinelAgreement, s.checkSentinels(master)})
 		}
 	}
+	checks = append(checks, check{invReplicaReadyWithoutData, s.checkReadyReplicas()})
 	if s.rf != nil {
 		checks = append(checks, check{invConfig, s.checkConfig()})
 	}
@@ -224,6 +229,21 @@ func (s snapshot) checkBootstrap() error {
 		case s.sourceErr == nil && r.info["master_replid"] != s.sourceReplID:
 			errs = append(errs, fmt.Errorf("%s replicates stream %s, the source's master is on %s",
 				r.Name, r.info["master_replid"], s.sourceReplID))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// checkReadyReplicas checks that no Ready redis pod is a replica whose link
+// is down and hasn't been up since the server started: it never completed
+// a sync. Redis and Valkey report master_link_down_since_seconds -1 then.
+func (s snapshot) checkReadyReplicas() error {
+	var errs []error
+	for _, r := range s.redis {
+		if r.Ready && r.info.role() == roleReplica && r.info["master_link_status"] != "up" &&
+			r.info["master_link_down_since_seconds"] == "-1" {
+			errs = append(errs, fmt.Errorf("%s is Ready without a completed sync: its link to %s:%s is %s and hasn't been up since it started",
+				r.Name, r.info["master_host"], r.info["master_port"], r.info["master_link_status"]))
 		}
 	}
 	return errors.Join(errs...)

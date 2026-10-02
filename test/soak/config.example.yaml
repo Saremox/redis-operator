@@ -2,10 +2,11 @@
 # has a default, shown here.
 
 # The operator Deployment whose image tag is exported as
-# redis_soak_build_info{operator_version}.
+# redis_soak_build_info{operator_version}, and the Lease its leader holds.
 operator:
   namespace: redis-operator
   deployment: redis-operator
+  lease: redis-failover-lease
 
 probe:
   interval: 1s
@@ -24,6 +25,10 @@ observer:
   # (metadata.generation) or a mutation, before a violation counts as a
   # finding.
   convergenceTimeout: 10m
+  # A Ready replica whose link is down and hasn't been up since it started
+  # (replica_ready_without_data) is a finding. false only reports it, for
+  # operators whose readiness probe passes such a replica.
+  replicaReadyWithoutData: true
 
 # The mutator changes each instance with a mutations section, one mutation
 # at a time, once the instance is quiet: no convergence window open and
@@ -51,6 +56,50 @@ mutation:
     image_upgrade: {perPod: 2m}
     sentinel_image_upgrade: {perPod: 1m}
     reset: {perPod: 1m}
+
+# The chaos lane takes cluster-level actions, one at a time for every
+# instance at once, every interval plus up to jitter, picked by weight from
+# mutation.seed; it stops with mutation.stopAfter. Every mutator pauses,
+# and every instance is in a convergence window, while an action runs.
+chaos:
+  # None (the default) switches the lane off.
+  kinds:
+    # Delete the operator pod.
+    operator_restart: 1
+    # helm upgrade the operator to every other version in turn, and back.
+    operator_upgrade: 1
+    # Cordon and drain a node, hold it, uncordon it.
+    node_drain: 1
+  interval: 10m
+  jitter: 0s
+  # Bounds each wait of an action; by default observer.convergenceTimeout.
+  timeout: 10m
+  upgrade:
+    release: redis-operator
+    helm: helm
+    # Added to every upgrade, which otherwise reuses the release's values.
+    set: [crds.upgradeHook.enabled=true]
+    # The chart's CRD hook Job, by default <release>-crds-upgrade.
+    hookJob: redis-operator-crds-upgrade
+    timeout: 10m
+    # An OCI chart with its version, or a chart archive or directory
+    # relative to this file; image is the operator's, repository:tag.
+    versions:
+      - name: 4.2.0-rc1
+        chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
+        version: 4.2.0-rc1
+        image: ghcr.io/saremox/redis-operator:4.2.0-rc1
+      - name: 4.2.0-rc2
+        chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
+        version: 4.2.0-rc2
+        image: ghcr.io/saremox/redis-operator:4.2.0-rc2
+  drain:
+    # The nodes that may be drained; never the tester's own.
+    nodeSelector: "!node-role.kubernetes.io/control-plane"
+    # How long the node stays cordoned once drained.
+    hold: 1m
+    # Evictions a PodDisruptionBudget blocks are retried this long.
+    timeout: 5m
 
 # The server versions in the rotation, by names that label the metrics,
 # each pinned to an exact patch tag. server and release, what INFO server

@@ -79,7 +79,14 @@ func TestApply(t *testing.T) {
 redis_soak_failovers_total{` + labels + `} 1
 # HELP redis_soak_findings_total Invariant violations outside a convergence window.
 # TYPE redis_soak_findings_total counter
+redis_soak_findings_total{invariant="healthy",` + labels + `} 0
+redis_soak_findings_total{invariant="master_service",` + labels + `} 0
+redis_soak_findings_total{invariant="one_master",` + labels + `} 0
+redis_soak_findings_total{invariant="oom_killed",` + labels + `} 0
 redis_soak_findings_total{invariant="pods",` + labels + `} 1
+redis_soak_findings_total{invariant="replica_ready_without_data",` + labels + `} 0
+redis_soak_findings_total{invariant="replication",` + labels + `} 0
+redis_soak_findings_total{invariant="sentinel_agreement",` + labels + `} 0
 # HELP redis_soak_masters Redis pods reporting the master role. 1 is right.
 # TYPE redis_soak_masters gauge
 redis_soak_masters{` + labels + `} 1

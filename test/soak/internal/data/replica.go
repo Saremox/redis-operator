@@ -57,7 +57,7 @@ func NewReplica(in config.Instance, cfg *config.Config, source *Data, pods Pods,
 	labels := prometheus.Labels{"rf": in.Name, "namespace": in.Namespace, "mode": string(in.Mode)}
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(in.Namespace + "/" + in.Name))
-	return &Replica{
+	r := &Replica{
 		in:       in,
 		cfg:      *in.Bootstrap,
 		source:   source,
@@ -69,6 +69,8 @@ func NewReplica(in config.Instance, cfg *config.Config, source *Data, pods Pods,
 		lost:     m.LostWrites.MustCurryWith(labels),
 		verified: m.LedgerVerified.MustCurryWith(labels),
 	}
+	initEvents(r.lost, cfg, in)
+	return r
 }
 
 func (r *Replica) Filled() bool { return true }

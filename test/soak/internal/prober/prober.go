@@ -38,6 +38,10 @@ const (
 	Follower Client = "follower"
 )
 
+// EventNone is the event of an outage that started while neither a
+// mutation of its instance nor a chaos action ran.
+const EventNone = "none"
+
 // Clients are the client styles every path is probed with.
 var Clients = []Client{Pooled, Retrying, Fresh, Follower}
 
@@ -53,14 +57,17 @@ type Prober struct {
 	key         string
 	seq         int64
 	outage      outage
-	log         *slog.Logger
+	// event returns what runs now: a chaos kind, the instance's mutation
+	// kind, or EventNone.
+	event func() string
+	log   *slog.Logger
 
 	total          *prometheus.CounterVec
 	duration       prometheus.ObserverVec
 	lastSuccess    *prometheus.GaugeVec
 	writable       prometheus.Gauge
 	readable       prometheus.Gauge
-	outageDuration prometheus.Observer
+	outageDuration prometheus.ObserverVec
 	waitAcked      prometheus.Gauge
 }
 
@@ -81,13 +88,14 @@ func New(in config.Instance, path Path, client Client, probe config.Probe, a *au
 		waitEvery:   int64(probe.WaitEvery),
 		waitTimeout: probe.WaitTimeout.Duration,
 		key:         fmt.Sprintf("soak:%s:%s:%s:seq", in.Name, path.Name, client),
+		event:       func() string { return EventNone },
 		log: log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode,
 			"path", path.Name, "client", client),
 		total:          m.ProbeTotal.MustCurryWith(labels),
 		duration:       m.ProbeDuration.MustCurryWith(labels),
 		lastSuccess:    m.LastSuccess.MustCurryWith(labels),
 		readable:       m.Readable.With(labels),
-		outageDuration: m.OutageDuration.With(labels),
+		outageDuration: m.OutageDuration.MustCurryWith(labels),
 		waitAcked:      m.WaitAckedReplicas.WithLabelValues(in.Name, in.Namespace, string(in.Mode)),
 	}
 	if path.ReadKey == "" {
@@ -179,13 +187,15 @@ func (p *Prober) get(ctx context.Context, c *redis.Client, key string) error {
 func (p *Prober) result(start time.Time, err error) {
 	if err != nil {
 		if p.outage.fail(start) {
-			p.log.Warn("outage started", "result", Classify(err), "error", err.Error())
+			p.outage.event = p.event()
+			p.log.Warn("outage started", "result", Classify(err), "event", p.outage.event, "error", err.Error())
 		}
 		return
 	}
+	event := p.outage.event
 	if d, ended := p.outage.succeed(start); ended {
-		p.outageDuration.Observe(d.Seconds())
-		p.log.Info("outage ended", "duration_seconds", d.Seconds())
+		p.outageDuration.WithLabelValues(event).Observe(d.Seconds())
+		p.log.Info("outage ended", "event", event, "duration_seconds", d.Seconds())
 	}
 }
 

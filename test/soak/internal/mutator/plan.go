@@ -86,8 +86,10 @@ type plan struct {
 	// reset is a kill of an instance's only pod without a volume, or a
 	// recreation of the instance, which loses the data by design.
 	reset bool
-	// edge is a version change.
+	// edge is a version change along the graph; flip changes the image
+	// outside it, and only its mixed window is measured.
 	edge *transition
+	flip *transition
 	// action applies a mutation that is neither a patch nor a delete;
 	// offline is scenario C.
 	action  func(context.Context) error

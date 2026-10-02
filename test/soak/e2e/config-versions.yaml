@@ -10,6 +10,9 @@ operator:
 observer:
   interval: 5s
   convergenceTimeout: 6m
+  # Only reported: on the operator without the readiness fix, edge's
+  # replicas that can't load the master's RDB stay Ready.
+  replicaReadyWithoutData: false
 mutation:
   interval: 10s
   jitter: 10s

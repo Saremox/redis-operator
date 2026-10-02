@@ -3,15 +3,18 @@ package mutator
 import (
 	"errors"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/instances"
+	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 )
 
 const versionsConfig = `
@@ -47,6 +50,12 @@ instances:
     namespace: ns
     template: ../instances/testdata/chain.yaml
     chain: {start: [redis-7.4, redis-8], versions: [redis-7.4, redis-8, valkey-8], expect: [unknown]}
+  - name: mixed
+    namespace: ns
+    mode: sentinel
+    mutations:
+      kinds: {sentinel_image_flip: 1}
+      sentinelImages: [valkey-9, redis-7.2, valkey-8]
 `
 
 // versionMutator returns the mutator of a configured instance, as far as
@@ -59,11 +68,13 @@ func versionMutator(t *testing.T, name string) *Mutator {
 	}
 	i := slices.IndexFunc(cfg.Instances, func(in config.Instance) bool { return in.Name == name })
 	in := cfg.Instances[i]
-	inst, err := instances.New(in, nil, nil, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatal(err)
+	m := &Mutator{in: in, versions: cfg}
+	if in.Template != "" {
+		if m.instance, err = instances.New(in, nil, nil, slog.New(slog.DiscardHandler)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return &Mutator{in: in, versions: cfg, instance: inst}
+	return m
 }
 
 // onImages is testState with the redis and Sentinel images, and every pod
@@ -323,5 +334,99 @@ func TestDescribePod(t *testing.T) {
 	got := describePod(m.versions, &p, redisName, server{fields: map[string]string{"master_link_status": "down"}}, "Can't handle RDB format version 12")
 	if want := "rfr-x-1 on valkey-8 ready=true restarts=2 waiting=CrashLoopBackOff link=down log: Can't handle RDB format version 12"; got != want {
 		t.Errorf("describePod =\n %q\nwant\n %q", got, want)
+	}
+}
+
+// sentinel_image_flip changes only the Sentinel image, to another of
+// sentinelImages, and measures the Sentinels' mixed window.
+func TestPlanSentinelFlip(t *testing.T) {
+	m := versionMutator(t, "mixed")
+	s := onImages("redis:7.2.16-alpine", "valkey/valkey:9.1.2-alpine")
+	s.rf.Spec.Sentinel.Enabled = new(true)
+	picked := map[string]int{}
+	for step := 1; step <= 100; step++ {
+		p := m.planSentinelFlip(stepRand(3, m.in, step), s)
+		if again := m.planSentinelFlip(stepRand(3, m.in, step), s); again.params != p.params {
+			t.Fatalf("step %d picked %q, then %q", step, p.params, again.params)
+		}
+		if p.kind != config.SentinelImageFlip || p.edge != nil || p.flip == nil || !p.flip.sentinel ||
+			p.flip.from.Name != "valkey-9" || !p.fetch.servers {
+			t.Fatalf("plan %+v", p)
+		}
+		want := `{"spec":{"sentinel":{"image":"` + p.flip.to.Image + `"}}}`
+		if string(p.patch) != want {
+			t.Fatalf("patch %s, want %s", p.patch, want)
+		}
+		picked[p.flip.to.Name]++
+	}
+	if len(picked) != 2 || picked["redis-7.2"] < 30 || picked["valkey-8"] < 30 {
+		t.Errorf("picked %v", picked)
+	}
+
+	p := m.planSentinelFlip(stepRand(3, m.in, 1), s)
+	to := onImages("redis:7.2.16-alpine", p.flip.to.Image)
+	to.rf.Spec.Sentinel.Enabled = new(true)
+	to.rf.Status.State = "Healthy"
+	to.servers = map[string]server{}
+	for _, pod := range to.redis {
+		to.servers[pod.Name] = server{name: "redis", version: "7.2.16"}
+	}
+	for _, pod := range to.sentinels {
+		to.servers[pod.Name] = server{name: p.flip.to.Server, version: p.flip.to.Release}
+	}
+	if err := p.converged(to); err != nil {
+		t.Errorf("Sentinels on the new image: %v", err)
+	}
+	if err := p.converged(s); err == nil {
+		t.Error("converged with the Sentinels on the old image")
+	}
+
+	unknown := onImages("redis:7.2.16-alpine", "redis:6.2-alpine")
+	unknown.rf.Spec.Sentinel.Enabled = new(true)
+	if p := m.planSentinelFlip(stepRand(3, m.in, 1), unknown); p.flip == nil || p.flip.from.Name != "unknown" || p.flip.from.Image != "redis:6.2-alpine" {
+		t.Errorf("from an unconfigured image: %+v", p)
+	}
+	s.rf.Spec.Sentinel.Enabled = new(false)
+	if p := m.planSentinelFlip(stepRand(3, m.in, 1), s); p.skip == "" {
+		t.Error("not skipped with Sentinel off")
+	}
+}
+
+// version_mixed_seconds tells the redis pods' mixed window from the
+// Sentinels'.
+func TestMixedComponent(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	mm := metrics.New(reg, time.Minute)
+	m := versionMutator(t, "mixed")
+	m.log = slog.New(slog.DiscardHandler)
+	m.mixedSeconds = mm.VersionMixed.MustCurryWith(prometheus.Labels{"rf": "mixed", "namespace": "ns", "mode": "sentinel"})
+	redis72, _ := m.versions.VersionNamed("redis-7.2")
+	valkey9, _ := m.versions.VersionNamed("valkey-9")
+	for _, sentinel := range []bool{false, true, true} {
+		m.mixed = &mixedWindow{t: &transition{edge: config.Edge{From: "redis-7.2", To: "valkey-9"}, from: redis72, to: valkey9, sentinel: sentinel}}
+		m.recordMixed(30 * time.Second)
+	}
+	if m.mixed != nil {
+		t.Error("the window is still open")
+	}
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]uint64{}
+	for _, f := range families {
+		if f.GetName() != "redis_soak_version_mixed_seconds" {
+			continue
+		}
+		for _, metric := range f.GetMetric() {
+			for _, l := range metric.GetLabel() {
+				if l.GetName() == "component" {
+					got[l.GetValue()] = metric.GetHistogram().GetSampleCount()
+				}
+			}
+		}
+	}
+	if want := map[string]uint64{"redis": 1, "sentinel": 2}; !maps.Equal(got, want) {
+		t.Errorf("windows by component %v, want %v", got, want)
 	}
 }

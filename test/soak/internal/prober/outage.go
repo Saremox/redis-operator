@@ -6,6 +6,8 @@ import "time"
 // successful one.
 type outage struct {
 	start time.Time
+	// event is what ran when the outage started.
+	event string
 }
 
 // fail records a failed probe and reports whether it started an outage.

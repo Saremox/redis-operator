@@ -73,6 +73,10 @@ type Observer struct {
 	external     string
 	sourceMaster string
 	sentinelUp   bool
+	// reportOnly are the invariants that are reported but never findings,
+	// and noted when each of them was violated.
+	reportOnly map[string]bool
+	noted      map[string]time.Time
 
 	ok         *prometheus.GaugeVec
 	violation  prometheus.ObserverVec
@@ -82,6 +86,7 @@ type Observer struct {
 	lag        *prometheus.GaugeVec
 	rfHealthy  prometheus.Gauge
 	serverInfo *prometheus.GaugeVec
+	windowOpen prometheus.Gauge
 
 	datasetKeys prometheus.Gauge
 	usedMemory  prometheus.Gauge
@@ -91,7 +96,7 @@ type Observer struct {
 
 func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs versioned.Interface, a *auth.Source, lock *global.Lock, m *metrics.Metrics, log *slog.Logger) *Observer {
 	labels := prometheus.Labels{"rf": in.Name, "namespace": in.Namespace, "mode": string(in.Mode)}
-	return &Observer{
+	o := &Observer{
 		in:         in,
 		interval:   cfg.Observer.Interval.Duration,
 		timeout:    cfg.Probe.Timeout.Duration,
@@ -105,6 +110,8 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		lagPods:    map[string]bool{},
 		servers:    map[string][2]string{},
 		failoverCh: make(chan string, 1),
+		reportOnly: map[string]bool{invReplicaReadyWithoutData: !cfg.Observer.ReplicaReadyWithoutDataFinding()},
+		noted:      map[string]time.Time{},
 		ok:         m.InvariantOK.MustCurryWith(labels),
 		violation:  m.InvariantViolation.MustCurryWith(labels),
 		findings:   m.Findings.MustCurryWith(labels),
@@ -113,12 +120,17 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		lag:        m.ReplicationLag.MustCurryWith(labels),
 		rfHealthy:  m.RFHealthy.With(labels),
 		serverInfo: m.ServerInfo.MustCurryWith(labels),
+		windowOpen: m.WindowOpen.With(labels),
 
 		datasetKeys: m.DatasetKeys.With(labels),
 		usedMemory:  m.UsedMemory.With(labels),
 		maxMemory:   m.MaxMemory.With(labels),
 		evicted:     m.EvictedKeys.With(labels),
 	}
+	// Alerts take the increase of findings_total, which a series that
+	// first appears at 1 wouldn't show.
+	o.findings.WithLabelValues(invOOMKilled)
+	return o
 }
 
 // Hold is a convergence window a mutation holds open.
@@ -156,10 +168,13 @@ func (o *Observer) SetSource(source *Observer) {
 
 // view is what a mutator reads of the observer's last round.
 type view struct {
+	at         time.Time
 	quiet      bool
 	windowOpen bool
-	master     string
-	masterIP   string
+	// failing are the invariants violated that may be findings.
+	failing  []string
+	master   string
+	masterIP string
 	// sentinelPath is whether the instance runs Sentinels that are Ready
 	// and agree on the master, so it can be probed through them.
 	sentinelPath bool
@@ -189,6 +204,24 @@ func (o *Observer) Hold(timeout time.Duration, converged func(context.Context) e
 func (o *Observer) Quiet() bool {
 	v := o.view.Load()
 	return v != nil && v.quiet
+}
+
+// Report is what the observer's last round found.
+type Report struct {
+	At time.Time
+	// Quiet is no convergence window open and every invariant holding.
+	Quiet bool
+	// Failing are the violated invariants that may be findings.
+	Failing []string
+}
+
+// Report returns what the last round found, a zero Report before the first.
+func (o *Observer) Report() Report {
+	v := o.view.Load()
+	if v == nil {
+		return Report{}
+	}
+	return Report{At: v.at, Quiet: v.quiet, Failing: v.failing}
 }
 
 // Master returns the name of the pod that last was the single master.
@@ -473,8 +506,18 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 		o.generation = generation
 	}
 	o.externalWindow(now)
-	checks := evaluate(s)
-	o.dropInvariants(checks)
+	all := evaluate(s)
+	o.dropInvariants(all)
+	var checks []check
+	for _, c := range all {
+		if o.reportOnly[c.invariant] {
+			o.note(now, c)
+			continue
+		}
+		o.findings.WithLabelValues(c.invariant)
+		checks = append(checks, c)
+	}
+	var failing []string
 	// A recreated RedisFailover has new Sentinels behind a new Service: its
 	// Sentinel path is dropped, with its clients, for a round at least.
 	recreated := o.rfUID != "" && o.rfUID != s.uid
@@ -485,6 +528,9 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 	for _, c := range checks {
 		o.ok.WithLabelValues(c.invariant).Set(gauge(c.err == nil))
 		allOK = allOK && c.err == nil
+		if c.err != nil {
+			failing = append(failing, c.invariant)
+		}
 		// The Sentinel Service routes to Ready pods only.
 		if c.invariant == invSentinelAgreement && c.err == nil && !recreated &&
 			podsReady("sentinel", sentinelPods(s), s.sentinelReplicas) == nil {
@@ -495,12 +541,15 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 	for _, e := range o.tracker.update(now, checks, converged) {
 		o.record(e)
 	}
+	o.windowOpen.Set(gauge(o.tracker.windowOpen()))
 	o.rfHealthy.Set(gauge(s.state == redisfailoverv1.HealthyState))
 	o.observeMaster(s)
 	o.observeServers(s)
 	o.observeOOMKills(s)
 	o.observeData(s)
 	v := &view{
+		at:           now,
+		failing:      failing,
 		quiet:        allOK && !o.tracker.windowOpen(),
 		windowOpen:   o.tracker.windowOpen(),
 		master:       o.master.Name,
@@ -518,8 +567,8 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 }
 
 // externalWindow holds a window open while something outside the instance
-// is expected to disturb it: a mutation stopped the operator, or, for a
-// bootstrapping instance, the source is converging or without a master.
+// is expected to disturb it: a mutation stopped the operator, a chaos
+// action runs, or, for a bootstrapping instance, the source is converging or without a master.
 // A bootstrapping instance's window also opens when the source's master
 // changes, as its pods only reach the new one after their link to the old
 // one broke, which may be after the source converged; it then closes once
@@ -527,8 +576,8 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 func (o *Observer) externalWindow(now time.Time) {
 	reason := ""
 	switch {
-	case o.lock.OperatorDown():
-		reason = "operator stopped"
+	case o.lock.Disturbance() != "":
+		reason = o.lock.Disturbance()
 	case o.source != nil:
 		v := o.source.view.Load()
 		switch {
@@ -551,6 +600,23 @@ func (o *Observer) externalWindow(now time.Time) {
 	o.external = reason
 }
 
+// note follows an invariant that is reported but never a finding.
+func (o *Observer) note(now time.Time, c check) {
+	o.ok.WithLabelValues(c.invariant).Set(gauge(c.err == nil))
+	since, violated := o.noted[c.invariant]
+	log := o.log.With("invariant", c.invariant, "finding", false)
+	switch {
+	case c.err != nil && !violated:
+		o.noted[c.invariant] = now
+		log.Warn("invariant violated", "reason", c.err.Error())
+	case c.err == nil && violated:
+		delete(o.noted, c.invariant)
+		d := now.Sub(since)
+		o.violation.WithLabelValues(c.invariant).Observe(d.Seconds())
+		log.Info("invariant restored", "duration_seconds", d.Seconds())
+	}
+}
+
 // dropInvariants forgets the invariants no longer evaluated, like
 // sentinel_agreement after Sentinel was switched off.
 func (o *Observer) dropInvariants(checks []check) {
@@ -563,6 +629,7 @@ func (o *Observer) dropInvariants(checks []check) {
 			continue
 		}
 		o.ok.DeleteLabelValues(name)
+		delete(o.noted, name)
 		if o.tracker.drop(name) {
 			o.log.Info("invariant dropped while violated", "invariant", name)
 		}

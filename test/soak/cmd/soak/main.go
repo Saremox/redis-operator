@@ -23,6 +23,7 @@ import (
 
 	"github.com/saremox/redis-operator/client/k8s/clientset/versioned"
 	"github.com/saremox/redis-operator/test/soak/internal/auth"
+	"github.com/saremox/redis-operator/test/soak/internal/chaos"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/data"
 	"github.com/saremox/redis-operator/test/soak/internal/global"
@@ -101,10 +102,10 @@ func run(configPath, listen string, log *slog.Logger) error {
 
 	var wg sync.WaitGroup
 	wg.Go(func() { reportBuildInfo(ctx, kube, cfg.Operator, m, log) })
+	var lane []chaos.Instance
 	for _, in := range cfg.Instances {
 		o, a := observers[in.Name], sources[in.Name]
 		r := prober.NewRunner(in, cfg.Probe, a, m, log)
-		wg.Go(func() { r.Run(ctx, func() []string { return prober.Names(in, o.SentinelPath()) }) })
 		var d mutator.Data
 		if dd := datas[in.Name]; dd != nil {
 			wg.Go(func() { dd.Run(ctx) })
@@ -117,10 +118,25 @@ func run(configPath, listen string, log *slog.Logger) error {
 			d = rd
 		}
 		wg.Go(func() { o.Run(ctx) })
+		var mu *mutator.Mutator
 		if cfg.Mutation.On() && len(in.Mutations.Kinds) > 0 {
-			mu := mutator.New(in, cfg, kube, rfs, o, d, a, lock, insts[in.Name], m, log)
+			mu = mutator.New(in, cfg, kube, rfs, o, d, a, lock, insts[in.Name], m, log)
 			wg.Go(func() { mu.Run(ctx) })
 		}
+		// An outage counts for the chaos action, or else the mutation, that
+		// ran when it started.
+		r.SetEvent(func() string {
+			if k := lock.Chaos(); k != "" || mu == nil {
+				return k
+			}
+			return mu.Current()
+		})
+		wg.Go(func() { r.Run(ctx, func() []string { return prober.Names(in, o.SentinelPath()) }) })
+		lane = append(lane, chaos.Instance{Name: in.Name, Observer: o, Data: d})
+	}
+	if cfg.ChaosOn() {
+		l := chaos.New(cfg, kube, lock, lane, os.Getenv("NODE_NAME"), m, log)
+		wg.Go(func() { l.Run(ctx) })
 	}
 	wg.Go(func() {
 		<-ctx.Done()
@@ -128,7 +144,7 @@ func run(configPath, listen string, log *slog.Logger) error {
 	})
 
 	log.Info("starting", "version", version, "instances", len(cfg.Instances), "listen", listen,
-		"mutation", cfg.Mutation.On(), "seed", cfg.Mutation.Seed)
+		"mutation", cfg.Mutation.On(), "chaos", cfg.ChaosOn(), "seed", cfg.Mutation.Seed)
 	err = srv.ListenAndServe()
 	stop()
 	wg.Wait()

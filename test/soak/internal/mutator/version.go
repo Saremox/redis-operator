@@ -124,6 +124,35 @@ func (m *Mutator) planSentinelImage(r *rand.Rand, s state) plan {
 	}
 }
 
+// planSentinelFlip changes only the Sentinel image to another of the
+// instance's sentinelImages, picked by the step's random source. It isn't
+// an edge of the graph: Sentinels hold no data to load.
+func (m *Mutator) planSentinelFlip(r *rand.Rand, s state) plan {
+	const kind = config.SentinelImageFlip
+	if !s.rf.SentinelEnabled() {
+		return skipped(kind, "Sentinel is off")
+	}
+	cur, ok := m.versions.VersionOf(s.rf.Spec.Sentinel.Image)
+	if !ok {
+		cur = config.Version{Name: "unknown", Image: s.rf.Spec.Sentinel.Image}
+	}
+	var choices []config.Version
+	for _, name := range m.in.Mutations.SentinelImages {
+		if v, _ := m.versions.VersionNamed(name); v.Image != cur.Image && !slices.Contains(choices, v) {
+			choices = append(choices, v)
+		}
+	}
+	to := choices[r.IntN(len(choices))]
+	return plan{
+		kind:      kind,
+		params:    fmt.Sprintf("sentinel.image %s -> %s", cur.Name, to.Name),
+		patch:     mergePatch(map[string]any{"sentinel": map[string]any{"image": to.Image}}),
+		flip:      &transition{edge: config.Edge{From: cur.Name, To: to.Name}, from: cur, to: to, sentinel: true},
+		fetch:     fetchOpts{servers: true},
+		converged: convergedOn(m.versions, s.rf.Spec.Redis.Image, to.Image),
+	}
+}
+
 // planReset recreates the instance from its template, on the chain's next
 // start version.
 func (m *Mutator) planReset(s state, why string) plan {

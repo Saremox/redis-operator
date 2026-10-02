@@ -90,7 +90,17 @@ func New(in config.Instance, cfg *config.Config, master Master, a *auth.Source, 
 	if in.Data.Ledger != nil {
 		d.ledger = newLedger()
 	}
+	initEvents(d.lost, cfg, in)
 	return d
+}
+
+// initEvents creates the lost_writes_total series of every event at 0:
+// alerts take their increase, which a series that first appears with the
+// writes a verification lost wouldn't show.
+func initEvents(lost *prometheus.CounterVec, cfg *config.Config, in config.Instance) {
+	for _, e := range cfg.Events(in) {
+		lost.WithLabelValues(e)
+	}
 }
 
 func (d *Data) Run(ctx context.Context) {

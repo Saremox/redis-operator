@@ -28,6 +28,7 @@ type Config struct {
 	Probe    Probe    `json:"probe"`
 	Observer Observer `json:"observer"`
 	Mutation Mutation `json:"mutation"`
+	Chaos    Chaos    `json:"chaos"`
 	// Versions and Edges are the server versions in the rotation and the
 	// transition graph between them.
 	Versions  []Version  `json:"versions"`
@@ -36,10 +37,11 @@ type Config struct {
 }
 
 // Operator locates the operator Deployment whose image tag is reported as
-// the operator version.
+// the operator version, and the Lease of its leader.
 type Operator struct {
 	Namespace  string `json:"namespace"`
 	Deployment string `json:"deployment"`
+	Lease      string `json:"lease"`
 }
 
 type Probe struct {
@@ -56,6 +58,16 @@ type Probe struct {
 type Observer struct {
 	Interval           metav1.Duration `json:"interval"`
 	ConvergenceTimeout metav1.Duration `json:"convergenceTimeout"`
+	// ReplicaReadyWithoutData makes a Ready replica that never completed a
+	// sync a finding, as other invariants are; default true. Off, it is
+	// only reported, for operators without the readiness fix.
+	ReplicaReadyWithoutData *bool `json:"replicaReadyWithoutData"`
+}
+
+// ReplicaReadyWithoutDataFinding reports whether replica_ready_without_data
+// counts as a finding.
+func (o Observer) ReplicaReadyWithoutDataFinding() bool {
+	return o.ReplicaReadyWithoutData == nil || *o.ReplicaReadyWithoutData
 }
 
 // Mutation sets how often instances are mutated. A mutation's
@@ -146,6 +158,7 @@ func Load(path string) (*Config, error) {
 			c.Instances[i].Template = filepath.Join(filepath.Dir(path), t)
 		}
 	}
+	c.Chaos.resolveCharts(filepath.Dir(path))
 	return c, nil
 }
 
@@ -167,6 +180,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Operator.Deployment == "" {
 		c.Operator.Deployment = "redis-operator"
+	}
+	if c.Operator.Lease == "" {
+		c.Operator.Lease = "redis-failover-lease"
 	}
 	if c.Probe.Interval.Duration == 0 {
 		c.Probe.Interval.Duration = time.Second
@@ -211,6 +227,7 @@ func (c *Config) setDefaults() {
 			c.Mutation.Timeouts[k] = t
 		}
 	}
+	c.Chaos.setDefaults(c.Observer)
 	for i := range c.Versions {
 		c.Versions[i].setDefaults()
 	}
@@ -270,6 +287,9 @@ func (c *Config) validate() error {
 	if err := c.validateVersions(); err != nil {
 		return err
 	}
+	if err := c.Chaos.validate(); err != nil {
+		return fmt.Errorf("chaos: %w", err)
+	}
 	seen := map[string]bool{}
 	for _, in := range c.Instances {
 		if in.Name == "" || in.Namespace == "" {
@@ -294,6 +314,9 @@ func (c *Config) validate() error {
 			return fmt.Errorf("instance %q: %w", in.Name, err)
 		}
 		if err := in.Mutations.validate(in); err != nil {
+			return fmt.Errorf("instance %q: mutations: %w", in.Name, err)
+		}
+		if err := c.validateFlip(in); err != nil {
 			return fmt.Errorf("instance %q: mutations: %w", in.Name, err)
 		}
 		key := in.Namespace + "/" + in.Name
@@ -334,6 +357,25 @@ func (c *Config) validateTemplate(in Instance) error {
 	}
 	if in.Version != in.Chain.Start[0] {
 		return errors.New("the version of a chain instance is its first start")
+	}
+	return nil
+}
+
+// validateFlip checks that sentinel_image_flip has at least two known
+// versions to flip between.
+func (c *Config) validateFlip(in Instance) error {
+	if _, ok := in.Mutations.Kinds[SentinelImageFlip]; !ok {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, v := range in.Mutations.SentinelImages {
+		if _, ok := c.VersionNamed(v); !ok {
+			return fmt.Errorf("sentinelImages: unknown version %s", v)
+		}
+		seen[v] = true
+	}
+	if len(seen) < 2 {
+		return fmt.Errorf("%s needs at least two sentinelImages", SentinelImageFlip)
 	}
 	return nil
 }

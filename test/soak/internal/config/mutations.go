@@ -42,13 +42,16 @@ const (
 	// Reset deletes the RedisFailover and its volumes, recreates it from
 	// its template on the chain's start, and refills it.
 	Reset Kind = "reset"
+	// SentinelImageFlip changes only the Sentinel image to another of
+	// sentinelImages, e.g. between a Redis and a Valkey version.
+	SentinelImageFlip Kind = "sentinel_image_flip"
 )
 
 var kinds = []Kind{
 	RedisReplicas, SentinelReplicas, RedisResources, KillMaster, KillMasterForce, KillReplica, KillSentinel,
 	RedisMemory, MaxMemoryPolicy, MaxMemoryPercent, FillBurst,
 	PasswordRotate, AuthAdd, AuthRemove, SentinelToggle, PasswordRotateOffline,
-	ImageUpgrade, SentinelImageUpgrade, Reset,
+	ImageUpgrade, SentinelImageUpgrade, Reset, SentinelImageFlip,
 }
 
 // bootstrapKinds are the kinds of a bootstrapping instance, which has no
@@ -66,7 +69,7 @@ func maxMemoryOnly(k Kind) bool {
 }
 
 func sentinelOnly(k Kind) bool {
-	return k == SentinelReplicas || k == KillSentinel
+	return k == SentinelReplicas || k == KillSentinel || k == SentinelImageFlip
 }
 
 // Mutations is an instance's mutation catalogue.
@@ -86,6 +89,9 @@ type Mutations struct {
 	MaxMemoryPercent  Range    `json:"maxMemoryPercent"`
 	// FillBurstHold is how long fill_burst keeps writing past maxmemory.
 	FillBurstHold metav1.Duration `json:"fillBurstHold"`
+	// SentinelImages are the versions sentinel_image_flip changes the
+	// Sentinel image between, by name.
+	SentinelImages []string `json:"sentinelImages"`
 }
 
 // Range is an inclusive range.
@@ -116,6 +122,39 @@ const minMemoryLimitMi = 64
 // Sorted returns the enabled kinds in a fixed order.
 func (m Mutations) Sorted() []Kind {
 	return slices.Sorted(maps.Keys(m.Kinds))
+}
+
+// MutationKinds returns every kind the instance's mutator may run: the
+// enabled ones, and those image_upgrade turns into at the end of a chain.
+func (in Instance) MutationKinds() []Kind {
+	kinds := in.Mutations.Sorted()
+	if _, ok := in.Mutations.Kinds[ImageUpgrade]; ok {
+		if in.Template != "" {
+			kinds = append(kinds, Reset)
+		}
+		if in.Chain != nil && in.Chain.Sentinel == SentinelSeparate {
+			kinds = append(kinds, SentinelImageUpgrade)
+		}
+	}
+	slices.Sort(kinds)
+	return slices.Compact(kinds)
+}
+
+// Events returns every value of an instance's event label: its mutation
+// kinds, the chaos kinds, and failovers, periodic verifications and
+// resets.
+func (c *Config) Events(in Instance) []string {
+	events := []string{EventFailover, EventPeriodic, EventReset}
+	for _, k := range in.MutationKinds() {
+		events = append(events, string(k))
+	}
+	if c.ChaosOn() {
+		for _, k := range c.Chaos.Sorted() {
+			events = append(events, string(k))
+		}
+	}
+	slices.Sort(events)
+	return slices.Compact(events)
 }
 
 func (m Mutations) validate(in Instance) error {

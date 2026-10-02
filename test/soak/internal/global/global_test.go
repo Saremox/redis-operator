@@ -42,20 +42,22 @@ func TestExclusivePausesTheOthers(t *testing.T) {
 
 	running()
 	unlock := acquired(t, exclusive, true, "exclusive after the running mutation")
-	l.SetOperatorDown(true)
-	if !l.OperatorDown() {
-		t.Error("the operator isn't down")
+	l.Disturb("operator stopped")
+	l.SetChaos("operator_restart")
+	if l.Disturbance() != "operator stopped" || l.Chaos() != "operator_restart" {
+		t.Errorf("disturbance %q, chaos %q", l.Disturbance(), l.Chaos())
 	}
 	acquired(t, shared, false, "a mutation during the exclusive one")
-	l.SetOperatorDown(false)
+	l.Disturb("")
+	l.SetChaos("")
 	unlock()
 	acquired(t, shared, true, "a mutation after the exclusive one")()
-	if l.OperatorDown() {
-		t.Error("the operator is still down")
+	if l.Disturbance() != "" || l.Chaos() != "" {
+		t.Errorf("still disturbed: %q, chaos %q", l.Disturbance(), l.Chaos())
 	}
 	var none *Lock
-	if none.OperatorDown() {
-		t.Error("a nil lock has the operator down")
+	if none.Disturbance() != "" || none.Chaos() != "" {
+		t.Error("a nil lock is disturbed")
 	}
 }
 

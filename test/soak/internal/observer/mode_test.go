@@ -215,7 +215,7 @@ func TestOperatorDownWindow(t *testing.T) {
 	o.lock = lock
 	o.apply(at(0), healthy(true), 1, false)
 	o.apply(at(5), healthy(true), 1, false)
-	lock.SetOperatorDown(true)
+	lock.Disturb("operator stopped")
 	s := healthy(true)
 	s.state = redisfailoverv1.NotHealthyState
 	// Longer than the convergence timeout: the window is restarted while
@@ -223,7 +223,7 @@ func TestOperatorDownWindow(t *testing.T) {
 	for i := 2; i < 200; i++ {
 		o.apply(at(5*i), s, 1, false)
 	}
-	lock.SetOperatorDown(false)
+	lock.Disturb("")
 	o.apply(at(1000), s, 1, false)
 	o.apply(at(1005), healthy(true), 1, false)
 	if v := testutil.ToFloat64(o.findings.WithLabelValues(invHealthy)); v != 0 {
@@ -355,5 +355,45 @@ func TestResetEvent(t *testing.T) {
 	o.apply(at(25), s, 1, false)
 	if ev := <-o.Failovers(); ev != config.EventReset {
 		t.Errorf("recreated: %s", ev)
+	}
+}
+
+// TestReplicaReadyWithoutDataReportOnly checks that, switched off as a
+// finding, replica_ready_without_data is still reported but neither a
+// finding nor in the way of a quiet instance.
+func TestReplicaReadyWithoutDataReportOnly(t *testing.T) {
+	stuck := func() snapshot {
+		s := healthy(false)
+		s.redis[1].info["master_link_status"] = "down"
+		s.redis[1].info["master_link_down_since_seconds"] = "-1"
+		return s
+	}
+	for _, finding := range []bool{true, false} {
+		o, _ := newTestObserver(t)
+		o.reportOnly[invReplicaReadyWithoutData] = !finding
+		o.apply(at(0), healthy(false), 1, false)
+		o.apply(at(5), healthy(false), 1, false)
+		o.apply(at(10), stuck(), 1, false)
+		got := testutil.ToFloat64(o.findings.WithLabelValues(invReplicaReadyWithoutData))
+		if want := gauge(finding); got != want {
+			t.Errorf("finding %t: findings = %v, want %v", finding, got, want)
+		}
+		if v := testutil.ToFloat64(o.ok.WithLabelValues(invReplicaReadyWithoutData)); v != 0 {
+			t.Errorf("finding %t: invariant_ok = %v", finding, v)
+		}
+		r := o.Report()
+		if !finding && !slices.Equal(r.Failing, []string{invReplication}) {
+			t.Errorf("report only: failing %v", r.Failing)
+		}
+		if finding && !slices.Contains(r.Failing, invReplicaReadyWithoutData) {
+			t.Errorf("finding: failing %v", r.Failing)
+		}
+		o.apply(at(15), healthy(false), 1, false)
+		if v := testutil.ToFloat64(o.ok.WithLabelValues(invReplicaReadyWithoutData)); v != 1 {
+			t.Errorf("finding %t: invariant_ok = %v after it was restored", finding, v)
+		}
+		if !o.Quiet() || o.Report().At != at(15) {
+			t.Errorf("finding %t: not quiet, or the report isn't the last round's: %+v", finding, o.Report())
+		}
 	}
 }

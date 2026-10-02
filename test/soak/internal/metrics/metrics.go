@@ -32,6 +32,7 @@ type Metrics struct {
 	ReplicationLag     *prometheus.GaugeVec
 	RFHealthy          *prometheus.GaugeVec
 	ServerInfo         *prometheus.GaugeVec
+	WindowOpen         *prometheus.GaugeVec
 
 	MutationTotal      *prometheus.CounterVec
 	MutationConverge   *prometheus.HistogramVec
@@ -49,6 +50,12 @@ type Metrics struct {
 
 	VersionTransition *prometheus.CounterVec
 	VersionMixed      *prometheus.HistogramVec
+
+	ChaosTotal           *prometheus.CounterVec
+	ChaosConverge        *prometheus.HistogramVec
+	ChaosInProgress      *prometheus.GaugeVec
+	ChaosOperatorDown    *prometheus.HistogramVec
+	ChaosEvictionBlocked prometheus.Histogram
 }
 
 // New registers the metrics. Convergence histograms reach up to
@@ -87,9 +94,9 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 		OutageDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: namespace,
 			Name:      "outage_duration_seconds",
-			Help:      "Time from the first failed probe to the next successful one.",
+			Help:      "Time from the first failed probe to the next successful one, by the chaos kind or the instance's mutation kind running when it started, or none.",
 			Buckets:   []float64{0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1800},
-		}, labels("path", "client")),
+		}, labels("path", "client", "event")),
 		BuildInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "build_info",
@@ -136,6 +143,11 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 			Name:      "server_info",
 			Help:      "Always 1. The server and version each redis pod reports in INFO server.",
 		}, labels("pod", "server", "version")),
+		WindowOpen: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "window_open",
+			Help:      "1 while a convergence window is open: violations are expected, not findings.",
+		}, labels()),
 		MutationTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "mutation_total",
@@ -205,16 +217,45 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 		VersionMixed: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: namespace,
 			Name:      "version_mixed_seconds",
-			Help:      "How long an instance ran two versions: from the first pod on the new version until the last pod on the old one was gone.",
+			Help:      "How long an instance ran two versions of its redis or sentinel component: from the first pod on the new version until the last pod on the old one was gone.",
 			Buckets:   []float64{10, 20, 30, 45, 60, 90, 120, 180, 300, 600, 900, 1200, 1800, 3600},
-		}, labels("from", "to")),
+		}, labels("from", "to", "component")),
+		ChaosTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "chaos_total",
+			Help:      "Chaos actions by kind and result: converged, timeout, failed or skipped.",
+		}, []string{"kind", "result"}),
+		ChaosConverge: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "chaos_converge_seconds",
+			Help:      "Time from a chaos action's disruption until every instance converged: a restart's delete, each upgrade's helm upgrade, a drain's cordon.",
+			Buckets:   convergeBuckets(convergenceTimeout),
+		}, []string{"kind"}),
+		ChaosInProgress: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "chaos_in_progress",
+			Help:      "1 while a chaos action of the kind runs.",
+		}, []string{"kind"}),
+		ChaosOperatorDown: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "chaos_operator_down_seconds",
+			Help:      "Time without a leading operator: from the old leader's deletion until a new one acquired the lease.",
+			Buckets:   []float64{1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 300},
+		}, []string{"kind"}),
+		ChaosEvictionBlocked: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "chaos_eviction_blocked_seconds",
+			Help:      "How long a PodDisruptionBudget blocked a drain's eviction of a pod.",
+			Buckets:   []float64{1, 2, 5, 10, 20, 30, 60, 120, 300, 600},
+		}),
 	}
 	reg.MustRegister(
 		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration, m.BuildInfo,
-		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.ServerInfo,
+		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.ServerInfo, m.WindowOpen,
 		m.MutationTotal, m.MutationConverge, m.PodsRecreated, m.MutationInProgress,
 		m.WaitAckedReplicas, m.DatasetKeys, m.UsedMemory, m.MaxMemory, m.OOMRejections, m.EvictedKeys, m.LostWrites, m.LedgerVerified,
 		m.VersionTransition, m.VersionMixed,
+		m.ChaosTotal, m.ChaosConverge, m.ChaosInProgress, m.ChaosOperatorDown, m.ChaosEvictionBlocked,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
