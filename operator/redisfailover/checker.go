@@ -748,8 +748,16 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		// A master whose pod is being deleted is no longer counted but may
 		// still take writes. Wait for it to stop so a promoted replica
 		// doesn't lose them.
-		if stopping, err := r.masterPodStopping(rf); err != nil || stopping {
+		stopping, err := r.masterPodStopping(rf)
+		if err != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: "unable to check whether the master is stopping",
+			}
 			return err
+		}
+		if stopping {
+			return nil
 		}
 		// A master pod that is there but doesn't answer gets failoverTimeout
 		// to come back. Without one, there is nothing to wait for.
@@ -816,8 +824,16 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 			// The master counted above may have started stopping since; then
 			// it is no longer found but may still take writes, as in case 0.
 			if masterIP == "" {
-				if stopping, err := r.masterPodStopping(rf); err != nil || stopping {
+				stopping, err := r.masterPodStopping(rf)
+				if err != nil {
+					rf.Status = redisfailoverv1.RedisFailoverStatus{
+						State:   redisfailoverv1.NotHealthyState,
+						Message: "unable to check whether the master is stopping",
+					}
 					return err
+				}
+				if stopping {
+					return nil
 				}
 			}
 			// A master that was found but doesn't answer gets the timeout.

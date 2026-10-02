@@ -191,3 +191,8 @@ func TestUpdateRedisesPodsKeepsWaitingAcrossErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestRolloutWaitString(t *testing.T) {
+	assert.Equal(t, "pod rfr-test-1 is not ready", (&rolloutWait{pod: "rfr-test-1", reason: "not ready"}).String())
+	assert.Equal(t, "2 of 3 pods exist", (&rolloutWait{reason: "2 of 3 pods exist"}).String())
+}
