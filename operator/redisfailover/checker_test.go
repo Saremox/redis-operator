@@ -1994,11 +1994,17 @@ func TestUpdate(t *testing.T) {
 				mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
 			}
 
+			mk := settledK8sServices()
 			for _, pod := range test.pods {
 				if !pod.master {
 					mrfc.On("CheckRedisSlavesReady", pod.pod.Status.PodIP, rf).Once().Return(pod.ready, nil)
 				}
 				if !pod.ready {
+					// A replica syncing on the update revision is waited for.
+					mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return(test.ssVersion, nil)
+					mrfc.On("GetRedisRevisionHash", pod.pod.Name, rf).Once().Return(pod.pod.Labels[appsv1.ControllerRevisionHashLabelKey], nil)
+					mk = &mK8SService.Services{}
+					mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: []corev1.Pod{pod.pod}}, nil)
 					next = false
 					break
 				}
@@ -2056,8 +2062,6 @@ func TestUpdate(t *testing.T) {
 					}
 				}
 			}
-
-			mk := settledK8sServices()
 
 			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 			err := handler.UpdateRedisesPods(rf)
@@ -2453,4 +2457,96 @@ func TestUpdateRedisesPodsResizeError(t *testing.T) {
 	handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, settledK8sServices(), metrics.Dummy, log.Dummy)
 	assert.EqualError(t, handler.UpdateRedisesPods(rf), "resize err")
 	mrfh.AssertExpectations(t)
+}
+
+// A replica on a stale revision that can't sync, e.g. after reverting an image
+// its replica can't sync with, is replaced instead of being waited for.
+func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
+	type redis struct {
+		name, ip, revision string
+		synced             bool
+	}
+	master := redis{name: "master", ip: "10.0.0.1", revision: "new"}
+	tests := []struct {
+		name       string
+		redises    []redis
+		noMaster   bool
+		unsettled  bool
+		wantDelete string
+	}{
+		{
+			name:       "an unsynced stale replica is replaced",
+			redises:    []redis{master, {"r1", "10.0.0.2", "new", true}, {"r2", "10.0.0.3", "old", false}},
+			wantDelete: "r2",
+		},
+		{
+			name:       "unsynced stale replicas go before synced ones",
+			redises:    []redis{master, {"r1", "10.0.0.2", "old", true}, {"r2", "10.0.0.3", "old", false}},
+			wantDelete: "r2",
+		},
+		{
+			name:    "a replica syncing on the update revision is waited for",
+			redises: []redis{master, {"r1", "10.0.0.2", "old", true}, {"r2", "10.0.0.3", "new", false}},
+		},
+		{
+			name:    "a replica syncing on the update revision is waited for before an unsynced stale one is replaced",
+			redises: []redis{master, {"r1", "10.0.0.2", "old", false}, {"r2", "10.0.0.3", "new", false}},
+		},
+		{
+			name:     "the master is never replaced",
+			redises:  []redis{{"master", "10.0.0.1", "old", false}, {"r1", "10.0.0.2", "new", true}, {"r2", "10.0.0.3", "new", true}},
+			noMaster: true,
+		},
+		{
+			name:      "the last replacement has to settle first",
+			redises:   []redis{master, {"r1", "10.0.0.2", "new", true}, {"r2", "10.0.0.3", "old", false}},
+			unsettled: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := operatorManagedRF()
+			rf.Spec.Redis.Replicas = int32(len(test.redises))
+			if test.unsettled {
+				rf.Spec.Redis.Replicas++
+			}
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mk := &mK8SService.Services{}
+			masterIP := master.ip
+			if test.noMaster {
+				masterIP = ""
+			}
+			ips, replicas, pods := []string{}, []string{}, []corev1.Pod{}
+			for _, r := range test.redises {
+				ips = append(ips, r.ip)
+				if r.name != "master" {
+					replicas = append(replicas, r.name)
+				}
+				if r.ip != masterIP {
+					mrfc.On("CheckRedisSlavesReady", r.ip, rf).Maybe().Return(r.synced, nil)
+				}
+				mrfc.On("GetRedisRevisionHash", r.name, rf).Maybe().Return(r.revision, nil)
+				pod := redisPod(r.revision, true, false)
+				pod.Name = r.name
+				pod.Status.PodIP = r.ip
+				pods = append(pods, pod)
+			}
+			mrfc.On("GetRedisesIPs", rf).Once().Return(ips, nil)
+			mrfc.On("GetMasterIP", rf).Once().Return(masterIP, nil)
+			mrfc.On("GetStatefulSetUpdateRevision", rf).Maybe().Return("new", nil)
+			mrfc.On("GetRedisesSlavesPods", rf).Maybe().Return(replicas, nil)
+			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Maybe().Return(&corev1.PodList{Items: pods}, nil)
+			// Any other DeletePod would panic the mock.
+			if test.wantDelete != "" {
+				mrfh.On("ResizePodInPlace", rf, test.wantDelete, "new").Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
+				mrfh.On("DeletePod", test.wantDelete, rf).Once().Return(nil)
+			}
+
+			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+			assert.NoError(t, handler.UpdateRedisesPods(rf))
+			mrfh.AssertExpectations(t)
+		})
+	}
 }

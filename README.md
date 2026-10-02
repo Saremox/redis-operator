@@ -429,7 +429,7 @@ The image versions deployed by the operator can be found on the [defaults file](
 
 Valkey images ship `redis-server` and `redis-cli`, so switching `redis.image` and `sentinel.image` to a Valkey image is an ordinary rolling update.
 
-Migrate from Redis 7.2 only. Valkey forked from Redis 7.2 and can't load the data of Redis 7.4 or later (`Can't handle RDB format version 12`). The first replica on Valkey then never syncs, so the operator doesn't replace the master: the RedisFailover keeps running on Redis, but the rollout never completes.
+Migrate from Redis 7.2 only. Valkey forked from Redis 7.2 and can't load the data of Redis 7.4 or later (`Can't handle RDB format version 12`). The first replica on Valkey then never syncs, so the operator doesn't replace the master: the RedisFailover keeps running on Redis, but the rollout never completes. Revert `redis.image` to end it: a replica that isn't synced and isn't on the current spec has no data to lose, so the operator replaces it without waiting for it to sync.
 ## Cleanup
 
 ### Operator and CRD

@@ -31,6 +31,14 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 		r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("masterIP", masterIP).Debug("got master IP")
 	}
 	// No performed updates when nodes are syncing, still not connected, etc.
+	// A replica that isn't synced but is on a stale revision is the exception:
+	// it has nothing the master lacks and is due for replacement anyway, e.g. a
+	// replica that can't load the master's RDB after a reverted image change.
+	// It is replaced first instead of being waited for forever. Its
+	// replacement is on the update revision, so it is waited for.
+	ssUR := ""
+	var podNames map[string]string
+	var unsyncedStale []string
 	for _, rip := range redises {
 		if rip != masterIP {
 			ready, err := r.rfChecker.CheckRedisSlavesReady(rip, rf)
@@ -38,21 +46,49 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			if err != nil {
 				return err
 			}
-			if !ready {
+			if ready {
+				continue
+			}
+			// Without a known master, rip may be the master.
+			if masterIP == "" && !rf.Bootstrapping() {
 				return nil
 			}
+			if podNames == nil {
+				if ssUR, err = r.rfChecker.GetStatefulSetUpdateRevision(rf); err != nil {
+					return err
+				}
+				if podNames, err = r.redisPodNamesByIP(rf); err != nil {
+					return err
+				}
+			}
+			pod, ok := podNames[rip]
+			if !ok {
+				return nil
+			}
+			revision, err := r.rfChecker.GetRedisRevisionHash(pod, rf)
+			if err != nil {
+				return err
+			}
+			if revision == ssUR {
+				return nil
+			}
+			unsyncedStale = append(unsyncedStale, pod)
 		}
 	}
 
-	ssUR, err := r.rfChecker.GetStatefulSetUpdateRevision(rf)
-	if err != nil {
-		return err
+	if podNames == nil {
+		if ssUR, err = r.rfChecker.GetStatefulSetUpdateRevision(rf); err != nil {
+			return err
+		}
 	}
 	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("ssUR", ssUR).Debug("got StatefulSet update revision")
 
-	redisesPods, err := r.rfChecker.GetRedisesSlavesPods(rf)
-	if err != nil {
-		return err
+	redisesPods := unsyncedStale
+	if len(redisesPods) == 0 {
+		redisesPods, err = r.rfChecker.GetRedisesSlavesPods(rf)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Update stale pods with a slave role
@@ -140,6 +176,21 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 	}
 
 	return nil
+}
+
+// redisPodNamesByIP maps the IPs of the redis pods to their names.
+func (r *RedisFailoverHandler) redisPodNamesByIP(rf *redisfailoverv1.RedisFailover) (map[string]string, error) {
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]string{}
+	for _, pod := range pods.Items {
+		if pod.Status.PodIP != "" && pod.DeletionTimestamp == nil {
+			names[pod.Status.PodIP] = pod.Name
+		}
+	}
+	return names, nil
 }
 
 // resizeInPlace tries to move a stale pod to the update revision without
