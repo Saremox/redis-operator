@@ -283,6 +283,20 @@ func TestSentinelSwitchedOff(t *testing.T) {
 	if !o.SentinelPath() {
 		t.Error("no Sentinel path after the Sentinels agree")
 	}
+	// A recreated RedisFailover drops the path for a round, so its
+	// clients reach the new Sentinels afresh.
+	s = healthy(true)
+	s.uid = "rf1"
+	o.apply(at(1012), s, 4, false)
+	s.uid = "rf2"
+	o.apply(at(1015), s, 1, false)
+	if o.SentinelPath() {
+		t.Error("Sentinel path kept on a recreated RedisFailover")
+	}
+	o.apply(at(1020), s, 1, false)
+	if !o.SentinelPath() {
+		t.Error("no Sentinel path after the new Sentinels agree")
+	}
 }
 
 func hasSeries(t *testing.T, reg *prometheus.Registry, name, label, value string) bool {

@@ -209,7 +209,8 @@ func (o *Observer) MasterAddr() string {
 }
 
 // SentinelPath reports whether the instance's Sentinels were all Ready and
-// agreed on the master since its mode last changed to Sentinel.
+// agreed on the master since its mode last changed to Sentinel, or it was
+// recreated.
 func (o *Observer) SentinelPath() bool {
 	v := o.view.Load()
 	return v != nil && v.sentinelPath
@@ -474,12 +475,18 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 	o.externalWindow(now)
 	checks := evaluate(s)
 	o.dropInvariants(checks)
+	// A recreated RedisFailover has new Sentinels behind a new Service: its
+	// Sentinel path is dropped, with its clients, for a round at least.
+	recreated := o.rfUID != "" && o.rfUID != s.uid
+	if recreated {
+		o.sentinelUp = false
+	}
 	allOK := true
 	for _, c := range checks {
 		o.ok.WithLabelValues(c.invariant).Set(gauge(c.err == nil))
 		allOK = allOK && c.err == nil
 		// The Sentinel Service routes to Ready pods only.
-		if c.invariant == invSentinelAgreement && c.err == nil &&
+		if c.invariant == invSentinelAgreement && c.err == nil && !recreated &&
 			podsReady("sentinel", sentinelPods(s), s.sentinelReplicas) == nil {
 			o.sentinelUp = true
 		}

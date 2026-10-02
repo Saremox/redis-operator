@@ -29,7 +29,9 @@ For every configured instance it probes the master once per
 The paths follow the RedisFailover's `sentinel.enabled`, not the config:
 `sentinel` is added once the Sentinels are all Ready and agree on the
 master after the mode changed to Sentinel, and removed, with its series,
-as soon as the mode is no longer Sentinel. A path's probes start from scratch when it is added.
+as soon as the mode is no longer Sentinel, or the RedisFailover was
+recreated by a `reset`: its new Sentinels sit behind a new Service. A
+path's probes start from scratch when it is added.
 
 Each path is probed with four client styles:
 
@@ -96,7 +98,9 @@ For every instance with a `data` section:
   every `ledger.verifyInterval` without either (`periodic`). A failover
   that loses the data by design is a `reset`: a kill of the only pod of an
   instance without a PersistentVolumeClaim, by the mutator or anything
-  else, or a recreated RedisFailover. Each is
+  else, or a recreated RedisFailover. A `reset` mutation forgets every
+  write acknowledged before it recreated the instance, so its
+  verification counts only the writes since, which must all be there. Each is
   logged as `data verified` with `event`, `step`, whether the master
   changed since the previous one (`failover`), the keys checked and
   `lost`.
