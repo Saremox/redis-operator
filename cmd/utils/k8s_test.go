@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The client constructors don't dial, so an unreachable server is enough.
+// The client constructors do not connect, so any server address is sufficient.
 const testKubeConfig = `apiVersion: v1
 kind: Config
 clusters:

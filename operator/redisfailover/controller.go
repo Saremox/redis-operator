@@ -37,9 +37,8 @@ type Handler interface {
 // rfController reconciles RedisFailovers from one queue keyed by RedisFailover.
 // Events on a RedisFailover's pods queue that RedisFailover, so a pod change
 // (deleted, recreated, ready) drives the next reconcile without waiting for
-// the resync. With a Secret watch, events on the Secret named by a
-// RedisFailover's spec.auth.secretPath queue that RedisFailover too, so a
-// password change is applied right away.
+// the resync. With a Secret watch, an auth Secret event also queues its
+// RedisFailovers.
 type rfController struct {
 	handler        Handler
 	rfInformer     cache.SharedIndexInformer
@@ -112,8 +111,8 @@ func podMetadataOnly(obj any) (any, error) {
 	}}, nil
 }
 
-// secretKeyOnly keeps only what the secret cache needs: the key, and the
-// resource version that tells a change from a relist.
+// secretKeyOnly keeps only the key and the resource version, because the
+// cache holds every Secret in the cluster.
 func secretKeyOnly(obj any) (any, error) {
 	secret, ok := obj.(*metav1.PartialObjectMetadata)
 	if !ok {
@@ -127,7 +126,7 @@ func secretKeyOnly(obj any) (any, error) {
 	}}, nil
 }
 
-// authSecretIndex indexes RedisFailovers by the key of their auth Secret.
+// authSecretIndex lets a Secret event find its RedisFailovers without a scan.
 const authSecretIndex = "authSecret"
 
 func authSecretKey(obj any) ([]string, error) {
@@ -192,8 +191,9 @@ func (c *rfController) eventHandler(keyOf func(any) (string, bool)) cache.Resour
 	}
 }
 
-// secretEventHandler queues the RedisFailovers, among those this operator
-// handles, whose auth Secret changed.
+// secretEventHandler queues each RedisFailover that uses the changed Secret.
+// The RedisFailover informer holds only supported namespaces, so other
+// Secrets queue nothing.
 func (c *rfController) secretEventHandler() cache.ResourceEventHandler {
 	enqueue := func(obj any) {
 		key, ok := rfKey(obj)
@@ -208,7 +208,7 @@ func (c *rfController) secretEventHandler() cache.ResourceEventHandler {
 	return cache.ResourceEventHandlerFuncs{
 		AddFunc: enqueue,
 		UpdateFunc: func(old, obj any) {
-			// A relist redelivers unchanged Secrets.
+			// A relist sends unchanged Secrets again.
 			if old.(*metav1.PartialObjectMetadata).ResourceVersion != obj.(*metav1.PartialObjectMetadata).ResourceVersion {
 				enqueue(obj)
 			}
@@ -242,8 +242,8 @@ func (c *rfController) run(ctx context.Context) error {
 	if c.secretInformer != nil {
 		go c.secretInformer.RunWithContext(ctx)
 	}
-	// Pod and Secret events only speed reconciles up, so a watch that can't sync
-	// (e.g. RBAC) must not block reconciling.
+	// Pod and Secret events only make reconciles faster, so a watch that cannot
+	// sync (for example, without RBAC access) must not block them.
 	// The wait only fails once ctx is done, i.e. on shutdown.
 	if !cache.WaitForNamedCacheSyncWithContext(ctx, c.rfInformer.HasSynced) {
 		c.logger.Infof("controller stopped before its cache synced")
@@ -316,8 +316,8 @@ func newPodListWatch(k8sClient kubernetes.Interface) *cache.ListWatch {
 	}
 }
 
-// newSecretListWatch lists and watches the metadata of every Secret, so no
-// Secret data is transferred or cached.
+// newSecretListWatch requests only metadata, so the operator does not receive
+// Secret data. No selector can find only the auth Secrets, so it watches all.
 func newSecretListWatch(metaClient metadata.Interface) *cache.ListWatch {
 	secrets := metaClient.Resource(corev1.SchemeGroupVersion.WithResource("secrets"))
 	return &cache.ListWatch{

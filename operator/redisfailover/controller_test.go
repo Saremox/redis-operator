@@ -193,8 +193,8 @@ func TestRFControllerSecretEventsReconcileTheRedisFailoversUsingIt(t *testing.T)
 	require.NoError(t, err)
 	require.Eventually(t, func() bool { return h.countFor("ns/a") == 3 && h.countFor("ns/b") == 3 }, 5*time.Second, 10*time.Millisecond)
 
-	// Neither is any RedisFailover's auth Secret. Events arrive in order, so
-	// once c is reconciled these were handled.
+	// No RedisFailover uses the first two Secrets. Events arrive in order, so
+	// the reconcile of c shows that the handler saw them.
 	_, err = secrets("ns").CreateFake(secret("ns", "unrelated", "3"), metav1.CreateOptions{})
 	require.NoError(t, err)
 	_, err = secrets("other-ns").CreateFake(secret("other-ns", "auth", "4"), metav1.CreateOptions{})
