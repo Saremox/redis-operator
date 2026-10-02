@@ -228,6 +228,22 @@ This behavior is configurable, creating a configmap and indicating to use it. An
 
 **Important**: the configmap has to be in the same namespace. The configmap has to have a `shutdown.sh` data, containing the script.
 
+### Sentinel failover and write loss
+
+Sentinel does not stop writes on the old master in a failover. If the old master still runs, it accepts writes until Sentinel makes it a replica. With the default timings, this occurs about 10 seconds after the promotion. The old master then copies the data of the new master, and the writes that it acknowledged in that interval are lost. The interval ends earlier if the operator moves the master label or makes the old master a replica first. In a test on kind, a `SENTINEL FAILOVER` lost 11 seconds of writes through `rfrm-<NAME>`.
+
+The default shutdown script does not cause this loss when the master pod is deleted. The script cannot reach Sentinel, because the pods do not get the `RFS_<NAME>_SERVICE_*` variables (`enableServiceLinks: false`). Thus no failover starts before Redis stops. Redis stops at the end of the script or of the grace period, and it waits for its replicas first. Sentinel then promotes a replica. In 3 deletions and 1 pod update on kind, no acknowledged write was lost, and clients got write errors for about 7 to 13 seconds.
+
+A shutdown script that requests a failover before Redis stops causes the loss. In the test, the default script with the Sentinel address added lost 8 seconds and 0.1 seconds of writes through `rfrm-<NAME>`, in 2 deletions.
+
+To lose fewer writes:
+
+- Use a Sentinel client. It gets the new master from Sentinel, and lost 1 to 6 seconds of writes in the tests, not 11 seconds.
+- Use `WAIT` for writes that must not be lost. On the old master, `WAIT 1 <timeout>` returns `0`, because its replicas replicate from the new master.
+- Set `min-replicas-to-write 1` in `redis.customConfig`. The old master then refuses writes when its replicas disconnect. In a test with plain Redis, this reduced the loss from 11 seconds to 0.9 seconds. The master also refuses writes when no replica is connected.
+
+**Known limitation**: the wait for a master pod that stops finds the pod by its `redisfailovers-role=master` label. The operator sets this label only after it counts exactly one master. Sentinel can promote a pod that already stops. An example is a scale-down from 3 to 1 that removes two pods at the same time (`Parallel` pod management). That pod does not have the label yet, so nothing waits for it.
+
 ### Custom SecurityContext
 
 By default, Kubernetes will run containers as the user specified in the Dockerfile (or the root user if not specified); this is not always desirable.
