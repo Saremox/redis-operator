@@ -54,6 +54,8 @@ kubectl replace -f https://raw.githubusercontent.com/Saremox/redis-operator/${RE
 ```
 helm upgrade redis-operator redis-operator/redis-operator
 ```
+
+The CRD enables the `status` subresource, so status updates no longer bump an RF's `metadata.generation`. When upgrading from a release without it, update the CRD and the operator together (with Helm, kubectl or kustomize): an older operator's status writes are dropped against the new CRD, and the new operator's status writes fail against the old one. Existing RFs keep their status.
 ### Using kubectl
 
 To create the operator, you can directly create it with kubectl:
@@ -207,6 +209,10 @@ Keys set in `customConfig` take precedence; `replica-ignore-maxmemory no` is rej
 `maxmemory` follows the smallest redis pod, as replicas hold the whole dataset and any of them can be promoted: a raised limit applies once every pod runs with it, a lowered one before the pods are replaced. `maxmemory` is only lowered below the memory in use under an `allkeys-*` policy, as `volatile-*` could evict every key with a TTL and still not fit; otherwise it is kept and the reason is in the status message. Until the data fits, the operator does not replace pods with the smaller limit. Pods recreated for other reasons, e.g. a node drain, get the smaller limit anyway.
 
 For small instances, the default `client-output-buffer-limit` for `pubsub` (32mb) and `replica` (256mb) can exceed the free part of the limit; lower them with `customConfig`. Replicas buffer a whole `MULTI`/`EXEC` or `EVAL` before applying it, so one large batch can get a replica OOM-killed.
+
+### Pod updates
+
+A changed spec replaces the redis pods one at a time, replicas first and the master last, each once the previous one is ready and every replica is synced with the master. When the rollout waits on the same pod for more than 10 minutes, e.g. on a new image that can't load the master's data, the status message names the pod and the reason, e.g. `rollout waiting on pod rfr-<NAME>-1 for more than 10m: not synced with the master`. The state stays `Healthy`, as the master still serves, and the message clears once the rollout moves on.
 
 ### In-place resize
 
@@ -362,6 +368,8 @@ url: rfrm-<NAME>
 port: <redis-port> # defaults to 6379
 ```
 
+Reads can also go to the replicas through `rfrs-<NAME>`. A replica is ready, and so behind that service, only while it has the master's data. It is not ready during a full sync, until its first sync since it started has completed (a replica that can't load the master's RDB format never gets there), and once its link to the master has been down for longer than the failover can take: 60 seconds plus `spec.sentinel.failoverTimeout` without Sentinel, or plus Sentinel's `down-after-milliseconds` and `failover-timeout` (from `spec.sentinel.customConfig`) with it. So the replicas stay ready through a failover.
+
 ### Enabling redis auth
 
 To enable auth, create a secret with a password field:
@@ -424,6 +432,12 @@ When `allowSentinels` is provided and `spec.sentinel.enabled` is `true`, the Ope
 ### Default versions
 
 The image versions deployed by the operator can be found on the [defaults file](api/redisfailover/v1/defaults.go).
+
+### Migrating to Valkey
+
+Valkey images ship `redis-server` and `redis-cli`, so switching `redis.image` and `sentinel.image` to a Valkey image is an ordinary rolling update.
+
+Migrate from Redis 7.2 only. Valkey forked from Redis 7.2 and can't load the data of Redis 7.4 or later (`Can't handle RDB format version 12`). The first replica on Valkey then never syncs, so the operator doesn't replace the master: the RedisFailover keeps running on Redis, but the rollout never completes.
 ## Cleanup
 
 ### Operator and CRD
