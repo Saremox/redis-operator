@@ -227,6 +227,11 @@ func (c *rfController) enqueue(key string) {
 	c.queue.Add(key)
 }
 
+// enqueueAfter uses a timer, because the queue has no delay.
+func (c *rfController) enqueueAfter(key string, d time.Duration) {
+	time.AfterFunc(d, func() { c.enqueue(key) })
+}
+
 // Run satisfies Controller.
 func (c *rfController) Run(ctx context.Context) error {
 	if c.leRunner == nil {

@@ -12,7 +12,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// PodDisruptionBudget the ServiceAccount service that knows how to interact with k8s to manage them
+// PodDisruptionBudget the PodDisruptionBudget service that knows how to interact with k8s to manage them
 type PodDisruptionBudget interface {
 	GetPodDisruptionBudget(namespace string, name string) (*policyv1.PodDisruptionBudget, error)
 	CreatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error

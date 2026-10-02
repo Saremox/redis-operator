@@ -35,7 +35,8 @@ fullnameOverride: ""
 namespace: null
 
 serviceAccount:
-  # Enable service account creation.
+  # true creates the ServiceAccount, the ClusterRole and the ClusterRoleBinding.
+  # false skips all three. You must then give the operator its RBAC permissions.
   create: true
   # Annotations to be added to the service account.
   annotations: {}
@@ -88,7 +89,8 @@ watchAuthSecrets: false
 ### Monitoring
 ###############
 monitoring:
-  # Enable Prometheus PodMonitor to monitor the operator.
+  # Create a metrics Service for the operator, and with serviceMonitor, a
+  # Prometheus ServiceMonitor.
   enabled: false
   serviceMonitor: false
   serviceAnnotations: {}
@@ -119,16 +121,15 @@ crds:
   # operator ignoring your changes rather than a stale CRD.
   #
   # Enabling this runs `kubectl apply` on the CRD bundled with this chart
-  # version as a pre-install/pre-upgrade Helm hook, using the operator's own
-  # ServiceAccount (which already needs customresourcedefinitions RBAC for
-  # the operator itself). Disabled by default because it grants a Helm hook
-  # Job permission to modify a cluster-scoped resource - review before
-  # enabling on a shared cluster.
+  # version as a pre-install/pre-upgrade Helm hook. The hook Job has its own
+  # ServiceAccount and ClusterRole, not the operator's. Disabled by default
+  # because it grants a Helm hook Job permission to modify a cluster-scoped
+  # resource - review before enabling on a shared cluster.
   upgradeHook:
     enabled: false
     image:
       repository: rancher/kubectl
-      # Defaults to a kubectl release tracking this chart's kubeVersion.
+      # Defaults to v1.36.2.
       tag: ""
       pullPolicy: IfNotPresent
     # Resource requests and limits for the hook Job's container.

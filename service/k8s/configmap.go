@@ -12,7 +12,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// ConfigMap the ServiceAccount service that knows how to interact with k8s to manage them
+// ConfigMap the ConfigMap service that knows how to interact with k8s to manage them
 type ConfigMap interface {
 	GetConfigMap(namespace string, name string) (*corev1.ConfigMap, error)
 	CreateConfigMap(namespace string, configMap *corev1.ConfigMap) error

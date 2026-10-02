@@ -8,7 +8,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// Service is the K8s service entrypoint.
+// Services is the K8s service entrypoint.
 type Services interface {
 	ConfigMap
 	Secret
