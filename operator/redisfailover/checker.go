@@ -332,6 +332,11 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 
 	switch nMasters {
 	case 0:
+		// As in operator-managed mode: a stopping master may still take
+		// writes, and its shutdown script asks Sentinel to fail over.
+		if stopping, err := r.masterPodStopping(rf); err != nil || stopping {
+			return err
+		}
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no masters detected"))
 		//when number of redis replicas is 1 , the redis is configured for standalone master mode
 		//Configure to master
