@@ -263,18 +263,21 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	name := GetRedisShutdownConfigMapName(rf)
 	port := rf.Spec.Redis.Port
 	namespace := rf.Namespace
-	rfName := strings.ReplaceAll(strings.ToUpper(rf.Name), "-", "_")
 
 	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
 	// Runs as the preStop hook under /bin/sh, which is BusyBox ash on the
 	// alpine redis images, so this has to stay POSIX: no "let", no "[[ ]]".
 	// A single failed sentinel query used to be enough to skip the failover
 	// and shut the master down anyway, so both sentinel calls are retried.
-	shutdownContent := fmt.Sprintf(`master=""
+	// The redis pods have no service links, so the script finds Sentinel
+	// through the DNS name of the Sentinel Service.
+	shutdownContent := ""
+	if rf.SentinelsAllowed() {
+		shutdownContent = fmt.Sprintf(`master=""
 retries=0
 while [ -z "$master" ] && [ "$retries" -lt 3 ]; do
 	retries=$((retries + 1))
-	master=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+	master=$(redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
 	if [ -z "$master" ]; then
 		sleep 3
 	fi
@@ -287,7 +290,7 @@ if [ "$master" = "$(hostname -i)" ]; then
   retries=0
   while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ]; do
   	retries=$((retries + 1))
-  	failover=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} SENTINEL failover mymaster)
+  	failover=$(redis-cli -h %[1]v -p 26379 SENTINEL failover mymaster)
   	if [ "$failover" != "OK" ]; then
   		sleep 3
   	fi
@@ -297,12 +300,14 @@ if [ "$master" = "$(hostname -i)" ]; then
   fi
   sleep 31
 fi
-cmd="redis-cli -p %[2]v"
+`, GetSentinelName(rf))
+	}
+	shutdownContent += fmt.Sprintf(`cmd="redis-cli -p %v"
 if [ ! -z "${REDIS_PASSWORD}" ]; then
 	export REDISCLI_AUTH=${REDIS_PASSWORD}
 fi
 save_command="${cmd} save"
-eval $save_command`, rfName, port)
+eval $save_command`, port)
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{

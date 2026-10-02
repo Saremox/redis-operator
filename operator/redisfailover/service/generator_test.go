@@ -1130,6 +1130,7 @@ func TestRedisShutdownConfigMapRetries(t *testing.T) {
 	assert := assert.New(t)
 
 	rf := generateRF()
+	rf.Spec.Sentinel.Enabled = ptr.To(true)
 
 	var script string
 	ms := &mK8SService.Services{}
@@ -3286,28 +3287,64 @@ sentinel parallel-syncs mymaster 2`
 // ---------------------------------------------------------------------------
 
 func TestEnsureRedisShutdownConfigMapGenerated(t *testing.T) {
-	assert := assert.New(t)
-	rf := generateRF()
-	rf.Name = "my-redis"
-	rf.Spec.Redis.Port = 6379
+	tests := []struct {
+		name         string
+		sentinel     *bool
+		bootstrap    *redisfailoverv1.BootstrapSettings
+		wantSentinel bool
+	}{
+		{name: "sentinel enabled", sentinel: ptr.To(true), wantSentinel: true},
+		{name: "sentinel disabled", sentinel: ptr.To(false)},
+		{name: "sentinel unset", sentinel: nil},
+		{
+			name:         "bootstrap with sentinels allowed",
+			sentinel:     ptr.To(true),
+			bootstrap:    &redisfailoverv1.BootstrapSettings{Host: "127.0.0.1", AllowSentinels: true},
+			wantSentinel: true,
+		},
+		{
+			name:      "bootstrap without sentinels",
+			sentinel:  ptr.To(true),
+			bootstrap: &redisfailoverv1.BootstrapSettings{Host: "127.0.0.1"},
+		},
+	}
 
-	var gotCM *corev1.ConfigMap
-	ms := &mK8SService.Services{}
-	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
-		gotCM = args.Get(1).(*corev1.ConfigMap)
-	}).Return(nil)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF()
+			rf.Name = "my-redis"
+			rf.Spec.Redis.Port = 6379
+			rf.Spec.Sentinel.Enabled = test.sentinel
+			rf.Spec.BootstrapNode = test.bootstrap
 
-	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-	err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
+			var gotCM *corev1.ConfigMap
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				gotCM = args.Get(1).(*corev1.ConfigMap)
+			}).Return(nil)
 
-	assert.NoError(err)
-	if assert.NotNil(gotCM) {
-		content := gotCM.Data["shutdown.sh"]
-		// rf.Name "my-redis" is upper-cased and its dashes replaced with
-		// underscores to build the RFS_<NAME>_SERVICE_* env var names.
-		assert.Contains(content, "RFS_MY_REDIS_SERVICE_HOST")
-		assert.Contains(content, "RFS_MY_REDIS_SERVICE_PORT_SENTINEL")
-		assert.Contains(content, "redis-cli -p 6379")
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
+
+			assert.NoError(err)
+			if assert.NotNil(gotCM) {
+				content := gotCM.Data["shutdown.sh"]
+				// The redis pods have no service links, so the script must
+				// not depend on the RFS_<NAME>_SERVICE_* variables.
+				assert.NotContains(content, "RFS_")
+				assert.Contains(content, "redis-cli -p 6379")
+				assert.True(strings.HasSuffix(content, "eval $save_command"))
+				if test.wantSentinel {
+					assert.Contains(content, "redis-cli -h rfs-my-redis -p 26379 --csv SENTINEL get-master-addr-by-name mymaster")
+					assert.Contains(content, "redis-cli -h rfs-my-redis -p 26379 SENTINEL failover mymaster")
+				} else {
+					assert.NotContains(content, "SENTINEL")
+					assert.NotContains(content, "26379")
+					assert.True(strings.HasPrefix(content, `cmd="redis-cli -p 6379"`))
+				}
+			}
+		})
 	}
 }
 
