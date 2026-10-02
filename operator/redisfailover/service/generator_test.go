@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -2600,7 +2601,7 @@ func TestRedisCustomLivenessProbe(t *testing.T) {
 						Command: []string{
 							"sh",
 							"-c",
-							"redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep PONG",
+							"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep PONG",
 						},
 					},
 				},
@@ -2680,7 +2681,7 @@ func TestSentinelCustomLivenessProbe(t *testing.T) {
 						Command: []string{
 							"sh",
 							"-c",
-							"redis-cli -h $(hostname) -p 26379 ping",
+							"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 ping",
 						},
 					},
 				},
@@ -3367,8 +3368,13 @@ func TestEnsureRedisReadinessConfigMap(t *testing.T) {
 }
 
 // TestRedisReadinessScript runs ready.sh against a fake redis-cli that prints
-// INFO replication as Redis 7.2-8 and Valkey 8-9 report it.
+// INFO replication as Redis 7.2-8 and Valkey 8-9 report it, or hangs like a
+// frozen server that accepts the connection but never replies. Each case runs
+// with and without timeout on PATH.
 func TestRedisReadinessScript(t *testing.T) {
+	if _, err := exec.LookPath("timeout"); err != nil {
+		t.Skip("timeout is not installed")
+	}
 	replica := func(fields ...string) string {
 		return strings.Join(append([]string{"# Replication", "role:slave"}, fields...), "\r\n") + "\r\n"
 	}
@@ -3417,6 +3423,10 @@ func TestRedisReadinessScript(t *testing.T) {
 			info:  replica("master_host:10.0.0.1", "master_link_status:down", "master_last_io_seconds_ago:-1", "master_sync_in_progress:0", "master_link_down_since_seconds:71"),
 			ready: false,
 		},
+		{
+			name:  "frozen server",
+			ready: false,
+		},
 	}
 
 	rf := generateRF()
@@ -3431,19 +3441,110 @@ func TestRedisReadinessScript(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "ready.sh")
 	require.NoError(t, os.WriteFile(script, []byte(gotCM.Data["ready.sh"]), 0o644))
-	fakeCLI := "#!/bin/sh\ncat \"$FAKE_INFO\"\n"
+	fakeCLI := "#!/bin/sh\n[ -s \"$FAKE_INFO\" ] || exec sleep 10\ncat \"$FAKE_INFO\"\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "redis-cli"), []byte(fakeCLI), 0o755))
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			info := filepath.Join(t.TempDir(), "info")
-			require.NoError(t, os.WriteFile(info, []byte(test.info), 0o644))
+	// An image with the script's other tools but no timeout.
+	bare := t.TempDir()
+	for _, tool := range []string{"sh", "xargs", "grep", "tr", "cut", "cat", "sleep"} {
+		p, err := exec.LookPath(tool)
+		require.NoError(t, err)
+		require.NoError(t, os.Symlink(p, filepath.Join(bare, tool)))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(bare, "redis-cli"), []byte(fakeCLI), 0o755))
 
-			cmd := exec.Command("sh", script)
-			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "FAKE_INFO="+info)
-			out, err := cmd.CombinedOutput()
-			assert.Equal(t, test.ready, err == nil, "ready.sh output: %s", out)
-		})
+	paths := []struct{ name, path string }{
+		{"", dir + ":" + os.Getenv("PATH")},
+		{", without timeout", bare},
+	}
+	for _, test := range tests {
+		for _, p := range paths {
+			// Without timeout a frozen server still hangs the script.
+			if test.info == "" && p.name != "" {
+				continue
+			}
+			t.Run(test.name+p.name, func(t *testing.T) {
+				info := filepath.Join(t.TempDir(), "info")
+				require.NoError(t, os.WriteFile(info, []byte(test.info), 0o644))
+
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, "sh", script)
+				cmd.Env = append(os.Environ(), "PATH="+p.path, "FAKE_INFO="+info)
+				cmd.WaitDelay = time.Second
+				start := time.Now()
+				out, err := cmd.CombinedOutput()
+				assert.Equal(t, test.ready, err == nil, "ready.sh output: %s", out)
+				// The kubelet's probe timeout is 5s, and some runtimes don't
+				// enforce it while a child still holds the output open.
+				assert.Less(t, time.Since(start), 5*time.Second, "ready.sh must finish within the probe timeout")
+			})
+		}
+	}
+}
+
+// TestLivenessProbeCommands runs the default Redis and Sentinel liveness
+// commands against a fake redis-cli that answers PONG or hangs like a frozen
+// server, with and without timeout on PATH.
+func TestLivenessProbeCommands(t *testing.T) {
+	if _, err := exec.LookPath("timeout"); err != nil {
+		t.Skip("timeout is not installed")
+	}
+
+	probes := map[string]*corev1.Probe{}
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Return(nil, nil)
+	ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Return(nil)
+	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		probes["redis"] = args.Get(1).(*appsv1.StatefulSet).Spec.Template.Spec.Containers[0].LivenessProbe
+	}).Return(nil)
+	ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		probes["sentinel"] = args.Get(1).(*appsv1.Deployment).Spec.Template.Spec.Containers[0].LivenessProbe
+	}).Return(nil)
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	require.NoError(t, client.EnsureRedisStatefulset(generateRF(), nil, []metav1.OwnerReference{}))
+	require.NoError(t, client.EnsureSentinelDeployment(generateRF(), nil, []metav1.OwnerReference{}))
+
+	fakeCLI := "#!/bin/sh\n[ \"$FAKE_FROZEN\" = 1 ] && exec sleep 10\necho PONG\n"
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "redis-cli"), []byte(fakeCLI), 0o755))
+	bare := t.TempDir()
+	for _, tool := range []string{"sh", "grep", "hostname", "sleep"} {
+		p, err := exec.LookPath(tool)
+		require.NoError(t, err)
+		require.NoError(t, os.Symlink(p, filepath.Join(bare, tool)))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(bare, "redis-cli"), []byte(fakeCLI), 0o755))
+
+	tests := []struct {
+		name   string
+		path   string
+		frozen bool
+		alive  bool
+	}{
+		{name: "answers", path: dir + ":" + os.Getenv("PATH"), alive: true},
+		{name: "frozen", path: dir + ":" + os.Getenv("PATH"), frozen: true},
+		{name: "answers, without timeout", path: bare, alive: true},
+	}
+	for _, component := range []string{"redis", "sentinel"} {
+		probe := probes[component]
+		require.Equal(t, "sh", probe.Exec.Command[0])
+		for _, test := range tests {
+			t.Run(component+", "+test.name, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, "sh", probe.Exec.Command[1:]...)
+				cmd.Env = append(os.Environ(), "PATH="+test.path)
+				if test.frozen {
+					cmd.Env = append(cmd.Env, "FAKE_FROZEN=1")
+				}
+				cmd.WaitDelay = time.Second
+				start := time.Now()
+				out, err := cmd.CombinedOutput()
+				assert.Equal(t, test.alive, err == nil, "output: %s", out)
+				assert.Less(t, time.Since(start), time.Duration(probe.TimeoutSeconds)*time.Second, "must finish within the probe timeout")
+			})
+		}
 	}
 }
 

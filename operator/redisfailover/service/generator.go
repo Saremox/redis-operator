@@ -365,6 +365,11 @@ LINK_DOWN_SINCE="master_link_down_since_seconds:"
 MAX_LINK_DOWN_SECONDS=%[2]v
 
 cmd="redis-cli -p %[1]v"
+# A frozen server still accepts connections, and redis-cli would wait for its
+# reply forever, holding the probe open past its timeout on some runtimes.
+if command -v timeout >/dev/null 2>&1; then
+	cmd="timeout 2 ${cmd}"
+fi
 if [ ! -z "${REDIS_PASSWORD}" ]; then
 	export REDISCLI_AUTH=${REDIS_PASSWORD}
 fi
@@ -555,7 +560,8 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 					Command: []string{
 						"sh",
 						"-c",
-						fmt.Sprintf("redis-cli -h $(hostname) -p %[1]v --user pinger --pass pingpass --no-auth-warning ping | grep PONG", rf.Spec.Redis.Port),
+						// Bounded like ready.sh: a frozen server never answers.
+						fmt.Sprintf("t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p %[1]v --user pinger --pass pingpass --no-auth-warning ping | grep PONG", rf.Spec.Redis.Port),
 					},
 				},
 			},
@@ -740,7 +746,7 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 					Command: []string{
 						"sh",
 						"-c",
-						"redis-cli -h $(hostname) -p 26379 ping",
+						"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 ping",
 					},
 				},
 			},
