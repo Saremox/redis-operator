@@ -2402,6 +2402,73 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) 
 	}
 }
 
+// GetNumberMasters can still count a master whose pod starts stopping before
+// CheckMasterHealth looks for it (a scale-down removing the master). Its
+// failover must wait for the pod to stop, as with no master counted.
+func TestOperatorManagedModeWaitsForAStoppingMasterBeforeFailover(t *testing.T) {
+	tests := []struct {
+		name      string
+		masterIP  string
+		pods      []corev1.Pod
+		podsErr   error
+		wantElect bool
+	}{
+		{
+			name:      "no pod is stopping",
+			pods:      []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false)},
+			wantElect: true,
+		},
+		{
+			name: "the master is stopping and still ready",
+			pods: []corev1.Pod{redisPod("1", true, false), masterPod(redisPod("1", true, true))},
+		},
+		{
+			name:      "a stopping master that is not ready (lost node) doesn't block",
+			pods:      []corev1.Pod{redisPod("1", true, false), masterPod(redisPod("1", false, true))},
+			wantElect: true,
+		},
+		{
+			name:      "an unreachable master on a live pod fails over",
+			masterIP:  "10.0.0.1",
+			wantElect: true,
+		},
+		{
+			name:    "listing pods fails",
+			podsErr: errors.New("list err"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := operatorManagedRF()
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mk := &mK8SService.Services{}
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+			mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+			mrfc.On("CheckMasterHealth", rf).Once().Return(false, test.masterIP, nil)
+			if test.masterIP == "" {
+				mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: test.pods}, test.podsErr)
+			}
+			if test.wantElect {
+				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: "10.0.0.2"}, nil)
+				mrfh.On("PromoteBestReplica", "10.0.0.2", rf).Once().Return(nil)
+			}
+
+			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+			err := handler.CheckAndHeal(rf)
+
+			assert.Equal(t, test.podsErr, err)
+			mrfc.AssertExpectations(t)
+			mrfh.AssertExpectations(t)
+			mk.AssertExpectations(t)
+		})
+	}
+}
+
 // A pod resized in place is neither deleted nor, as master, failed over.
 func TestUpdateRedisesPodsResizesInPlace(t *testing.T) {
 	for _, stale := range []string{"slave", "master"} {
