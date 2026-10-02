@@ -726,6 +726,13 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		}
 
 		if !healthy {
+			// The master counted above may have started stopping since; then
+			// it is no longer found but may still take writes, as in case 0.
+			if masterIP == "" {
+				if stopping, err := r.masterPodStopping(rf); err != nil || stopping {
+					return err
+				}
+			}
 			// A master that was found but doesn't answer gets the timeout.
 			// With none found it may be gone, so the election isn't delayed.
 			if masterIP != "" {
