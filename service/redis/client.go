@@ -143,7 +143,7 @@ func (c *client) GetNumberSentinelsInMemory(ip string) (int32, error) {
 	return int32(nSentinels), nil
 }
 
-// GetNumberSentinelSlavesInMemory return the number of sentinels that the requested sentinel has
+// GetNumberSentinelSlavesInMemory returns the number of slaves that the requested sentinel knows for its master
 func (c *client) GetNumberSentinelSlavesInMemory(ip string) (int32, error) {
 	options := redisOptions(net.JoinHostPort(ip, sentinelPort), "")
 	rClient := rediscli.NewClient(options)

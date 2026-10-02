@@ -999,6 +999,11 @@ spec:
                         type: object
                     type: object
                   command:
+                    description: |-
+                      Command replaces the default redis command. With auth.secretPath, the
+                      default passes the password to redis-server, so a custom command must
+                      pass --requirepass and --masterauth from $REDIS_PASSWORD itself.
+                      Otherwise Redis runs with no password.
                     items:
                       type: string
                     type: array
@@ -6011,7 +6016,8 @@ spec:
                     description: |-
                       InPlaceResize controls whether redis pods whose update only changes
                       container resources are resized in place instead of being recreated.
-                      Defaults to Enabled.
+                      It needs Kubernetes 1.33 or later, and 1.35 to lower a memory limit.
+                      Otherwise the pods are recreated. Defaults to Enabled.
                     enum:
                     - Enabled
                     - Disabled
@@ -7609,6 +7615,9 @@ spec:
                     description: |-
                       MaxMemory lets the operator set maxmemory and maxmemory-policy from the
                       redis container's memory limit. Values set in customConfig take precedence.
+                      It needs a memory limit of at least 64Mi. It uses the smallest limit of
+                      all redis pods, because a failover can promote any replica. It sets
+                      replica-ignore-maxmemory yes, so customConfig cannot set it to no.
                     properties:
                       percent:
                         description: |-
