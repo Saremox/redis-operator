@@ -5,7 +5,8 @@ and imports the dashboard into Grafana.
 Usage: check-monitoring.py PROMETHEUS_URL GRAFANA_URL RANGE_SECONDS RF...
 
 Every alert, dashboard panel, template variable and annotation expression
-must evaluate without error, and every metric it selects must have data.
+must evaluate without error, and every metric it selects must be one the
+tester defines.
 A dashboard expression must also return data wherever the series it
 selects have data; one that ends in a filter like `> 0` may return
 nothing, but not without it. An alert returns nothing until it fires,
@@ -34,6 +35,11 @@ errors = []
 SELECTOR = re.compile(r"\b(redis_soak_[a-z_]+)(\{[^}]*\})?")
 FILTER = re.compile(r"^(.*\S)\s*(>|<|==|!=|>=|<=)\s*[0-9.]+\s*$", re.S)
 RANGE = f"{seconds}s"
+# Every metric the tester defines: a metric without series, like the
+# version transitions of a profile without chains, is no error.
+KNOWN = set()
+for name in re.findall(r'Name:\s+"(\w+)"', open(os.path.join(here, "..", "internal", "metrics", "metrics.go")).read()):
+    KNOWN |= {f"redis_soak_{name}" + suffix for suffix in ("", "_bucket", "_sum", "_count")}
 
 
 def call(url, body=None, auth=None):
@@ -72,8 +78,10 @@ def selectors_with_data(expr):
         ok = False
         if has_data(name):
             notes.append(f"no series match {selector} yet")
+        elif name in KNOWN:
+            notes.append(f"no {name} series in this profile")
         else:
-            errors.append(f"{expr!r}: metric {name} has no data at all")
+            errors.append(f"{expr!r}: the tester has no metric {name}")
     return ok, notes
 
 
