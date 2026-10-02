@@ -1,6 +1,7 @@
 package redisfailover
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -17,76 +18,176 @@ import (
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
-func TestUpdateRedisesPodsReportsAStalledRollout(t *testing.T) {
-	defer func(d time.Duration) { rolloutStallTimeout = d }(rolloutStallTimeout)
+var podReady = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+
+// rolloutTest is a two pod RedisFailover whose master rfr-test-0 is on the old
+// revision and whose replica rfr-test-1 is on the new one.
+type rolloutTest struct {
+	t       *testing.T
+	rf      *redisfailoverv1.RedisFailover
+	pods    []corev1.Pod
+	synced  bool
+	revErr  error
+	podsErr error
+	heal    *mRFService.RedisFailoverHeal
+	handler *RedisFailoverHandler
+}
+
+func newRolloutTest(t *testing.T) *rolloutTest {
+	timeout := rolloutStallTimeout
+	t.Cleanup(func() { rolloutStallTimeout = timeout })
 	rolloutStallTimeout = 50 * time.Millisecond
 
-	rf := &redisfailoverv1.RedisFailover{
-		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"},
-		Spec:       redisfailoverv1.RedisFailoverSpec{Redis: redisfailoverv1.RedisSettings{Replicas: 2}},
-	}
-	ready := []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
-	pods := []corev1.Pod{
-		{
-			ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-0", UID: "m", Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: "old"}},
-			Status:     corev1.PodStatus{PodIP: "10.0.0.1", Conditions: ready},
+	rt := &rolloutTest{
+		t: t,
+		rf: &redisfailoverv1.RedisFailover{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"},
+			Spec:       redisfailoverv1.RedisFailoverSpec{Redis: redisfailoverv1.RedisSettings{Replicas: 2}},
 		},
-		{
-			ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-1", UID: "r1", Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: "new"}},
-			Status:     corev1.PodStatus{PodIP: "10.0.0.2"},
+		pods: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-0", UID: "m", Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: "old"}},
+				Status:     corev1.PodStatus{PodIP: "10.0.0.1", Conditions: podReady},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-1", UID: "r1", Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: "new"}},
+				Status:     corev1.PodStatus{PodIP: "10.0.0.2"},
+			},
 		},
+		heal: &mRFService.RedisFailoverHeal{},
 	}
-	synced := false
-
+	rf := rt.rf
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfc.On("GetRedisesIPs", rf).Return([]string{"10.0.0.1", "10.0.0.2"}, nil)
 	mrfc.On("GetMasterIP", rf).Return("10.0.0.1", nil)
 	mrfc.On("CheckRedisSlavesReady", "10.0.0.2", rf).Return(func(string, *redisfailoverv1.RedisFailover) (bool, error) {
-		return synced, nil
+		return rt.synced, nil
 	})
-	mrfc.On("GetStatefulSetUpdateRevision", rf).Return("new", nil)
+	mrfc.On("GetStatefulSetUpdateRevision", rf).Return(func(*redisfailoverv1.RedisFailover) (string, error) {
+		return "new", rt.revErr
+	})
 	mrfc.On("GetRedisesSlavesPods", rf).Return([]string{"rfr-test-1"}, nil)
 	mrfc.On("GetRedisRevisionHash", "rfr-test-1", rf).Return("new", nil)
 	mrfc.On("GetRedisesMasterPod", rf).Return("rfr-test-0", nil)
 	mrfc.On("GetRedisRevisionHash", "rfr-test-0", rf).Return(func(string, *redisfailoverv1.RedisFailover) (string, error) {
-		return pods[0].Labels[appsv1.ControllerRevisionHashLabelKey], nil
+		return rt.pods[0].Labels[appsv1.ControllerRevisionHashLabelKey], nil
 	})
 	mk := &mK8SService.Services{}
 	mk.On("GetStatefulSetPods", "testns", "rfr-test").Return(func(string, string) (*corev1.PodList, error) {
-		return &corev1.PodList{Items: pods}, nil
+		return &corev1.PodList{Items: rt.pods}, rt.podsErr
 	})
-	mrfh := &mRFService.RedisFailoverHeal{}
-	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+	rt.handler = NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, rt.heal, mk, metrics.Dummy, log.Dummy)
+	return rt
+}
 
-	update := func() string {
-		rf.Status = redisfailoverv1.RedisFailoverStatus{}
-		assert.NoError(t, handler.UpdateRedisesPods(rf))
-		return rf.Status.Message
-	}
+// update runs UpdateRedisesPods on a fresh status, keeping message, and
+// returns the status message.
+func (rt *rolloutTest) update(message string) string {
+	rt.rf.Status = redisfailoverv1.RedisFailoverStatus{Message: message}
+	assert.NoError(rt.t, rt.handler.UpdateRedisesPods(rt.rf))
+	return rt.rf.Status.Message
+}
+
+func TestUpdateRedisesPodsReportsAStalledRollout(t *testing.T) {
+	rt := newRolloutTest(t)
 
 	// A replaced replica that doesn't sync is reported once the rollout has
 	// waited on it for longer than the bound.
-	assert.Empty(t, update())
+	assert.Empty(t, rt.update(""))
 	time.Sleep(2 * rolloutStallTimeout)
-	assert.Equal(t, "rollout waiting on pod rfr-test-1 for more than 0m: not synced with the master", update())
+	assert.Equal(t, "rollout waiting on pod rfr-test-1 for more than 0m: not synced with the master", rt.update(""))
 
 	// The pod recreated starts over.
-	pods[1].UID = "r2"
-	assert.Empty(t, update())
+	rt.pods[1].UID = "r2"
+	assert.Empty(t, rt.update(""))
 
 	// Once it syncs, the rollout moves on, and a later wait starts over.
 	time.Sleep(2 * rolloutStallTimeout)
-	synced = true
-	pods[1].Status.Conditions = ready
-	mrfh.On("ResizePodInPlace", rf, "rfr-test-0", "new").Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
-	mrfh.On("DeletePod", "rfr-test-0", rf).Once().Return(nil)
-	assert.Empty(t, update())
-	synced = false
-	assert.Empty(t, update())
+	rt.synced = true
+	rt.pods[1].Status.Conditions = podReady
+	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-0", "new").Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
+	rt.heal.On("DeletePod", "rfr-test-0", rt.rf).Once().Return(nil)
+	assert.Empty(t, rt.update(""))
+	rt.synced = false
+	assert.Empty(t, rt.update(""))
 
 	// A replica that isn't synced while no rollout is pending is not reported.
-	pods[0].Labels[appsv1.ControllerRevisionHashLabelKey] = "new"
+	rt.pods[0].Labels[appsv1.ControllerRevisionHashLabelKey] = "new"
 	time.Sleep(2 * rolloutStallTimeout)
-	assert.Empty(t, update())
-	mrfh.AssertExpectations(t)
+	assert.Empty(t, rt.update(""))
+	rt.heal.AssertExpectations(t)
+}
+
+func TestUpdateRedisesPodsReportsAStalledReplacement(t *testing.T) {
+	tests := []struct {
+		name string
+		// pods changes the replica, which is synced, so the rollout waits in
+		// redisPodsSettled before replacing the master.
+		pods func(pods []corev1.Pod) []corev1.Pod
+		want string
+	}{
+		{
+			name: "replaced pod not ready",
+			pods: func(pods []corev1.Pod) []corev1.Pod { return pods },
+			want: "rollout waiting on pod rfr-test-1 for more than 0m: not ready",
+		},
+		{
+			name: "pod terminating",
+			pods: func(pods []corev1.Pod) []corev1.Pod {
+				pods[1].DeletionTimestamp = &metav1.Time{Time: time.Now()}
+				return pods
+			},
+			want: "rollout waiting on pod rfr-test-1 for more than 0m: terminating",
+		},
+		{
+			name: "pod missing",
+			pods: func(pods []corev1.Pod) []corev1.Pod { return pods[:1] },
+			want: "rollout waiting for more than 0m: 1 of 2 pods exist",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rt := newRolloutTest(t)
+			rt.synced = true
+			rt.pods = test.pods(rt.pods)
+
+			assert.Empty(t, rt.update(""))
+			time.Sleep(2 * rolloutStallTimeout)
+			assert.Equal(t, test.want, rt.update(""))
+			rt.heal.AssertExpectations(t)
+		})
+	}
+}
+
+func TestUpdateRedisesPodsKeepsAnEarlierMessage(t *testing.T) {
+	rt := newRolloutTest(t)
+
+	assert.Equal(t, "maxmemory kept at 100mb", rt.update("maxmemory kept at 100mb"))
+	time.Sleep(2 * rolloutStallTimeout)
+	assert.Equal(t, "maxmemory kept at 100mb; rollout waiting on pod rfr-test-1 for more than 0m: not synced with the master",
+		rt.update("maxmemory kept at 100mb"))
+}
+
+func TestUpdateRedisesPodsKeepsWaitingAcrossErrors(t *testing.T) {
+	for _, step := range []string{"update revision", "pods"} {
+		t.Run(step, func(t *testing.T) {
+			rt := newRolloutTest(t)
+			assert.Empty(t, rt.update(""))
+			time.Sleep(2 * rolloutStallTimeout)
+
+			// A failed lookup is returned and doesn't restart the wait.
+			err := errors.New("lookup failed")
+			if step == "pods" {
+				rt.podsErr = err
+			} else {
+				rt.revErr = err
+			}
+			rt.rf.Status = redisfailoverv1.RedisFailoverStatus{}
+			assert.Equal(t, err, rt.handler.UpdateRedisesPods(rt.rf))
+			assert.Empty(t, rt.rf.Status.Message)
+
+			rt.podsErr, rt.revErr = nil, nil
+			assert.Equal(t, "rollout waiting on pod rfr-test-1 for more than 0m: not synced with the master", rt.update(""))
+		})
+	}
 }
