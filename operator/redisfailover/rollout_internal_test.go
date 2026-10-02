@@ -66,7 +66,12 @@ func newRolloutTest(t *testing.T) *rolloutTest {
 		return "new", rt.revErr
 	})
 	mrfc.On("GetRedisesSlavesPods", rf).Return([]string{"rfr-test-1"}, nil)
-	mrfc.On("GetRedisRevisionHash", "rfr-test-1", rf).Return("new", nil)
+	mrfc.On("GetRedisRevisionHash", "rfr-test-1", rf).Return(func(string, *redisfailoverv1.RedisFailover) (string, error) {
+		if len(rt.pods) < 2 {
+			return "new", nil
+		}
+		return rt.pods[1].Labels[appsv1.ControllerRevisionHashLabelKey], nil
+	})
 	mrfc.On("GetRedisesMasterPod", rf).Return("rfr-test-0", nil)
 	mrfc.On("GetRedisRevisionHash", "rfr-test-0", rf).Return(func(string, *redisfailoverv1.RedisFailover) (string, error) {
 		return rt.pods[0].Labels[appsv1.ControllerRevisionHashLabelKey], nil
@@ -155,6 +160,33 @@ func TestUpdateRedisesPodsReportsAStalledReplacement(t *testing.T) {
 			rt.heal.AssertExpectations(t)
 		})
 	}
+}
+
+// A revert makes a stalled replica stale. The rollout replaces it, and the
+// stall time starts again.
+func TestUpdateRedisesPodsResetsTheWaitOnAReplacedStaleReplica(t *testing.T) {
+	rt := newRolloutTest(t)
+	key := passwordKey(rt.rf)
+
+	assert.Empty(t, rt.update(""))
+	time.Sleep(2 * rolloutStallTimeout)
+	assert.Equal(t, "rollout waiting on pod rfr-test-1 for more than 0m: not synced with the master", rt.update(""))
+
+	// The revert puts the unsynced replica on a stale revision.
+	rt.pods[1].Labels[appsv1.ControllerRevisionHashLabelKey] = "old"
+	rt.heal.On("DeletePod", "rfr-test-1", rt.rf).Once().Return(nil)
+	assert.Empty(t, rt.update(""))
+	_, tracked := rt.handler.rolloutWaits.Load(key)
+	assert.False(t, tracked)
+
+	// The stall time of the replacement starts at this wait.
+	rt.pods[1].UID = "r2"
+	rt.pods[1].Labels[appsv1.ControllerRevisionHashLabelKey] = "new"
+	assert.Empty(t, rt.update(""))
+	v, tracked := rt.handler.rolloutWaits.Load(key)
+	assert.True(t, tracked)
+	assert.Equal(t, "r2", string(v.(rolloutWait).uid))
+	rt.heal.AssertExpectations(t)
 }
 
 func TestUpdateRedisesPodsKeepsAnEarlierMessage(t *testing.T) {
