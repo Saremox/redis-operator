@@ -364,7 +364,9 @@ LINK_DOWN_SINCE="master_link_down_since_seconds:"
 # failover, during which every replica's link is down.
 MAX_LINK_DOWN_SECONDS=%[2]v
 
-cmd="redis-cli -p %[1]v"
+# A frozen server still accepts connections, and redis-cli would wait for its
+# reply forever, holding the probe open past its timeout on some runtimes.
+cmd="timeout 2 redis-cli -p %[1]v"
 if [ ! -z "${REDIS_PASSWORD}" ]; then
 	export REDISCLI_AUTH=${REDIS_PASSWORD}
 fi

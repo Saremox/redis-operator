@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -3367,8 +3368,12 @@ func TestEnsureRedisReadinessConfigMap(t *testing.T) {
 }
 
 // TestRedisReadinessScript runs ready.sh against a fake redis-cli that prints
-// INFO replication as Redis 7.2-8 and Valkey 8-9 report it.
+// INFO replication as Redis 7.2-8 and Valkey 8-9 report it, or hangs like a
+// frozen server that accepts the connection but never replies.
 func TestRedisReadinessScript(t *testing.T) {
+	if _, err := exec.LookPath("timeout"); err != nil {
+		t.Skip("timeout is not installed")
+	}
 	replica := func(fields ...string) string {
 		return strings.Join(append([]string{"# Replication", "role:slave"}, fields...), "\r\n") + "\r\n"
 	}
@@ -3417,6 +3422,10 @@ func TestRedisReadinessScript(t *testing.T) {
 			info:  replica("master_host:10.0.0.1", "master_link_status:down", "master_last_io_seconds_ago:-1", "master_sync_in_progress:0", "master_link_down_since_seconds:71"),
 			ready: false,
 		},
+		{
+			name:  "frozen server",
+			ready: false,
+		},
 	}
 
 	rf := generateRF()
@@ -3431,7 +3440,7 @@ func TestRedisReadinessScript(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "ready.sh")
 	require.NoError(t, os.WriteFile(script, []byte(gotCM.Data["ready.sh"]), 0o644))
-	fakeCLI := "#!/bin/sh\ncat \"$FAKE_INFO\"\n"
+	fakeCLI := "#!/bin/sh\n[ -s \"$FAKE_INFO\" ] || exec sleep 10\ncat \"$FAKE_INFO\"\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "redis-cli"), []byte(fakeCLI), 0o755))
 
 	for _, test := range tests {
@@ -3439,10 +3448,17 @@ func TestRedisReadinessScript(t *testing.T) {
 			info := filepath.Join(t.TempDir(), "info")
 			require.NoError(t, os.WriteFile(info, []byte(test.info), 0o644))
 
-			cmd := exec.Command("sh", script)
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "sh", script)
 			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "FAKE_INFO="+info)
+			cmd.WaitDelay = time.Second
+			start := time.Now()
 			out, err := cmd.CombinedOutput()
 			assert.Equal(t, test.ready, err == nil, "ready.sh output: %s", out)
+			// The kubelet's probe timeout is 5s, and some runtimes don't
+			// enforce it while a child still holds the output open.
+			assert.Less(t, time.Since(start), 5*time.Second, "ready.sh must finish within the probe timeout")
 		})
 	}
 }
