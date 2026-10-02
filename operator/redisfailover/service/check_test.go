@@ -861,6 +861,7 @@ func TestGetNumberMastersReadyPodUnanswered(t *testing.T) {
 			assert.Equal(t, test.expN, n)
 			if test.expErr {
 				assert.ErrorContains(t, err, "redis-0")
+				assert.ErrorIs(t, err, rfservice.ErrRedisNotAnswering)
 			} else {
 				assert.NoError(t, err)
 			}

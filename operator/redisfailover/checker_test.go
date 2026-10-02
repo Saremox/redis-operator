@@ -514,6 +514,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 	tests := []struct {
 		name        string
 		setup       func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover)
+		masterPod   bool
 		wantErr     bool
 		wantErrIs   error
 		wantState   string
@@ -616,10 +617,24 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 			wantMessage: "unable to check master health",
 		},
 		{
+			// The mocks expect no promotion, so a promotion fails the test.
+			name: "single master - unhealthy, waits for the failover timeout",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
+			},
+			masterPod:   true,
+			wantErr:     false,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "master unreachable for 0s, failing over after 10s",
+		},
+		{
 			name: "single master - unhealthy, replica found and promoted successfully",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
 				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				rf.Spec.Sentinel.FailoverTimeout = &metav1.Duration{}
 				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
 				mrfh.On("PromoteBestReplica", promotedIP, rf).Once().Return(nil)
@@ -634,6 +649,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
 				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				rf.Spec.Sentinel.FailoverTimeout = &metav1.Duration{}
 				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(nil, errors.New("no replica info"))
 			},
@@ -646,6 +662,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
 				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				rf.Spec.Sentinel.FailoverTimeout = &metav1.Duration{}
 				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
 				mrfh.On("PromoteBestReplica", promotedIP, rf).Once().Return(errors.New("promote fail"))
@@ -659,6 +676,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
 				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+				rf.Spec.Sentinel.FailoverTimeout = &metav1.Duration{}
 				mrfc.On("CheckMasterHealth", rf).Once().Return(false, master, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: promotedIP}, nil)
 				mrfh.On("PromoteBestReplica", promotedIP, rf).Once().Return(wrappedPartialErr)
@@ -774,6 +792,12 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 
 			config := generateConfig()
 			mk := settledK8sServices()
+			if test.masterPod {
+				pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfr-0"}, Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: master}}
+				mk = &mK8SService.Services{}
+				mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{Items: []corev1.Pod{pod}}, nil)
+				mk.On("UpdatePodAnnotations", rf.Namespace, "rfr-0", mock.Anything).Once().Return(nil)
+			}
 			// CheckAndHeal always defers updateStatus, on every return path.
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfs := &mRFService.RedisFailoverClient{}
@@ -2396,7 +2420,7 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) 
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 			mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
-			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: test.pods}, test.podsErr)
+			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Return(&corev1.PodList{Items: test.pods}, test.podsErr)
 			if test.wantElect {
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: "10.0.0.2"}, nil)
 				mrfh.On("PromoteBestReplica", "10.0.0.2", rf).Once().Return(nil)
@@ -2443,8 +2467,13 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeFailover(t *testing.T) 
 			wantElect: true,
 		},
 		{
-			name:      "an unreachable master on a live pod fails over",
-			masterIP:  "10.0.0.1",
+			// It fails over because failoverTimeout is 0s here.
+			name:     "an unreachable master on a live pod fails over",
+			masterIP: "10.0.0.1",
+			pods: []corev1.Pod{{
+				ObjectMeta: metav1.ObjectMeta{Name: "rfr-0"},
+				Status:     corev1.PodStatus{Phase: corev1.PodRunning, PodIP: "10.0.0.1"},
+			}},
 			wantElect: true,
 		},
 		{
@@ -2465,8 +2494,9 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeFailover(t *testing.T) 
 			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 			mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 			mrfc.On("CheckMasterHealth", rf).Once().Return(false, test.masterIP, nil)
-			if test.masterIP == "" {
-				mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: test.pods}, test.podsErr)
+			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Return(&corev1.PodList{Items: test.pods}, test.podsErr)
+			if test.masterIP != "" {
+				rf.Spec.Sentinel.FailoverTimeout = &metav1.Duration{}
 			}
 			if test.wantElect {
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: "10.0.0.2"}, nil)

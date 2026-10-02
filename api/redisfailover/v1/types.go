@@ -120,8 +120,10 @@ type SentinelSettings struct {
 	// manages failover instead of Sentinel. Defaults to false (operator-managed
 	// failover) since v4.0.0.
 	Enabled *bool `json:"enabled,omitempty"`
-	// FailoverTimeout is how long to wait before promoting a replica when
-	// operator-managed failover is used (sentinel.enabled=false). Defaults to 10s.
+	// FailoverTimeout is the time that operator-managed failover (sentinel.enabled=false)
+	// waits for a master that does not answer while its pod runs, so that a short
+	// stall does not cause a failover. A master that is gone or not found gets no
+	// wait. Defaults to 10s; 0s disables the wait.
 	FailoverTimeout            *metav1.Duration                  `json:"failoverTimeout,omitempty"`
 	Image                      string                            `json:"image,omitempty"`
 	ImagePullPolicy            corev1.PullPolicy                 `json:"imagePullPolicy,omitempty"`
