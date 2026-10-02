@@ -1,0 +1,67 @@
+name: Soak E2E
+
+# The soak tester's kind e2e against a released operator: it installs the
+# chart and image of operator_version from ghcr.io, runs the tester for
+# the profile's duration and asserts from its metrics and logs. It takes
+# about an hour, so it only runs by hand, never on pull requests. The
+# chaos profile upgrades from upgrade_from to operator_version and back.
+on:
+  workflow_dispatch:
+    inputs:
+      operator_version:
+        description: Operator release to test, e.g. 4.2.0-rc2
+        required: true
+      profile:
+        description: The test/soak/e2e profile
+        type: choice
+        options: [full, versions, chaos]
+        default: full
+      upgrade_from:
+        description: For chaos, the earlier release to upgrade from
+        required: false
+      duration:
+        description: Seconds the tester mutates; empty for the profile's default
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  soak-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        working-directory: test/soak
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: test/soak/go.mod
+          cache: false
+
+      - name: Install kind and the jq-based yq
+        # The e2e scripts use yq's jq syntax.
+        run: |
+          go install sigs.k8s.io/kind@v0.31.0
+          pip install --user yq
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run the kind e2e
+        env:
+          OPERATOR_VERSION: ${{ inputs.operator_version }}
+          E2E_PROFILE: ${{ inputs.profile }}
+          UPGRADE_FROM: ${{ inputs.upgrade_from }}
+          DURATION: ${{ inputs.duration }}
+        run: |
+          make kind-e2e OPERATOR_VERSION="$OPERATOR_VERSION" E2E_PROFILE="$E2E_PROFILE" \
+            UPGRADE_FROM="$UPGRADE_FROM" DURATION="$DURATION"
+
+      - name: Upload the artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-e2e-${{ inputs.profile }}-${{ inputs.operator_version }}
+          path: test/soak/bin/kind-e2e-artifacts

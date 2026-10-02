@@ -108,6 +108,7 @@ jobs:
           working-directory: test/soak
           args: --timeout=15m
       - run: make test
+      - run: make check-monitoring
 
   integration-test:
     name: Integration test
