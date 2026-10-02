@@ -212,7 +212,7 @@ For small instances, the default `client-output-buffer-limit` for `pubsub` (32mb
 
 ### Pod updates
 
-A changed spec replaces the redis pods one at a time, replicas first and the master last, each once the previous one is ready and every replica is synced with the master. When the rollout waits on the same pod for more than 10 minutes, e.g. on a new image that can't load the master's data, the status message names the pod and the reason, e.g. `rollout waiting on pod rfr-<NAME>-1 for more than 10m: not synced with the master`. The state stays `Healthy`, as the master still serves, and the message clears once the rollout moves on.
+A changed spec replaces the redis pods one at a time, replicas first and the master last, each once the previous one is ready and every replica is synced with the master. A replica that isn't synced and isn't on the current spec yet is replaced first, without waiting for it, e.g. after reverting to an image the cluster ran before. When the rollout waits on the same pod for more than 10 minutes, e.g. on a new image that can't load the master's data, the status message names the pod and the reason, e.g. `rollout waiting on pod rfr-<NAME>-1 for more than 10m: not synced with the master`. The state stays `Healthy`, as the master still serves, and the message clears once the rollout moves on.
 
 ### In-place resize
 
