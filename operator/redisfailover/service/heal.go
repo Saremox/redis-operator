@@ -8,6 +8,7 @@ import (
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
+	"github.com/saremox/redis-operator/operator/redisfailover/util"
 	"github.com/saremox/redis-operator/service/k8s"
 	"github.com/saremox/redis-operator/service/redis"
 	v1 "k8s.io/api/core/v1"
@@ -103,14 +104,10 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 	if err != nil {
 		return err
 	}
-	if len(ssp.Items) < 1 {
+	pods := masterCandidates(ssp.Items)
+	if len(pods) < 1 {
 		return errors.New("number of redis pods are 0")
 	}
-
-	// Order the pods so we start by the oldest one
-	sort.Slice(ssp.Items, func(i, j int) bool {
-		return ssp.Items[i].CreationTimestamp.Before(&ssp.Items[j].CreationTimestamp)
-	})
 
 	password, err := k8s.GetRedisPassword(r.k8sService, rf)
 	if err != nil {
@@ -119,7 +116,7 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 
 	port := getRedisPort(rf.Spec.Redis.Port)
 	newMasterIP := ""
-	for _, pod := range ssp.Items {
+	for _, pod := range pods {
 		if newMasterIP == "" {
 			newMasterIP = pod.Status.PodIP
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("New master is %s with ip %s", pod.Name, newMasterIP)
@@ -152,6 +149,24 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 	} else {
 		return nil
 	}
+}
+
+// masterCandidates drops terminating pods and orders the rest Ready first,
+// then oldest first.
+func masterCandidates(items []v1.Pod) []v1.Pod {
+	pods := make([]v1.Pod, 0, len(items))
+	for _, pod := range items {
+		if pod.DeletionTimestamp == nil {
+			pods = append(pods, pod)
+		}
+	}
+	sort.SliceStable(pods, func(i, j int) bool {
+		if ri, rj := util.PodIsReady(&pods[i]), util.PodIsReady(&pods[j]); ri != rj {
+			return ri
+		}
+		return pods[i].CreationTimestamp.Before(&pods[j].CreationTimestamp)
+	})
+	return pods
 }
 
 // podIPBelongsTo reports whether ip is currently the PodIP of one of the
