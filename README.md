@@ -385,7 +385,7 @@ spec:
 ```
 You need to set secretPath as the secret name which is created before.
 
-It is safe to change the `password` key of that Secret in place, to add `auth.secretPath`, or to remove it. The operator first sets the new password on each Redis and Sentinel with `CONFIG SET`, so replication continues. Then it restarts the Redis pods one at a time. New connections must use the new password immediately.
+It is safe to change the `password` key of that Secret in place, to add `auth.secretPath`, or to remove it. The operator first sets the new password on each Redis with `CONFIG SET` and on each Sentinel with `SENTINEL SET`, so replication continues. Then it restarts the Redis pods one at a time. New connections must use the new password immediately.
 
 By default, the operator finds a change at its next sync (`--sync-interval`, 30s by default). The chart value `watchAuthSecrets: true` (flag `--watch-auth-secrets`) applies a change immediately. It is off by default because it needs `list` and `watch` on secrets in all namespaces, which can read every Secret.
 
