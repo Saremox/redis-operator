@@ -210,6 +210,10 @@ Keys set in `customConfig` take precedence; `replica-ignore-maxmemory no` is rej
 
 For small instances, the default `client-output-buffer-limit` for `pubsub` (32mb) and `replica` (256mb) can exceed the free part of the limit; lower them with `customConfig`. Replicas buffer a whole `MULTI`/`EXEC` or `EVAL` before applying it, so one large batch can get a replica OOM-killed.
 
+### Pod updates
+
+A changed spec replaces the redis pods one at a time, replicas first and the master last, each once the previous one is ready and every replica is synced with the master. When the rollout waits on the same pod for more than 10 minutes, e.g. on a new image that can't load the master's data, the status message names the pod and the reason, e.g. `rollout waiting on pod rfr-<NAME>-1 for more than 10m: not synced with the master`. The state stays `Healthy`, as the master still serves, and the message clears once the rollout moves on.
+
 ### In-place resize
 
 On Kubernetes 1.33 or later, an update that only changes container cpu or memory resizes the redis pods in place instead of recreating them, so no data is reloaded and the master does not fail over. Pods are resized one at a time, replicas first. Lowering a memory limit in place needs Kubernetes 1.35. Set `redis.inPlaceResize: Disabled` to always recreate the pods.
