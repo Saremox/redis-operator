@@ -1,0 +1,100 @@
+# Prometheus and Grafana for kind-e2e's check of the dashboard and alerts.
+# Prometheus scrapes the tester like deploy/monitoring's ServiceMonitor,
+# honouring its labels, and loads the PrometheusRule's groups, which
+# kind-e2e puts into the prometheus ConfigMap as rules.yaml. Both run on
+# the control plane, which no drain picks.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: soak-monitoring
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: soak-monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: prometheus}
+  template:
+    metadata:
+      labels: {app: prometheus}
+    spec:
+      nodeSelector: {node-role.kubernetes.io/control-plane: ""}
+      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.7.3
+          args: [--config.file=/etc/prometheus/prometheus.yml, --storage.tsdb.path=/prometheus]
+          ports: [{name: web, containerPort: 9090}]
+          readinessProbe: {httpGet: {path: /-/ready, port: web}}
+          volumeMounts:
+            - {name: config, mountPath: /etc/prometheus}
+            - {name: data, mountPath: /prometheus}
+      volumes:
+        - {name: config, configMap: {name: prometheus}}
+        - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: soak-monitoring
+spec:
+  selector: {app: prometheus}
+  ports: [{name: web, port: 9090, targetPort: web}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: soak-monitoring
+data:
+  prometheus.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        url: http://prometheus.soak-monitoring.svc:9090
+        isDefault: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: soak-monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: grafana}
+  template:
+    metadata:
+      labels: {app: grafana}
+    spec:
+      nodeSelector: {node-role.kubernetes.io/control-plane: ""}
+      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      containers:
+        - name: grafana
+          image: grafana/grafana:12.2.1
+          env:
+            - {name: GF_SECURITY_ADMIN_PASSWORD, value: soak}
+            - {name: GF_ANALYTICS_REPORTING_ENABLED, value: "false"}
+            - {name: GF_ANALYTICS_CHECK_FOR_UPDATES, value: "false"}
+            - {name: GF_PLUGINS_PREINSTALL_DISABLED, value: "true"}
+          ports: [{name: web, containerPort: 3000}]
+          readinessProbe: {httpGet: {path: /api/health, port: web}}
+          volumeMounts:
+            - {name: datasources, mountPath: /etc/grafana/provisioning/datasources}
+      volumes:
+        - {name: datasources, configMap: {name: grafana-datasources}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: soak-monitoring
+spec:
+  selector: {app: grafana}
+  ports: [{name: web, port: 3000, targetPort: web}]

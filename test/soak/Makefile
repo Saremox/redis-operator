@@ -3,16 +3,23 @@ IMAGE ?= ghcr.io/saremox/redis-operator-soak
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 # kind-e2e settings. OPERATOR_VERSION installs a released chart and image
-# instead of building the operator from this checkout. E2E_PROFILE is full
-# or versions. DURATION is how many seconds the mutator starts mutations,
-# by default 2100 for full and 3000 for versions.
+# instead of building the operator from this checkout. E2E_PROFILE is full,
+# versions or chaos. DURATION is how many seconds the mutator starts
+# mutations, by default 2100 for full, 3000 for versions and 1500 for
+# chaos. SUBNET is the pod subnet's second octet. chaos upgrades between
+# UPGRADE_FROM and UPGRADE_TO, git refs it builds, or with OPERATOR_VERSION
+# from the release UPGRADE_FROM to OPERATOR_VERSION.
 CLUSTER ?= soak
 KIND_NODE ?= v1.35.0
+SUBNET ?= 244
 OPERATOR_VERSION ?=
 E2E_PROFILE ?= full
 DURATION ?=
+UPGRADE_FROM ?=
+UPGRADE_TO ?=
+PROMETHEUS_IMAGE ?= prom/prometheus:v3.7.3
 
-.PHONY: build test lint image kind-up kind-e2e
+.PHONY: build test lint image kind-up kind-e2e check-monitoring
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/soak ./cmd/soak
@@ -30,5 +37,15 @@ kind-up:
 	../../.claude/skills/kind-cluster/kind-up.sh $(CLUSTER) $(KIND_NODE)
 
 kind-e2e: build
-	CLUSTER=$(CLUSTER) KIND_NODE=$(KIND_NODE) OPERATOR_VERSION=$(OPERATOR_VERSION) \
-		E2E_PROFILE=$(E2E_PROFILE) DURATION=$(DURATION) ./e2e/kind-e2e.sh
+	CLUSTER=$(CLUSTER) KIND_NODE=$(KIND_NODE) SUBNET=$(SUBNET) OPERATOR_VERSION=$(OPERATOR_VERSION) \
+		E2E_PROFILE=$(E2E_PROFILE) DURATION=$(DURATION) UPGRADE_FROM=$(UPGRADE_FROM) UPGRADE_TO=$(UPGRADE_TO) \
+		./e2e/kind-e2e.sh
+
+# promtool checks the alerts and runs e2e/rules-test.yaml on them; the
+# dashboard must be JSON with panels.
+check-monitoring:
+	@tmp=$$(mktemp -d) && chmod 755 $$tmp && \
+	yq '.spec' deploy/monitoring/prometheusrule.yaml >$$tmp/rules.yaml && cp e2e/rules-test.yaml $$tmp/ && chmod 644 $$tmp/* && \
+	docker run --rm -v $$tmp:/r -w /r --entrypoint promtool $(PROMETHEUS_IMAGE) check rules rules.yaml && \
+	docker run --rm -v $$tmp:/r -w /r --entrypoint promtool $(PROMETHEUS_IMAGE) test rules rules-test.yaml && \
+	jq -e '.panels | length > 0' deploy/monitoring/dashboard.json >/dev/null; rc=$$?; rm -rf $$tmp; exit $$rc

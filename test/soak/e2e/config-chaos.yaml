@@ -1,0 +1,83 @@
+# kind-e2e's config for E2E_PROFILE=chaos: the chaos lane on a control
+# plane and two workers, against four small instances the tester creates
+# from the rf-chaos-*.yaml and rf-mixed-sent.yaml templates. Seed 54 takes
+# operator_restart, operator_upgrade, a node_drain of the second worker,
+# another operator_upgrade and a drain of the first, one per 60-90s and
+# each once the last converged; mixed-sent flips its Sentinel image
+# between Valkey 9 and Redis 7.2 meanwhile. kind-e2e fills in the upgrade's
+# versions and sets stopAfter to DURATION.
+operator:
+  namespace: redis-operator
+  deployment: redis-operator
+observer:
+  interval: 5s
+  convergenceTimeout: 5m
+mutation:
+  interval: 90s
+  jitter: 30s
+  minDwell: 15s
+  seed: 54
+  stopAfter: 1500s
+chaos:
+  kinds:
+    operator_restart: 1
+    operator_upgrade: 1
+    node_drain: 1
+  interval: 60s
+  jitter: 30s
+  timeout: 5m
+  upgrade:
+    timeout: 5m
+    # kind-e2e replaces both with the versions it built, or the RCs.
+    versions:
+      - {name: from, chart: chart-from.tgz, image: "redis-operator:from"}
+      - {name: to, chart: chart-to.tgz, image: "redis-operator:to"}
+  drain:
+    hold: 30s
+    timeout: 3m
+versions:
+  - {name: redis-7.2, image: "redis:7.2.16-alpine"}
+  - {name: valkey-9, image: "valkey/valkey:9.1.2-alpine"}
+instances:
+  # Operator-managed failover on emptyDir.
+  - name: chaos-op
+    namespace: chaos-op
+    mode: operator
+    template: rf-chaos-op.yaml
+    version: redis-7.2
+    data:
+      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
+      ledger: {writesPerSecond: 10}
+  # Three pods on volumes that move with them, with auth: its budget lets
+  # a drain evict one pod at a time.
+  - name: chaos-pvc
+    namespace: chaos-pvc
+    mode: operator
+    template: rf-chaos-pvc.yaml
+    version: redis-7.2
+    data:
+      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
+      ledger: {writesPerSecond: 10}
+  - name: chaos-sent
+    namespace: chaos-sent
+    mode: sentinel
+    template: rf-chaos-sent.yaml
+    version: redis-7.2
+    sentinelVersion: redis-7.2
+    data:
+      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
+      ledger: {writesPerSecond: 10}
+  # Redis 7.2 data whose Sentinels flip between Valkey 9 and Redis 7.2.
+  - name: mixed-sent
+    namespace: mixed-sent
+    mode: sentinel
+    template: rf-mixed-sent.yaml
+    version: redis-7.2
+    sentinelVersion: valkey-9
+    data:
+      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
+      ledger: {writesPerSecond: 10}
+    mutations:
+      kinds:
+        sentinel_image_flip: 1
+      sentinelImages: [valkey-9, redis-7.2]

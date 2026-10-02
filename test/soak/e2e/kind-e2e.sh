@@ -22,13 +22,29 @@
 # it reports every edge with its mixed window, outages and losses, how the
 # unknown edges failed, the Valkey compatibility checks and the resets.
 #
-# Environment: CLUSTER, KIND_NODE, OPERATOR_VERSION (empty: build the
-# operator from this checkout), E2E_PROFILE (full or versions), DURATION
-# (seconds the mutator starts mutations, default 2100, 3000 for versions).
+# With E2E_PROFILE=chaos it runs the chaos lane of e2e/config-chaos.yaml on
+# a control plane and two workers, against four small instances: it
+# installs UPGRADE_FROM, upgrades to UPGRADE_TO and back, restarts the
+# operator and drains each worker. It asserts that every action converged
+# with no change in flight, that no restart or upgrade lost writes, nor a
+# drain of the instance on volumes, and that the dashboard and alerts of
+# deploy/monitoring work against a Prometheus and a Grafana in the
+# cluster. It reports the time without an operator, the CRD hook, the
+# drains with their blocked evictions, and every action's outages and
+# losses.
+#
+# Environment: CLUSTER, KIND_NODE, SUBNET (the pod subnet's second octet),
+# OPERATOR_VERSION (empty: build the operator from this checkout),
+# E2E_PROFILE (full, versions or chaos), DURATION (seconds the mutator
+# starts mutations, default 2100, 3000 for versions, 1500 for chaos), and
+# for chaos UPGRADE_FROM and UPGRADE_TO: git refs built from source
+# (default 4.2.0-rc2 and origin/main), or with OPERATOR_VERSION a released
+# tag to upgrade from (required) and to OPERATOR_VERSION.
 set -euo pipefail
 
 cluster=${CLUSTER:-soak}
 node=${KIND_NODE:-v1.35.0}
+subnet=${SUBNET:-244}
 profile=${E2E_PROFILE:-full}
 soak=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$soak/../.." && pwd)
@@ -36,12 +52,13 @@ skill=$repo/.claude/skills/kind-cluster
 export KUBECONFIG=/tmp/kind-$cluster/kubeconfig
 artifacts=$soak/bin/kind-e2e-artifacts
 
-operator_invariants="pods one_master master_service replication config healthy oom_killed"
-sentinel_invariants="pods one_master master_service replication sentinel_agreement config healthy oom_killed"
+operator_invariants="pods one_master master_service replication replica_ready_without_data config healthy oom_killed"
+sentinel_invariants="pods one_master master_service replication sentinel_agreement replica_ready_without_data config healthy oom_killed"
 clients="pooled retrying fresh follower"
 # Every instance of both profiles, whose namespaces a run starts afresh.
 all_instances=(op-basic sent-basic op-maxmem op-noevict op-full sent-full toggle bootstrap
-  redis-chain redis-chain-sent migrate migrate-sent edge valkey-op valkey-sent mixed-sent)
+  redis-chain redis-chain-sent migrate migrate-sent edge valkey-op valkey-sent mixed-sent
+  chaos-op chaos-pvc chaos-sent)
 case $profile in
 full)
   config=$soak/e2e/config.yaml
@@ -54,7 +71,7 @@ full)
     [op-basic]=$operator_invariants [sent-basic]=$sentinel_invariants
     [op-maxmem]=$operator_invariants [op-noevict]=$operator_invariants
     [op-full]=$operator_invariants [sent-full]=$sentinel_invariants
-    [bootstrap]="pods one_master master_service config healthy oom_killed"
+    [bootstrap]="pods one_master master_service replica_ready_without_data config healthy oom_killed"
   )
   # The kinds e2e/config.yaml enables.
   declare -A kinds=(
@@ -111,18 +128,186 @@ versions)
   convergence=720
   interval=80
   ;;
+chaos)
+  config=$soak/e2e/config-chaos.yaml
+  duration=${DURATION:-1500}
+  instances=(chaos-op chaos-pvc chaos-sent mixed-sent)
+  declare -A paths=([chaos-op]="rfrm" [chaos-pvc]="rfrm" [chaos-sent]="sentinel rfrm" [mixed-sent]="sentinel rfrm")
+  declare -A invariants=(
+    [chaos-op]=$operator_invariants [chaos-pvc]=$operator_invariants
+    [chaos-sent]=$sentinel_invariants [mixed-sent]=$sentinel_invariants
+  )
+  declare -A kinds=([chaos-op]="" [chaos-pvc]="" [chaos-sent]="" [mixed-sent]="sentinel_image_flip")
+  chaos_kinds="operator_restart operator_upgrade node_drain"
+  # Restarts and upgrades must lose no write anywhere, drains none on the
+  # instance on volumes.
+  pvc_instances="chaos-pvc"
+  # An upgrade's three waits of the chaos timeout, plus the longest
+  # interval and a data verification.
+  convergence=900
+  interval=120
+  ;;
 *)
-  echo "E2E_PROFILE must be full or versions" >&2
+  echo "E2E_PROFILE must be full, versions or chaos" >&2
   exit 1
   ;;
 esac
 
+# kind_up_workers creates the cluster as the skill's kind-up.sh does, with
+# two workers to drain, and a directory every node mounts as /shared, for
+# volumes that move with their pods.
+kind_up_workers() {
+  local dir=/tmp/kind-$cluster n host img
+  mkdir -p "$dir/shared"
+  chmod 0777 "$dir/shared"
+  if ! docker info >/dev/null 2>&1; then
+    (dockerd >/tmp/dockerd.log 2>&1 &)
+    for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+  fi
+  local node_config="  kubeadmConfigPatches:
+  - |
+    kind: KubeletConfiguration
+    failCgroupV1: false
+  extraMounts:
+  - hostPath: $dir/shared
+    containerPath: /shared"
+  cat >"$dir/kind.yaml" <<EOF
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  podSubnet: 10.$subnet.0.0/16
+  serviceSubnet: 10.$((subnet + 1)).0.0/16
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri"]
+    restrict_oom_score_adj = true
+  [plugins."io.containerd.grpc.v1.cri".registry]
+    config_path = "/etc/containerd/certs.d"
+nodes:
+- role: control-plane
+$node_config
+- role: worker
+$node_config
+- role: worker
+$node_config
+EOF
+  "$skill/registry.sh" pull "kindest/node:$node"
+  kind create cluster --name "$cluster" --image "kindest/node:$node" \
+    --config "$dir/kind.yaml" --kubeconfig "$dir/kubeconfig" --wait 180s
+  # registry.sh makes the local registry the control plane's mirror only.
+  "$skill/registry.sh" connect "$cluster"
+  for n in $(kind get nodes --name "$cluster"); do
+    for host in docker.io quay.io; do
+      docker exec "$n" mkdir -p "/etc/containerd/certs.d/$host"
+      printf '[host."http://kind-registry:5000"]\n  capabilities = ["pull", "resolve"]\n' |
+        docker exec -i "$n" cp /dev/stdin "/etc/containerd/certs.d/$host/hosts.toml"
+    done
+  done
+  for img in $(grep -oE '"[^"]+:[^"]+"' "$repo/api/redisfailover/v1/defaults.go" | tr -d '"' | sort -u); do
+    "$skill/registry.sh" push "$img"
+  done
+  # A StorageClass whose volumes live in /shared: a pod moves to another
+  # node with its volume, as on network storage. It is a clone of kind's
+  # local-path provisioner in its shared file system mode.
+  kubectl -n local-path-storage get configmap local-path-config -o json |
+    jq '.metadata = {name: "shared-path-config", namespace: "local-path-storage"}
+      | .data["config.json"] = "{\"sharedFileSystemPath\": \"/shared\"}"' | kubectl apply -f -
+  kubectl -n local-path-storage get deployment local-path-provisioner -o json |
+    jq '.metadata = {name: "shared-path-provisioner", namespace: "local-path-storage"} | del(.status)
+      | .spec.selector.matchLabels.app = "shared-path-provisioner"
+      | .spec.template.metadata.labels.app = "shared-path-provisioner"
+      | .spec.template.spec.containers[0].command += ["--provisioner-name", "rancher.io/shared-path", "--configmap-name", "shared-path-config"]
+      | .spec.template.spec.volumes[0].configMap.name = "shared-path-config"' | kubectl apply -f -
+  kubectl apply -f - <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: shared-path
+provisioner: rancher.io/shared-path
+volumeBindingMode: Immediate
+reclaimPolicy: Delete
+EOF
+  kubectl -n local-path-storage rollout status deployment/shared-path-provisioner --timeout=180s
+  # As in most clusters, a drain takes CoreDNS down one pod at a time.
+  kubectl -n kube-system create poddisruptionbudget coredns --selector=k8s-app=kube-dns --min-available=1
+}
+
+# build_version builds the operator of a git ref as redis-operator:src-<sha>,
+# serves it through the local registry, and packages its chart.
+build_version() {
+  local name=$1 ref=$2 src sha
+  sha=$(git -C "$repo" rev-parse --short "$ref^{commit}")
+  src=$(mktemp -d)
+  git -C "$repo" archive "$sha" | tar -x -C "$src"
+  mkdir -p "$src/out"
+  (cd "$src" && CGO_ENABLED=0 go build -o "$src/out/redis-operator" -ldflags "-w" ./cmd/redisoperator)
+  # As the skill's build-image.sh does: docker/app/Dockerfile can't install
+  # packages in the sandbox.
+  cat >"$src/out/Dockerfile" <<'EOF'
+FROM alpine:latest
+COPY redis-operator /usr/local/bin/redis-operator
+RUN addgroup -g 1000 rf && adduser -D -u 1000 -G rf rf
+USER rf
+ENTRYPOINT ["/usr/local/bin/redis-operator"]
+EOF
+  "$skill/registry.sh" pull alpine:latest
+  docker build -q -t "redis-operator:src-$sha" "$src/out" >/dev/null
+  "$skill/registry.sh" push "redis-operator:src-$sha"
+  helm package "$src/charts/redisoperator" --destination "$src/out" >/dev/null
+  mv "$src"/out/redis-operator-*.tgz "$charts/chart-$name.tgz"
+  version_name[$name]=$ref
+  version_chart[$name]=chart-$name.tgz
+  version_version[$name]=""
+  version_image[$name]=redis-operator:src-$sha
+  rm -rf "$src"
+}
+
 if ! kind get clusters 2>/dev/null | grep -qx "$cluster"; then
-  "$skill/kind-up.sh" "$cluster" "$node"
+  if [[ $profile == chaos ]]; then
+    kind_up_workers
+  else
+    "$skill/kind-up.sh" "$cluster" "$node" "$subnet"
+  fi
 fi
 
 echo "--- operator"
-if [[ -z ${OPERATOR_VERSION:-} ]]; then
+if [[ $profile == chaos ]]; then
+  # Both versions of the upgrade; the first is installed, with the chart's
+  # CRD hook. The operator, like the tester, runs on the control plane,
+  # which no drain picks.
+  declare -A version_name version_chart version_version version_image
+  charts=$soak/bin/kind-e2e-charts
+  rm -rf "$charts"
+  mkdir -p "$charts"
+  if [[ -z ${OPERATOR_VERSION:-} ]]; then
+    build_version from "${UPGRADE_FROM:-4.2.0-rc2}"
+    build_version to "${UPGRADE_TO:-origin/main}"
+  else
+    for v in "from ${UPGRADE_FROM:?UPGRADE_FROM is the release to upgrade from}" "to $OPERATOR_VERSION"; do
+      read -r name tag <<<"$v"
+      version_name[$name]=$tag
+      version_chart[$name]=oci://ghcr.io/saremox/redis-operator/charts/redis-operator
+      version_version[$name]=$tag
+      version_image[$name]=ghcr.io/saremox/redis-operator:$tag
+    done
+  fi
+  chart=${version_chart[from]}
+  [[ $chart == oci://* ]] || chart=$charts/$chart
+  cat >"$charts/values.yaml" <<'EOF'
+nodeSelector:
+  node-role.kubernetes.io/control-plane: ""
+tolerations:
+  - {key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}
+crds:
+  upgradeHook:
+    enabled: true
+EOF
+  # The hook's kubectl, which the nodes pull through the registry.
+  "$skill/registry.sh" push rancher/kubectl:v1.36.2
+  helm upgrade --install redis-operator "$chart" ${version_version[from]:+--version "${version_version[from]}"} \
+    --namespace redis-operator --create-namespace -f "$charts/values.yaml" \
+    --set image.repository="${version_image[from]%:*}" --set image.tag="${version_image[from]##*:}" --wait
+elif [[ -z ${OPERATOR_VERSION:-} ]]; then
   "$skill/build-image.sh" soak-e2e
   helm upgrade --install redis-operator "$repo/charts/redisoperator" \
     --namespace redis-operator --create-namespace \
@@ -137,10 +322,10 @@ echo "--- instances"
 # and without the other profile's, which the node has no room for.
 kubectl -n redis-soak delete deployment soak --ignore-not-found --wait
 kubectl delete namespace "${all_instances[@]}" --ignore-not-found --wait
-if [[ $profile == versions ]]; then
+if [[ $profile != full ]]; then
   # The tester creates the instances from their templates; the node pulls
   # every version's image from the local registry.
-  for img in $(grep -oE 'image: "[^"]+"' "$config" | cut -d'"' -f2 | sort -u); do
+  for img in $(yq -r '.versions[].image' "$config" | sort -u); do
     "$skill/registry.sh" push "$img"
   done
 fi
@@ -149,7 +334,7 @@ for ns in "${all_instances[@]}"; do
   kubectl create namespace "$ns"
 done
 for rf in "${instances[@]}"; do
-  [[ $profile == versions ]] && break
+  [[ $profile != full ]] && break
   if [[ $rf == bootstrap ]]; then
     # It replicates from op-basic's master through its Service.
     until kubectl -n op-basic get service rfrm-op-basic >/dev/null 2>&1; do sleep 2; done
@@ -178,6 +363,28 @@ wait_instances() {
 }
 [[ $profile == full ]] && wait_instances
 
+if [[ $profile == chaos ]]; then
+  echo "--- Prometheus and Grafana"
+  # Prometheus scrapes the tester from its start, and loads the alerts.
+  kubectl apply -f "$soak/e2e/monitoring.yaml"
+  yq '.spec' "$soak/deploy/monitoring/prometheusrule.yaml" >"$charts/rules.yaml"
+  cat >"$charts/prometheus.yml" <<'EOF'
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+rule_files: [/etc/prometheus/rules.yaml]
+scrape_configs:
+  - job_name: redis-soak
+    honor_labels: true
+    static_configs:
+      - targets: [soak.redis-soak.svc:9090]
+EOF
+  kubectl -n soak-monitoring create configmap prometheus --from-file="$charts/prometheus.yml" --from-file="$charts/rules.yaml"
+  for img in prom/prometheus:v3.7.3 grafana/grafana:12.2.1; do
+    "$skill/registry.sh" push "$img"
+  done
+fi
+
 echo "--- tester"
 # The image reuses the Dockerfile's final stage with the binary `make build`
 # made on the host, since a Go build inside docker has no module proxy
@@ -199,13 +406,39 @@ mkdir -p "$overlay"
 sed "s/^  stopAfter: .*/  stopAfter: ${duration}s/" "$config" >"$overlay/config.yaml"
 templates=()
 for t in "$(dirname "$config")"/rf-*.yaml; do
-  [[ $profile == versions ]] || break
+  [[ $profile == full ]] && break
   cp "$t" "$overlay/"
   templates+=("$(basename "$t")")
 done
+extra_resources=""
+patches=""
+if [[ $profile == chaos ]]; then
+  # The upgrade's versions, with the charts built here next to the config.
+  for v in from to; do
+    yq -y -i "(.chaos.upgrade.versions[] | select(.name == \"$v\")) |= (.name = \"${version_name[$v]}\"
+      | .chart = \"${version_chart[$v]}\" | .version = \"${version_version[$v]}\" | .image = \"${version_image[$v]}\")" "$overlay/config.yaml"
+    if [[ ${version_chart[$v]} != oci://* ]]; then
+      cp "$charts/${version_chart[$v]}" "$overlay/"
+      templates+=("${version_chart[$v]}")
+    fi
+  done
+  # The mutator's rights in the chaos instances' namespaces, and the
+  # tester on the control plane, which no drain picks.
+  for ns in chaos-op chaos-pvc chaos-sent; do
+    yq -y -s ".[0] | .metadata.namespace = \"$ns\"" "$soak/deploy/rbac-instances.yaml"
+    echo ---
+  done >"$overlay/rbac-chaos-instances.yaml"
+  extra_resources="  - rbac-chaos-instances.yaml"
+  patches="patches:
+  - target: {kind: Deployment, name: soak}
+    patch: |-
+      - {op: add, path: /spec/template/spec/nodeSelector, value: {node-role.kubernetes.io/control-plane: \"\"}}
+      - {op: add, path: /spec/template/spec/tolerations, value: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]}"
+fi
 cat >"$overlay/kustomization.yaml" <<YAML
 resources:
   - ../../deploy
+$extra_resources
 images:
   - name: ghcr.io/saremox/redis-operator-soak
     newName: redis-operator-soak
@@ -217,11 +450,12 @@ configMapGenerator:
     files:
       - config.yaml
 $(printf '      - %s\n' "${templates[@]}")
+$patches
 YAML
 kubectl apply -k "$overlay"
 kubectl -n redis-soak rollout status deployment/soak --timeout=180s
 started=$(date +%s)
-[[ $profile == versions ]] && wait_instances
+[[ $profile != full ]] && wait_instances
 
 scrape() {
   metrics=$(kubectl get --raw /api/v1/namespaces/redis-soak/services/soak:metrics/proxy/metrics)
@@ -287,7 +521,10 @@ while (($(date +%s) < started + duration)); do
 done
 echo "--- waiting for the last mutations to converge"
 deadline=$(($(date +%s) + 2 * convergence + interval + 60))
-until (($(logs | jq -s '[.[] | select(.msg == "mutator stopped")] | length') == ${#instances[@]})); do
+# Every mutator, and the chaos lane, logs when it stopped.
+stops=$(yq '[.instances[] | select(.mutations.kinds)] | length' "$config")
+yq -e '.chaos.kinds' "$config" >/dev/null 2>&1 && stops=$((stops + 1))
+until (($(logs | jq -s '[.[] | select(.msg == "mutator stopped" or .msg == "chaos stopped")] | length') == stops)); do
   if (($(date +%s) > deadline)); then
     echo "FAIL: the mutators didn't stop"
     fail=1
@@ -300,6 +537,11 @@ sleep 15
 scrape
 
 logs >"$artifacts/soak.jsonl"
+if [[ $profile == chaos ]]; then
+  for ns in redis-operator soak-monitoring kube-system; do
+    kubectl -n "$ns" get events --sort-by=.lastTimestamp >"$artifacts/events-$ns.txt"
+  done
+fi
 kubectl -n redis-operator logs deployment/redis-operator --since="$(($(date +%s) - started + 30))s" >"$artifacts/operator.log"
 for rf in "${instances[@]}"; do
   kubectl -n "$rf" get events --sort-by=.lastTimestamp >"$artifacts/events-$rf.txt"
@@ -587,11 +829,91 @@ if [[ $profile == versions ]]; then
     | "scale-down removed the master: \(.rf) step \(.step) \($d.params // "") lost \(.lost)"' "$artifacts/soak.jsonl"
 fi
 
+if [[ $profile == chaos ]]; then
+  echo "--- chaos actions (seconds)"
+  jq -r 'select(.lane == "chaos" and (.msg == "chaos done" or .msg == "chaos skipped"))
+    | [.step, .kind, .result, (.duration_seconds | round), (.error // .reason // "" | gsub("\n"; "; "))] | @tsv' \
+    "$artifacts/soak.jsonl" | table step kind result seconds error
+  jq -r 'select(.lane == "chaos" and .msg == "chaos") | [.time, .step, .kind, (.in_flight // [] | join(",") | if . == "" then "-" else . end)] | @tsv' \
+    "$artifacts/soak.jsonl" | table started step kind in_flight
+
+  echo "--- operator restarts (seconds)"
+  # Without an operator: from the old leader's deletion until the new one
+  # acquired the Lease.
+  jq -r 'select(.msg == "operator restarted")
+    | [.step, .from, .to, (.operator_down_seconds * 10 | round / 10), (.converge_seconds | round)] | @tsv' \
+    "$artifacts/soak.jsonl" | table step old_leader new_leader without_operator converged
+
+  echo "--- operator upgrades (seconds)"
+  jq -r 'select(.msg == "operator upgraded" or .msg == "helm upgrade failed" or .msg == "operator not upgraded")
+    | [.step, "\(.from) -> \(.to)", .msg, (.helm_seconds | round), .hook, (.hook_seconds * 10 | round / 10),
+       (.operator_down_seconds // 0 | . * 10 | round / 10), (.converge_seconds // 0 | round)] | @tsv' \
+    "$artifacts/soak.jsonl" | table step upgrade result helm hook hook_s without_operator converged
+  echo "the CRD before and after each upgrade's hook:"
+  jq -r 'select(.msg == "operator upgraded" or .msg == "helm upgrade failed") | "  \(.from) -> \(.to): \(.crd_before) -> \(.crd_after)"' \
+    "$artifacts/soak.jsonl"
+  echo "the hook's Job and pod events:"
+  grep -E 'crds-upgrade' "$artifacts/events-redis-operator.txt" | sed 's/^/  /' || true
+  jq -r 'select(.msg == "helm upgrade failed") | .output' "$artifacts/soak.jsonl"
+
+  echo "--- node drains (seconds)"
+  jq -r 'select(.msg == "node drained" or .msg == "node uncordoned")
+    | [.step, .node, .msg, (.evict_seconds // 0 | round), (.converge_seconds | round), (.pdb_blocked // "-")] | @tsv' \
+    "$artifacts/soak.jsonl" | table step node phase evicted converged pdb_blocked
+  echo "evictions a PodDisruptionBudget blocked:"
+  jq -r 'select(.msg == "eviction blocked" or .msg == "eviction unblocked" or .msg == "eviction still blocked at the drain timeout")
+    | [.step, .node, "\(.pod_namespace)/\(.pod)", .msg, (.blocked_seconds // 0 | . * 10 | round / 10)] | @tsv' \
+    "$artifacts/soak.jsonl" | table step node pod event blocked
+  grep -E '^redis_soak_chaos_' <<<"$metrics" | sed 's/^redis_soak_//'
+
+  echo "--- outages per chaos action (seconds; per path and client style)"
+  jq -rs '[.[] | select(.msg == "outage ended" and (.event | test("^(operator_restart|operator_upgrade|node_drain)$")))]
+    | group_by([.rf, .event, .path, .client])[]
+    | [.[0].rf, .[0].event, .[0].path, .[0].client, length, (map(.duration_seconds) | add * 10 | round / 10),
+       (map(.duration_seconds) | max * 10 | round / 10)] | @tsv' "$artifacts/soak.jsonl" |
+    table rf event path client outages total max
+  jq -rs '[.[] | select(.msg == "outage started" and (.event | test("^(operator_restart|operator_upgrade|node_drain)$")))]
+    | group_by([.rf, .event, .result])[] | [.[0].rf, .[0].event, .[0].result, length] | @tsv' "$artifacts/soak.jsonl" |
+    table rf event first_result outages
+
+  echo "--- data verified after chaos actions"
+  jq -r 'select(.msg == "data verified" and (.event | test("^(operator_restart|operator_upgrade|node_drain|reset)$")))
+    | [.rf, .event, .step, .failover, .recent, .older, .fill, .lost] | @tsv' "$artifacts/soak.jsonl" |
+    table rf event step failover recent older fill lost
+  jq -c 'select(.msg == "lost writes") | del(.level, .namespace, .mode)' "$artifacts/soak.jsonl"
+
+  echo "--- Sentinel image flips (seconds)"
+  jq -r 'select(.msg == "mutation done" and .kind == "sentinel_image_flip") | [.rf, .step, .result, (.duration_seconds | round), .params] | @tsv' \
+    "$artifacts/soak.jsonl" | table rf step result seconds params
+  jq -r 'select(.msg == "mixed versions") | [.rf, .from, .to, .sentinel, (.duration_seconds | round)] | @tsv' "$artifacts/soak.jsonl" |
+    table rf from to sentinel mixed_seconds
+
+  echo "--- replica_ready_without_data"
+  jq -c 'select(.invariant == "replica_ready_without_data" and (.msg == "invariant violated" or .msg == "invariant restored"))
+    | {time, rf, msg, finding, reason, duration_seconds}' "$artifacts/soak.jsonl"
+
+  echo "--- dashboard and alerts"
+  # Through port-forwards: Prometheus has scraped the tester since its start.
+  kubectl -n soak-monitoring port-forward svc/prometheus 19090:9090 >/dev/null 2>&1 &
+  pf_prometheus=$!
+  kubectl -n soak-monitoring port-forward svc/grafana 13000:3000 >/dev/null 2>&1 &
+  pf_grafana=$!
+  sleep 5
+  monitoring=0
+  python3 "$soak/e2e/check-monitoring.py" http://127.0.0.1:19090 http://127.0.0.1:13000 $(($(date +%s) - started)) "${instances[@]}" \
+    >"$artifacts/monitoring.txt" 2>&1 || monitoring=$?
+  kill "$pf_prometheus" "$pf_grafana"
+  # Without the panels that returned data for an instance.
+  grep -vE '\[[a-z-]+\]: [0-9]+ series$' "$artifacts/monitoring.txt" || true
+fi
+
 # verified_after_mutations prints the mutations the data wasn't verified
 # after, as their kind or as a reset.
 verified_after_mutations() {
-  jq -rs '(map(select(.msg == "data verified")) | map("\(.rf)/\(.step)")) as $v
-    | .[] | select(.msg == "mutation done") | "\(.rf)/\(.step)" as $k | select($v | index($k) | not) | "\($k)/\(.kind)"' \
+  jq -rs '(map(select(.msg == "data verified")) | map("\(.rf)/\(.step)/\(.event)")) as $v
+    | .[] | select(.msg == "mutation done") | . as $d
+    | select($v | (index("\($d.rf)/\($d.step)/\($d.kind)") or index("\($d.rf)/\($d.step)/reset")) | not)
+    | "\(.rf)/\(.step)/\(.kind)"' \
     "$artifacts/soak.jsonl"
 }
 # lossy_events prints the verifications that lost writes they must not:
@@ -621,7 +943,7 @@ race_losses() {
 verified_after_failovers() {
   jq -rs '
     def ts: capture("^(?<s>[^.Z]+)(?<f>\\.[0-9]+)?") | ((.s + "Z") | fromdateiso8601) + ((.f // "0") | tonumber);
-    (map(select(.msg == "data verified" and (.event == "failover" or .event == "reset")))) as $fv
+    (map(select(.msg == "data verified" and (.event | test("^(failover|reset|operator_restart|operator_upgrade|node_drain)$"))))) as $fv
     | (map(select(.msg == "mutating"))) as $starts
     | (map(select(.msg == "mutation done"))) as $dones
     | .[] | select(.msg == "failover") | . as $f | ($f.time | ts) as $t
@@ -685,6 +1007,28 @@ else
     | select($pvc | split(" ") | index($v.rf)) | "\(.rf)/\(.step)/\(.from)->\(.to)=\(.lost)"' "$artifacts/soak.jsonl" | xargs)
   check "writes lost along ok edges on volumes: $lossy" eq "$lossy" ""
 fi
+if [[ $profile == chaos ]]; then
+  for kind in $chaos_kinds; do
+    l=("kind=\"$kind\"")
+    check "chaos_total{kind=$kind,result=converged} = 0" ge "$(value redis_soak_chaos_total "${l[@]}" 'result="converged"')" 1
+    for result in timeout failed; do
+      n=$(value redis_soak_chaos_total "${l[@]}" "result=\"$result\"")
+      check "chaos_total{kind=$kind,result=$result} = $n" eq "$n" 0
+    done
+  done
+  inflight=$(jq -r 'select(.msg == "chaos" and (.in_flight // [] | length) > 0) | "\(.step)/\(.kind):\(.in_flight | join(","))"' \
+    "$artifacts/soak.jsonl" | xargs)
+  check "changes in flight when a chaos action started: $inflight" eq "$inflight" ""
+  # Restarts and upgrades never touch a redis pod; a drain's evictions are
+  # graceful, and the volumes move with the pods.
+  lossy=$(jq -r --arg pvc "$pvc_instances" 'select(.msg == "data verified" and .lost > 0) | . as $v
+    | select(.event == "operator_restart" or .event == "operator_upgrade" or (.event == "node_drain" and ($pvc | split(" ") | index($v.rf))))
+    | "\(.rf)/\(.step)/\(.event)=\(.lost)"' "$artifacts/soak.jsonl" | xargs)
+  check "writes lost by chaos actions that must lose none: $lossy" eq "$lossy" ""
+  n=$(jq -s '[.[] | select(.msg == "data verified" and (.event | test("^(operator_restart|operator_upgrade|node_drain)$")))] | length' "$artifacts/soak.jsonl")
+  check "the data was never verified after a chaos action" gt "$n" 0
+  check "the dashboard and alerts" eq "$monitoring" 0
+fi
 unverified=$(verified_after_mutations | xargs)
 check "data not verified after mutations: $unverified" eq "$unverified" ""
 unverified=$(verified_after_failovers | xargs)
@@ -699,6 +1043,10 @@ if [[ $fail != 0 ]]; then
   done
   kubectl -n redis-operator get events --sort-by=.lastTimestamp | tail -20 || true
   exit 1
+fi
+if [[ $profile == chaos ]]; then
+  echo "PASS: every chaos action converged with no change in flight, without findings, every probe succeeds, no restart, upgrade or drain on volumes lost writes, and the dashboard and alerts check out"
+  exit 0
 fi
 if [[ $profile == versions ]]; then
   echo "PASS: every edge was taken, every ok edge ended ok, none failed unsafely, every chain reset and every kind converged, without findings, every probe succeeds, and no rollover along an ok edge on volumes lost writes"
