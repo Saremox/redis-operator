@@ -53,6 +53,8 @@ REDIS_OPERATOR_VERSION=<release-tag>
 kubectl replace -f https://raw.githubusercontent.com/Saremox/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
 ```
 
+The chart can also apply its CRD before each install and upgrade. Set `crds.upgradeHook.enabled=true`. A Helm hook Job then runs `kubectl apply` with its own ServiceAccount, which can change the RedisFailover CRD. The hook is off by default because of this permission. The charts of 4.2.0-rc2 and earlier run the hook with the operator image, which has no `kubectl`. Use the hook only with a later release.
+
 ```
 helm upgrade redis-operator redis-operator/redis-operator
 ```
