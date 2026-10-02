@@ -2,6 +2,30 @@
 
 Check [releases](https://github.com/Saremox/redis-operator/releases) section for Changelog
 
+## [Unreleased]
+
+Changes on `main` after 4.2.0-rc2.
+
+### Upgrade notes
+- Re-apply the CRD and upgrade the operator at the same time. Helm does not update the CRD on `helm upgrade` unless `crds.upgradeHook.enabled` is true.
+- The CRD enables the `status` subresource (#207). An older operator loses its status writes against the new CRD. The new operator fails its status writes against the old CRD.
+- The CRD has the schema of k8s.io/api 0.37 (#208). With the old CRD, the API server removes fields such as `httpGet.protocol`, `grpc.mode` and `volumeMounts[].bindMountOptions`.
+- The operator needs `get` and `patch` on `redisfailovers/status` (#207). The chart, the kustomize and the example ClusterRoles grant them. Add them to a ClusterRole that you maintain yourself.
+
+### Changes
+- Write the RedisFailover status through the status subresource, so a status change does not change `metadata.generation` (#207).
+- Regenerate the CRD for k8s.io/api 0.37, and verify the CRD manifests in CI (#208).
+- Operator-managed failover waits for a stopping master before it promotes a replica, so a scale-down that removes the master does not lose writes (#210).
+- Operator-managed mode sets the status to NotHealthy when it cannot check whether the master is stopping (#219).
+- A Redis replica whose link to the master is down is not ready before its first sync, or after a window of 60s plus the failover timing (#205).
+- The status message names the pod when a rollout waits on the same pod for more than 10 minutes (#206).
+- The default Redis readiness and liveness probes and the Sentinel liveness probe run `redis-cli` under `timeout 2` when the image has `timeout`, so a frozen pod fails the probe in seconds (#217).
+- The default Sentinel readiness probe runs `redis-cli` under `timeout 2` when the image has `timeout`, so a frozen Sentinel fails the probe in about 2s (#218).
+- Make every RedisFailover example valid for the CRD (#215).
+- Document that a migration to Valkey must start from Redis 7.2. Valkey cannot load the RDB format of Redis 7.4 and later (#202).
+- Pin the base images of the operator image by digest (#221).
+- Build the operator image with Go 1.27 (#222).
+
 ## [v1.1.0-rc.3] - 2022-01-19
 ### Changes
 - Fixed support for kubernetes <1.21
