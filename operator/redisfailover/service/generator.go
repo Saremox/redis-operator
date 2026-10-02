@@ -264,46 +264,86 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	name := GetRedisShutdownConfigMapName(rf)
 	port := rf.Spec.Redis.Port
 	namespace := rf.Namespace
-	rfName := strings.ReplaceAll(strings.ToUpper(rf.Name), "-", "_")
 
 	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
 	// Runs as the preStop hook under /bin/sh, which is BusyBox ash on the
 	// alpine redis images, so this has to stay POSIX: no "let", no "[[ ]]".
 	// A single failed sentinel query used to be enough to skip the failover
 	// and shut the master down anyway, so both sentinel calls are retried.
-	shutdownContent := fmt.Sprintf(`master=""
+	// The redis pods have no service links, so the script finds Sentinel
+	// through the DNS name of the Sentinel Service.
+	// The kubelet stops the hook at the end of the grace period (30s by
+	// default), and then the script cannot SAVE. Thus each call has a 2s
+	// limit, and the Sentinel part ends before 19s: the last failover request
+	// or poll starts before the 12s deadline and ends before 15s, and
+	// REPLICAOF and CLIENT UNPAUSE add a maximum of 4s.
+	// Until Sentinel promotes a replica, the master still accepts writes, and
+	// the promotion loses those that did not reach the replica. Thus the script
+	// pauses the writes, and makes the old master a replica of the new master
+	// before it ends the pause: the clients then get READONLY and not a lost
+	// OK. The pause stops 6s after the deadline, also if the script stops.
+	// Sentinel has no password, so only the local calls send REDIS_PASSWORD.
+	shutdownContent := ""
+	if rf.SentinelsAllowed() {
+		shutdownContent = fmt.Sprintf(`t=; command -v timeout >/dev/null 2>&1 && t="timeout 2"
+local_cli() {
+	if [ -n "${REDIS_PASSWORD}" ]; then
+		REDISCLI_AUTH="${REDIS_PASSWORD}" $t redis-cli -p %[2]v "$@"
+	else
+		$t redis-cli -p %[2]v "$@"
+	fi
+}
+deadline=$(($(date +%%s) + 12))
+self=$(hostname -i)
+master=""
 retries=0
 while [ -z "$master" ] && [ "$retries" -lt 3 ]; do
 	retries=$((retries + 1))
-	master=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+	master=$($t redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
 	if [ -z "$master" ]; then
-		sleep 3
+		sleep 1
 	fi
 done
 if [ -z "$master" ]; then
 	echo "shutdown.sh: could not resolve the master from sentinel after $retries attempts" >&2
 fi
-if [ "$master" = "$(hostname -i)" ]; then
+if [ "$master" = "$self" ]; then
+  paused=$(local_cli CLIENT PAUSE $(((deadline + 6 - $(date +%%s)) * 1000)) WRITE)
+  if [ "$paused" != "OK" ]; then
+  	echo "shutdown.sh: could not pause the writes (CLIENT PAUSE WRITE needs Redis 6.2): $paused" >&2
+  fi
   failover=""
   retries=0
-  while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ]; do
+  while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ] && [ "$(date +%%s)" -lt "$deadline" ]; do
   	retries=$((retries + 1))
-  	failover=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} SENTINEL failover mymaster)
+  	failover=$($t redis-cli -h %[1]v -p 26379 SENTINEL failover mymaster)
   	if [ "$failover" != "OK" ]; then
-  		sleep 3
+  		sleep 1
   	fi
   done
   if [ "$failover" != "OK" ]; then
   	echo "shutdown.sh: sentinel did not accept the failover after $retries attempts: $failover" >&2
+  else
+  	while { [ -z "$master" ] || [ "$master" = "$self" ]; } && [ "$(date +%%s)" -lt "$deadline" ]; do
+  		sleep 1
+  		master=$($t redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+  	done
+  	if [ -z "$master" ] || [ "$master" = "$self" ]; then
+  		echo "shutdown.sh: sentinel did not report a new master before the deadline" >&2
+  	else
+  		local_cli REPLICAOF "$master" %[2]v
+  	fi
   fi
-  sleep 31
+  local_cli CLIENT UNPAUSE
 fi
-cmd="redis-cli -p %[2]v"
+`, GetSentinelName(rf), port)
+	}
+	shutdownContent += fmt.Sprintf(`cmd="redis-cli -p %v"
 if [ ! -z "${REDIS_PASSWORD}" ]; then
 	export REDISCLI_AUTH=${REDIS_PASSWORD}
 fi
 save_command="${cmd} save"
-eval $save_command`, rfName, port)
+eval $save_command`, port)
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
