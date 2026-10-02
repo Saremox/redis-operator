@@ -33,6 +33,21 @@ repo=$(cd "$soak/../.." && pwd)
 skill=$repo/.claude/skills/kind-cluster
 export KUBECONFIG=/tmp/kind-$cluster/kubeconfig
 artifacts=$soak/bin/kind-e2e-artifacts
+ctx=
+# A failure before the report keeps the cluster state, so that the uploaded
+# artifacts show the cause.
+on_exit() {
+  local rc=$?
+  [[ -n $ctx ]] && rm -rf "$ctx"
+  if ((rc != 0)) && [[ -f $KUBECONFIG ]]; then
+    mkdir -p "$artifacts/failure"
+    kubectl get redisfailovers -A -o yaml >"$artifacts/failure/redisfailovers.yaml" 2>&1 || true
+    kubectl get pods -A -o wide >"$artifacts/failure/pods.txt" 2>&1 || true
+    kubectl get events -A --sort-by=.lastTimestamp >"$artifacts/failure/events.txt" 2>&1 || true
+    kubectl -n redis-operator logs deployment/redis-operator --tail=5000 >"$artifacts/failure/operator.log" 2>&1 || true
+  fi
+}
+trap on_exit EXIT
 
 operator_invariants="pods one_master master_service replication replica_ready_without_data config healthy oom_killed"
 sentinel_invariants="pods one_master master_service replication sentinel_agreement replica_ready_without_data config healthy oom_killed"
@@ -372,7 +387,6 @@ echo "--- tester"
 # made on the host, since a Go build inside docker has no module proxy
 # access in every environment this runs in.
 ctx=$(mktemp -d)
-trap 'rm -rf "$ctx"' EXIT
 mkdir -p "$ctx/out"
 cp "$soak/bin/soak" "$ctx/out/soak"
 # The tag changes with the binary: the node keeps an image it has, so a
