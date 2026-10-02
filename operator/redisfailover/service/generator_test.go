@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -18,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -3412,7 +3414,7 @@ func TestRedisReadinessScript(t *testing.T) {
 		},
 		{
 			name:  "link down too long",
-			info:  replica("master_host:10.0.0.1", "master_link_status:down", "master_last_io_seconds_ago:-1", "master_sync_in_progress:0", "master_link_down_since_seconds:61"),
+			info:  replica("master_host:10.0.0.1", "master_link_status:down", "master_last_io_seconds_ago:-1", "master_sync_in_progress:0", "master_link_down_since_seconds:71"),
 			ready: false,
 		},
 	}
@@ -3441,6 +3443,58 @@ func TestRedisReadinessScript(t *testing.T) {
 			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "FAKE_INFO="+info)
 			out, err := cmd.CombinedOutput()
 			assert.Equal(t, test.ready, err == nil, "ready.sh output: %s", out)
+		})
+	}
+}
+
+// TestRedisReadinessLinkDownWindow checks that a replica stays ready through
+// the configured failover: the window is 60s plus the failover's timing.
+func TestRedisReadinessLinkDownWindow(t *testing.T) {
+	tests := []struct {
+		name   string
+		modify func(rf *redisfailoverv1.RedisFailover)
+		window string
+	}{
+		{
+			name:   "operator mode, default failoverTimeout",
+			modify: func(rf *redisfailoverv1.RedisFailover) {},
+			window: "70",
+		},
+		{
+			name: "operator mode, custom failoverTimeout",
+			modify: func(rf *redisfailoverv1.RedisFailover) {
+				rf.Spec.Sentinel.FailoverTimeout = &metav1.Duration{Duration: 2 * time.Minute}
+			},
+			window: "180",
+		},
+		{
+			name: "sentinel mode, default config",
+			modify: func(rf *redisfailoverv1.RedisFailover) {
+				rf.Spec.Sentinel.Enabled = ptr.To(true)
+			},
+			window: "75",
+		},
+		{
+			name: "sentinel mode, customConfig",
+			modify: func(rf *redisfailoverv1.RedisFailover) {
+				rf.Spec.Sentinel.Enabled = ptr.To(true)
+				rf.Spec.Sentinel.CustomConfig = []string{"down-after-milliseconds 120000", "parallel-syncs 1", "failover-timeout 30000"}
+			},
+			window: "210",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			test.modify(rf)
+			var gotCM *corev1.ConfigMap
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				gotCM = args.Get(1).(*corev1.ConfigMap)
+			}).Return(nil)
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			require.NoError(t, client.EnsureRedisReadinessConfigMap(rf, nil, []metav1.OwnerReference{}))
+			assert.Contains(t, gotCM.Data["ready.sh"], "\nMAX_LINK_DOWN_SECONDS="+test.window+"\n")
 		})
 	}
 }

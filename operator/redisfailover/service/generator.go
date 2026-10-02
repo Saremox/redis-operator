@@ -5,8 +5,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"fmt"
+	"strconv"
 	"strings"
 	"text/template"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -315,6 +317,36 @@ eval $save_command`, rfName, port)
 	}
 }
 
+// redisReadinessMaxLinkDownSeconds is how long ready.sh keeps a replica ready
+// after its link to the master dropped: a base window plus the time the
+// configured failover takes to start and finish.
+func redisReadinessMaxLinkDownSeconds(rf *redisfailoverv1.RedisFailover) int64 {
+	window := 60 * time.Second
+	if rf.OperatorManagedFailover() {
+		window += rf.GetFailoverTimeoutDuration()
+	} else {
+		window += sentinelConfigMilliseconds(rf, "down-after-milliseconds", 5000)
+		window += sentinelConfigMilliseconds(rf, "failover-timeout", 10000)
+	}
+	return int64(window.Round(time.Second) / time.Second)
+}
+
+// sentinelConfigMilliseconds returns the value sentinel customConfig gives
+// param, the last one as the operator applies them in order, or def.
+func sentinelConfigMilliseconds(rf *redisfailoverv1.RedisFailover, param string, def int64) time.Duration {
+	ms := def
+	for _, c := range rf.Spec.Sentinel.CustomConfig {
+		s := strings.Split(c, " ")
+		if len(s) != 2 || s[0] != param {
+			continue
+		}
+		if v, err := strconv.ParseInt(s[1], 10, 64); err == nil && v >= 0 {
+			ms = v
+		}
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
 func generateRedisReadinessConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.ConfigMap {
 	name := GetRedisReadinessName(rf)
 	port := rf.Spec.Redis.Port
@@ -330,7 +362,7 @@ LINK_UP="master_link_status:up"
 LINK_DOWN_SINCE="master_link_down_since_seconds:"
 # A replica stays ready this long after losing its master, so it outlasts a
 # failover, during which every replica's link is down.
-MAX_LINK_DOWN_SECONDS=60
+MAX_LINK_DOWN_SECONDS=%[2]v
 
 cmd="redis-cli -p %[1]v"
 if [ ! -z "${REDIS_PASSWORD}" ]; then
@@ -384,7 +416,7 @@ case $role in
 		*)
 				echo "unexpected"
 				exit 1
-esac`, port)
+esac`, port, redisReadinessMaxLinkDownSeconds(rf))
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
