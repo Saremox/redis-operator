@@ -131,6 +131,24 @@ jobs:
               --jq .body > release-notes.md
           fi
 
+      # A release with manual upgrade steps has docs/migrations/X.Y.Z.md.
+      # The guide for X.Y.Z also applies to X.Y.Z-rcN.
+      - name: Add migration guide warning
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          GUIDE="docs/migrations/${TAG%-rc*}.md"
+
+          if [ -f "$GUIDE" ]; then
+            URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${TAG}/${GUIDE}"
+            {
+              echo "> [!WARNING]"
+              echo "> This release needs manual steps. Read the [migration guide](${URL}) before you upgrade."
+              echo
+              cat release-notes.md
+            } > release-notes.tmp
+            mv release-notes.tmp release-notes.md
+          fi
+
       - name: Install Helm
         uses: azure/setup-helm@v5
         with:

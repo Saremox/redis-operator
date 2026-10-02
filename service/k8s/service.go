@@ -12,7 +12,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// Service the ServiceAccount service that knows how to interact with k8s to manage them
+// Service the Service service that knows how to interact with k8s to manage them
 type Service interface {
 	GetService(namespace string, name string) (*corev1.Service, error)
 	CreateService(namespace string, service *corev1.Service) error

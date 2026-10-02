@@ -32,7 +32,7 @@ type StatefulSet interface {
 	GetControllerRevision(namespace, name string) (*appsv1.ControllerRevision, error)
 }
 
-// StatefulSetService is the service account service implementation using API calls to kubernetes.
+// StatefulSetService is the statefulSet service implementation using API calls to kubernetes.
 type StatefulSetService struct {
 	kubeClient      kubernetes.Interface
 	logger          log.Logger
