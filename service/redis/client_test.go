@@ -834,6 +834,54 @@ func TestGetNumberSentinelsInMemory_NotMonitoringAnything(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// startFakeSentinel listens on ip:sentinelPort and answers each command with
+// info as a bulk string. A real Sentinel cannot report more than 65536
+// sentinels or replicas.
+func startFakeSentinel(t *testing.T, ip, info string) {
+	t.Helper()
+	l, err := net.Listen("tcp", net.JoinHostPort(ip, sentinelPort))
+	if err != nil {
+		t.Skipf("cannot listen on %s: %v", net.JoinHostPort(ip, sentinelPort), err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	reply := []byte("$" + strconv.Itoa(len(info)) + "\r\n" + info + "\r\n")
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				buf := make([]byte, 4096)
+				for {
+					if _, err := conn.Read(buf); err != nil {
+						return
+					}
+					if _, err := conn.Write(reply); err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+}
+
+func TestGetNumberSentinelsInMemory_TooMany(t *testing.T) {
+	const target = "127.0.0.2"
+	startFakeSentinel(t, target, "# Sentinel\r\nsentinel_masters:1\r\n"+
+		"master0:name=mymaster,status=ok,address=10.0.0.1:6379,slaves=70000,sentinels=70000\r\n")
+	c := newTestClient()
+
+	n, err := c.GetNumberSentinelsInMemory(target)
+	assert.Error(t, err)
+	assert.Zero(t, n)
+
+	n, err = c.GetNumberSentinelSlavesInMemory(target)
+	assert.Error(t, err)
+	assert.Zero(t, n)
+}
+
 // ---------------------------------------------------------------------
 // MonitorRedisWithPort / SetCustomSentinelConfig / ResetSentinel /
 // SentinelCheckQuorum

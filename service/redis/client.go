@@ -135,7 +135,7 @@ func (c *client) GetNumberSentinelsInMemory(ip string) (int32, error) {
 	}
 	if nSentinels > 65536 {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, metrics.SENTINEL_TOO_MANY)
-		return 0, err
+		return 0, fmt.Errorf("sentinel reports %d sentinels, more than 65536", nSentinels)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return int32(nSentinels), nil
@@ -172,7 +172,7 @@ func (c *client) GetNumberSentinelSlavesInMemory(ip string) (int32, error) {
 	}
 	if nSlaves > 65536 {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, metrics.SENTINEL_TOO_MANY)
-		return 0, err
+		return 0, fmt.Errorf("sentinel reports %d replicas, more than 65536", nSlaves)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return int32(nSlaves), nil
