@@ -172,6 +172,7 @@ func TestSetMasterOnAllDisconnectsAMasterWithoutTheMasterLabel(t *testing.T) {
 		isMasterErr     error
 		noDisconnector  bool
 		relabelErr      error
+		skipReplicaOf   bool
 		expectedActions []string
 	}{
 		{
@@ -196,9 +197,15 @@ func TestSetMasterOnAllDisconnectsAMasterWithoutTheMasterLabel(t *testing.T) {
 			labels: slaveRoleLabel,
 		},
 		{
-			name:        "a pod that does not answer keeps its clients",
+			name:          "a pod that does not answer is skipped",
+			labels:        slaveRoleLabel,
+			isMasterErr:   errors.New("i/o timeout"),
+			skipReplicaOf: true,
+		},
+		{
+			name:        "a pod that answers with an error keeps its clients",
 			labels:      slaveRoleLabel,
-			isMasterErr: errors.New("i/o timeout"),
+			isMasterErr: errors.New("NOAUTH Authentication required"),
 		},
 		{
 			name:           "without a disconnector the pod is not checked",
@@ -227,7 +234,9 @@ func TestSetMasterOnAllDisconnectsAMasterWithoutTheMasterLabel(t *testing.T) {
 			if !test.noDisconnector {
 				mr.On("IsMaster", "1.1.1.1", "0", "").Once().Return(test.isMaster, test.isMasterErr)
 			}
-			mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(nil)
+			if !test.skipReplicaOf {
+				mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(nil)
+			}
 
 			var opts []rfservice.Option
 			if !test.noDisconnector {
@@ -384,4 +393,35 @@ func TestClientDisconnectorFallsBackToDisconnecting(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClientDisconnectorRunsAgainAfterAFailureWhenDemotedAgain(t *testing.T) {
+	rf := generateRF()
+	kubeClient := fake.NewClientset(masterEndpointSlice(rf, "1.1.1.1"))
+	called := make(chan struct{}, 2)
+	mr := &mRedisService.Client{}
+	mr.On("DisconnectClients", "1.1.1.1", "0", "").Once().Return(errors.New("i/o timeout")).
+		Run(func(mock.Arguments) { called <- struct{}{} })
+	mr.On("DisconnectClients", "1.1.1.1", "0", "").Once().Return(nil).
+		Run(func(mock.Arguments) { called <- struct{}{} })
+	disconnector := rfservice.NewClientDisconnector(kubeClient, mr, log.DummyLogger{}, time.Minute, 0)
+
+	demoted := podWithRole("old-master", "1.1.1.1", slaveRoleLabel)
+	disconnector.DisconnectDemoted(rf, demoted, "0", "")
+	// The first run still waits for the endpoint, so this call only asks for
+	// one more run.
+	disconnector.DisconnectDemoted(rf, demoted, "0", "")
+	_, err := kubeClient.DiscoveryV1().EndpointSlices(namespace).
+		Update(context.Background(), masterEndpointSlice(rf), metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-called:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("disconnect %d did not run", i+1)
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+	mr.AssertNumberOfCalls(t, "DisconnectClients", 2)
 }
