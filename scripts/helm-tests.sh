@@ -59,6 +59,19 @@ for want in "4.1.3:latest=false major=false minor=true " "4.2.1:latest=true majo
     fi
 done
 
+# The changelog of a patch on an older release line must not use a release of
+# a newer line as its baseline.
+previous_tag() {
+    printf '3.2.4\n4.1.2\n4.2.0-rc2\n4.2.0\n' | ./scripts/release.sh previous "$1"
+}
+for want in "3.2.5:3.2.4" "4.2.1:4.2.0" "4.3.0-rc1:4.2.0" "4.2.0:4.1.2" "3.2.4:"; do
+    got=$(previous_tag "${want%%:*}")
+    if [ "${got}" != "${want#*:}" ]; then
+        echo "Changelog baseline of ${want%%:*}: '${got}', want '${want#*:}'." >&2
+        exit 1
+    fi
+done
+
 helm lint ${chart}
 helm template ${chart} --kube-version ${kube_version}
 
@@ -104,9 +117,13 @@ service_accounts() {
         END { doc_end() }'
 }
 
-# The API server rejects a ServiceAccount subject without a namespace.
+# The API server rejects a ServiceAccount subject without a namespace. The
+# release asset must also bind the ServiceAccount of the operator.
 fail=0
-for dir in manifests/kustomize/overlays/*/; do
+asset=$(sed -n 's|^ *kustomize build \(manifests/[^ ]*\) > release-artifacts/redis-operator.yaml$|\1|p' \
+    .github/workflows/release.yml)
+[ -n "${asset}" ] || { echo "FAIL: release.yml builds no redis-operator.yaml from manifests/" >&2; fail=1; }
+for dir in manifests/kustomize/overlays/*/ ${asset}; do
   echo ">> Testing kustomize ${dir}"
   refs=$(kubectl kustomize "${dir}" 2>/dev/null | service_accounts)
   grep -q '^subject ' <<<"${refs}" || { echo "FAIL: ${dir} binds no ServiceAccount" >&2; fail=1; }
@@ -115,6 +132,14 @@ for dir in manifests/kustomize/overlays/*/; do
     grep -qx "sa ${ref}" <<<"${refs}" || { echo "FAIL: ${dir}: no ServiceAccount ${ref}" >&2; fail=1; }
   done < <(grep '^subject ' <<<"${refs}")
 done
+
+# Without pipefail, a failed `gh api` gives release.sh no input, and the
+# release moves latest.
+steps=$(awk '/^      - /{ if (pipe && !bash) print name; name = $0; pipe = bash = 0 }
+    /[|] [.][/]scripts[/]release[.]sh/ { pipe = 1 }
+    /^        shell: bash$/ { bash = 1 }
+    END { if (pipe && !bash) print name }' .github/workflows/release.yml)
+[ -z "${steps}" ] || { echo "FAIL: release.yml steps pipe into release.sh without 'shell: bash':" >&2; echo "${steps}" >&2; fail=1; }
 
 [ ${fail} -eq 0 ]
 
