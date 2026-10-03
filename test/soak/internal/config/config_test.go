@@ -1,21 +1,44 @@
 package config
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
+	"sigs.k8s.io/yaml"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
+// The e2e profiles are jq programs over deploy/config.yaml.
 func TestShippedConfigsParse(t *testing.T) {
-	for _, path := range []string{"../../deploy/config.yaml", "../../e2e/config.yaml", "../../e2e/config-versions.yaml", "../../e2e/config-chaos.yaml"} {
-		b, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
+	b, err := os.ReadFile("../../deploy/config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(b); err != nil {
+		t.Fatal(err)
+	}
+	jq, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skip("no jq")
+	}
+	js, err := yaml.YAMLToJSON(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range []string{"full", "versions", "chaos"} {
+		cmd := exec.Command(jq, "--arg", "stopAfter", "900s", "--arg", "versions",
+			`[{"name": "a", "chart": "a.tgz", "image": "op:a"}, {"name": "b", "chart": "b.tgz", "image": "op:b"}]`,
+			"-f", "../../e2e/"+profile+".jq")
+		cmd.Stdin = bytes.NewReader(js)
+		out, err := cmd.Output()
+		if err == nil {
+			_, err = Parse(out)
 		}
-		if _, err := Parse(b); err != nil {
-			t.Errorf("%s: %v", path, err)
+		if err != nil {
+			t.Errorf("%s: %v", profile, err)
 		}
 	}
 }

@@ -7,6 +7,9 @@
 #   NODE_VERSION  kindest/node tag (default v1.35.0)
 #   SUBNET        second octet of the pod subnet 10.SUBNET.0.0/16 (default 244).
 #                 Use a different one per cluster when running several.
+# Environment:
+#   WORKERS       worker nodes besides the control plane (default 0)
+#   SHARED        a host directory that every node mounts as /shared
 set -euo pipefail
 
 name=${1:?usage: kind-up.sh NAME [NODE_VERSION] [SUBNET]}
@@ -40,12 +43,21 @@ containerdConfigPatches:
   [plugins."io.containerd.grpc.v1.cri".registry]
     config_path = "/etc/containerd/certs.d"
 nodes:
-- role: control-plane
+EOF
+for role in control-plane $(for _ in $(seq 1 "${WORKERS:-0}"); do echo worker; done); do
+  cat >>"$dir/kind.yaml" <<EOF
+- role: $role
   kubeadmConfigPatches:
   - |
     kind: KubeletConfiguration
     failCgroupV1: false
 EOF
+  if [[ -n ${SHARED:-} ]]; then
+    mkdir -p "$SHARED"
+    chmod 0777 "$SHARED"
+    printf '  extraMounts:\n  - hostPath: %s\n    containerPath: /shared\n' "$SHARED" >>"$dir/kind.yaml"
+  fi
+done
 
 "$here/registry.sh" pull "kindest/node:$version"
 kind create cluster --name "$name" --image "kindest/node:$version" \

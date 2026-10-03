@@ -34,7 +34,7 @@ const (
 )
 
 func stepRand(seed int64, in config.Instance, step int) *rand.Rand {
-	return config.StepRand(seed, in.Namespace+"/"+in.Name, step)
+	return config.StepRand(seed, in.Name, step)
 }
 
 func pickKind(r *rand.Rand, m config.Mutations) config.Kind {

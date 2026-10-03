@@ -211,8 +211,8 @@ func TestResourcesPatch(t *testing.T) {
 
 	r := stepRand(1, testInstance, 5)
 	p := planResources(r, mutations().Resources, testState())
-	want := `{"spec":{"redis":{"resources":{"limits":{"memory":"133Mi"},"requests":{"cpu":"67m","memory":"35Mi"}}}}}`
-	if string(p.patch) != want || p.params != "requests.cpu 50m -> 67m, requests.memory 64Mi -> 35Mi, limits.memory 256Mi -> 133Mi" {
+	want := `{"spec":{"redis":{"resources":{"limits":{"memory":"199Mi"},"requests":{"cpu":"33m","memory":"84Mi"}}}}}`
+	if string(p.patch) != want || p.params != "requests.cpu 50m -> 33m, requests.memory 64Mi -> 84Mi, limits.memory 256Mi -> 199Mi" {
 		t.Errorf("patch %s, params %q", p.patch, p.params)
 	}
 }
