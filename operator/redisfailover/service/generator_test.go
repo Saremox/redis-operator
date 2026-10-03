@@ -3274,11 +3274,11 @@ func TestEnsureSentinelConfigMapContent(t *testing.T) {
 
 	assert.NoError(err)
 	if assert.NotNil(gotCM) {
-		// This pins down the current fixed sentinel.conf values so a future
-		// accidental change to the template is caught.
+		// The timeouts must be the sentinel customConfig defaults. Otherwise a
+		// restarted Sentinel disagrees with the other Sentinels.
 		expected := `sentinel monitor mymaster 127.0.0.1 6379 2
-sentinel down-after-milliseconds mymaster 1000
-sentinel failover-timeout mymaster 3000
+sentinel down-after-milliseconds mymaster 5000
+sentinel failover-timeout mymaster 10000
 sentinel parallel-syncs mymaster 2`
 		assert.Equal(expected, gotCM.Data["sentinel.conf"])
 	}

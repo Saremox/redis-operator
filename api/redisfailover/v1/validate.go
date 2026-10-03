@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -86,11 +87,26 @@ func (r *RedisFailover) Validate() error {
 		r.Spec.Sentinel.Exporter.Image = defaultSentinelExporterImage
 	}
 
-	if len(r.Spec.Sentinel.CustomConfig) == 0 {
-		r.Spec.Sentinel.CustomConfig = defaultSentinelCustomConfig
-	}
+	r.Spec.Sentinel.CustomConfig = addSentinelDefaults(r.Spec.Sentinel.CustomConfig)
 
 	return nil
+}
+
+// addSentinelDefaults puts each default in front of configs, unless configs
+// sets that parameter. Otherwise a Sentinel uses a different value after a
+// restart or a new monitor, and the Sentinels then disagree on the timeouts.
+func addSentinelDefaults(configs []string) []string {
+	set := map[string]bool{}
+	for _, c := range configs {
+		set[strings.SplitN(c, " ", 2)[0]] = true
+	}
+	merged := []string{}
+	for _, d := range defaultSentinelCustomConfig {
+		if !set[strings.SplitN(d, " ", 2)[0]] {
+			merged = append(merged, d)
+		}
+	}
+	return append(merged, configs...)
 }
 
 func deduplicateStr(strSlice []string) []string {

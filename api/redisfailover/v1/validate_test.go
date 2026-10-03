@@ -15,8 +15,10 @@ func TestValidate(t *testing.T) {
 		rfRedisCustomConfig    []string
 		rfSentinelCustomConfig []string
 		rfCommandRenames       []RedisCommandRename
-		expectedError          string
-		expectedBootstrapNode  *BootstrapSettings
+		// expectedSentinelCustomConfig is nil when Validate adds all the defaults.
+		expectedSentinelCustomConfig []string
+		expectedError                string
+		expectedBootstrapNode        *BootstrapSettings
 	}{
 		{
 			name:   "populates default values",
@@ -28,9 +30,22 @@ func TestValidate(t *testing.T) {
 			expectedError: "name length can't be higher than 48",
 		},
 		{
-			name:                   "SentinelCustomConfig provided",
-			rfName:                 "test",
-			rfSentinelCustomConfig: []string{"failover-timeout 500"},
+			name:                         "SentinelCustomConfig value wins over its default",
+			rfName:                       "test",
+			rfSentinelCustomConfig:       []string{"failover-timeout 500"},
+			expectedSentinelCustomConfig: []string{"down-after-milliseconds 5000", "failover-timeout 500"},
+		},
+		{
+			name:                         "SentinelCustomConfig keeps the defaults it does not set",
+			rfName:                       "test",
+			rfSentinelCustomConfig:       []string{"parallel-syncs 1"},
+			expectedSentinelCustomConfig: []string{"down-after-milliseconds 5000", "failover-timeout 10000", "parallel-syncs 1"},
+		},
+		{
+			name:                         "SentinelCustomConfig that sets all defaults keeps its order",
+			rfName:                       "test",
+			rfSentinelCustomConfig:       []string{"failover-timeout 500", "parallel-syncs 1", "down-after-milliseconds 2000"},
+			expectedSentinelCustomConfig: []string{"failover-timeout 500", "parallel-syncs 1", "down-after-milliseconds 2000"},
 		},
 		{
 			name:            "BootstrapNode provided without a host",
@@ -109,9 +124,9 @@ func TestValidate(t *testing.T) {
 				}
 
 				expectedRedisCustomConfig = append(expectedRedisCustomConfig, test.rfRedisCustomConfig...)
-				expectedSentinelCustomConfig := defaultSentinelCustomConfig
-				if len(test.rfSentinelCustomConfig) > 0 {
-					expectedSentinelCustomConfig = test.rfSentinelCustomConfig
+				expectedSentinelCustomConfig := test.expectedSentinelCustomConfig
+				if expectedSentinelCustomConfig == nil {
+					expectedSentinelCustomConfig = defaultSentinelCustomConfig
 				}
 
 				expectedRF := &RedisFailover{
@@ -149,6 +164,10 @@ func TestValidate(t *testing.T) {
 					Status: RedisFailoverStatus{},
 				}
 				assert.Equal(expectedRF, rf)
+
+				// Validate runs again on each reconcile of the same object.
+				assert.NoError(rf.Validate())
+				assert.Equal(expectedSentinelCustomConfig, rf.Spec.Sentinel.CustomConfig)
 			} else {
 				if assert.Error(err) {
 					assert.Contains(test.expectedError, err.Error())

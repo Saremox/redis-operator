@@ -222,6 +222,8 @@ To have the ability of this configuration to be changed "on the fly," without th
 - Configuration on the `sentinel.conf`: `sentinel down-after-milliseconds mymaster 2000`
 - Configuration on the `customConfig`: `down-after-milliseconds 2000`
 
+The operator adds `down-after-milliseconds 5000` and `failover-timeout 10000` to the Sentinel `customConfig`, unless `customConfig` sets that option. Thus all the Sentinels use the same timeouts, also after a restart.
+
 **Important 2**: do **NOT** change the options used for control the redis/sentinel such as `port`, `bind`, `dir`, etc.
 
 ### Managed maxmemory

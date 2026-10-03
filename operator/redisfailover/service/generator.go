@@ -36,11 +36,6 @@ rename-command "{{.From}}" "{{.To}}"
 {{- end}}
 `
 
-	sentinelConfigTemplate = `sentinel monitor mymaster 127.0.0.1 {{.Spec.Redis.Port}} 2
-sentinel down-after-milliseconds mymaster 1000
-sentinel failover-timeout mymaster 3000
-sentinel parallel-syncs mymaster 2`
-
 	redisShutdownConfigurationVolumeName   = "redis-shutdown-config"
 	redisStartupConfigurationVolumeName    = "redis-startup-config"
 	redisReadinessVolumeName               = "redis-readiness-config"
@@ -49,6 +44,13 @@ sentinel parallel-syncs mymaster 2`
 
 	graceTime = 30
 )
+
+// sentinelConfigTemplate starts a Sentinel with the default timeouts, so that it
+// agrees with the other Sentinels until the operator applies customConfig.
+var sentinelConfigTemplate = fmt.Sprintf(`sentinel monitor mymaster 127.0.0.1 {{.Spec.Redis.Port}} 2
+sentinel down-after-milliseconds mymaster %d
+sentinel failover-timeout mymaster %d
+sentinel parallel-syncs mymaster 2`, redisfailoverv1.DefaultSentinelDownAfterMilliseconds, redisfailoverv1.DefaultSentinelFailoverTimeoutMilliseconds)
 
 func generateSentinelService(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.Service {
 	name := GetSentinelName(rf)
@@ -366,8 +368,8 @@ func redisReadinessMaxLinkDownSeconds(rf *redisfailoverv1.RedisFailover) int64 {
 	if rf.OperatorManagedFailover() {
 		window += rf.GetFailoverTimeoutDuration()
 	} else {
-		window += sentinelConfigMilliseconds(rf, "down-after-milliseconds", 5000)
-		window += sentinelConfigMilliseconds(rf, "failover-timeout", 10000)
+		window += sentinelConfigMilliseconds(rf, "down-after-milliseconds", redisfailoverv1.DefaultSentinelDownAfterMilliseconds)
+		window += sentinelConfigMilliseconds(rf, "failover-timeout", redisfailoverv1.DefaultSentinelFailoverTimeoutMilliseconds)
 	}
 	return int64(window.Round(time.Second) / time.Second)
 }
