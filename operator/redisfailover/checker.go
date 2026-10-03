@@ -375,6 +375,18 @@ func (r *RedisFailoverHandler) unreachableMasterPod(rf *redisfailoverv1.RedisFai
 	})
 }
 
+// recordMasterNotAnswering starts the wait of a ready master pod that does not
+// answer at its first missed check. Errors are ignored, because the reconcile
+// fails already.
+func (r *RedisFailoverHandler) recordMasterNotAnswering(rf *redisfailoverv1.RedisFailover, err error) {
+	if !errors.Is(err, rfservice.ErrRedisNotAnswering) {
+		return
+	}
+	if pod, _ := r.findRedisPod(rf, rfservice.IsMasterPod); pod != nil {
+		_, _ = r.masterUnreachableSince(rf, pod)
+	}
+}
+
 // labelledMasterPod returns the pod labelled master only when exactly one
 // pod has the label. With more than one, the label does not show which master
 // the operator elected.
@@ -858,14 +870,7 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 
 	nMasters, err := r.rfChecker.GetNumberMasters(rf)
 	if err != nil {
-		// The master can be a ready pod that does not answer. Its wait starts
-		// at this first missed check. Errors are ignored, because this
-		// reconcile fails already.
-		if errors.Is(err, rfservice.ErrRedisNotAnswering) {
-			if pod, _ := r.findRedisPod(rf, rfservice.IsMasterPod); pod != nil {
-				_, _ = r.masterUnreachableSince(rf, pod)
-			}
-		}
+		r.recordMasterNotAnswering(rf, err)
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: "unable to get number of masters",
@@ -953,6 +958,7 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 
 		healthy, masterIP, err := r.rfChecker.CheckMasterHealth(rf)
 		if err != nil {
+			r.recordMasterNotAnswering(rf, err)
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
 				State:   redisfailoverv1.NotHealthyState,
 				Message: "unable to check master health",
@@ -961,10 +967,12 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		}
 
 		if !healthy {
-			// The master counted above may have started stopping since; then
-			// it is no longer found but may still take writes, as in case 0.
+			var pod *corev1.Pod
 			if masterIP == "" {
-				stopping, err := r.masterPodStopping(rf)
+				// The master counted above may have started stopping since; then
+				// it is no longer found but may still take writes, as in case 0.
+				var stopping bool
+				stopping, err = r.masterPodStopping(rf)
 				if err != nil {
 					rf.Status = redisfailoverv1.RedisFailoverStatus{
 						State:   redisfailoverv1.NotHealthyState,
@@ -979,22 +987,22 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 					}
 					return nil
 				}
+				// The second count does not count a master pod that is not
+				// ready. As in case 0, that pod gets failoverTimeout to recover.
+				pod, err = r.unreachableMasterPod(rf)
+			} else {
+				pod, err = r.findRedisPod(rf, func(pod *corev1.Pod) bool { return pod.Status.PodIP == masterIP })
 			}
-			// Only a master that was found gets the wait. A master that was
-			// not found can be gone, and a wait only makes the outage longer.
-			if masterIP != "" {
-				pod, err := r.findRedisPod(rf, func(pod *corev1.Pod) bool { return pod.Status.PodIP == masterIP })
-				if err != nil {
-					rf.Status = redisfailoverv1.RedisFailoverStatus{
-						State:   redisfailoverv1.NotHealthyState,
-						Message: masterPodLookupFailed,
-					}
-					return err
+			if err != nil {
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: masterPodLookupFailed,
 				}
-				if pod != nil {
-					if wait, err := r.waitForFailover(rf, pod); err != nil || wait {
-						return err
-					}
+				return err
+			}
+			if pod != nil {
+				if wait, err := r.waitForFailover(rf, pod); err != nil || wait {
+					return err
 				}
 			}
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
