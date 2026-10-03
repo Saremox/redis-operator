@@ -86,28 +86,20 @@ func (p *PodService) ListPods(namespace string) (*corev1.PodList, error) {
 	return pods, err
 }
 
-// PatchStringValue specifies a patch operation for a string.
-type PatchStringValue struct {
-	Op    string      `json:"op"`
-	Path  string      `json:"path"`
-	Value interface{} `json:"value"`
-}
-
+// UpdatePodLabels sets the given labels on a pod. It uses a JSON merge patch
+// because a JSON patch path needs `/` and `~` escaped in label keys such as
+// `app.kubernetes.io/component`.
 func (p *PodService) UpdatePodLabels(namespace, podName string, labels map[string]string) error {
 	p.logger.Infof("Update pod label, namespace: %s, pod name: %s, labels: %v", namespace, podName, labels)
 
-	var payloads []interface{}
-	for labelKey, labelValue := range labels {
-		payload := PatchStringValue{
-			Op:    "replace",
-			Path:  "/metadata/labels/" + labelKey,
-			Value: labelValue,
-		}
-		payloads = append(payloads, payload)
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"labels": labels,
+		},
 	}
-	payloadBytes, _ := json.Marshal(payloads)
+	payloadBytes, _ := json.Marshal(patch)
 
-	_, err := p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.JSONPatchType, payloadBytes, metav1.PatchOptions{})
+	_, err := p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.MergePatchType, payloadBytes, metav1.PatchOptions{})
 	recordMetrics(namespace, "Pod", podName, "PATCH", err, p.metricsRecorder)
 	if err != nil {
 		p.logger.Errorf("Update pod labels failed, namespace: %s, pod name: %s, error: %v", namespace, podName, err)
@@ -115,9 +107,9 @@ func (p *PodService) UpdatePodLabels(namespace, podName string, labels map[strin
 	return err
 }
 
-// UpdatePodAnnotations sets the given annotations on a pod. It uses a JSON merge
-// patch so the annotations map is created when absent and existing annotations
-// are left untouched, unlike the JSON-patch "replace" used for labels.
+// UpdatePodAnnotations sets the given annotations on a pod. The JSON merge
+// patch creates the annotations map when it is absent and keeps the other
+// annotations.
 func (p *PodService) UpdatePodAnnotations(namespace, podName string, annotations map[string]string) error {
 	p.logger.Infof("Update pod annotations, namespace: %s, pod name: %s, annotations: %v", namespace, podName, annotations)
 

@@ -31,11 +31,8 @@ func newPodListAction(ns string) kubetesting.ListActionImpl {
 	return kubetesting.NewListAction(podsGroup, schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Pod"}, ns, metav1.ListOptions{})
 }
 
-// TestPodServiceUpdatePodLabels exercises UpdatePodLabels, the mechanism
-// behind master/slave role-label updates during failover. It builds a JSON
-// Patch with Op "replace", which per RFC 6902 requires the target path to
-// already exist -- these tests prove that behavior against a real fake
-// clientset rather than assuming it.
+// TestPodServiceUpdatePodLabels covers UpdatePodLabels, which sets the role
+// label during a failover.
 func TestPodServiceUpdatePodLabels(t *testing.T) {
 	testns := "testns"
 
@@ -100,20 +97,7 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 		assertTest.Error(err)
 	})
 
-	t.Run("documents actual replace semantics: a label key absent from the pod but with an existing labels map is upserted, not rejected", func(t *testing.T) {
-		// NOTE: strict RFC 6902 says "replace" must fail when the target path
-		// does not already exist. In practice, the JSON Patch library used
-		// here (gopkg.in/evanphx/json-patch.v4, via client-go's fake and real
-		// Patch codepaths) does NOT enforce that for object/map members: its
-		// "replace" implementation only errors when some *ancestor* path
-		// segment is entirely missing (see the next sub-test, where the pod
-		// has no labels map at all). When the labels map already exists --
-		// true for every pod in this codebase, since a default role label is
-		// baked into the pod template at creation -- "replace" against a
-		// label key that isn't present yet silently succeeds and adds it,
-		// behaving like an upsert rather than a strict replace. This is a
-		// real deviation from RFC 6902 in the dependency, not a bug in
-		// UpdatePodLabels itself -- documented here rather than fixed.
+	t.Run("sets a label key that contains a slash and keeps the other labels", func(t *testing.T) {
 		assertTest := assert.New(t)
 
 		pod := &corev1.Pod{
@@ -121,29 +105,24 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 				Name:      "testpod",
 				Namespace: testns,
 				Labels: map[string]string{
-					"role": "slave",
+					"role":                        "slave",
+					"app.kubernetes.io/component": "redis",
 				},
 			},
 		}
 		mcli := kubernetes.NewClientset(pod)
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
-		err := service.UpdatePodLabels(testns, "testpod", map[string]string{"new-label-key": "value"})
+		err := service.UpdatePodLabels(testns, "testpod", map[string]string{"app.kubernetes.io/component": "sentinel"})
 		assertTest.NoError(err)
 
-		got, getErr := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
-		assertTest.NoError(getErr)
-		assertTest.Equal("slave", got.Labels["role"], "pre-existing labels are left untouched")
-		assertTest.Equal("value", got.Labels["new-label-key"], "the new key is upserted rather than rejected")
+		got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
+		assertTest.NoError(err)
+		assertTest.Equal("sentinel", got.Labels["app.kubernetes.io/component"])
+		assertTest.Equal("slave", got.Labels["role"])
 	})
 
-	t.Run("replace fails when the pod has no labels map at all", func(t *testing.T) {
-		// This is the actual failure mode of "replace": it errors only when
-		// an ancestor container of the target path (here, /metadata/labels
-		// itself) does not exist on the object, not merely when the leaf key
-		// is missing. Every pod in this codebase gets a default role label at
-		// creation, so its labels map always exists in practice -- this case
-		// documents what would happen if that ever weren't true.
+	t.Run("creates the labels on a pod without any", func(t *testing.T) {
 		assertTest := assert.New(t)
 
 		pod := &corev1.Pod{
@@ -156,7 +135,11 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.UpdatePodLabels(testns, "nolabelspod", map[string]string{"role": "master"})
-		assertTest.Error(err, "replace against a path whose parent container is entirely absent must fail")
+		assertTest.NoError(err)
+
+		got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "nolabelspod", metav1.GetOptions{})
+		assertTest.NoError(err)
+		assertTest.Equal(map[string]string{"role": "master"}, got.Labels)
 	})
 }
 
