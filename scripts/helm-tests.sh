@@ -75,6 +75,15 @@ done
 helm lint ${chart}
 helm template ${chart} --kube-version ${kube_version}
 
+echo ">> Testing watchAuthSecrets=true"
+out=$(helm template ${chart} --kube-version ${kube_version} --set watchAuthSecrets=true)
+fail=0
+grep -qx -- '        - --watch-auth-secrets' <<<"${out}" \
+  || { echo "FAIL: the Deployment does not pass --watch-auth-secrets" >&2; fail=1; }
+grep -A6 -- '      - secrets$' <<<"${out}" | grep -q '"watch"' \
+  || { echo "FAIL: the ClusterRole does not grant watch on secrets" >&2; fail=1; }
+[ ${fail} -eq 0 ]
+
 # The Deployment, the ServiceAccount and the binding subject must use the same
 # name. Otherwise the pod refers to a ServiceAccount that does not exist.
 echo ">> Testing serviceAccount.name=custom with serviceAccount.create=true"

@@ -4,6 +4,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -101,4 +105,61 @@ func TestRunLogsTheVersion(t *testing.T) {
 
 	assert.ErrorIs(t, err, assert.AnError)
 	logger.AssertExpectations(t)
+}
+
+const unreachableKubeConfig = `apiVersion: v1
+kind: Config
+clusters: [{name: c, cluster: {server: "https://127.0.0.1:1"}}]
+users: [{name: u, user: {token: x}}]
+contexts: [{name: c, context: {cluster: c, user: u}}]
+current-context: c
+`
+
+func TestRunStopsOnSIGTERM(t *testing.T) {
+	prevRegisterer := prometheus.DefaultRegisterer
+	t.Cleanup(func() { prometheus.DefaultRegisterer = prevRegisterer })
+	prometheus.DefaultRegisterer = prometheus.NewRegistry()
+	t.Setenv("POD_NAMESPACE", "default")
+
+	// This channel keeps SIGTERM from stopping the test binary before Run
+	// listens for it.
+	sigC := make(chan os.Signal, 1)
+	signal.Notify(sigC, syscall.SIGTERM)
+	t.Cleanup(func() { signal.Stop(sigC) })
+
+	kubeConfig := filepath.Join(t.TempDir(), "kubeconfig")
+	require.NoError(t, os.WriteFile(kubeConfig, []byte(unreachableKubeConfig), 0o600))
+	m := Main{
+		flags: &utils.CMDFlags{
+			LogLevel:                 "info",
+			ListenAddr:               "127.0.0.1:0",
+			MetricsPath:              "/metrics",
+			Development:              true,
+			KubeConfig:               kubeConfig,
+			SupportedNamespacesRegex: ".*",
+			Concurrency:              1,
+			SyncInterval:             30,
+		},
+		logger: log.Dummy,
+	}
+
+	errC := make(chan error, 1)
+	go func() { errC <- m.Run() }()
+
+	// Run registers for SIGTERM after it creates the operator, so send it
+	// until Run returns.
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	timeout := time.After(15 * time.Second)
+	for {
+		select {
+		case err := <-errC:
+			assert.NoError(t, err)
+			return
+		case <-tick.C:
+			require.NoError(t, syscall.Kill(os.Getpid(), syscall.SIGTERM))
+		case <-timeout:
+			t.Fatal("Run did not return after SIGTERM")
+		}
+	}
 }

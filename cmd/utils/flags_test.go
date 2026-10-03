@@ -41,6 +41,32 @@ func TestInitDisconnectClientsOnDemotion(t *testing.T) {
 	}
 }
 
+func TestInitWatchAuthSecrets(t *testing.T) {
+	tests := map[string]struct {
+		args []string
+		want bool
+	}{
+		"off by default": {want: false},
+		"turned on":      {args: []string{"--watch-auth-secrets"}, want: true},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			defer func(args []string, commandLine *flag.FlagSet) {
+				os.Args, flag.CommandLine = args, commandLine
+			}(os.Args, flag.CommandLine)
+			os.Args = append([]string{"redis-operator"}, test.args...)
+			flag.CommandLine = flag.NewFlagSet("redis-operator", flag.ContinueOnError)
+
+			var flags CMDFlags
+			flags.Init()
+
+			assert.Equal(t, test.want, flags.WatchAuthSecrets)
+			assert.Equal(t, test.want, flags.ToRedisOperatorConfig().WatchAuthSecrets)
+		})
+	}
+}
+
 func TestInitEnablePprof(t *testing.T) {
 	tests := map[string]struct {
 		args []string

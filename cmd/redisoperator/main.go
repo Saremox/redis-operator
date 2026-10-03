@@ -74,7 +74,7 @@ func (m *Main) Run() error {
 	}()
 
 	// Kubernetes clients.
-	k8sClient, customClient, err := utils.CreateKubernetesClients(m.flags)
+	k8sClient, customClient, metadataClient, err := utils.CreateKubernetesClients(m.flags)
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func (m *Main) Run() error {
 	lockNamespace := getNamespace()
 
 	// Create operator and run.
-	redisfailoverOperator, err := redisfailover.New(m.flags.ToRedisOperatorConfig(), k8sservice, k8sClient, lockNamespace, redisClient, metricsRecorder, m.logger)
+	redisfailoverOperator, err := redisfailover.New(m.flags.ToRedisOperatorConfig(), k8sservice, k8sClient, metadataClient, lockNamespace, redisClient, metricsRecorder, m.logger)
 	if err != nil {
 		return err
 	}
