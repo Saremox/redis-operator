@@ -148,6 +148,7 @@ func TestSetMasterOnAllDisconnectsOnlyTheDemotedMaster(t *testing.T) {
 	mr := &mRedisService.Client{}
 	mr.On("IsMaster", "0.0.0.0", "0", "").Return(true, nil)
 	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(nil)
+	mr.On("IsMaster", "2.2.2.2", "0", "").Once().Return(false, nil)
 	mr.On("MakeSlaveOfWithPort", "2.2.2.2", "0", "0.0.0.0", "0", "").Once().Return(nil)
 	var disconnects []string
 
@@ -159,6 +160,81 @@ func TestSetMasterOnAllDisconnectsOnlyTheDemotedMaster(t *testing.T) {
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 	assert.Equal([]string{"disconnect old-master"}, disconnects)
+}
+
+// An old master that comes back after a failover usually has the slave label
+// already. It answers as a master, so its clients must reconnect too.
+func TestSetMasterOnAllDisconnectsAMasterWithoutTheMasterLabel(t *testing.T) {
+	tests := []struct {
+		name            string
+		labels          map[string]string
+		isMaster        bool
+		isMasterErr     error
+		noDisconnector  bool
+		expectedActions []string
+	}{
+		{
+			name:            "a pod labelled slave answers as master",
+			labels:          slaveRoleLabel,
+			isMaster:        true,
+			expectedActions: []string{"disconnect old-master"},
+		},
+		{
+			name:            "an unlabelled pod answers as master",
+			isMaster:        true,
+			expectedActions: []string{"relabel", "disconnect old-master"},
+		},
+		{
+			name:   "a replica keeps its clients",
+			labels: slaveRoleLabel,
+		},
+		{
+			name:        "a pod that does not answer keeps its clients",
+			labels:      slaveRoleLabel,
+			isMasterErr: errors.New("i/o timeout"),
+		},
+		{
+			name:           "without a disconnector the pod is not checked",
+			labels:         slaveRoleLabel,
+			noDisconnector: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			pods := &corev1.PodList{Items: []corev1.Pod{
+				podWithRole("new-master", "0.0.0.0", masterRoleLabel),
+				podWithRole("old-master", "1.1.1.1", test.labels),
+			}}
+
+			var actions []string
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+			if test.labels == nil {
+				ms.On("UpdatePodLabels", namespace, "old-master", slaveRoleLabel).Once().Return(nil).
+					Run(func(mock.Arguments) { actions = append(actions, "relabel") })
+			}
+			mr := &mRedisService.Client{}
+			mr.On("IsMaster", "0.0.0.0", "0", "").Return(true, nil)
+			if !test.noDisconnector {
+				mr.On("IsMaster", "1.1.1.1", "0", "").Once().Return(test.isMaster, test.isMasterErr)
+			}
+			mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(nil)
+
+			var opts []rfservice.Option
+			if !test.noDisconnector {
+				opts = append(opts, rfservice.WithClientDisconnector(fakeDisconnector{calls: &actions}))
+			}
+			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{}, opts...)
+			err := healer.SetMasterOnAll("0.0.0.0", rf)
+
+			assert.NoError(t, err)
+			ms.AssertExpectations(t)
+			mr.AssertExpectations(t)
+			assert.Equal(t, test.expectedActions, actions)
+		})
+	}
 }
 
 // Bootstrap mode re-issues SLAVEOF on every reconcile; that must not disconnect anyone.

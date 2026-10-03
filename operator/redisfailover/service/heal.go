@@ -229,6 +229,7 @@ func (r *RedisFailoverHealer) SetMasterOnAll(masterIP string, rf *redisfailoverv
 				continue
 			}
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("Making pod %s slave of %s", pod.Name, masterIP)
+			unlabelledMaster := r.isUnlabelledMaster(pod, port, password)
 			if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, masterIP, port, password); err != nil {
 				// The pod is unreachable - typically the old master on a downed
 				// node. Skip it and keep repointing the reachable slaves instead
@@ -241,9 +242,23 @@ func (r *RedisFailoverHealer) SetMasterOnAll(masterIP string, rf *redisfailoverv
 			if err != nil {
 				return err
 			}
+			if unlabelledMaster {
+				r.opts.disconnector.DisconnectDemoted(rf, pod, port, password)
+			}
 		}
 	}
 	return nil
+}
+
+// isUnlabelledMaster tells if pod answers as a Redis master but has no master
+// label. An old master that comes back after a failover usually has the slave
+// label, and setSlaveLabel disconnects clients only when it removes the master label.
+func (r *RedisFailoverHealer) isUnlabelledMaster(pod v1.Pod, port, password string) bool {
+	if r.opts.disconnector == nil || pod.Labels[redisRoleLabelKey] == redisRoleLabelMaster {
+		return false
+	}
+	isMaster, err := r.redisClient.IsMaster(pod.Status.PodIP, port, password)
+	return err == nil && isMaster
 }
 
 // SetExternalMasterOnAll puts all redis nodes as a slave of a given master outside of
