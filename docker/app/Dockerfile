@@ -10,13 +10,10 @@ ARG TARGETARCH
 ARG VERSION
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH VERSION=$VERSION ./scripts/build.sh
 
-FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
-RUN apk --no-cache add \
-  ca-certificates
-COPY --from=build /src/bin/redis-operator /usr/local/bin
-COPY --from=build /src/bin/redis-instance /usr/local/bin
-RUN addgroup -g 1000 rf && \
-  adduser -D -u 1000 -G rf rf
-USER rf
+FROM gcr.io/distroless/static-debian13:latest@sha256:58133991db06659feaabe0f4e97a35cebf15ef4ea08f8a4c6d2ee5f75e4aa6a0
+COPY --from=build /src/bin/redis-operator /usr/local/bin/
+COPY --from=build /src/bin/redis-instance /usr/local/bin/
+# The chart also runs the operator as 1000:1000.
+USER 1000:1000
 
 ENTRYPOINT ["/usr/local/bin/redis-operator"]
