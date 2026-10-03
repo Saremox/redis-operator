@@ -8,12 +8,13 @@ import (
 	"github.com/saremox/redis-operator/cmd/utils"
 	"github.com/saremox/redis-operator/log"
 	mLog "github.com/saremox/redis-operator/mocks/log"
+	"github.com/saremox/redis-operator/version"
 )
 
 func TestRunLogsTheVersion(t *testing.T) {
-	prev := Version
-	t.Cleanup(func() { Version = prev })
-	Version = "v1.2.3"
+	prev := version.Version
+	t.Cleanup(func() { version.Version = prev })
+	version.Version = "v1.2.3"
 
 	logger := &mLog.Logger{}
 	logger.On("Infof", "Starting redis-operator %s", "v1.2.3").Once().Return()

@@ -21,6 +21,7 @@ import (
 	"github.com/saremox/redis-operator/operator/redisfailover"
 	"github.com/saremox/redis-operator/service/k8s"
 	"github.com/saremox/redis-operator/service/redis"
+	"github.com/saremox/redis-operator/version"
 )
 
 const (
@@ -29,9 +30,6 @@ const (
 	shutdownTimeout  = 5 * time.Second
 	metricsNamespace = "redis_operator"
 )
-
-// Version is set by scripts/build.sh.
-var Version = "dev"
 
 // Main is the  main runner.
 type Main struct {
@@ -55,7 +53,7 @@ func New(logger log.Logger) Main {
 func (m *Main) Run() error {
 	errC := make(chan error, 1)
 
-	m.logger.Infof("Starting redis-operator %s", Version)
+	m.logger.Infof("Starting redis-operator %s", version.Version)
 
 	// Set correct logging.
 	err := m.logger.Set(log.Level(strings.ToLower(m.flags.LogLevel)))

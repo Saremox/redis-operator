@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/saremox/redis-operator/version"
 )
 
 // runMain runs main with args and returns the exit code that main gives.
@@ -62,5 +64,5 @@ func TestMainPrintsTheVersion(t *testing.T) {
 	code := runMain(t, "--version")
 
 	assert.Equal(t, -1, code)
-	assert.Equal(t, "redis-instance version "+Version+"\n", out.String())
+	assert.Equal(t, "redis-instance version "+version.Version+"\n", out.String())
 }

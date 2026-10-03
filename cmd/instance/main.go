@@ -16,14 +16,12 @@ import (
 
 	"github.com/saremox/redis-operator/cmd/instance/cleanup"
 	"github.com/saremox/redis-operator/cmd/instance/run"
+	"github.com/saremox/redis-operator/version"
 )
-
-// Version is set by scripts/build.sh.
-var Version = "dev"
 
 var rootCmd = &cobra.Command{
 	Use:     "redis-instance",
-	Version: Version,
+	Version: version.Version,
 	Short:   "Redis instance manager for redis-operator",
 	Long: `Redis instance manager handles lifecycle operations for Redis instances
 managed by redis-operator.
