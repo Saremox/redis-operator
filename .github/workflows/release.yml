@@ -100,6 +100,8 @@ jobs:
           cache-to: type=gha,mode=max
 
   soak-image:
+    # The operator release does not wait for this job, so that a failed
+    # tester build cannot block a release.
     name: Build and push soak tester image
     runs-on: ubuntu-latest
     needs: verify
@@ -167,7 +169,7 @@ jobs:
   release:
     name: Publish release
     runs-on: ubuntu-latest
-    needs: [image, soak-image]
+    needs: image
     permissions:
       contents: write
       packages: write
