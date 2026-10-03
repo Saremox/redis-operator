@@ -35,7 +35,6 @@ func TestSetOldestAsMasterNewMasterError(t *testing.T) {
 
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
-	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", "0.0.0.0", "0", "").Once().Return(errors.New(""))
 
@@ -43,6 +42,8 @@ func TestSetOldestAsMasterNewMasterError(t *testing.T) {
 
 	err := healer.SetOldestAsMaster(rf)
 	assert.Error(err)
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t)
 }
 
 func TestSetOldestAsMaster(t *testing.T) {
@@ -53,6 +54,7 @@ func TestSetOldestAsMaster(t *testing.T) {
 	pods := &corev1.PodList{
 		Items: []corev1.Pod{
 			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
 				Status: corev1.PodStatus{
 					PodIP: "0.0.0.0",
 				},
@@ -62,7 +64,7 @@ func TestSetOldestAsMaster(t *testing.T) {
 
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
-	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Once().Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-0", masterRoleLabel).Once().Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", "0.0.0.0", "0", "").Once().Return(nil)
 
@@ -70,6 +72,8 @@ func TestSetOldestAsMaster(t *testing.T) {
 
 	err := healer.SetOldestAsMaster(rf)
 	assert.NoError(err)
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t)
 }
 
 func TestSetOldestAsMasterMultiplePodsMakeSlaveOfError(t *testing.T) {
@@ -80,11 +84,13 @@ func TestSetOldestAsMasterMultiplePodsMakeSlaveOfError(t *testing.T) {
 	pods := &corev1.PodList{
 		Items: []corev1.Pod{
 			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
 				Status: corev1.PodStatus{
 					PodIP: "0.0.0.0",
 				},
 			},
 			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
 				Status: corev1.PodStatus{
 					PodIP: "1.1.1.1",
 				},
@@ -94,7 +100,8 @@ func TestSetOldestAsMasterMultiplePodsMakeSlaveOfError(t *testing.T) {
 
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
-	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-0", masterRoleLabel).Once().Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-1", slaveRoleLabel).Once().Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", "0.0.0.0", "0", "").Once().Return(nil)
 	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(errors.New(""))
@@ -103,6 +110,8 @@ func TestSetOldestAsMasterMultiplePodsMakeSlaveOfError(t *testing.T) {
 
 	err := healer.SetOldestAsMaster(rf)
 	assert.NoError(err)
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t)
 }
 
 func TestSetOldestAsMasterMultiplePods(t *testing.T) {
@@ -113,11 +122,13 @@ func TestSetOldestAsMasterMultiplePods(t *testing.T) {
 	pods := &corev1.PodList{
 		Items: []corev1.Pod{
 			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
 				Status: corev1.PodStatus{
 					PodIP: "0.0.0.0",
 				},
 			},
 			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
 				Status: corev1.PodStatus{
 					PodIP: "1.1.1.1",
 				},
@@ -127,7 +138,8 @@ func TestSetOldestAsMasterMultiplePods(t *testing.T) {
 
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
-	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-0", masterRoleLabel).Once().Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-1", slaveRoleLabel).Once().Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", "0.0.0.0", "0", "").Once().Return(nil)
 	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(nil)
@@ -136,6 +148,8 @@ func TestSetOldestAsMasterMultiplePods(t *testing.T) {
 
 	err := healer.SetOldestAsMaster(rf)
 	assert.NoError(err)
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t)
 }
 
 func TestSetOldestAsMasterOrdering(t *testing.T) {
@@ -147,6 +161,7 @@ func TestSetOldestAsMasterOrdering(t *testing.T) {
 		Items: []corev1.Pod{
 			{
 				ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-0",
 					CreationTimestamp: metav1.Time{
 						Time: time.Now(),
 					},
@@ -157,6 +172,7 @@ func TestSetOldestAsMasterOrdering(t *testing.T) {
 			},
 			{
 				ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-1",
 					CreationTimestamp: metav1.Time{
 						Time: time.Now().Add(-1 * time.Hour), // This is older by 1 hour
 					},
@@ -170,7 +186,8 @@ func TestSetOldestAsMasterOrdering(t *testing.T) {
 
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
-	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-1", masterRoleLabel).Once().Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-0", slaveRoleLabel).Once().Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", "1.1.1.1", "0", "").Once().Return(nil)
 	mr.On("MakeSlaveOfWithPort", "0.0.0.0", "0", "1.1.1.1", "0", "").Once().Return(nil)
@@ -179,6 +196,8 @@ func TestSetOldestAsMasterOrdering(t *testing.T) {
 
 	err := healer.SetOldestAsMaster(rf)
 	assert.NoError(err)
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t)
 }
 
 func TestSetOldestAsMasterCandidates(t *testing.T) {
@@ -186,6 +205,7 @@ func TestSetOldestAsMasterCandidates(t *testing.T) {
 	pod := func(ip string, age time.Duration, ready, terminating bool) corev1.Pod {
 		p := corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
+				Name:              ip,
 				CreationTimestamp: metav1.NewTime(now.Add(-age)),
 			},
 			Status: corev1.PodStatus{PodIP: ip},
@@ -287,7 +307,12 @@ func TestSetOldestAsMasterCandidates(t *testing.T) {
 			rf := generateRF()
 			ms := &mK8SService.Services{}
 			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: test.pods}, nil)
-			ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
+			if test.wantMaster != "" {
+				ms.On("UpdatePodLabels", namespace, test.wantMaster, masterRoleLabel).Once().Return(nil)
+			}
+			for _, ip := range test.wantSlaves {
+				ms.On("UpdatePodLabels", namespace, ip, slaveRoleLabel).Once().Return(nil)
+			}
 			mr := &mRedisService.Client{}
 			mr.On("MakeMaster", mock.Anything, "0", "").Return(nil)
 			mr.On("MakeSlaveOfWithPort", mock.Anything, "0", mock.Anything, "0", "").Return(nil)
@@ -308,6 +333,7 @@ func TestSetOldestAsMasterCandidates(t *testing.T) {
 			for _, ip := range test.wantSlaves {
 				mr.AssertCalled(t, "MakeSlaveOfWithPort", ip, "0", test.wantMaster, "0", "")
 			}
+			ms.AssertExpectations(t)
 		})
 	}
 }
@@ -342,15 +368,15 @@ func TestSetOldestAsMasterErrors(t *testing.T) {
 			name: "master label fails",
 			setup: func(rf *redisfailoverv1.RedisFailover, ms *mK8SService.Services) {
 				ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
-				ms.On("UpdatePodLabels", namespace, "master", mock.Anything).Once().Return(errors.New(""))
+				ms.On("UpdatePodLabels", namespace, "master", masterRoleLabel).Once().Return(errors.New(""))
 			},
 		},
 		{
 			name: "slave label fails",
 			setup: func(rf *redisfailoverv1.RedisFailover, ms *mK8SService.Services) {
 				ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
-				ms.On("UpdatePodLabels", namespace, "master", mock.Anything).Once().Return(nil)
-				ms.On("UpdatePodLabels", namespace, "slave", mock.Anything).Once().Return(errors.New(""))
+				ms.On("UpdatePodLabels", namespace, "master", masterRoleLabel).Once().Return(nil)
+				ms.On("UpdatePodLabels", namespace, "slave", slaveRoleLabel).Once().Return(errors.New(""))
 			},
 		},
 	}
@@ -366,6 +392,7 @@ func TestSetOldestAsMasterErrors(t *testing.T) {
 
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 			assert.Error(t, healer.SetOldestAsMaster(rf))
+			ms.AssertExpectations(t)
 		})
 	}
 }
@@ -392,13 +419,14 @@ func TestSetMasterOnAllMakeMasterError(t *testing.T) {
 
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
-	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Once().Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("IsMaster", "0.0.0.0", "0", "").Return(false, errors.New(""))
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetMasterOnAll("0.0.0.0", rf)
 	assert.Error(err)
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t)
 }
 
 // A slave that cannot be reached (MakeSlaveOf fails) is skipped rather than
@@ -455,6 +483,7 @@ func TestSetMasterOnAllMakeSlaveOfErrorIsSkipped(t *testing.T) {
 				},
 			},
 			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-2"},
 				Status: corev1.PodStatus{
 					PodIP: "2.2.2.2", // reachable slave
 				},
@@ -464,7 +493,7 @@ func TestSetMasterOnAllMakeSlaveOfErrorIsSkipped(t *testing.T) {
 
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
-	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-2", slaveRoleLabel).Once().Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("IsMaster", "0.0.0.0", "0", "").Return(true, nil)
 	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(errors.New("i/o timeout"))
@@ -475,6 +504,7 @@ func TestSetMasterOnAllMakeSlaveOfErrorIsSkipped(t *testing.T) {
 
 	err := healer.SetMasterOnAll("0.0.0.0", rf)
 	assert.NoError(err)
+	ms.AssertExpectations(t)
 	mr.AssertExpectations(t) // proves the reachable slave was still reconfigured
 }
 
@@ -486,11 +516,13 @@ func TestSetMasterOnAll(t *testing.T) {
 	pods := &corev1.PodList{
 		Items: []corev1.Pod{
 			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
 				Status: corev1.PodStatus{
 					PodIP: "0.0.0.0",
 				},
 			},
 			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
 				Status: corev1.PodStatus{
 					PodIP: "1.1.1.1",
 				},
@@ -500,7 +532,7 @@ func TestSetMasterOnAll(t *testing.T) {
 
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
-	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-1", slaveRoleLabel).Once().Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("IsMaster", "0.0.0.0", "0", "").Return(true, nil)
 	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(nil)
@@ -509,6 +541,8 @@ func TestSetMasterOnAll(t *testing.T) {
 
 	err := healer.SetMasterOnAll("0.0.0.0", rf)
 	assert.NoError(err)
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t)
 }
 
 func TestSetMasterOnAllRejectsIPNotOwnedByRF(t *testing.T) {
@@ -677,7 +711,8 @@ func TestPromoteBestReplicaSuccess(t *testing.T) {
 
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
-	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-master", masterRoleLabel).Once().Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-replica", slaveRoleLabel).Once().Return(nil)
 
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", newMasterIP, "0", "").Once().Return(nil)
@@ -689,6 +724,42 @@ func TestPromoteBestReplicaSuccess(t *testing.T) {
 	assert.NoError(err)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
+}
+
+// A failover usually runs while the old master pod terminates, or while its
+// replacement is Pending without an IP. A replica command to such a pod fails
+// and marks the failover as partial.
+func TestPromoteBestReplicaSkipsPendingAndTerminatingPods(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	newMasterIP := "1.1.1.1"
+
+	terminating := podWithRole("pod-old-master", "3.3.3.3", masterRoleLabel)
+	terminating.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+	pending := podWithRole("pod-pending", "", nil)
+	pending.Status.Phase = corev1.PodPending
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			podWithRole("pod-master", newMasterIP, slaveRoleLabel),
+			terminating,
+			pending,
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	ms.On("UpdatePodLabels", namespace, "pod-master", masterRoleLabel).Once().Return(nil)
+
+	mr := &mRedisService.Client{}
+	mr.On("MakeMaster", newMasterIP, "0", "").Once().Return(nil)
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+
+	err := healer.PromoteBestReplica(newMasterIP, rf)
+	assert.NoError(err)
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t) // no MakeSlaveOfWithPort call to the terminating or the Pending pod
 }
 
 func TestPromoteBestReplicaReplicaRepointerFails(t *testing.T) {
@@ -719,7 +790,7 @@ func TestPromoteBestReplicaReplicaRepointerFails(t *testing.T) {
 
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
-	ms.On("UpdatePodLabels", namespace, "pod-master", mock.Anything).Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-master", masterRoleLabel).Once().Return(nil)
 
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", newMasterIP, "0", "").Once().Return(nil)
@@ -762,8 +833,8 @@ func TestPromoteBestReplicaLabelUpdateFails(t *testing.T) {
 
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
-	ms.On("UpdatePodLabels", namespace, "pod-master", mock.Anything).Return(nil)
-	ms.On("UpdatePodLabels", namespace, "pod-replica", mock.Anything).Return(errors.New("label update failed"))
+	ms.On("UpdatePodLabels", namespace, "pod-master", masterRoleLabel).Once().Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-replica", slaveRoleLabel).Once().Return(errors.New("label update failed"))
 
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", newMasterIP, "0", "").Once().Return(nil)
