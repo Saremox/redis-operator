@@ -111,8 +111,21 @@ for pod in "Deployment t-redis-operator" "Job t-redis-operator-crds-upgrade"; do
   grep -qx '        - name: a' <<<"${doc}" && grep -qx '        - name: b' <<<"${doc}" \
     || { echo "FAIL: ${pod} does not pull with the secrets a and b" >&2; fail=1; }
 done
+# A pull Secret with the placeholder credentials cannot pull. A release that
+# used the old default existsSecrets [registrysecret] must not get one.
+if helm template t ${chart} --kube-version ${kube_version} --set imageCredentials.create=true >/dev/null 2>&1; then
+  echo "FAIL: imageCredentials.create=true renders a pull Secret with the placeholder credentials" >&2; fail=1
+fi
 out=$(helm template t ${chart} --kube-version ${kube_version} --set crds.upgradeHook.enabled=true \
-  --set imageCredentials.create=true)
+  --set imageCredentials.create=true --set 'imageCredentials.existsSecrets={registrysecret}')
+[ "$(grep -c '^kind: Secret$' <<<"${out}")" -eq 0 ] \
+  || { echo "FAIL: existsSecrets={registrysecret} creates a registry Secret" >&2; fail=1; }
+for pod in "Deployment t-redis-operator" "Job t-redis-operator-crds-upgrade"; do
+  manifest "${out}" ${pod} | grep -qx '        - name: registrysecret' \
+    || { echo "FAIL: ${pod} does not pull with registrysecret" >&2; fail=1; }
+done
+out=$(helm template t ${chart} --kube-version ${kube_version} --set crds.upgradeHook.enabled=true \
+  --set imageCredentials.create=true --set imageCredentials.username=u --set imageCredentials.password=p)
 manifest "${out}" Secret t-redis-operator-registry | grep -q '^type: kubernetes.io/dockerconfigjson$' \
   || { echo "FAIL: imageCredentials.create=true creates no registry Secret" >&2; fail=1; }
 manifest "${out}" Deployment t-redis-operator | grep -qx '        - name: t-redis-operator-registry' \

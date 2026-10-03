@@ -14,7 +14,8 @@ image:
 imageCredentials:
   # true gives the operator pod and the CRD upgrade hook pod image pull secrets:
   # the existsSecrets, or if existsSecrets is empty, a Secret that the chart
-  # creates from registry, username, password and email.
+  # creates from registry, username, password and email. The chart stops when
+  # username or password has the placeholder value below.
   create: false
   registry: url.private.registry
   username: someone

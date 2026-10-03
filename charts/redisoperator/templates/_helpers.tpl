@@ -70,9 +70,15 @@ Create the name of the service account to use
   {{- end -}}
 {{- end -}}
 
-{{/* Expands data for image pull secret. */}}
+{{/*
+Expands data for image pull secret. A pull Secret with the placeholder
+credentials of values.yaml cannot pull an image, so the chart stops instead.
+*/}}
 {{- define "imagePullSecret" }}
 {{- with .Values.imageCredentials }}
+{{- if or (eq .username "someone") (eq .password "somepassword") }}
+{{- fail "imageCredentials.create is true, so the chart creates a pull Secret, but imageCredentials.username or password has the placeholder value. Set both, or set imageCredentials.existsSecrets to your pull Secrets, for example [registrysecret]." }}
+{{- end }}
 {{- printf "{\"auths\":{\"%s\":{\"username\":\"%s\",\"password\":\"%s\",\"email\":\"%s\",\"auth\":\"%s\"}}}" .registry .username .password .email (printf "%s:%s" .username .password | b64enc) | b64enc }}
 {{- end }}
 {{- end }}
