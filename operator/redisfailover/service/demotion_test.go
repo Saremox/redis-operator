@@ -171,6 +171,7 @@ func TestSetMasterOnAllDisconnectsAMasterWithoutTheMasterLabel(t *testing.T) {
 		isMaster        bool
 		isMasterErr     error
 		noDisconnector  bool
+		relabelErr      error
 		expectedActions []string
 	}{
 		{
@@ -182,7 +183,13 @@ func TestSetMasterOnAllDisconnectsAMasterWithoutTheMasterLabel(t *testing.T) {
 		{
 			name:            "an unlabelled pod answers as master",
 			isMaster:        true,
-			expectedActions: []string{"relabel", "disconnect old-master"},
+			expectedActions: []string{"disconnect old-master", "relabel"},
+		},
+		{
+			name:            "a failed relabel does not keep the clients",
+			isMaster:        true,
+			relabelErr:      errors.New("conflict"),
+			expectedActions: []string{"disconnect old-master", "relabel"},
 		},
 		{
 			name:   "a replica keeps its clients",
@@ -212,7 +219,7 @@ func TestSetMasterOnAllDisconnectsAMasterWithoutTheMasterLabel(t *testing.T) {
 			ms := &mK8SService.Services{}
 			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
 			if test.labels == nil {
-				ms.On("UpdatePodLabels", namespace, "old-master", slaveRoleLabel).Once().Return(nil).
+				ms.On("UpdatePodLabels", namespace, "old-master", slaveRoleLabel).Once().Return(test.relabelErr).
 					Run(func(mock.Arguments) { actions = append(actions, "relabel") })
 			}
 			mr := &mRedisService.Client{}
@@ -229,7 +236,7 @@ func TestSetMasterOnAllDisconnectsAMasterWithoutTheMasterLabel(t *testing.T) {
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{}, opts...)
 			err := healer.SetMasterOnAll("0.0.0.0", rf)
 
-			assert.NoError(t, err)
+			assert.ErrorIs(t, err, test.relabelErr)
 			ms.AssertExpectations(t)
 			mr.AssertExpectations(t)
 			assert.Equal(t, test.expectedActions, actions)

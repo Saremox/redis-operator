@@ -238,12 +238,14 @@ func (r *RedisFailoverHealer) SetMasterOnAll(masterIP string, rf *redisfailoverv
 				continue
 			}
 
+			// The pod is a replica now, so the disconnect does not wait for the
+			// label: a failed label update must not keep the clients connected.
+			if unlabelledMaster {
+				r.opts.disconnector.DisconnectDemoted(rf, pod, port, password)
+			}
 			err = r.setSlaveLabelIfNecessary(rf, pod, port, password)
 			if err != nil {
 				return err
-			}
-			if unlabelledMaster {
-				r.opts.disconnector.DisconnectDemoted(rf, pod, port, password)
 			}
 		}
 	}
