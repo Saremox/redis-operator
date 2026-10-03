@@ -29,10 +29,12 @@ func TestNewHTTPHandler(t *testing.T) {
 			h := newHTTPHandler("/metrics", test.enablePprof)
 
 			for path, want := range map[string]int{
-				"/metrics":             http.StatusOK,
-				"/debug/pprof/":        test.wantPprof,
-				"/debug/pprof/cmdline": test.wantPprof,
-				"/debug/pprof/symbol":  test.wantPprof,
+				"/metrics":                       http.StatusOK,
+				"/debug/pprof/":                  test.wantPprof,
+				"/debug/pprof/cmdline":           test.wantPprof,
+				"/debug/pprof/symbol":            test.wantPprof,
+				"/debug/pprof/profile?seconds=1": test.wantPprof,
+				"/debug/pprof/trace?seconds=1":   test.wantPprof,
 			} {
 				w := httptest.NewRecorder()
 				h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
@@ -57,7 +59,7 @@ func TestRunServesTheHTTPHandler(t *testing.T) {
 			LogLevel:    "info",
 			ListenAddr:  addr,
 			MetricsPath: "/metrics",
-			EnablePprof: true,
+			EnablePprof: false,
 			Development: true,
 			KubeConfig:  t.TempDir() + "/missing",
 		},
@@ -67,14 +69,18 @@ func TestRunServesTheHTTPHandler(t *testing.T) {
 	// Run starts the HTTP server, then fails on the missing kubeconfig.
 	assert.Error(t, m.Run())
 
-	for _, path := range []string{"/metrics", "/debug/pprof/"} {
+	for path, want := range map[string]int{
+		"/metrics":      http.StatusOK,
+		"/debug/pprof/": http.StatusNotFound,
+		"/debug/vars":   http.StatusNotFound,
+	} {
 		assert.EventuallyWithT(t, func(c *assert.CollectT) {
 			resp, err := http.Get("http://" + addr + path)
 			if !assert.NoError(c, err) {
 				return
 			}
 			defer func() { _ = resp.Body.Close() }()
-			assert.Equal(c, http.StatusOK, resp.StatusCode)
+			assert.Equal(c, want, resp.StatusCode)
 		}, 5*time.Second, 50*time.Millisecond, path)
 	}
 }
