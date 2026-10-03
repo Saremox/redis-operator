@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
@@ -148,15 +149,22 @@ func (s *StatefulSetService) updateStatefulSetPVCs(namespace string, storedState
 		// The owner change is its own update and its error stops the
 		// reconcile: a rejected resize must not keep an owner reference that
 		// lets the garbage collector delete the PVC.
-		ownerReferences := []metav1.OwnerReference{}
-		for _, owner := range pvc.OwnerReferences {
-			if !removedOwners[owner.UID] {
-				ownerReferences = append(ownerReferences, owner)
-			}
-		}
-		if len(ownerReferences) != len(pvc.OwnerReferences) {
-			pvc.OwnerReferences = ownerReferences
-			pvc, err = s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Update(context.TODO(), pvc, metav1.UpdateOptions{})
+		if len(withoutOwners(pvc.OwnerReferences, removedOwners)) != len(pvc.OwnerReferences) {
+			// Other controllers also write the PVC, so a conflict is retried on
+			// the current PVC instead of a failed reconcile.
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				current, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Get(context.TODO(), pvc.Name, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				current.OwnerReferences = withoutOwners(current.OwnerReferences, removedOwners)
+				updated, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Update(context.TODO(), current, metav1.UpdateOptions{})
+				if err != nil {
+					return err
+				}
+				pvc = updated
+				return nil
+			})
 			if err != nil {
 				return err
 			}
@@ -173,6 +181,16 @@ func (s *StatefulSetService) updateStatefulSetPVCs(namespace string, storedState
 		}
 	}
 	return nil
+}
+
+func withoutOwners(ownerReferences []metav1.OwnerReference, removed map[types.UID]bool) []metav1.OwnerReference {
+	kept := []metav1.OwnerReference{}
+	for _, owner := range ownerReferences {
+		if !removed[owner.UID] {
+			kept = append(kept, owner)
+		}
+	}
+	return kept
 }
 
 func hasOwnerReference(ownerReferences []metav1.OwnerReference, uid types.UID) bool {

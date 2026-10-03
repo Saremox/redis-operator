@@ -3,6 +3,7 @@ package k8s_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -26,6 +27,7 @@ import (
 
 var (
 	statefulSetsGroup = schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "statefulsets"}
+	pvcsGroup         = schema.GroupVersionResource{Version: "v1", Resource: "persistentvolumeclaims"}
 )
 
 func newStatefulSetUpdateAction(ns string, statefulSet *appsv1.StatefulSet) kubetesting.UpdateActionImpl {
@@ -360,8 +362,9 @@ func pvcStatefulSet(storage string, templateOwners []metav1.OwnerReference) *app
 func statefulSetPVC(name, storage string, owners ...metav1.OwnerReference) *v1.PersistentVolumeClaim {
 	return &v1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: "testns",
+			Name:            name,
+			Namespace:       "testns",
+			ResourceVersion: "1",
 			Labels: map[string]string{
 				"app.kubernetes.io/component": "redis",
 				"app.kubernetes.io/name":      "test",
@@ -377,6 +380,34 @@ func statefulSetPVC(name, storage string, owners ...metav1.OwnerReference) *v1.P
 			},
 		},
 	}
+}
+
+// enforcePVCResourceVersion makes a PVC update fail with a conflict when its
+// resourceVersion is old, as the API server does. The object tracker of the fake
+// clientset does not check the resourceVersion.
+func enforcePVCResourceVersion(mcli *kubernetes.Clientset) {
+	mcli.PrependReactor("update", "persistentvolumeclaims", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		pvc := action.(kubetesting.UpdateAction).GetObject().(*v1.PersistentVolumeClaim)
+		obj, err := mcli.Tracker().Get(pvcsGroup, action.GetNamespace(), pvc.Name)
+		if err != nil {
+			return true, nil, err
+		}
+		stored := obj.(*v1.PersistentVolumeClaim)
+		if pvc.ResourceVersion != stored.ResourceVersion {
+			return true, nil, kubeerrors.NewConflict(pvcsGroup.GroupResource(), pvc.Name, errors.New("the object has been modified"))
+		}
+		updated := pvc.DeepCopy()
+		updated.ResourceVersion = nextResourceVersion(stored.ResourceVersion)
+		if err := mcli.Tracker().Update(pvcsGroup, updated, action.GetNamespace()); err != nil {
+			return true, nil, err
+		}
+		return true, updated.DeepCopy(), nil
+	})
+}
+
+func nextResourceVersion(resourceVersion string) string {
+	version, _ := strconv.Atoi(resourceVersion)
+	return strconv.Itoa(version + 1)
 }
 
 func getPVC(t *testing.T, mcli *kubernetes.Clientset, name string) *v1.PersistentVolumeClaim {
@@ -398,18 +429,23 @@ func TestStatefulSetServiceCreateOrUpdatePVCs(t *testing.T) {
 	otherOwner := metav1.OwnerReference{APIVersion: "v1", Kind: "ConfigMap", Name: "other", UID: "other-uid"}
 
 	tests := []struct {
-		name              string
-		storedStorage     string
-		storedAnnotations map[string]string
-		desiredStorage    string
-		desiredOwners     []metav1.OwnerReference
-		pvcs              []*v1.PersistentVolumeClaim
-		errorOnList       error
-		errorOnUpdate     error
-		rejectResize      bool
-		expErr            bool
-		expStorage        map[string]string
-		expOwners         map[string][]metav1.OwnerReference
+		name                 string
+		storedStorage        string
+		storedAnnotations    map[string]string
+		desiredStorage       string
+		desiredOwners        []metav1.OwnerReference
+		desiredReplicas      *int32
+		pvcs                 []*v1.PersistentVolumeClaim
+		errorOnList          error
+		errorOnGet           error
+		errorOnUpdate        error
+		conflictOnUpdate     bool
+		rejectResize         bool
+		expErr               bool
+		expStorage           map[string]string
+		expOwners            map[string][]metav1.OwnerReference
+		expAnnotations       map[string]map[string]string
+		expStatefulSetUpdate bool
 	}{
 		{
 			name: "A PVC that the StatefulSet created from its old template after a resize is resized.",
@@ -466,15 +502,51 @@ func TestStatefulSetServiceCreateOrUpdatePVCs(t *testing.T) {
 			},
 		},
 		{
-			name:           "A failed PVC update does not stop the StatefulSet update.",
-			storedStorage:  "1Gi",
-			desiredStorage: "2Gi",
-			desiredOwners:  []metav1.OwnerReference{rfOwnerReference},
+			name:            "A failed PVC update does not stop the StatefulSet update.",
+			storedStorage:   "1Gi",
+			desiredStorage:  "2Gi",
+			desiredOwners:   []metav1.OwnerReference{rfOwnerReference},
+			desiredReplicas: ptr.To(int32(3)),
 			pvcs: []*v1.PersistentVolumeClaim{
 				statefulSetPVC("data-rfr-test-0", "1Gi", rfOwnerReference),
 			},
-			errorOnUpdate: errors.New("wanted error"),
-			expStorage:    map[string]string{"data-rfr-test-0": "1Gi"},
+			errorOnUpdate:        errors.New("wanted error"),
+			expStorage:           map[string]string{"data-rfr-test-0": "1Gi"},
+			expStatefulSetUpdate: true,
+		},
+		{
+			name:           "keepAfterDeletion and a resize in one reconcile change both, with the resourceVersion of the owner update.",
+			storedStorage:  "1Gi",
+			desiredStorage: "2Gi",
+			desiredOwners:  nil,
+			pvcs: []*v1.PersistentVolumeClaim{
+				statefulSetPVC("data-rfr-test-0", "1Gi", rfOwnerReference),
+			},
+			expStorage: map[string]string{"data-rfr-test-0": "2Gi"},
+			expOwners:  map[string][]metav1.OwnerReference{"data-rfr-test-0": nil},
+		},
+		{
+			name:           "A conflict on the owner reference removal is retried on the current PVC.",
+			storedStorage:  "1Gi",
+			desiredStorage: "1Gi",
+			desiredOwners:  nil,
+			pvcs: []*v1.PersistentVolumeClaim{
+				statefulSetPVC("data-rfr-test-0", "1Gi", rfOwnerReference),
+			},
+			conflictOnUpdate: true,
+			expOwners:        map[string][]metav1.OwnerReference{"data-rfr-test-0": nil},
+			expAnnotations:   map[string]map[string]string{"data-rfr-test-0": {"other-writer": "true"}},
+		},
+		{
+			name:           "A failed PVC get for the owner reference removal returns an error.",
+			storedStorage:  "1Gi",
+			desiredStorage: "1Gi",
+			desiredOwners:  nil,
+			pvcs: []*v1.PersistentVolumeClaim{
+				statefulSetPVC("data-rfr-test-0", "1Gi", rfOwnerReference),
+			},
+			errorOnGet: errors.New("wanted error"),
+			expErr:     true,
 		},
 		{
 			name:           "A rejected resize does not keep the owner reference that keepAfterDeletion removes.",
@@ -520,6 +592,7 @@ func TestStatefulSetServiceCreateOrUpdatePVCs(t *testing.T) {
 				objects = append(objects, pvc)
 			}
 			mcli := kubernetes.NewClientset(objects...)
+			enforcePVCResourceVersion(mcli)
 			if test.errorOnList != nil {
 				mcli.PrependReactor("list", "persistentvolumeclaims", func(action kubetesting.Action) (bool, runtime.Object, error) {
 					return true, nil, test.errorOnList
@@ -531,6 +604,34 @@ func TestStatefulSetServiceCreateOrUpdatePVCs(t *testing.T) {
 				})
 			}
 
+			if test.errorOnGet != nil {
+				mcli.PrependReactor("get", "persistentvolumeclaims", func(action kubetesting.Action) (bool, runtime.Object, error) {
+					return true, nil, test.errorOnGet
+				})
+			}
+			if test.conflictOnUpdate {
+				// Another controller writes the PVC between the get and the
+				// first update of the operator.
+				conflicted := false
+				mcli.PrependReactor("update", "persistentvolumeclaims", func(action kubetesting.Action) (bool, runtime.Object, error) {
+					if conflicted {
+						return false, nil, nil
+					}
+					conflicted = true
+					name := action.(kubetesting.UpdateAction).GetObject().(*v1.PersistentVolumeClaim).Name
+					obj, err := mcli.Tracker().Get(pvcsGroup, action.GetNamespace(), name)
+					if err != nil {
+						return true, nil, err
+					}
+					other := obj.(*v1.PersistentVolumeClaim).DeepCopy()
+					other.Annotations = map[string]string{"other-writer": "true"}
+					other.ResourceVersion = nextResourceVersion(other.ResourceVersion)
+					if err := mcli.Tracker().Update(pvcsGroup, other, action.GetNamespace()); err != nil {
+						return true, nil, err
+					}
+					return true, nil, kubeerrors.NewConflict(pvcsGroup.GroupResource(), name, errors.New("the object has been modified"))
+				})
+			}
 			if test.rejectResize {
 				mcli.PrependReactor("update", "persistentvolumeclaims", func(action kubetesting.Action) (bool, runtime.Object, error) {
 					pvc := action.(kubetesting.UpdateAction).GetObject().(*v1.PersistentVolumeClaim)
@@ -542,7 +643,9 @@ func TestStatefulSetServiceCreateOrUpdatePVCs(t *testing.T) {
 			}
 
 			service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
-			err := service.CreateOrUpdateStatefulSet("testns", pvcStatefulSet(test.desiredStorage, test.desiredOwners))
+			desired := pvcStatefulSet(test.desiredStorage, test.desiredOwners)
+			desired.Spec.Replicas = test.desiredReplicas
+			err := service.CreateOrUpdateStatefulSet("testns", desired)
 
 			if test.expErr {
 				assert.Error(err)
@@ -555,6 +658,16 @@ func TestStatefulSetServiceCreateOrUpdatePVCs(t *testing.T) {
 			for name, owners := range test.expOwners {
 				assert.ElementsMatch(owners, getPVC(t, mcli, name).OwnerReferences, "owner references of pvc %s", name)
 			}
+			for name, annotations := range test.expAnnotations {
+				assert.Equal(annotations, getPVC(t, mcli, name).Annotations, "annotations of pvc %s", name)
+			}
+			statefulSetUpdated := false
+			for _, action := range mcli.Actions() {
+				if action.Matches("update", "statefulsets") {
+					statefulSetUpdated = true
+				}
+			}
+			assert.Equal(test.expStatefulSetUpdate, statefulSetUpdated, "StatefulSet update")
 		})
 	}
 }
