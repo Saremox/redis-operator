@@ -76,14 +76,19 @@ type OperatorVersion struct {
 	Image string `json:"image"`
 }
 
-// Repository and Tag split the image.
+// Repository and Tag split the image for the chart, which joins them with a
+// ':'. A digest stays with the tag.
 func (v OperatorVersion) Repository() string {
-	i := strings.LastIndex(v.Image, ":")
-	return v.Image[:i]
+	repo, _ := splitImage(v.Image)
+	return repo
 }
 
 func (v OperatorVersion) Tag() string {
-	return v.Image[strings.LastIndex(v.Image, ":")+1:]
+	_, tag := splitImage(v.Image)
+	if _, digest, ok := strings.Cut(v.Image, "@"); ok {
+		tag += "@" + digest
+	}
+	return tag
 }
 
 // Drain is how node_drain picks and drains a node.
@@ -95,6 +100,11 @@ type Drain struct {
 	Hold metav1.Duration `json:"hold"`
 	// Timeout bounds the evictions, which PodDisruptionBudgets may block.
 	Timeout metav1.Duration `json:"timeout"`
+}
+
+func hasTag(image string) bool {
+	_, tag := splitImage(image)
+	return tag != ""
 }
 
 // ChaosOn reports whether the chaos lane runs.
@@ -166,7 +176,7 @@ func (ch Chaos) validate() error {
 		switch {
 		case v.Name == "" || v.Chart == "" || v.Image == "":
 			return errors.New("upgrade: every version needs a name, chart and image")
-		case !strings.Contains(v.Image[strings.LastIndex(v.Image, "/")+1:], ":"):
+		case !hasTag(v.Image):
 			return fmt.Errorf("upgrade: %s: image %s has no tag", v.Name, v.Image)
 		case names[v.Name] || images[v.Image]:
 			return fmt.Errorf("upgrade: %s or its image is configured twice", v.Name)

@@ -40,9 +40,16 @@ instances: [{name: a, namespace: ns, mutations: {kinds: {kill_master: 1}}}]`))
 }
 
 func TestOperatorVersionImage(t *testing.T) {
-	v := OperatorVersion{Image: "localhost:5001/saremox/redis-operator:4.2.0-rc2"}
-	if v.Repository() != "localhost:5001/saremox/redis-operator" || v.Tag() != "4.2.0-rc2" {
-		t.Errorf("%s : %s", v.Repository(), v.Tag())
+	for image, want := range map[string][2]string{
+		"localhost:5001/saremox/redis-operator:4.2.0-rc2": {"localhost:5001/saremox/redis-operator", "4.2.0-rc2"},
+		// The chart joins repository and tag with a ':', so the digest
+		// stays with the tag.
+		"localhost:5001/op:4.2.0@sha256:0123": {"localhost:5001/op", "4.2.0@sha256:0123"},
+	} {
+		v := OperatorVersion{Image: image}
+		if v.Repository() != want[0] || v.Tag() != want[1] {
+			t.Errorf("%s: %s : %s", image, v.Repository(), v.Tag())
+		}
 	}
 }
 
@@ -57,6 +64,7 @@ func TestInvalidChaos(t *testing.T) {
 		"negative hold":       "chaos: {kinds: {node_drain: 1}, drain: {hold: -1s}}" + in,
 		"one version":         upgrade("[{name: a, chart: a.tgz, image: \"op:a\"}]"),
 		"no image tag":        upgrade("[{name: a, chart: a.tgz, image: \"op:a\"}, {name: b, chart: b.tgz, image: \"localhost:5001/op\"}]"),
+		"digest without tag":  upgrade("[{name: a, chart: a.tgz, image: \"op:a\"}, {name: b, chart: b.tgz, image: \"op@sha256:0123\"}]"),
 		"no chart":            upgrade("[{name: a, chart: a.tgz, image: \"op:a\"}, {name: b, image: \"op:b\"}]"),
 		"duplicate name":      upgrade("[{name: a, chart: a.tgz, image: \"op:a\"}, {name: a, chart: b.tgz, image: \"op:b\"}]"),
 		"duplicate image":     upgrade("[{name: a, chart: a.tgz, image: \"op:a\"}, {name: b, chart: b.tgz, image: \"op:a\"}]"),
