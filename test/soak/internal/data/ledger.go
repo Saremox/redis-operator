@@ -16,8 +16,9 @@ type ledger struct {
 	next, inflight int64
 	acked          ranges
 	// verified: every acknowledged write below was checked; aged: every
-	// number below is forgotten and its key deleted.
-	verified, aged int64
+	// number below is forgotten and its key deleted; released: every key
+	// below may be deleted or gone.
+	verified, aged, released int64
 }
 
 func newLedger() *ledger {
@@ -81,6 +82,7 @@ func (l *ledger) commit(r round, lost []int64) span {
 	}
 	old := span{l.aged, l.verified}
 	l.verified = max(l.verified, r.to)
+	l.released = max(l.released, old.hi)
 	return old
 }
 
@@ -95,12 +97,20 @@ func (l *ledger) agedOut(s span) {
 func (l *ledger) forget() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.verified, l.aged = l.next, l.next
+	l.verified, l.aged, l.released = l.next, l.next, l.next
 	l.acked.dropBelow(l.next)
 }
 
+// releasedBelow returns the number below which keys may be deleted or gone.
+func (l *ledger) releasedBelow() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.released
+}
+
 // recentSample returns up to k of the writes acknowledged since the last
-// verification. Their keys are deleted only after two more verifications.
+// verification. Their keys are deleted only after two more verifications,
+// and releasedBelow tells when.
 func (l *ledger) recentSample(rnd *rand.Rand, k int) []int64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()

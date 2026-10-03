@@ -194,6 +194,10 @@ func (r *Replica) verifyPod(ctx context.Context, p observer.PodAddr, seqs []int6
 		}
 	}
 	lost, _, err := r.source.check(ctx, c, LedgerKey, r.source.cfg.Ledger.ValueBytes, seqs)
+	// The source deletes its old keys, also while the pod catches up, and
+	// the pod replicates the deletes.
+	released := r.source.ledger.releasedBelow()
+	lost = slices.DeleteFunc(lost, func(n int64) bool { return n < released })
 	if len(lost) > 0 {
 		r.log.Warn("source writes missing on a pod", "pod", p.Name, "lost", len(lost), "lost_seqs", format(spansOf(lost)))
 	}
