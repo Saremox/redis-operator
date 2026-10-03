@@ -21,6 +21,9 @@ import (
 // Each function compares OwnerReferences. A child that lost its owner, for
 // example after `kubectl delete --cascade=orphan`, must get the owner of the
 // new RedisFailover, or the garbage collector does not delete it later.
+// Known limit: the volume claim templates of a StatefulSet cannot change, so
+// a PVC that the StatefulSet creates later still gets the owner reference of
+// the old RedisFailover from the template.
 
 // statefulSetUpToDate reports whether desired would change anything about
 // stored if applied, so the caller can skip a no-op Update call.
