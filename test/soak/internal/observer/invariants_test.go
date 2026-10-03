@@ -147,11 +147,11 @@ func TestEvaluate(t *testing.T) {
 	}
 }
 
-// A real Redis 7.2 and Valkey 8 master/replica pair, as INFO reports it.
+// A real Redis 7.2 and Valkey 9 master/replica pair, as INFO reports it.
 func TestEvaluateRealInfo(t *testing.T) {
 	for _, c := range []struct{ prefix, masterIP string }{
 		{"redis-7.2.12", "172.19.0.2"},
-		{"valkey-8.1.10", "172.19.0.4"},
+		{"valkey-9.1.2", "172.19.0.2"},
 	} {
 		t.Run(c.prefix, func(t *testing.T) {
 			s := snapshot{redisReplicas: 2, port: 6379, state: "Healthy", endpoints: []string{c.masterIP}}

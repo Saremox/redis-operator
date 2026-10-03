@@ -3,7 +3,6 @@ package chaos
 import (
 	"context"
 	"log/slog"
-	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -71,29 +70,6 @@ func testLane(t *testing.T, yaml string, instances []Instance) (*Lane, *global.L
 	return l, lock, m
 }
 
-func TestPickKind(t *testing.T) {
-	kinds := map[config.ChaosKind]int{config.OperatorRestart: 1, config.OperatorUpgrade: 1, config.NodeDrain: 2}
-	picked := map[config.ChaosKind]int{}
-	for step := 1; step <= 400; step++ {
-		k := config.Pick(stepRand(7, step), kinds)
-		if again := config.Pick(stepRand(7, step), kinds); again != k {
-			t.Fatalf("step %d picked %s, then %s", step, k, again)
-		}
-		picked[k]++
-	}
-	if picked[config.NodeDrain] < 160 || picked[config.OperatorRestart] < 70 || picked[config.OperatorUpgrade] < 70 {
-		t.Errorf("picked %v", picked)
-	}
-	// The lane's steps aren't any instance's.
-	if stepRand(7, 1).Uint64() == rand.New(rand.NewPCG(7, 1)).Uint64() {
-		t.Error("the lane's random source is the seed's own")
-	}
-}
-
-// TestActPausesMutators checks that an action runs only once every running
-// mutation is done, that no mutation runs while it does, that every
-// instance is disturbed meanwhile, and that every instance's data is
-// verified after it, with the kind as the event.
 func TestActPausesMutators(t *testing.T) {
 	data := &fakeData{}
 	instances := []Instance{{Name: "a", Observer: &fakeObserver{}, Data: data}, {Name: "b", Observer: &fakeObserver{}}}

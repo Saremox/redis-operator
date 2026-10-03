@@ -247,7 +247,7 @@ func (c *Config) validate() error {
 	}
 	for k, t := range c.Mutation.Timeouts {
 		if !slices.Contains(kinds, k) || t.Base.Duration <= MinDwell || t.PerPod.Duration < 0 {
-			return fmt.Errorf("mutation.timeouts: %s: a known kind, base longer than minDwell, perPod not negative", k)
+			return fmt.Errorf("mutation.timeouts: %s: a known kind, base longer than %s, perPod not negative", k, MinDwell)
 		}
 	}
 	if err := c.validateVersions(); err != nil {

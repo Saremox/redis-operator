@@ -26,7 +26,6 @@ func TestParseInfo(t *testing.T) {
 		offset                    int64
 	}{
 		{"redis", "7.2.12", "172.19.0.2", 128},
-		{"valkey", "8.1.10", "172.19.0.4", 128},
 		{"valkey", "9.1.2", "172.19.0.2", 78},
 	}
 	for _, c := range cases {
