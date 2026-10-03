@@ -21,9 +21,14 @@ const (
 // arbitrary directives into redis.conf.
 var validCommandRenamePattern = regexp.MustCompile(`^[A-Za-z_]+$`)
 
-// operatorRedisCommands are the Redis commands that the operator and the pod
-// scripts send. A rename of one of them makes each reconcile or a probe fail.
-var operatorRedisCommands = []string{"ACL", "AUTH", "CLIENT", "CONFIG", "INFO", "PING", "REPLICAOF", "SAVE", "SLAVEOF"}
+// operatorRedisCommands are the Redis commands that the operator, the pod
+// scripts and the replicas send. A rename of one of them makes each reconcile,
+// a probe or the replication fail.
+var operatorRedisCommands = []string{"AUTH", "CLIENT", "CONFIG", "INFO", "PING", "PSYNC", "REPLCONF", "REPLICAOF", "SLAVEOF"}
+
+// sentinelRedisCommands are the other Redis commands that Sentinel sends. A
+// rename of one of them stops the Sentinel discovery or the failover.
+var sentinelRedisCommands = []string{"EXEC", "MULTI", "PUBLISH", "SUBSCRIBE"}
 
 // Validate set the values by default if not defined and checks if the values given are valid
 func (r *RedisFailover) Validate() error {
@@ -35,8 +40,8 @@ func (r *RedisFailover) Validate() error {
 		if !validCommandRenamePattern.MatchString(rename.From) {
 			return fmt.Errorf("customCommandRenames: invalid \"from\" command name %q, must match %s", rename.From, validCommandRenamePattern.String())
 		}
-		if slices.Contains(operatorRedisCommands, strings.ToUpper(rename.From)) {
-			return fmt.Errorf("customCommandRenames: %q cannot be renamed, because the operator or the pod scripts send it (%s)", rename.From, strings.Join(operatorRedisCommands, ", "))
+		if err := r.validateCommandRename(rename.From); err != nil {
+			return err
 		}
 		// "to" may be empty to disable the command entirely.
 		if rename.To != "" && !validCommandRenamePattern.MatchString(rename.To) {
@@ -99,6 +104,22 @@ func (r *RedisFailover) Validate() error {
 		r.Spec.Sentinel.CustomConfig = defaultSentinelCustomConfig
 	}
 
+	return nil
+}
+
+// validateCommandRename rejects a rename of a command that the RedisFailover
+// needs. ACL is necessary only to load an aclfile, and the Sentinel commands
+// only when Sentinels run.
+func (r *RedisFailover) validateCommandRename(from string) error {
+	command := strings.ToUpper(from)
+	switch {
+	case slices.Contains(operatorRedisCommands, command):
+		return fmt.Errorf("customCommandRenames: %q cannot be renamed, because the operator, the pod scripts or the replicas send it (%s)", from, strings.Join(operatorRedisCommands, ", "))
+	case command == "ACL" && r.CustomConfigSets("aclfile"):
+		return fmt.Errorf("customCommandRenames: %q cannot be renamed, because the operator sends ACL LOAD to apply the aclfile of customConfig", from)
+	case slices.Contains(sentinelRedisCommands, command) && r.SentinelsAllowed():
+		return fmt.Errorf("customCommandRenames: %q cannot be renamed, because Sentinel sends it (%s)", from, strings.Join(sentinelRedisCommands, ", "))
+	}
 	return nil
 }
 

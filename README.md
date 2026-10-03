@@ -226,7 +226,11 @@ To have the ability of this configuration to be changed "on the fly," without th
 
 **Important 2**: do **NOT** change the options used for control the redis/sentinel such as `port`, `bind`, `dir`, etc.
 
-Validation rejects a `redis.customCommandRenames` entry for a command that the operator or the pod scripts send: `ACL`, `AUTH`, `CLIENT`, `CONFIG`, `INFO`, `PING`, `REPLICAOF`, `SAVE` or `SLAVEOF`.
+Validation rejects a `redis.customCommandRenames` entry for a command that the RedisFailover needs:
+
+- `AUTH`, `CLIENT`, `CONFIG`, `INFO`, `PING`, `PSYNC`, `REPLCONF`, `REPLICAOF` and `SLAVEOF`. The operator, the pod scripts or the replicas send them.
+- `EXEC`, `MULTI`, `PUBLISH` and `SUBSCRIBE` when Sentinels run. Sentinel sends them.
+- `ACL` when `redis.customConfig` sets `aclfile`. The operator sends `ACL LOAD` to apply the file.
 
 ### Managed maxmemory
 
