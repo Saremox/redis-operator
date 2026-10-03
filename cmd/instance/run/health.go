@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+
+	"github.com/saremox/redis-operator/version"
 )
 
 const (
@@ -359,7 +361,7 @@ func (h *HealthServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			MasterSyncInProgress: info["master_sync_in_progress"] == "1",
 		},
 		InstanceManager: InstanceManagerStatus{
-			Version:            "4.0.0",
+			Version:            version.Version,
 			UptimeSeconds:      int64(time.Since(h.startTime).Seconds()),
 			StartupCleanupDone: cleanupDone,
 			HealthPort:         h.port,

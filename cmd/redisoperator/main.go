@@ -21,6 +21,7 @@ import (
 	"github.com/saremox/redis-operator/operator/redisfailover"
 	"github.com/saremox/redis-operator/service/k8s"
 	"github.com/saremox/redis-operator/service/redis"
+	"github.com/saremox/redis-operator/version"
 )
 
 const (
@@ -51,6 +52,8 @@ func New(logger log.Logger) Main {
 // Run execs the program.
 func (m *Main) Run() error {
 	errC := make(chan error, 1)
+
+	m.logger.Infof("Starting redis-operator %s", version.Version)
 
 	// Set correct logging.
 	err := m.logger.Set(log.Level(strings.ToLower(m.flags.LogLevel)))
