@@ -129,7 +129,7 @@ func IsMasterPod(pod *corev1.Pod) bool {
 // safe to call on every reconcile without extra API writes.
 func applyMasterEvictionAnnotation(k8sService k8s.Services, rf *redisfailoverv1.RedisFailover, pod corev1.Pod, isMaster bool) error {
 	if !rf.Spec.Redis.PreventMasterEviction {
-		return nil
+		return resetMasterEvictionAnnotation(k8sService, rf, pod)
 	}
 	desired := "true"
 	if isMaster {
@@ -139,6 +139,24 @@ func applyMasterEvictionAnnotation(k8sService k8s.Services, rf *redisfailoverv1.
 		return nil
 	}
 	return k8sService.UpdatePodAnnotations(rf.Namespace, pod.Name, map[string]string{masterSafeToEvictAnnotation: desired})
+}
+
+// resetMasterEvictionAnnotation gives the pod the safe-to-evict value from
+// spec.redis.podAnnotations, or removes the annotation. A "false" that stays
+// after the user turns preventMasterEviction off blocks the node drains of the
+// cluster autoscaler.
+func resetMasterEvictionAnnotation(k8sService k8s.Services, rf *redisfailoverv1.RedisFailover, pod corev1.Pod) error {
+	current, present := pod.Annotations[masterSafeToEvictAnnotation]
+	if desired, ok := rf.Spec.Redis.PodAnnotations[masterSafeToEvictAnnotation]; ok {
+		if present && current == desired {
+			return nil
+		}
+		return k8sService.UpdatePodAnnotations(rf.Namespace, pod.Name, map[string]string{masterSafeToEvictAnnotation: desired})
+	}
+	if !present {
+		return nil
+	}
+	return k8sService.RemovePodAnnotation(rf.Namespace, pod.Name, masterSafeToEvictAnnotation)
 }
 
 func (r *RedisFailoverChecker) setMasterLabelIfNecessary(rf *redisfailoverv1.RedisFailover, pod corev1.Pod) error {

@@ -27,6 +27,7 @@ type Pod interface {
 	ListPods(namespace string) (*corev1.PodList, error)
 	UpdatePodLabels(namespace, podName string, labels map[string]string) error
 	UpdatePodAnnotations(namespace, podName string, annotations map[string]string) error
+	RemovePodAnnotation(namespace, podName, key string) error
 	ResizePod(namespace, podName string, resources map[string]corev1.ResourceRequirements) error
 	PodResizeSupport() (PodResizeSupport, error)
 }
@@ -132,6 +133,26 @@ func (p *PodService) UpdatePodAnnotations(namespace, podName string, annotations
 	recordMetrics(namespace, "Pod", podName, "PATCH", err, p.metricsRecorder)
 	if err != nil {
 		p.logger.Errorf("Update pod annotations failed, namespace: %s, pod name: %s, error: %v", namespace, podName, err)
+	}
+	return err
+}
+
+// RemovePodAnnotation deletes one annotation from a pod. In a JSON merge patch,
+// a null value deletes the key.
+func (p *PodService) RemovePodAnnotation(namespace, podName, key string) error {
+	p.logger.Infof("Remove pod annotation, namespace: %s, pod name: %s, annotation: %s", namespace, podName, key)
+
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"annotations": map[string]interface{}{key: nil},
+		},
+	}
+	payloadBytes, _ := json.Marshal(patch)
+
+	_, err := p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.MergePatchType, payloadBytes, metav1.PatchOptions{})
+	recordMetrics(namespace, "Pod", podName, "PATCH", err, p.metricsRecorder)
+	if err != nil {
+		p.logger.Errorf("Remove pod annotation failed, namespace: %s, pod name: %s, error: %v", namespace, podName, err)
 	}
 	return err
 }

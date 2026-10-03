@@ -799,6 +799,20 @@ func (_m *Services) PodResizeSupport() (k8s.PodResizeSupport, error) {
 	return r0, r1
 }
 
+// RemovePodAnnotation provides a mock function with given fields: namespace, podName, key
+func (_m *Services) RemovePodAnnotation(namespace string, podName string, key string) error {
+	ret := _m.Called(namespace, podName, key)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string, string) error); ok {
+		r0 = rf(namespace, podName, key)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // ResizePod provides a mock function with given fields: namespace, podName, resources
 func (_m *Services) ResizePod(namespace string, podName string, resources map[string]v1.ResourceRequirements) error {
 	ret := _m.Called(namespace, podName, resources)

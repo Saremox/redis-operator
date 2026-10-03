@@ -173,7 +173,8 @@ Sentinels run when `spec.sentinel.enabled` is `true`. With `bootstrapNode`, they
 Setting `redis.preventMasterEviction: true` makes the operator annotate the current master pod with
 `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` (and mark slaves `"true"`), so the
 cluster-autoscaler will not drain the node running the master and trigger an avoidable failover. The
-annotation follows the master as it moves. Defaults to `false` (no annotation is managed).
+annotation follows the master as it moves. Defaults to `false`. When it is `false`, the operator
+removes the annotation from the pods, or sets the value from `redis.podAnnotations`.
 
 ### Sentinel update strategy and PodDisruptionBudget
 
