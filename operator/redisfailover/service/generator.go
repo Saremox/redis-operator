@@ -45,8 +45,11 @@ rename-command "{{.From}}" "{{.To}}"
 	graceTime = 30
 )
 
-// sentinelConfigTemplate starts a Sentinel with the default timeouts, so that it
-// agrees with the other Sentinels until the operator applies customConfig.
+// sentinelConfigTemplate monitors a placeholder master. The operator replaces
+// that monitor with SENTINEL MONITOR, which uses the Sentinel built-in
+// timeouts, and then applies customConfig. Thus the timeouts here apply only to
+// the placeholder. They are the customConfig defaults, so that each timeout has
+// one value in the code.
 var sentinelConfigTemplate = fmt.Sprintf(`sentinel monitor mymaster 127.0.0.1 {{.Spec.Redis.Port}} 2
 sentinel down-after-milliseconds mymaster %d
 sentinel failover-timeout mymaster %d
