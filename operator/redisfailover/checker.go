@@ -1259,8 +1259,8 @@ func setRedisCheckerMetrics(metricsClient metrics.Recorder, mode /* redis or sen
 
 // updateStatus is the only status write of a reconcile. The checks set only
 // State and Message, so LastChanged comes from the observed status unless the
-// state changed. An unchanged status is not written, because each status
-// change queues the RedisFailover again.
+// state changed. An unchanged status is not written, which saves one API call
+// on each resync and pod event.
 func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, observed redisfailoverv1.RedisFailoverStatus) {
 	if observed.State != rf.Status.State {
 		rf.Status.LastChanged = time.Now().Format(time.RFC3339)
