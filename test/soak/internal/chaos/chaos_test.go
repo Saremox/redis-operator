@@ -75,8 +75,8 @@ func TestPickKind(t *testing.T) {
 	kinds := map[config.ChaosKind]int{config.OperatorRestart: 1, config.OperatorUpgrade: 1, config.NodeDrain: 2}
 	picked := map[config.ChaosKind]int{}
 	for step := 1; step <= 400; step++ {
-		k := pickKind(stepRand(7, step), kinds)
-		if again := pickKind(stepRand(7, step), kinds); again != k {
+		k := config.Pick(stepRand(7, step), kinds)
+		if again := config.Pick(stepRand(7, step), kinds); again != k {
 			t.Fatalf("step %d picked %s, then %s", step, k, again)
 		}
 		picked[k]++
@@ -230,7 +230,7 @@ chaos: {kinds: {operator_restart: 1, node_drain: 1}, interval: 40ms, jitter: 20m
 	for step := 1; step <= len(kinds); step++ {
 		r := stepRand(3, step)
 		r.Int64N(int64(20*time.Millisecond) + 1)
-		want = append(want, pickKind(r, l.cfg.Kinds))
+		want = append(want, config.Pick(r, l.cfg.Kinds))
 	}
 	if !slices.Equal(kinds, want) {
 		t.Errorf("kinds %v, want the seed's %v", kinds, want)

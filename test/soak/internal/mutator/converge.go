@@ -13,6 +13,7 @@ import (
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/test/soak/internal/maxmem"
+	"github.com/saremox/redis-operator/test/soak/internal/observer"
 )
 
 // state is what planning a mutation and judging its convergence look at.
@@ -225,7 +226,7 @@ func redisPodReplaced(name string, uid types.UID) func(state) error {
 			switch {
 			case p.UID == uid:
 				return fmt.Errorf("%s not deleted yet", name)
-			case !ready(p):
+			case !observer.Ready(p):
 				return fmt.Errorf("%s not ready", name)
 			}
 			return nil
@@ -253,23 +254,11 @@ func podsReady(kind string, pods []corev1.Pod, want int32) error {
 		return fmt.Errorf("%d %s pods, want %d", len(pods), kind, want)
 	}
 	for i := range pods {
-		if !ready(&pods[i]) {
+		if !observer.Ready(&pods[i]) {
 			return fmt.Errorf("%s not ready", pods[i].Name)
 		}
 	}
 	return nil
-}
-
-func ready(p *corev1.Pod) bool {
-	if p.DeletionTimestamp != nil {
-		return false
-	}
-	for _, c := range p.Status.Conditions {
-		if c.Type == corev1.PodReady {
-			return c.Status == corev1.ConditionTrue
-		}
-	}
-	return false
 }
 
 // passwordAccepted holds once every redis pod accepts the password fetched

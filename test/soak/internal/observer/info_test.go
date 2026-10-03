@@ -17,7 +17,7 @@ func testInfo(t *testing.T, files ...string) info {
 		}
 		s += string(b)
 	}
-	return parseInfo(s)
+	return info(ParseInfo(s))
 }
 
 func TestParseInfo(t *testing.T) {
@@ -68,7 +68,7 @@ func TestRole(t *testing.T) {
 		"sentinel": "",
 	}
 	for role, want := range cases {
-		if got := parseInfo("# Replication\r\nrole:" + role + "\r\n").role(); got != want {
+		if got := info(ParseInfo("# Replication\r\nrole:" + role + "\r\n")).role(); got != want {
 			t.Errorf("role %q = %q, want %q", role, got, want)
 		}
 	}
@@ -88,7 +88,7 @@ func TestServer(t *testing.T) {
 		{"redis_version:7.2.4\nserver_name:valkey", "valkey", "7.2.4"},
 	}
 	for _, c := range cases {
-		if name, version := parseInfo(c.info).server(); name != c.name || version != c.version {
+		if name, version := info(ParseInfo(c.info)).server(); name != c.name || version != c.version {
 			t.Errorf("%q: got %s %s, want %s %s", c.info, name, version, c.name, c.version)
 		}
 	}

@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/saremox/redis-operator/test/soak/internal/config"
+	"github.com/saremox/redis-operator/test/soak/internal/observer"
 )
 
 // operatorState is the operator Deployment, its pods and its leader's
@@ -74,7 +75,7 @@ func leading(s operatorState, ok func(*corev1.Pod) error) (*corev1.Pod, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !ready(p) {
+	if !observer.Ready(p) {
 		return nil, fmt.Errorf("the leader %s is not ready", p.Name)
 	}
 	if err := ok(p); err != nil {
@@ -121,18 +122,6 @@ func upgraded(s operatorState, image string) (*corev1.Pod, error) {
 		}
 		return nil
 	})
-}
-
-func ready(p *corev1.Pod) bool {
-	if p.DeletionTimestamp != nil {
-		return false
-	}
-	for _, c := range p.Status.Conditions {
-		if c.Type == corev1.PodReady {
-			return c.Status == corev1.ConditionTrue
-		}
-	}
-	return false
 }
 
 // downSince returns how long the instances ran without a leading operator:

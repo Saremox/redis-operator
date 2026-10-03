@@ -20,6 +20,7 @@ import (
 	"github.com/saremox/redis-operator/client/k8s/clientset/versioned"
 	"github.com/saremox/redis-operator/test/soak/internal/auth"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
+	"github.com/saremox/redis-operator/test/soak/internal/poll"
 )
 
 // LoadTemplate reads a RedisFailover manifest. Its name and namespace are
@@ -183,15 +184,5 @@ func (i *Instance) Delete(ctx context.Context) error {
 }
 
 func (i *Instance) wait(ctx context.Context, f func() error) error {
-	for {
-		err := f()
-		if err == nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("%w: %w", ctx.Err(), err)
-		case <-time.After(i.poll):
-		}
-	}
+	return poll.Until(ctx, i.poll, 0, func(context.Context) error { return f() })
 }

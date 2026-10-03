@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/saremox/redis-operator/test/soak/internal/observer"
 	"github.com/saremox/redis-operator/test/soak/internal/prober"
 )
 
@@ -86,7 +87,7 @@ func (m *Mutator) observe(ctx context.Context, t *transition) observation {
 func (m *Mutator) writable(ctx context.Context, addr string) error {
 	ctx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
-	c := m.podClientAddr(addr, m.auth.Provider())
+	c := observer.Client(addr, m.auth.Provider(), m.timeout)
 	defer func() { _ = c.Close() }()
 	return c.Set(ctx, "soak:"+m.in.Name+":version:writable", time.Now().Unix(), 0).Err()
 }

@@ -9,7 +9,6 @@ import (
 	"math/rand/v2"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,6 +18,7 @@ import (
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 	"github.com/saremox/redis-operator/test/soak/internal/observer"
+	"github.com/saremox/redis-operator/test/soak/internal/poll"
 )
 
 // Pods lists an instance's redis pods.
@@ -110,18 +110,9 @@ func (r *Replica) Run(ctx context.Context) {
 }
 
 func (r *Replica) verifyRetrying(ctx context.Context, event string, step int) (int, error) {
-	for attempt := 1; ; attempt++ {
-		lost, err := r.verify(ctx, event, step)
-		if err == nil || ctx.Err() != nil {
-			return lost, err
-		}
-		if attempt%10 == 1 {
-			r.log.Warn("verifying the data", "event", event, "step", step, "attempt", attempt, "error", err.Error())
-		}
-		if !sleep(ctx, 2*time.Second) {
-			return 0, ctx.Err()
-		}
-	}
+	return retry(ctx, r.log.With("event", event, "step", step), func(ctx context.Context) (int, error) {
+		return r.verify(ctx, event, step)
+	})
 }
 
 // verify reads a sample of the source's recent ledger writes from the
@@ -137,7 +128,7 @@ func (r *Replica) verify(ctx context.Context, event string, step int) (int, erro
 	if addr == "" {
 		return 0, errNoMaster
 	}
-	c := src.podClient(addr, src.auth)
+	c := src.podClient(addr)
 	defer func() { _ = c.Close() }()
 	size := src.cfg.Ledger.ValueBytes
 	gone, _, err := src.check(ctx, c, LedgerKey, size, seqs)
@@ -179,24 +170,18 @@ func (r *Replica) verify(ctx context.Context, event string, step int) (int, erro
 }
 
 func (r *Replica) verifyPod(ctx context.Context, p observer.PodAddr, seqs []int64, at position) (int, error) {
-	c := r.source.podClient(p.Addr, r.auth)
+	c := observer.Client(p.Addr, r.auth.Provider(), 5*r.source.timeout)
 	defer func() { _ = c.Close() }()
-	deadline := time.Now().Add(catchUp)
-	for {
+	err := poll.Until(ctx, 200*time.Millisecond, catchUp, func(ctx context.Context) error {
 		info, err := replication(ctx, c)
-		if err != nil {
-			return 0, err
+		if err != nil || caughtUp(info, at) {
+			return err
 		}
-		if caughtUp(info, at) {
-			break
-		}
-		if time.Now().After(deadline) {
-			return 0, fmt.Errorf("replicates %s up to %s with link %s, the source's master was at %s:%d %s before",
-				info["master_replid"], info["slave_repl_offset"], info["master_link_status"], at.replID, at.offset, catchUp)
-		}
-		if !sleep(ctx, 200*time.Millisecond) {
-			return 0, ctx.Err()
-		}
+		return fmt.Errorf("replicates %s up to %s with link %s, the source's master is at %s:%d",
+			info["master_replid"], info["slave_repl_offset"], info["master_link_status"], at.replID, at.offset)
+	})
+	if err != nil {
+		return 0, err
 	}
 	lost, _, err := r.source.check(ctx, c, LedgerKey, r.source.cfg.Ledger.ValueBytes, seqs)
 	// The source deletes its old keys, also while the pod catches up, and
@@ -220,14 +205,5 @@ func caughtUp(info map[string]string, at position) bool {
 
 func replication(ctx context.Context, c *redis.Client) (map[string]string, error) {
 	s, err := c.Info(ctx, "replication").Result()
-	if err != nil {
-		return nil, err
-	}
-	info := map[string]string{}
-	for line := range strings.Lines(s) {
-		if k, v, ok := strings.Cut(strings.TrimSpace(line), ":"); ok {
-			info[k] = v
-		}
-	}
-	return info, nil
+	return observer.ParseInfo(s), err
 }

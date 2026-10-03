@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/test/soak/internal/poll"
 )
 
 // passwordNotApplied is the status message of an operator that cannot move the
@@ -168,23 +169,9 @@ func (m *Mutator) waitConverged(ctx context.Context, opts fetchOpts, converged f
 }
 
 // wait polls f every second until it returns nil, for at most the
-// convergence timeout, and returns its last error then.
+// convergence timeout.
 func (m *Mutator) wait(ctx context.Context, f func() error) error {
-	deadline := time.Now().Add(m.convergeTimeout)
-	for {
-		err := f()
-		if err == nil {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("not within %s: %w", m.convergeTimeout, err)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Second):
-		}
-	}
+	return poll.Until(ctx, time.Second, m.convergeTimeout, func(context.Context) error { return f() })
 }
 
 func healthy(rf *redisfailoverv1.RedisFailover) error {

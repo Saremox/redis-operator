@@ -16,8 +16,9 @@ const (
 // info is the key:value body of an INFO reply.
 type info map[string]string
 
-func parseInfo(s string) info {
-	i := info{}
+// ParseInfo parses the key:value lines of an INFO reply.
+func ParseInfo(s string) map[string]string {
+	i := map[string]string{}
 	for line := range strings.Lines(s) {
 		line = strings.TrimSpace(line)
 		if line == "" || line[0] == '#' {
@@ -60,7 +61,7 @@ func (i info) int(key string) int64 {
 // ServerOf returns the server and version an INFO server reply reports,
 // and its replication fields if it has them.
 func ServerOf(reply string) (name, version string, fields map[string]string) {
-	i := parseInfo(reply)
+	i := info(ParseInfo(reply))
 	name, version = i.server()
 	return name, version, i
 }

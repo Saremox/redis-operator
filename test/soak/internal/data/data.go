@@ -21,6 +21,8 @@ import (
 	"github.com/saremox/redis-operator/test/soak/internal/auth"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
+	"github.com/saremox/redis-operator/test/soak/internal/observer"
+	"github.com/saremox/redis-operator/test/soak/internal/poll"
 	"github.com/saremox/redis-operator/test/soak/internal/prober"
 )
 
@@ -199,18 +201,24 @@ func (d *Data) runVerifier(ctx context.Context) {
 
 // verifyRetrying verifies until it succeeds or ctx is done.
 func (d *Data) verifyRetrying(ctx context.Context, event string, step int, lossless bool) (int, error) {
-	for attempt := 1; ; attempt++ {
-		lost, err := d.verify(ctx, event, step, lossless)
-		if err == nil || ctx.Err() != nil {
-			return lost, err
+	return retry(ctx, d.log.With("event", event, "step", step), func(ctx context.Context) (int, error) {
+		return d.verify(ctx, event, step, lossless)
+	})
+}
+
+// retry calls verify every 2s until it succeeds or ctx is done, and logs
+// every tenth error.
+func retry(ctx context.Context, log *slog.Logger, verify func(context.Context) (int, error)) (int, error) {
+	lost, attempt := 0, 0
+	err := poll.Until(ctx, 2*time.Second, 0, func(ctx context.Context) error {
+		var err error
+		if lost, err = verify(ctx); err != nil && attempt%10 == 0 {
+			log.Warn("verifying the data", "attempt", attempt+1, "error", err.Error())
 		}
-		if attempt%10 == 1 {
-			d.log.Warn("verifying the data", "event", event, "step", step, "attempt", attempt, "error", err.Error())
-		}
-		if !sleep(ctx, 2*time.Second) {
-			return 0, ctx.Err()
-		}
-	}
+		attempt++
+		return err
+	})
+	return lost, err
 }
 
 var errNoMaster = errors.New("no single master")
@@ -223,7 +231,7 @@ func (d *Data) verify(ctx context.Context, event string, step int, lossless bool
 		return 0, errNoMaster
 	}
 	start := time.Now()
-	c := d.podClient(addr, d.auth)
+	c := d.podClient(addr)
 	defer func() { _ = c.Close() }()
 	mi, err := memoryInfo(ctx, c)
 	if err != nil {
@@ -295,17 +303,10 @@ func (d *Data) verify(ctx context.Context, event string, step int, lossless bool
 	return lost, nil
 }
 
-// podClient connects to a pod directly, for verifications.
-func (d *Data) podClient(addr string, a *auth.Source) *redis.Client {
-	return redis.NewClient(&redis.Options{
-		Addr:                  addr,
-		CredentialsProvider:   a.Provider(),
-		DialTimeout:           d.timeout,
-		ReadTimeout:           5 * d.timeout,
-		WriteTimeout:          5 * d.timeout,
-		ContextTimeoutEnabled: true,
-		MaxRetries:            -1,
-	})
+// podClient connects to a pod directly, for verifications, whose
+// pipelines read many keys.
+func (d *Data) podClient(addr string) *redis.Client {
+	return observer.Client(addr, d.auth.Provider(), 5*d.timeout)
 }
 
 const chunk = 500
@@ -598,18 +599,10 @@ func memoryInfo(ctx context.Context, c *redis.Client) (memInfo, error) {
 	if err != nil {
 		return memInfo{}, err
 	}
-	var mi memInfo
-	for line := range strings.Lines(s) {
-		k, v, _ := strings.Cut(strings.TrimSpace(line), ":")
-		switch k {
-		case "used_memory":
-			mi.used, _ = strconv.ParseInt(v, 10, 64)
-		case "maxmemory":
-			mi.maxMemory, _ = strconv.ParseInt(v, 10, 64)
-		case "maxmemory_policy":
-			mi.policy = v
-		}
-	}
+	i := observer.ParseInfo(s)
+	mi := memInfo{policy: i["maxmemory_policy"]}
+	mi.used, _ = strconv.ParseInt(i["used_memory"], 10, 64)
+	mi.maxMemory, _ = strconv.ParseInt(i["maxmemory"], 10, 64)
 	return mi, nil
 }
 

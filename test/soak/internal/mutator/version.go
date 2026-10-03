@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/saremox/redis-operator/test/soak/internal/config"
+	"github.com/saremox/redis-operator/test/soak/internal/observer"
 )
 
 // Results of a version change, the values of version_transition_total's
@@ -394,7 +395,7 @@ func describePod(versions *config.Config, p *corev1.Pod, container string, sv se
 	} else {
 		parts = append(parts, "on "+image)
 	}
-	parts = append(parts, fmt.Sprintf("ready=%t", ready(p)))
+	parts = append(parts, fmt.Sprintf("ready=%t", observer.Ready(p)))
 	for _, cs := range p.Status.ContainerStatuses {
 		if cs.Name != container {
 			continue

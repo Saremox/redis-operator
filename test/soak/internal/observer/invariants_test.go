@@ -188,7 +188,7 @@ func TestLags(t *testing.T) {
 // forever; between attempts INFO reports its link down since it started.
 func TestReplicaReadyWithoutDataRealInfo(t *testing.T) {
 	s := snapshot{redisReplicas: 2, port: 6379, state: "Healthy", endpoints: []string{"10.0.0.10"}}
-	replica := parseInfo("# Replication\r\nrole:slave\r\nmaster_host:10.0.0.10\r\nmaster_port:6379\r\n" +
+	replica := ParseInfo("# Replication\r\nrole:slave\r\nmaster_host:10.0.0.10\r\nmaster_port:6379\r\n" +
 		"master_link_status:down\r\nmaster_last_io_seconds_ago:-1\r\nmaster_sync_in_progress:0\r\n" +
 		"slave_read_repl_offset:0\r\nslave_repl_offset:0\r\nmaster_link_down_since_seconds:-1\r\n")
 	s.redis = []redisPod{

@@ -5,7 +5,6 @@ import (
 	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"maps"
 	"math/rand/v2"
 	"slices"
@@ -33,28 +32,12 @@ const (
 	mi             = 1 << 20
 )
 
-// stepRand returns the random source of one seed step. Each instance and
-// step gets its own, so a logged step can be replayed on its own.
 func stepRand(seed int64, in config.Instance, step int) *rand.Rand {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(in.Namespace + "/" + in.Name))
-	return rand.New(rand.NewPCG(uint64(seed)^h.Sum64(), uint64(step)))
+	return config.StepRand(seed, in.Namespace+"/"+in.Name, step)
 }
 
 func pickKind(r *rand.Rand, m config.Mutations) config.Kind {
-	kinds := m.Sorted()
-	total := 0
-	for _, k := range kinds {
-		total += m.Kinds[k]
-	}
-	n := r.IntN(total)
-	for _, k := range kinds {
-		if n < m.Kinds[k] {
-			return k
-		}
-		n -= m.Kinds[k]
-	}
-	panic("unreachable")
+	return config.Pick(r, m.Kinds)
 }
 
 // pickOther returns a value of rg other than current.

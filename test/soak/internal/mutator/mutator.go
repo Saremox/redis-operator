@@ -31,6 +31,7 @@ import (
 	"github.com/saremox/redis-operator/test/soak/internal/maxmem"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 	"github.com/saremox/redis-operator/test/soak/internal/observer"
+	"github.com/saremox/redis-operator/test/soak/internal/poll"
 )
 
 // Results, the values of the result label.
@@ -194,17 +195,8 @@ func (m *Mutator) Run(ctx context.Context) {
 // waitFilled waits until the data reached its target once, so mutations
 // act on a filled instance.
 func (m *Mutator) waitFilled(ctx context.Context) bool {
-	if m.data == nil {
-		return true
-	}
-	t := time.NewTicker(time.Second)
-	defer t.Stop()
-	for !m.data.Filled() {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-t.C:
-		}
+	if m.data != nil && !waitFor(ctx, m.data.Filled) {
+		return false
 	}
 	m.log.Info("data filled, mutating")
 	return true
@@ -213,16 +205,18 @@ func (m *Mutator) waitFilled(ctx context.Context) bool {
 // waitQuiet waits until no convergence window is open and every invariant
 // holds.
 func (m *Mutator) waitQuiet(ctx context.Context) bool {
-	t := time.NewTicker(time.Second)
-	defer t.Stop()
-	for !m.observer.Quiet() {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-t.C:
+	return waitFor(ctx, m.observer.Quiet)
+}
+
+// waitFor checks ok every second, and reports whether it held before ctx
+// was done.
+func waitFor(ctx context.Context, ok func() bool) bool {
+	return poll.Until(ctx, time.Second, 0, func(context.Context) error {
+		if !ok() {
+			return errors.New("not yet")
 		}
-	}
-	return true
+		return nil
+	}) == nil
 }
 
 // expectation is a mutation step whose expected result did not occur within
@@ -637,23 +631,6 @@ func exists[T any](_ T, err error) (bool, error) {
 	return err == nil, err
 }
 
-// podClient connects to a redis or Sentinel pod with credentials.
-func (m *Mutator) podClient(ip string, port int, credentials func() (string, string)) *redis.Client {
-	return m.podClientAddr(net.JoinHostPort(ip, strconv.Itoa(port)), credentials)
-}
-
-func (m *Mutator) podClientAddr(addr string, credentials func() (string, string)) *redis.Client {
-	return redis.NewClient(&redis.Options{
-		Addr:                  addr,
-		CredentialsProvider:   credentials,
-		DialTimeout:           m.timeout,
-		ReadTimeout:           m.timeout,
-		WriteTimeout:          m.timeout,
-		ContextTimeoutEnabled: true,
-		MaxRetries:            -1,
-	})
-}
-
 // eachPod runs f on a client of every pod with an IP, in parallel, and
 // returns its results by pod name.
 func eachPod[T any](ctx context.Context, m *Mutator, pods []corev1.Pod, port int, credentials func() (string, string), f func(context.Context, *redis.Client) (T, error)) (map[string]T, map[string]error) {
@@ -667,7 +644,7 @@ func eachPod[T any](ctx context.Context, m *Mutator, pods []corev1.Pod, port int
 			continue
 		}
 		wg.Go(func() {
-			c := m.podClient(p.Status.PodIP, port, credentials)
+			c := observer.Client(net.JoinHostPort(p.Status.PodIP, strconv.Itoa(port)), credentials, m.timeout)
 			defer func() { _ = c.Close() }()
 			cctx, cancel := context.WithTimeout(ctx, m.timeout)
 			defer cancel()

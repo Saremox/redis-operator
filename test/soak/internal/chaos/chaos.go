@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"log/slog"
 	"maps"
 	"math/rand/v2"
@@ -24,6 +23,7 @@ import (
 	"github.com/saremox/redis-operator/test/soak/internal/global"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 	"github.com/saremox/redis-operator/test/soak/internal/observer"
+	"github.com/saremox/redis-operator/test/soak/internal/poll"
 )
 
 // Results, the values of chaos_total's result label.
@@ -116,28 +116,8 @@ func New(cfg *config.Config, kube kubernetes.Interface, lock *global.Lock, insta
 	return l
 }
 
-// stepRand returns the random source of one step of the lane, apart from
-// every instance's.
 func stepRand(seed int64, step int) *rand.Rand {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte("chaos"))
-	return rand.New(rand.NewPCG(uint64(seed)^h.Sum64(), uint64(step)))
-}
-
-func pickKind(r *rand.Rand, kinds map[config.ChaosKind]int) config.ChaosKind {
-	sorted := slices.Sorted(maps.Keys(kinds))
-	total := 0
-	for _, k := range sorted {
-		total += kinds[k]
-	}
-	n := r.IntN(total)
-	for _, k := range sorted {
-		if n < kinds[k] {
-			return k
-		}
-		n -= kinds[k]
-	}
-	panic("unreachable")
+	return config.StepRand(seed, "chaos", step)
 }
 
 // Run takes an action every interval plus up to jitter, until
@@ -156,7 +136,7 @@ func (l *Lane) Run(ctx context.Context) {
 			return
 		case <-time.After(d):
 		}
-		l.act(ctx, step, r, pickKind(r, l.cfg.Kinds))
+		l.act(ctx, step, r, config.Pick(r, l.cfg.Kinds))
 	}
 }
 
@@ -319,31 +299,9 @@ func (l *Lane) reports() map[string]observer.Report {
 	return out
 }
 
-// await polls f until it returns nil, for at most the timeout, and returns
-// its last error then.
+// await polls f until it returns nil, for at most the timeout.
 func (l *Lane) await(ctx context.Context, f func(context.Context) error) error {
-	return l.awaitFor(ctx, l.cfg.Timeout.Duration, f)
-}
-
-func (l *Lane) awaitFor(ctx context.Context, d time.Duration, f func(context.Context) error) error {
-	deadline := time.Now().Add(d)
-	for {
-		err := f(ctx)
-		if err == nil {
-			return nil
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("not within %s: %w", d, err)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(l.poll):
-		}
-	}
+	return poll.Until(ctx, l.poll, l.cfg.Timeout.Duration, f)
 }
 
 // quiet holds once every instance was observed after since with no
