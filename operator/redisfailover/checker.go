@@ -791,8 +791,17 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 					}
 					return ferr
 				}
-				sentinelMonitorMaster = freshMaster
 				masterRefreshed = true
+				if freshMaster != sentinelMonitorMaster {
+					sentinelMonitorMaster = freshMaster
+					// The Sentinel can already monitor the new master. A new
+					// monitor then only resets its state.
+					err = r.rfChecker.CheckSentinelMonitor(sip, sentinelMonitorMaster, port)
+					setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
+					if err == nil {
+						continue
+					}
+				}
 			}
 			if err := r.rfHealer.NewSentinelMonitor(sip, sentinelMonitorMaster, rf); err != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
