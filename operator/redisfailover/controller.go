@@ -322,8 +322,10 @@ func newPodListWatch(k8sClient kubernetes.Interface) *cache.ListWatch {
 	}
 }
 
-// newSecretListWatch requests only metadata, so the operator does not receive
-// Secret data. No selector can find only the auth Secrets, so it watches all.
+// newSecretListWatch requests only metadata. The metadata can still contain
+// Secret data in the last-applied-configuration annotation, so the transform
+// keeps only the key fields. No selector can find only the auth Secrets, so it
+// watches all.
 func newSecretListWatch(metaClient metadata.Interface) *cache.ListWatch {
 	secrets := metaClient.Resource(corev1.SchemeGroupVersion.WithResource("secrets"))
 	return &cache.ListWatch{

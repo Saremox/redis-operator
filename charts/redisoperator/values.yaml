@@ -89,8 +89,10 @@ resources: {}
 #     memory: 128Mi
 
 # true applies an auth Secret (spec.auth.secretPath) change immediately, not at
-# the next sync (30s by default). It is false by default because true grants
-# list and watch on secrets in all namespaces, which can read every Secret.
+# the next sync (30s by default). The operator then needs list and watch on
+# secrets in all namespaces, which can read every Secret. That is why it is
+# false by default. With serviceAccount.create=false, add these verbs to your
+# own ClusterRole.
 watchAuthSecrets: false
 
 ### Monitoring
