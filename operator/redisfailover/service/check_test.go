@@ -502,6 +502,8 @@ func TestCheckSentinelSlavesNumberInMemoryBootstrappingMismatch(t *testing.T) {
 	rf.Spec.Redis.Replicas = 3
 
 	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
+		Return(podsWithPhases(corev1.PodRunning, corev1.PodRunning, corev1.PodRunning), nil)
 	mr := &mRedisService.Client{}
 	mr.On("GetNumberSentinelSlavesInMemory", "1.1.1.1").Once().Return(int32(2), nil)
 
@@ -526,6 +528,77 @@ func TestCheckSentinelSlavesNumberInMemoryBootstrappingMatch(t *testing.T) {
 
 	err := checker.CheckSentinelSlavesNumberInMemory("1.1.1.1", rf)
 	assert.NoError(err)
+}
+
+// TestCheckSentinelNumberInMemoryRunningPods checks that a Sentinel that
+// knows fewer Sentinels than the spec is reset only when it does not know all
+// the running Sentinels. A reset does not add a Pending Sentinel.
+func TestCheckSentinelNumberInMemoryRunningPods(t *testing.T) {
+	run, pend := corev1.PodRunning, corev1.PodPending
+	tests := []struct {
+		name      string
+		inMemory  int32
+		pods      *corev1.PodList
+		podsErr   error
+		wantReset bool
+	}{
+		{name: "one sentinel pending", inMemory: 2, pods: podsWithPhases(run, run, pend)},
+		{name: "a running sentinel not known", inMemory: 2, pods: podsWithPhases(run, run, run), wantReset: true},
+		{name: "pods not listed", inMemory: 2, podsErr: errors.New("list error"), wantReset: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			ms := &mK8SService.Services{}
+			ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(test.pods, test.podsErr)
+			mr := &mRedisService.Client{}
+			mr.On("GetNumberSentinelsInMemory", "1.1.1.1").Once().Return(test.inMemory, nil)
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+			err := checker.CheckSentinelNumberInMemory("1.1.1.1", rf)
+
+			assert.Equal(t, test.wantReset, err != nil, "error: %v", err)
+			ms.AssertExpectations(t)
+		})
+	}
+}
+
+// TestCheckSentinelSlavesNumberInMemoryRunningPods checks that a Sentinel
+// that knows fewer slaves than the spec is reset only when it does not know
+// all the running slaves.
+func TestCheckSentinelSlavesNumberInMemoryRunningPods(t *testing.T) {
+	run, pend := corev1.PodRunning, corev1.PodPending
+	tests := []struct {
+		name      string
+		bootstrap bool
+		inMemory  int32
+		pods      *corev1.PodList
+		podsErr   error
+		wantReset bool
+	}{
+		{name: "one redis pending", inMemory: 1, pods: podsWithPhases(run, run, pend)},
+		{name: "a running slave not known", inMemory: 1, pods: podsWithPhases(run, run, run), wantReset: true},
+		{name: "bootstrapping, one redis pending", bootstrap: true, inMemory: 2, pods: podsWithPhases(run, run, pend)},
+		{name: "pods not listed", inMemory: 1, podsErr: errors.New("list error"), wantReset: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			if test.bootstrap {
+				rf.Spec.BootstrapNode = &redisfailoverv1.BootstrapSettings{Host: "127.0.0.1"}
+			}
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(test.pods, test.podsErr)
+			mr := &mRedisService.Client{}
+			mr.On("GetNumberSentinelSlavesInMemory", "1.1.1.1").Once().Return(test.inMemory, nil)
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+			err := checker.CheckSentinelSlavesNumberInMemory("1.1.1.1", rf)
+
+			assert.Equal(t, test.wantReset, err != nil, "error: %v", err)
+			ms.AssertExpectations(t)
+		})
+	}
 }
 
 func TestCheckSentinelSlavesNumberQuorumInMemoryGetNumberSentinelSlavesInMemoryError(t *testing.T) {

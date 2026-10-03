@@ -47,7 +47,7 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
 - Redis has the custom configuration and the managed `maxmemory`.
 - Stale Redis pods get the new statefulset revision. The operator deletes the master pod only when every Sentinel knows a quorum of the slaves. Otherwise, Sentinel has no replica to promote.
 - All Sentinels monitor the same Redis master.
-- Each Sentinel knows the correct number of Sentinels and slaves. If not, the operator resets that Sentinel.
+- Each Sentinel knows the correct number of Sentinels and slaves. If not, the operator resets that Sentinel. A pod that does not run, for example a Pending pod, is no reason for a reset, because a reset does not add it.
 - Sentinel has the custom configuration.
 
 ### Bootstrap mode
