@@ -3013,7 +3013,7 @@ func TestOperatorManagedModeDoesNotReplaceAStalledMaster(t *testing.T) {
 		},
 		{
 			name:        "the master pod is not ready",
-			wantMessage: "master unreachable for 0s, failing over after 10s",
+			wantMessage: `^master unreachable since \S+, failing over after 10s$`,
 		},
 	}
 	for _, test := range tests {
@@ -3053,7 +3053,7 @@ func TestOperatorManagedModeDoesNotReplaceAStalledMaster(t *testing.T) {
 				assert.NoError(t, err)
 			}
 			assert.Equal(t, v1.NotHealthyState, rf.Status.State)
-			assert.Equal(t, test.wantMessage, rf.Status.Message)
+			assert.Regexp(t, test.wantMessage, rf.Status.Message)
 			mrfh.AssertNotCalled(t, "PromoteBestReplica", replicaIP, rf)
 			mk.AssertExpectations(t)
 		})
