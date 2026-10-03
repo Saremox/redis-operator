@@ -1047,6 +1047,9 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 		master   = "0.0.0.0"
 		sentinel = "1.1.1.1"
 		port     = "0" // getRedisPort(rf.Spec.Redis.Port) with the zero-value Port used by generateRF
+		// newMaster is the master that the re-check before a heal finds,
+		// because the master can change during the reconcile.
+		newMaster = "2.2.2.2"
 	)
 
 	tests := []struct {
@@ -1191,8 +1194,8 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 				mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
 				mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(errors.New("wrong master"))
-				mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
-				mrfh.On("SetMasterOnAll", master, rf).Once().Return(errors.New("set fail"))
+				mrfc.On("GetMasterIP", rf).Once().Return(newMaster, nil)
+				mrfh.On("SetMasterOnAll", newMaster, rf).Once().Return(errors.New("set fail"))
 			},
 			wantErr:   true,
 			wantState: v1.NotHealthyState,
@@ -1320,8 +1323,8 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
 				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel}, nil)
 				mrfc.On("CheckSentinelMonitor", sentinel, master, port).Once().Return(errors.New("mon err"))
-				mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
-				mrfh.On("NewSentinelMonitor", sentinel, master, rf).Once().Return(errors.New("new monitor err"))
+				mrfc.On("GetMasterIP", rf).Once().Return(newMaster, nil)
+				mrfh.On("NewSentinelMonitor", sentinel, newMaster, rf).Once().Return(errors.New("new monitor err"))
 			},
 			wantErr:   true,
 			wantState: v1.NotHealthyState,

@@ -151,9 +151,12 @@ publish:
 release: tag image-release
 
 # Test stuff in dev
+# The development image has no redis-server, so the service/redis tests skip.
+# The warning comes after the test output, where the reader sees it.
+REDIS_SERVER_WARNING := command -v redis-server >/dev/null || echo "WARNING: redis-server is not on the PATH, so the service/redis tests were skipped. Run make ci-unit-test on a host with redis-server."
 .PHONY: unit-test
 unit-test: docker-build
-	docker run -ti --rm -v $(PWD):$(WORKDIR) -u $(UID):$(UID) --name $(SERVICE_NAME) $(REPOSITORY)-dev /bin/sh -c '$(UNIT_TEST_CMD)'
+	docker run -ti --rm -v $(PWD):$(WORKDIR) -u $(UID):$(UID) --name $(SERVICE_NAME) $(REPOSITORY)-dev /bin/sh -c '$(UNIT_TEST_CMD); status=$$?; $(REDIS_SERVER_WARNING); exit $$status'
 
 .PHONY: ci-unit-test
 ci-unit-test:
