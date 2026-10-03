@@ -380,7 +380,7 @@ func sentinelConfigMilliseconds(rf *redisfailoverv1.RedisFailover, param string,
 	ms := def
 	for _, c := range rf.Spec.Sentinel.CustomConfig {
 		s := strings.Split(c, " ")
-		if len(s) != 2 || s[0] != param {
+		if len(s) != 2 || !strings.EqualFold(s[0], param) {
 			continue
 		}
 		if v, err := strconv.ParseInt(s[1], 10, 64); err == nil && v >= 0 {

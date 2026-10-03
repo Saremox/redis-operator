@@ -48,6 +48,12 @@ func TestValidate(t *testing.T) {
 			expectedSentinelCustomConfig: []string{"failover-timeout 500", "parallel-syncs 1", "down-after-milliseconds 2000"},
 		},
 		{
+			name:                         "SentinelCustomConfig key in upper case replaces its default",
+			rfName:                       "test",
+			rfSentinelCustomConfig:       []string{"DOWN-AFTER-MILLISECONDS 60000"},
+			expectedSentinelCustomConfig: []string{"failover-timeout 10000", "DOWN-AFTER-MILLISECONDS 60000"},
+		},
+		{
 			name:            "BootstrapNode provided without a host",
 			rfName:          "test",
 			rfBootstrapNode: &BootstrapSettings{},

@@ -3792,6 +3792,14 @@ func TestRedisReadinessLinkDownWindow(t *testing.T) {
 			},
 			window: "210",
 		},
+		{
+			name: "sentinel mode, customConfig keys in upper case",
+			modify: func(rf *redisfailoverv1.RedisFailover) {
+				rf.Spec.Sentinel.Enabled = ptr.To(true)
+				rf.Spec.Sentinel.CustomConfig = []string{"DOWN-AFTER-MILLISECONDS 120000", "Failover-Timeout 30000"}
+			},
+			window: "210",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

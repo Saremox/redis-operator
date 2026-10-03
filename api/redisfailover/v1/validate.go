@@ -95,10 +95,11 @@ func (r *RedisFailover) Validate() error {
 // addSentinelDefaults puts each default in front of configs, unless configs
 // sets that parameter. Otherwise a Sentinel uses a different value after a
 // restart or a new monitor, and the Sentinels then disagree on the timeouts.
+// The parameter names are case-insensitive, as in SENTINEL SET.
 func addSentinelDefaults(configs []string) []string {
 	set := map[string]bool{}
 	for _, c := range configs {
-		set[strings.SplitN(c, " ", 2)[0]] = true
+		set[strings.ToLower(strings.SplitN(c, " ", 2)[0])] = true
 	}
 	merged := []string{}
 	for _, d := range defaultSentinelCustomConfig {

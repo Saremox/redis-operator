@@ -984,6 +984,12 @@ func TestSentinelConfigsToApply(t *testing.T) {
 			want:    []sentinelConfigParam{{param: "parallel-syncs", value: "3"}},
 		},
 		{
+			name:    "param in upper case that matches current: nothing to apply",
+			current: map[string]string{"down-after-milliseconds": "5000"},
+			configs: []string{"DOWN-AFTER-MILLISECONDS 5000"},
+			want:    nil,
+		},
+		{
 			name:    "nil current (state unreadable) applies everything",
 			current: nil,
 			configs: []string{"down-after-milliseconds 5000", "failover-timeout 10000"},
