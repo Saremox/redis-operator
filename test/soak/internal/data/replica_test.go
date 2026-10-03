@@ -92,7 +92,6 @@ func TestReplicaSourceAgedOut(t *testing.T) {
 	labels := prometheus.Labels{"rf": "b", "namespace": "ns", "mode": "operator"}
 	r := &Replica{
 		in:         config.Instance{Name: "b", Namespace: "ns", Mode: config.ModeOperator},
-		cfg:        config.Bootstrap{SampleKeys: 100},
 		source:     src,
 		pods:       fakePods{{Name: "rfr-b-0", Addr: pod.Addr()}},
 		rnd:        rand.New(rand.NewPCG(1, 2)),

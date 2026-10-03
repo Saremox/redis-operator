@@ -26,6 +26,23 @@ import (
 	"github.com/saremox/redis-operator/test/soak/internal/prober"
 )
 
+// The shape and the pace of the data. Each value comes from its key only.
+const (
+	fillValueBytes   = 1024
+	ledgerValueBytes = 64
+	// fillRate keys per second, in pipelines of fillBatch, so that the
+	// filler does not overload the node.
+	fillRate   = 2000
+	fillBatch  = 100
+	ledgerRate = 10
+	// sampleKeys is the number of fill keys, older ledger keys and source
+	// keys that a verification checks.
+	sampleKeys = 100
+	// verifyInterval verifies the ledger when no event did for this long,
+	// which bounds the keys that it keeps.
+	verifyInterval = 10 * time.Minute
+)
+
 // Master tells where the master is, and when it changed: Failovers
 // receives config.EventFailover or config.EventReset.
 type Master interface {
@@ -174,7 +191,7 @@ func verifyAfter(ctx context.Context, requests chan<- *request, r *request) (int
 func (d *Data) runVerifier(ctx context.Context) {
 	var periodic <-chan time.Time
 	if d.ledger != nil {
-		t := time.NewTicker(d.cfg.Ledger.VerifyInterval.Duration)
+		t := time.NewTicker(verifyInterval)
 		defer t.Stop()
 		periodic = t.C
 	}
@@ -241,8 +258,8 @@ func (d *Data) verify(ctx context.Context, event string, step int, lossless bool
 	var r round
 	var lostRecent, lostOlder []int64
 	if d.ledger != nil {
-		r = d.ledger.plan(d.rnd, d.cfg.Ledger.SampleKeys)
-		size := d.cfg.Ledger.ValueBytes
+		r = d.ledger.plan(d.rnd, sampleKeys)
+		size := ledgerValueBytes
 		if lostRecent, _, err = d.check(ctx, c, LedgerKey, size, members(r.recent)); err != nil {
 			return 0, err
 		}
@@ -260,9 +277,9 @@ func (d *Data) verify(ctx context.Context, event string, step int, lossless bool
 	}
 	d.fillMu.Lock()
 	fillTo := d.fillNext
-	fillSeqs := sample(d.rnd, d.fillAck.spans, d.cfg.Fill.SampleKeys)
+	fillSeqs := sample(d.rnd, d.fillAck.spans, sampleKeys)
 	d.fillMu.Unlock()
-	lostFill, missingFill, err := d.check(ctx, c, FillKey, d.cfg.Fill.ValueBytes, fillSeqs)
+	lostFill, missingFill, err := d.check(ctx, c, FillKey, fillValueBytes, fillSeqs)
 	if err != nil {
 		return 0, err
 	}
@@ -386,7 +403,7 @@ func (d *Data) deleteMatching(ctx context.Context, patterns ...string) bool {
 }
 
 func (d *Data) runLedger(ctx context.Context) {
-	t := time.NewTicker(time.Second / time.Duration(d.cfg.Ledger.WritesPerSecond))
+	t := time.NewTicker(time.Second / ledgerRate)
 	defer t.Stop()
 	paused := false
 	for {
@@ -411,7 +428,7 @@ func (d *Data) runLedger(ctx context.Context) {
 		seq := d.ledger.begin()
 		key := LedgerKey(d.in.Name, seq)
 		wctx, cancel := context.WithTimeout(ctx, d.timeout)
-		err := d.client.Set(wctx, key, Value(key, d.cfg.Ledger.ValueBytes), 0).Err()
+		err := d.client.Set(wctx, key, Value(key, ledgerValueBytes), 0).Err()
 		cancel()
 		d.ledger.end(seq, err == nil)
 		d.countOOM(err)
@@ -428,7 +445,7 @@ func (d *Data) countOOM(err error) {
 // fixed size without one.
 func (d *Data) runFiller(ctx context.Context) {
 	f := d.cfg.Fill
-	lim := rate.NewLimiter(rate.Limit(f.KeysPerSecond), f.Batch)
+	lim := rate.NewLimiter(fillRate, fillBatch)
 	for ctx.Err() == nil {
 		mi, err := memoryInfo(ctx, d.client)
 		if err != nil {
@@ -448,9 +465,9 @@ func (d *Data) runFiller(ctx context.Context) {
 			continue
 		}
 		// About a second's worth, before looking again.
-		n := min(int64(f.KeysPerSecond), (target-mi.used)/int64(f.ValueBytes)+1)
+		n := min(fillRate, (target-mi.used)/fillValueBytes+1)
 		for n > 0 && ctx.Err() == nil {
-			b := min(n, int64(f.Batch))
+			b := min(n, fillBatch)
 			if lim.WaitN(ctx, int(b)) != nil {
 				return
 			}
@@ -471,7 +488,7 @@ func (d *Data) writeFill(ctx context.Context, n int64) {
 	cmds := make([]*redis.StatusCmd, n)
 	for i := range n {
 		key := FillKey(d.in.Name, from+i)
-		cmds[i] = pipe.Set(ctx, key, Value(key, d.cfg.Fill.ValueBytes), d.cfg.Fill.TTL.Duration)
+		cmds[i] = pipe.Set(ctx, key, Value(key, fillValueBytes), d.cfg.Fill.TTL.Duration)
 	}
 	_, _ = pipe.Exec(ctx)
 	d.fillMu.Lock()
@@ -496,14 +513,13 @@ func (d *Data) Burst(ctx context.Context, hold time.Duration) (string, error) {
 	if mi.policy != "noeviction" || mi.maxMemory == 0 {
 		return fmt.Sprintf("maxmemory %d, policy %s", mi.maxMemory, mi.policy), nil
 	}
-	f := d.cfg.Fill
-	lim := rate.NewLimiter(rate.Limit(4*f.KeysPerSecond), f.Batch)
+	lim := rate.NewLimiter(4*fillRate, fillBatch)
 	// Bounded in case writes are never rejected.
-	most := 2 * mi.maxMemory / int64(f.ValueBytes)
+	most := 2 * mi.maxMemory / fillValueBytes
 	var n, written, rejected int64
 	var full time.Time
 	for n < most && (full.IsZero() || time.Since(full) < hold) {
-		b := int64(f.Batch)
+		b := int64(fillBatch)
 		if !full.IsZero() {
 			b = 1
 			if !sleep(ctx, 100*time.Millisecond) {
@@ -547,7 +563,7 @@ func (d *Data) writeBurst(ctx context.Context, from, n int64) (ok, oom int64) {
 	cmds := make([]*redis.StatusCmd, n)
 	for i := range n {
 		key := BurstKey(d.in.Name, from+i)
-		cmds[i] = pipe.Set(ctx, key, Value(key, d.cfg.Fill.ValueBytes), 0)
+		cmds[i] = pipe.Set(ctx, key, Value(key, fillValueBytes), 0)
 	}
 	_, _ = pipe.Exec(ctx)
 	for _, cmd := range cmds {

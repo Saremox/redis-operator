@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"slices"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -196,7 +197,7 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 		if mm.Policy != "noeviction" {
 			return skipped(kind, "policy %s", mm.Policy)
 		}
-		hold := m.FillBurstHold.Duration
+		const hold = 10 * time.Second
 		replicas := s.rf.Spec.Redis.Replicas
 		return plan{
 			kind:   kind,

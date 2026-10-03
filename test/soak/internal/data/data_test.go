@@ -174,9 +174,9 @@ func (f *fakeInfo) hook(c *server.Peer, cmd string, args ...string) bool {
 
 func newTestData(t *testing.T, ledger bool) (*Data, *miniredis.Miniredis, *fakeInfo, *metrics.Metrics) {
 	t.Helper()
-	cfgYAML := "instances: [{name: x, namespace: ns, maxMemoryPolicy: noeviction, data: {fill: {percent: 50, sizeMi: 1, valueBytes: 1024, keysPerSecond: 100000, batch: 100, sampleKeys: 20}}}]"
+	cfgYAML := "instances: [{name: x, namespace: ns, maxMemoryPolicy: noeviction, data: {fill: {percent: 50, sizeMi: 1}}}]"
 	if ledger {
-		cfgYAML = strings.Replace(cfgYAML, "sampleKeys: 20}", "sampleKeys: 20}, ledger: {sampleKeys: 5}", 1)
+		cfgYAML = strings.Replace(cfgYAML, "sizeMi: 1}", "sizeMi: 1}, ledger: {}", 1)
 	}
 	cfg, err := config.Parse([]byte(cfgYAML))
 	if err != nil {
@@ -256,7 +256,6 @@ func TestVerify(t *testing.T) {
 	_ = m.Set(LedgerKey("x", 115), "garbage")
 	m.Del(FillKey("x", 3))
 	_ = m.Set(FillKey("x", 4), "garbage")
-	d.cfg.Fill.SampleKeys = 50
 	d.failedOver.Store(true)
 	n, err := d.verify(ctx, config.EventFailover, 0, false)
 	if err != nil {
@@ -314,7 +313,7 @@ func TestVerifyAfterReset(t *testing.T) {
 			d.ledger.end(seq, d.client.Set(ctx, key, Value(key, 64), 0).Err() == nil)
 		}
 	}
-	write(100)
+	write(300)
 	d.writeFill(ctx, 1000)
 	if _, err := d.verify(ctx, config.EventPeriodic, 0, false); err != nil {
 		t.Fatal(err)
@@ -325,10 +324,10 @@ func TestVerifyAfterReset(t *testing.T) {
 	if _, err := d.verify(ctx, "kill_master", 1, false); err != nil {
 		t.Fatal(err)
 	}
-	// Every ledger write, though only 5 older ones are sampled, and the
+	// Every ledger write, though only 100 older ones are sampled, and the
 	// sampled fill keys.
-	if got := lost("kill_master"); got != 130+20 {
-		t.Errorf("lost %v, want 150", got)
+	if got := lost("kill_master"); got != 330+sampleKeys {
+		t.Errorf("lost %v, want %d", got, 330+sampleKeys)
 	}
 	write(10)
 	d.writeFill(ctx, 10)
@@ -384,7 +383,6 @@ func TestVerifyEvictable(t *testing.T) {
 	_ = m.Set(FillKey("x", 20), "garbage")
 	policy := "allkeys-lru"
 	fi.policy.Store(&policy)
-	d.cfg.Fill.SampleKeys = 50
 	if _, err := d.verify(ctx, "redis_memory", 1, false); err != nil {
 		t.Fatal(err)
 	}

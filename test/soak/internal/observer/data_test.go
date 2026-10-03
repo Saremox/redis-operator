@@ -15,32 +15,6 @@ import (
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 )
 
-func TestEvictionsAcrossRestarts(t *testing.T) {
-	var e evictions
-	all := []string{"rfr-x-0", "rfr-x-1", "rfr-x-2"}
-	steps := []struct {
-		name   string
-		counts map[string]evictionCount
-		pods   []string
-		want   int64
-	}{
-		{"first round is the baseline", map[string]evictionCount{"rfr-x-0": {"a", 500}, "rfr-x-1": {"b", 0}}, all, 0},
-		{"master evicts", map[string]evictionCount{"rfr-x-0": {"a", 700}, "rfr-x-1": {"b", 0}}, all, 200},
-		{"master unreachable", map[string]evictionCount{"rfr-x-1": {"b", 0}}, all, 0},
-		{"back, same process", map[string]evictionCount{"rfr-x-0": {"a", 750}, "rfr-x-1": {"b", 0}}, all, 50},
-		{"restarted, counter reset", map[string]evictionCount{"rfr-x-0": {"c", 30}, "rfr-x-1": {"b", 0}}, all, 30},
-		{"promoted replica evicts", map[string]evictionCount{"rfr-x-0": {"c", 30}, "rfr-x-1": {"b", 40}}, all, 40},
-		{"new pod", map[string]evictionCount{"rfr-x-0": {"c", 30}, "rfr-x-1": {"b", 40}, "rfr-x-2": {"d", 5}}, all, 5},
-		{"pod gone", map[string]evictionCount{"rfr-x-0": {"c", 30}, "rfr-x-1": {"b", 40}}, all[:2], 0},
-		{"recreated under the same name", map[string]evictionCount{"rfr-x-0": {"c", 30}, "rfr-x-1": {"b", 40}, "rfr-x-2": {"e", 7}}, all, 7},
-	}
-	for _, s := range steps {
-		if got := e.update(s.counts, s.pods); got != s.want {
-			t.Errorf("%s: %d, want %d", s.name, got, s.want)
-		}
-	}
-}
-
 func TestOOMKills(t *testing.T) {
 	at := metav1.NewTime(time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC))
 	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: types.UID("u0")}}
@@ -131,27 +105,5 @@ func TestEvaluateConfig(t *testing.T) {
 	}
 	if v := violated(evaluate(healthy(false))); v != nil {
 		t.Errorf("without maxMemory: %v", v)
-	}
-}
-
-func TestObserveData(t *testing.T) {
-	o, _ := newTestObserver(t)
-	s := healthy(false)
-	s.redis[0].info["used_memory"] = "1048576"
-	s.redis[0].info["maxmemory"] = "2097152"
-	s.redis[0].info["db0"] = "keys=42,expires=40,avg_ttl=1000"
-	s.redis[0].info["run_id"] = "a"
-	s.redis[0].info["evicted_keys"] = "10"
-	o.observeData(s)
-	s.redis[0].info["evicted_keys"] = "15"
-	o.observeData(s)
-	for name, c := range map[string]float64{
-		"keys": testutil.ToFloat64(o.datasetKeys), "used": testutil.ToFloat64(o.usedMemory),
-		"max": testutil.ToFloat64(o.maxMemory), "evicted": testutil.ToFloat64(o.evicted),
-	} {
-		want := map[string]float64{"keys": 42, "used": 1 << 20, "max": 2 << 20, "evicted": 5}[name]
-		if c != want {
-			t.Errorf("%s = %v, want %v", name, c, want)
-		}
 	}
 }

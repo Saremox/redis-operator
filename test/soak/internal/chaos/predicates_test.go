@@ -151,31 +151,10 @@ func TestDownSince(t *testing.T) {
 	}
 }
 
-func TestHook(t *testing.T) {
-	created := time.Now()
-	cases := []struct {
-		name   string
-		w      *watch
-		helmOK bool
-		want   hookResult
-	}{
-		{"completed", &watch{created: created, completed: created.Add(4 * time.Second)}, true, hookResult{"succeeded", 4 * time.Second}},
-		{"deleted on success", &watch{created: created, gone: created.Add(5 * time.Second)}, true, hookResult{"succeeded", 5 * time.Second}},
-		{"failed", &watch{created: created, failed: true, gone: created.Add(9 * time.Second)}, false, hookResult{"failed", 9 * time.Second}},
-		{"not seen", &watch{}, true, hookResult{result: "not seen"}},
-		{"gone, helm failed", &watch{created: created, gone: created.Add(time.Second)}, false, hookResult{result: "unknown"}},
-	}
-	for _, c := range cases {
-		if got := c.w.hook(c.helmOK); got != c.want {
-			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)
-		}
-	}
-}
-
 func TestHelmArgs(t *testing.T) {
-	u := config.Upgrade{Release: "redis-operator", Timeout: metav1.Duration{Duration: 5 * time.Minute},
-		Set: []string{"crds.upgradeHook.enabled=true"}}
-	got := strings.Join(helmArgs(u, "ops", config.OperatorVersion{Name: "rc2", Chart: "/etc/soak/redis-operator-rc2.tgz",
+	ch := config.Chaos{Timeout: metav1.Duration{Duration: 5 * time.Minute}, Upgrade: config.Upgrade{Set: []string{"crds.upgradeHook.enabled=true"}}}
+	op := config.Operator{Namespace: "ops", Deployment: "redis-operator"}
+	got := strings.Join(helmArgs(ch, op, config.OperatorVersion{Name: "rc2", Chart: "/etc/soak/redis-operator-rc2.tgz",
 		Image: "localhost:5001/redis-operator:4.2.0-rc2"}), " ")
 	want := "upgrade redis-operator /etc/soak/redis-operator-rc2.tgz --namespace ops --reset-then-reuse-values " +
 		"--set image.repository=localhost:5001/redis-operator --set image.tag=4.2.0-rc2 --wait --timeout 5m0s " +
@@ -183,7 +162,7 @@ func TestHelmArgs(t *testing.T) {
 	if got != want {
 		t.Errorf("args\n%s\nwant\n%s", got, want)
 	}
-	got = strings.Join(helmArgs(u, "ops", config.OperatorVersion{Name: "rc1", Chart: "oci://ghcr.io/saremox/redis-operator/charts/redis-operator",
+	got = strings.Join(helmArgs(ch, op, config.OperatorVersion{Name: "rc1", Chart: "oci://ghcr.io/saremox/redis-operator/charts/redis-operator",
 		Version: "4.2.0-rc1", Image: "ghcr.io/saremox/redis-operator:4.2.0-rc1"}), " ")
 	if !strings.Contains(got, " oci://ghcr.io/saremox/redis-operator/charts/redis-operator ") || !strings.Contains(got, "--version 4.2.0-rc1") ||
 		!strings.Contains(got, "--set image.repository=ghcr.io/saremox/redis-operator --set image.tag=4.2.0-rc1") {
@@ -248,15 +227,5 @@ func TestDrainable(t *testing.T) {
 	nodes := []corev1.Node{node("w3", true, false), node("w1", true, false), node("w2", true, true), node("w4", false, false), node("self", true, false)}
 	if got := drainable(nodes, "self"); strings.Join(got, ",") != "w1,w3" {
 		t.Errorf("drainable %v", got)
-	}
-}
-
-func TestDeletedAt(t *testing.T) {
-	deleted := time.Now().Truncate(time.Second)
-	p := operatorPod("op", "op", "redis-operator:a", true)
-	p.DeletionTimestamp = &metav1.Time{Time: deleted.Add(30 * time.Second)}
-	p.DeletionGracePeriodSeconds = new(int64(30))
-	if got := deletedAt(&p); !got.Equal(deleted) {
-		t.Errorf("deleted at %s, want %s", got, deleted)
 	}
 }

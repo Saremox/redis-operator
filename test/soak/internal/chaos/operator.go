@@ -2,16 +2,13 @@ package chaos
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,6 +18,9 @@ import (
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/observer"
 )
+
+// leaseName is the Lease of the operator leader.
+const leaseName = "redis-failover-lease"
 
 // operatorState is the operator Deployment, its pods and its leader's
 // Lease.
@@ -46,7 +46,7 @@ func (l *Lane) operatorState(ctx context.Context) (operatorState, error) {
 		return s, err
 	}
 	s.pods = pods.Items
-	s.lease, err = l.kube.CoordinationV1().Leases(ns).Get(ctx, l.operator.Lease, metav1.GetOptions{})
+	s.lease, err = l.kube.CoordinationV1().Leases(ns).Get(ctx, leaseName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		s.lease, err = nil, nil
 	}
@@ -228,11 +228,13 @@ func (l *Lane) upgrade(ctx context.Context, a *action) outcome {
 
 // helmArgs returns the arguments of the upgrade to a version: the
 // release's own values, reused, then the version's image and the
-// configured --set values.
-func helmArgs(u config.Upgrade, namespace string, to config.OperatorVersion) []string {
-	args := []string{"upgrade", u.Release, to.Chart, "--namespace", namespace, "--reset-then-reuse-values",
+// configured --set values. The chart names the Deployment after the
+// release.
+func helmArgs(ch config.Chaos, op config.Operator, to config.OperatorVersion) []string {
+	u := ch.Upgrade
+	args := []string{"upgrade", op.Deployment, to.Chart, "--namespace", op.Namespace, "--reset-then-reuse-values",
 		"--set", "image.repository=" + to.Repository(), "--set", "image.tag=" + to.Tag(),
-		"--wait", "--timeout", u.Timeout.Duration.String()}
+		"--wait", "--timeout", ch.Timeout.Duration.String()}
 	if to.Version != "" {
 		args = append(args, "--version", to.Version)
 	}
@@ -248,30 +250,16 @@ func helmArgs(u config.Upgrade, namespace string, to config.OperatorVersion) []s
 // upgrade to convergence, or why it failed or did not converge in time.
 func (l *Lane) hop(ctx context.Context, a *action, from, to config.OperatorVersion) (time.Duration, error, error) {
 	log := a.log.With("from", from.Name, "to", to.Name)
-	s, err := l.operatorState(ctx)
-	if err != nil {
-		return 0, err, nil
-	}
-	old, _ := leader(s)
-	crd := l.crdVersion(ctx)
 	l.lock.Disturb("operator upgrade to " + to.Name)
 	defer l.lock.Disturb("")
 	start := time.Now()
-	wctx, stop := context.WithCancel(ctx)
-	w := &watch{}
-	var wg sync.WaitGroup
-	wg.Go(func() { l.watchUpgrade(wctx, w, old) })
-	out, helmErr := l.helm(ctx, helmArgs(l.cfg.Upgrade, l.operator.Namespace, to)...)
-	helmDone := time.Now()
-	stop()
-	wg.Wait()
-	hook := w.hook(helmErr == nil)
-	log = log.With("helm_seconds", helmDone.Sub(start).Seconds(), "hook", hook.result, "hook_seconds", hook.duration.Seconds(),
-		"crd_before", crd, "crd_after", l.crdVersion(ctx))
-	if helmErr != nil {
-		log.Warn("helm upgrade failed", "error", helmErr.Error(), "output", tail(string(out), 20))
-		return 0, fmt.Errorf("helm upgrade: %w", helmErr), nil
+	out, err := l.helm(ctx, helmArgs(l.cfg, l.operator, to)...)
+	log = log.With("helm_seconds", time.Since(start).Seconds())
+	if err != nil {
+		log.Warn("helm upgrade failed", "error", err.Error(), "output", tail(string(out), 20))
+		return 0, fmt.Errorf("helm upgrade: %w", err), nil
 	}
+	var s operatorState
 	var after *corev1.Pod
 	err = l.await(ctx, func(ctx context.Context) error {
 		if s, err = l.operatorState(ctx); err != nil {
@@ -284,11 +272,7 @@ func (l *Lane) hop(ctx context.Context, a *action, from, to config.OperatorVersi
 		log.Warn("operator not upgraded", "error", err.Error())
 		return 0, nil, fmt.Errorf("the operator: %w", err)
 	}
-	stopped := start
-	if !w.leaderStopped.IsZero() {
-		stopped = w.leaderStopped
-	}
-	down := downSince(s, stopped)
+	down := downSince(s, start)
 	l.operatorDown.WithLabelValues(string(a.kind)).Observe(down.Seconds())
 	since := l.release()
 	if err := l.await(ctx, func(context.Context) error { return quiet(l.reports(), since) }); err != nil {
@@ -298,116 +282,6 @@ func (l *Lane) hop(ctx context.Context, a *action, from, to config.OperatorVersi
 	d := time.Since(start)
 	log.Info("operator upgraded", "leader", after.Name, "operator_down_seconds", down.Seconds(), "converge_seconds", d.Seconds())
 	return d, nil, nil
-}
-
-// crdVersion describes the CRD's generation and resourceVersion, to tell
-// whether the hook changed it.
-func (l *Lane) crdVersion(ctx context.Context) string {
-	rc := l.kube.Discovery().RESTClient()
-	if rc == nil {
-		return "unknown"
-	}
-	raw, err := rc.Get().AbsPath("/apis/apiextensions.k8s.io/v1/customresourcedefinitions", l.cfg.Upgrade.CRD).
-		DoRaw(ctx)
-	var crd metav1.PartialObjectMetadata
-	if err == nil {
-		err = json.Unmarshal(raw, &crd)
-	}
-	if err != nil {
-		return "unknown: " + err.Error()
-	}
-	return fmt.Sprintf("generation %d, resourceVersion %s", crd.Generation, crd.ResourceVersion)
-}
-
-// watch is what watchUpgrade saw of the CRD hook Job and the old leader.
-type watch struct {
-	mu            sync.Mutex
-	created       time.Time
-	completed     time.Time
-	failed        bool
-	gone          time.Time
-	leaderStopped time.Time
-}
-
-type hookResult struct {
-	result   string
-	duration time.Duration
-}
-
-// hook judges the CRD hook from what watchUpgrade saw: helm deletes the hook
-// Job when it succeeds, and fails the upgrade when it fails.
-func (w *watch) hook(helmOK bool) hookResult {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	end := w.completed
-	if end.IsZero() {
-		end = w.gone
-	}
-	switch {
-	case w.created.IsZero():
-		return hookResult{result: "not seen"}
-	case w.failed:
-		return hookResult{result: "failed", duration: end.Sub(w.created)}
-	case !w.completed.IsZero() || helmOK && !w.gone.IsZero():
-		return hookResult{result: "succeeded", duration: end.Sub(w.created)}
-	}
-	return hookResult{result: "unknown"}
-}
-
-// watchUpgrade follows the CRD hook Job and the old leader's deletion
-// while helm runs.
-func (l *Lane) watchUpgrade(ctx context.Context, w *watch, old *corev1.Pod) {
-	t := time.NewTicker(500 * time.Millisecond)
-	defer t.Stop()
-	ns := l.operator.Namespace
-	for {
-		job, err := l.kube.BatchV1().Jobs(ns).Get(ctx, l.cfg.Upgrade.HookJob, metav1.GetOptions{})
-		w.mu.Lock()
-		switch {
-		case err == nil:
-			if w.created.IsZero() {
-				w.created = job.CreationTimestamp.Time
-			}
-			for _, c := range job.Status.Conditions {
-				if c.Status != corev1.ConditionTrue {
-					continue
-				}
-				switch c.Type {
-				case batchv1.JobComplete:
-					w.completed = c.LastTransitionTime.Time
-				case batchv1.JobFailed:
-					w.failed = true
-				}
-			}
-		case apierrors.IsNotFound(err) && !w.created.IsZero() && w.gone.IsZero():
-			w.gone = time.Now()
-		}
-		w.mu.Unlock()
-		if old != nil && w.leaderStopped.IsZero() {
-			p, err := l.kube.CoreV1().Pods(ns).Get(ctx, old.Name, metav1.GetOptions{})
-			switch {
-			case err == nil && p.UID == old.UID && p.DeletionTimestamp != nil:
-				w.leaderStopped = deletedAt(p)
-			case apierrors.IsNotFound(err) || err == nil && p.UID != old.UID:
-				w.leaderStopped = time.Now()
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
-}
-
-// deletedAt returns when a pod was deleted: its deletionTimestamp is when
-// its grace period ends.
-func deletedAt(p *corev1.Pod) time.Time {
-	t := p.DeletionTimestamp.Time
-	if p.DeletionGracePeriodSeconds != nil {
-		t = t.Add(-time.Duration(*p.DeletionGracePeriodSeconds) * time.Second)
-	}
-	return t
 }
 
 // tail returns the last n lines of s.

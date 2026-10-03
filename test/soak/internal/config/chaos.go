@@ -30,8 +30,8 @@ const (
 var chaosKinds = []ChaosKind{OperatorRestart, OperatorUpgrade, NodeDrain}
 
 // Chaos configures the chaos lane: one action at a time on all instances, one
-// for each interval plus up to jitter. It is off without kinds or with
-// mutation.enabled false, and starts no actions after mutation.stopAfter.
+// for each interval plus up to jitter. It is off without kinds, and starts no
+// actions after mutation.stopAfter.
 type Chaos struct {
 	// Kinds are the enabled kinds and their weights.
 	Kinds    map[ChaosKind]int `json:"kinds"`
@@ -45,22 +45,12 @@ type Chaos struct {
 	Drain   Drain           `json:"drain"`
 }
 
-// Upgrade is how operator_upgrade runs helm.
+// Upgrade is how operator_upgrade runs helm on the release named as the
+// operator Deployment.
 type Upgrade struct {
-	// Release is the operator's helm release, in operator.namespace.
-	Release string `json:"release"`
-	// Helm is the helm binary.
-	Helm string `json:"helm"`
 	// Set are --set values added to every upgrade, after the release's
 	// own, which it reuses.
-	Set []string `json:"set"`
-	// HookJob is the chart's CRD upgrade hook Job, by default
-	// <release>-crds-upgrade.
-	HookJob string `json:"hookJob"`
-	// CRD is the CustomResourceDefinition the hook applies.
-	CRD string `json:"crd"`
-	// Timeout is helm's --timeout.
-	Timeout  metav1.Duration   `json:"timeout"`
+	Set      []string          `json:"set"`
 	Versions []OperatorVersion `json:"versions"`
 }
 
@@ -91,11 +81,8 @@ func (v OperatorVersion) Tag() string {
 	return tag
 }
 
-// Drain is how node_drain picks and drains a node.
+// Drain is how node_drain drains a node.
 type Drain struct {
-	// NodeSelector is a label selector of the nodes that may be drained.
-	// The tester's own node never is.
-	NodeSelector string `json:"nodeSelector"`
 	// Hold is how long the drained node stays cordoned.
 	Hold metav1.Duration `json:"hold"`
 	// Timeout bounds the evictions, which PodDisruptionBudgets may block.
@@ -109,7 +96,7 @@ func hasTag(image string) bool {
 
 // ChaosOn reports whether the chaos lane runs.
 func (c *Config) ChaosOn() bool {
-	return c.Mutation.On() && len(c.Chaos.Kinds) > 0
+	return len(c.Chaos.Kinds) > 0
 }
 
 // Sorted returns the enabled chaos kinds in a fixed order.
@@ -124,26 +111,7 @@ func (ch *Chaos) setDefaults(observer Observer) {
 	if ch.Timeout.Duration == 0 {
 		ch.Timeout = observer.ConvergenceTimeout
 	}
-	u := &ch.Upgrade
-	if u.Release == "" {
-		u.Release = "redis-operator"
-	}
-	if u.Helm == "" {
-		u.Helm = "helm"
-	}
-	if u.HookJob == "" {
-		u.HookJob = u.Release + "-crds-upgrade"
-	}
-	if u.CRD == "" {
-		u.CRD = "redisfailovers.databases.spotahome.com"
-	}
-	if u.Timeout.Duration == 0 {
-		u.Timeout.Duration = 10 * time.Minute
-	}
 	d := &ch.Drain
-	if d.NodeSelector == "" {
-		d.NodeSelector = "!node-role.kubernetes.io/control-plane"
-	}
 	if d.Hold.Duration == 0 {
 		d.Hold.Duration = time.Minute
 	}
@@ -162,7 +130,7 @@ func (ch Chaos) validate() error {
 		}
 	}
 	if ch.Interval.Duration < 0 || ch.Jitter.Duration < 0 || ch.Timeout.Duration < 0 ||
-		ch.Drain.Hold.Duration < 0 || ch.Drain.Timeout.Duration < 0 || ch.Upgrade.Timeout.Duration < 0 {
+		ch.Drain.Hold.Duration < 0 || ch.Drain.Timeout.Duration < 0 {
 		return errors.New("negative duration")
 	}
 	if _, ok := ch.Kinds[OperatorUpgrade]; !ok {

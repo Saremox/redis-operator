@@ -6,8 +6,6 @@ import (
 	"maps"
 	"slices"
 	"strings"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Kind is a kind of mutation, the value of the kind label.
@@ -87,8 +85,6 @@ type Mutations struct {
 	RedisMemory       Range    `json:"redisMemory"`
 	MaxMemoryPolicies []string `json:"maxMemoryPolicies"`
 	MaxMemoryPercent  Range    `json:"maxMemoryPercent"`
-	// FillBurstHold is how long fill_burst keeps writing past maxmemory.
-	FillBurstHold metav1.Duration `json:"fillBurstHold"`
 	// SentinelImages are the versions sentinel_image_flip changes the
 	// Sentinel image between, by name.
 	SentinelImages []string `json:"sentinelImages"`
@@ -226,9 +222,6 @@ func (m Mutations) validate(in Instance) error {
 	if _, ok := m.Kinds[FillBurst]; ok {
 		if in.Data == nil || !slices.Contains(in.Policies(), "noeviction") {
 			return errors.New("fill_burst needs data and the noeviction policy")
-		}
-		if m.FillBurstHold.Duration <= 0 {
-			return errors.New("fillBurstHold must be positive")
 		}
 	}
 	return nil

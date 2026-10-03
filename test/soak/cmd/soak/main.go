@@ -119,7 +119,7 @@ func run(configPath, listen string, log *slog.Logger) error {
 		}
 		wg.Go(func() { o.Run(ctx) })
 		var mu *mutator.Mutator
-		if cfg.Mutation.On() && len(in.Mutations.Kinds) > 0 {
+		if len(in.Mutations.Kinds) > 0 {
 			mu = mutator.New(in, cfg, kube, rfs, o, d, a, lock, insts[in.Name], m, log)
 			wg.Go(func() { mu.Run(ctx) })
 		}
@@ -144,7 +144,7 @@ func run(configPath, listen string, log *slog.Logger) error {
 	})
 
 	log.Info("starting", "version", version, "instances", len(cfg.Instances), "listen", listen,
-		"mutation", cfg.Mutation.On(), "chaos", cfg.ChaosOn(), "seed", cfg.Mutation.Seed)
+		"chaos", cfg.ChaosOn(), "seed", cfg.Mutation.Seed)
 	err = srv.ListenAndServe()
 	stop()
 	wg.Wait()

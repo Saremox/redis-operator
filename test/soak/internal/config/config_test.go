@@ -8,17 +8,6 @@ import (
 	"time"
 )
 
-func TestLoadExample(t *testing.T) {
-	c, err := Load("../../config.example.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(c.Instances) != 6 || c.Instances[0].Name != "op-basic" || c.Instances[1].Mode != ModeSentinel || c.Instances[4].Bootstrap == nil ||
-		c.Instances[5].Chain == nil || len(c.Versions) != 3 || len(c.Edges) != 3 {
-		t.Fatalf("unexpected instances: %+v", c.Instances)
-	}
-}
-
 func TestShippedConfigsParse(t *testing.T) {
 	for _, path := range []string{"../../deploy/config.yaml", "../../e2e/config.yaml", "../../e2e/config-versions.yaml", "../../e2e/config-chaos.yaml"} {
 		b, err := os.ReadFile(path)
@@ -50,7 +39,7 @@ func TestDefaults(t *testing.T) {
 		t.Errorf("instance defaults: %+v", in)
 	}
 	mu := c.Mutation
-	if !mu.On() || mu.Interval.Duration != 2*time.Minute || mu.Jitter.Duration != 0 || mu.MinDwell.Duration != 15*time.Second || mu.Seed == 0 {
+	if mu.Interval.Duration != 2*time.Minute || mu.Jitter.Duration != 0 || mu.Seed == 0 {
 		t.Errorf("mutation defaults: %+v", mu)
 	}
 	if len(in.Mutations.Kinds) != 0 {
@@ -60,7 +49,7 @@ func TestDefaults(t *testing.T) {
 
 func TestMutations(t *testing.T) {
 	c, err := Parse([]byte(`
-mutation: {enabled: false, seed: 7}
+mutation: {seed: 7}
 instances:
   - name: a
     namespace: ns
@@ -77,7 +66,7 @@ instances:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Mutation.On() || c.Mutation.Seed != 7 {
+	if c.Mutation.Seed != 7 {
 		t.Errorf("mutation: %+v", c.Mutation)
 	}
 	want := []Kind{KillMaster, KillReplica, KillSentinel, RedisReplicas, RedisResources, SentinelReplicas}
@@ -107,7 +96,7 @@ func TestInvalidMutations(t *testing.T) {
 		"cpu request over limit": instance("operator",
 			"{kinds: {redis_resources: 1}, resources: {requests: {cpu: {min: 100, max: 500}}, limits: {cpu: {min: 200, max: 400}}}}"),
 		"force probability": instance("operator", "{kinds: {kill_master: 1}, forceDeleteProbability: 1.5}"),
-		"long dwell":        "mutation: {minDwell: 1h}\n" + instance("operator", "{}"),
+		"short convergence": "observer: {convergenceTimeout: 10s}\n" + instance("operator", "{}"),
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -122,7 +111,7 @@ func TestInvalid(t *testing.T) {
 	cases := map[string]string{
 		"no instances":  "probe: {interval: 1s}",
 		"unknown field": "instances: [{name: a, namespace: ns, bogus: 1}]",
-		"no namespace":  "instances: [{name: a}]",
+		"no name":       "instances: [{namespace: ns}]",
 		"long name":     "instances: [{name: " + strings.Repeat("a", 49) + ", namespace: ns}]",
 		"bad mode":      "instances: [{name: a, namespace: ns, mode: cluster}]",
 		"bad port":      "instances: [{name: a, namespace: ns, port: 70000}]",
@@ -162,18 +151,8 @@ instances:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Probe.WaitEvery != 10 || c.Probe.WaitTimeout.Duration != 500*time.Millisecond {
-		t.Errorf("probe defaults: %+v", c.Probe)
-	}
-	d := c.Instances[0].Data
-	if d.Fill.Percent != 70 || d.Fill.SizeMi != 16 || d.Fill.ValueBytes != 1024 || d.Fill.KeysPerSecond != 1000 || d.Fill.Batch != 50 {
+	if d := c.Instances[0].Data; d.Fill.Percent != 70 || d.Fill.SizeMi != 16 {
 		t.Errorf("fill defaults: %+v", d.Fill)
-	}
-	if l := d.Ledger; l.WritesPerSecond != 10 || l.ValueBytes != 64 || l.SampleKeys != 100 || l.VerifyInterval.Duration != 10*time.Minute {
-		t.Errorf("ledger defaults: %+v", l)
-	}
-	if c.Instances[0].Mutations.FillBurstHold.Duration != 10*time.Second {
-		t.Errorf("fillBurstHold default: %v", c.Instances[0].Mutations.FillBurstHold)
 	}
 	if got := c.Instances[0].Policies(); !slices.Equal(got, []string{"noeviction", "noeviction", "volatile-lru"}) {
 		t.Errorf("policies %v", got)
@@ -194,7 +173,6 @@ func TestInvalidData(t *testing.T) {
 			"{kinds: {maxmemory_policy: 1}, maxMemoryPolicies: [noeviction, allkeys-lfu]}"),
 		"ledger under volatile without ttl": instance("volatile-lru", "{fill: {}, ledger: {}}", "{}"),
 		"fill percent":                      instance("noeviction", "{fill: {percent: 120}}", "{}"),
-		"tiny values":                       instance("noeviction", "{fill: {valueBytes: 4}}", "{}"),
 		"maxMemory kind without maxMemory":  instance("", "{fill: {}}", "{kinds: {maxmemory_percent: 1}, maxMemoryPercent: {min: 10, max: 95}}"),
 		"no memory range":                   instance("noeviction", "{fill: {}}", "{kinds: {redis_memory: 1}}"),
 		"memory below 64Mi":                 instance("noeviction", "{fill: {}}", "{kinds: {redis_memory: 1}, redisMemory: {min: 32, max: 128}}"),
@@ -209,7 +187,6 @@ func TestInvalidData(t *testing.T) {
 			"{kinds: {redis_resources: 1}, resources: {limits: {memory: {min: 192, max: 512}}}}"),
 		"memory below the data": instance("", "{fill: {sizeMi: 100}}",
 			"{kinds: {redis_resources: 1}, resources: {limits: {memory: {min: 192, max: 512}}}}"),
-		"wait timeout": "probe: {timeout: 1s, waitTimeout: 1s}\ninstances: [{name: a, namespace: ns}]",
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -236,19 +213,14 @@ func TestBootstrap(t *testing.T) {
 instances:
   - {name: src, namespace: src, data: {fill: {}, ledger: {}}, mutations: {kinds: {kill_master_force: 1, password_rotate: 1, auth_add: 1, auth_remove: 1, password_rotate_offline: 1, sentinel_toggle: 1}}}
   - name: boot
-    namespace: boot
     bootstrap: {source: src}
     mutations: {kinds: {redis_replicas: 1, kill_replica: 1}, redisReplicas: {min: 1, max: 3}}
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
-	src, boot := c.Instances[0], c.Instances[1]
-	if src.AuthSecret != "src-auth" {
-		t.Errorf("authSecret default %q", src.AuthSecret)
-	}
-	if b := boot.Bootstrap; b.SampleKeys != 100 || b.VerifyInterval.Duration != time.Minute {
-		t.Errorf("bootstrap defaults: %+v", b)
+	if src := c.Instances[0]; src.AuthSecret() != "src-auth" || src.Namespace != "src" || c.Instances[1].Namespace != DefaultNamespace {
+		t.Errorf("instance defaults: %+v", c.Instances)
 	}
 	if !Exclusive(PasswordRotateOffline) || Exclusive(PasswordRotate) {
 		t.Error("exclusive kinds")

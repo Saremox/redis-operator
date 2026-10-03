@@ -13,7 +13,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -147,8 +146,8 @@ func TestRestartTimesOut(t *testing.T) {
 	}
 }
 
-// operator_upgrade upgrades to the other version and back, runs helm with
-// each version's chart and image, and follows the CRD hook.
+// operator_upgrade upgrades to the other version and back, and runs helm
+// with each version's chart and image.
 func TestUpgradeOnFakes(t *testing.T) {
 	const a, b = "redis-operator:a", "redis-operator:b"
 	old := operatorPod("op-a", "op-a", a, true)
@@ -172,21 +171,6 @@ chaos:
 		image := map[string]string{"/charts/a.tgz": a, "/charts/b.tgz": b}[args[2]]
 		n++
 		ns := "redis-operator"
-		job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "redis-operator-crds-upgrade", Namespace: ns,
-			CreationTimestamp: metav1.Now()}}
-		if _, err := kube.BatchV1().Jobs(ns).Create(ctx, job, metav1.CreateOptions{}); err != nil {
-			return nil, err
-		}
-		time.Sleep(700 * time.Millisecond)
-		job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue,
-			LastTransitionTime: metav1.NewTime(job.CreationTimestamp.Add(600 * time.Millisecond))}}
-		if _, err := kube.BatchV1().Jobs(ns).Update(ctx, job, metav1.UpdateOptions{}); err != nil {
-			return nil, err
-		}
-		time.Sleep(700 * time.Millisecond)
-		if err := kube.BatchV1().Jobs(ns).Delete(ctx, job.Name, metav1.DeleteOptions{}); err != nil {
-			return nil, err
-		}
 		pods, _ := kube.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
 		for _, p := range pods.Items {
 			_ = kube.CoreV1().Pods(ns).Delete(ctx, p.Name, metav1.DeleteOptions{})
@@ -205,11 +189,8 @@ chaos:
 		t.Errorf("charts %v", charts)
 	}
 	line := logs.line(t, "operator upgraded")
-	if line["from"] != "a" || line["to"] != "b" || line["hook"] != "succeeded" || line["leader"] != "op-1" {
+	if line["from"] != "a" || line["to"] != "b" || line["leader"] != "op-1" {
 		t.Errorf("logged %v", line)
-	}
-	if d := line["hook_seconds"].(float64); d < 0.5 || d > 0.7 {
-		t.Errorf("hook took %vs", d)
 	}
 	if n := testutil.CollectAndCount(m.ChaosOperatorDown, "redis_soak_chaos_operator_down_seconds"); n != 1 {
 		t.Errorf("%d operator_down series", n)

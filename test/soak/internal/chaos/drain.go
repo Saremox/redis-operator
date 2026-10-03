@@ -61,8 +61,8 @@ func drained(node string, pods []corev1.Pod) error {
 	return nil
 }
 
-// drainable returns the nodes that may be drained: those the selector
-// picks that are Ready and schedulable, except the tester's own.
+// drainable returns the nodes that may be drained: those that are Ready and
+// schedulable, except the tester's own.
 func drainable(nodes []corev1.Node, self string) []string {
 	var out []string
 	for _, n := range nodes {
@@ -84,7 +84,7 @@ func drainable(nodes []corev1.Node, self string) []string {
 // node cordoned for the hold, uncordons it, and waits until all instances are
 // quiet.
 func (l *Lane) drain(ctx context.Context, a *action) outcome {
-	nodes, err := l.kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: l.cfg.Drain.NodeSelector})
+	nodes, err := l.kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: "!node-role.kubernetes.io/control-plane"})
 	if err != nil {
 		return outcome{err: err}
 	}

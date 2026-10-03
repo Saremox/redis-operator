@@ -69,7 +69,6 @@ type Observer struct {
 	// started is when the tester started. An earlier run counted the OOM
 	// kills before it.
 	started    time.Time
-	evictions  evictions
 	failoverCh chan string
 	// evaluated are the invariants of the last round.
 	evaluated []string
@@ -93,11 +92,6 @@ type Observer struct {
 	rfHealthy  prometheus.Gauge
 	serverInfo *prometheus.GaugeVec
 	windowOpen prometheus.Gauge
-
-	datasetKeys prometheus.Gauge
-	usedMemory  prometheus.Gauge
-	maxMemory   prometheus.Gauge
-	evicted     prometheus.Counter
 }
 
 func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs versioned.Interface, a *auth.Source, lock *global.Lock, m *metrics.Metrics, log *slog.Logger) *Observer {
@@ -111,7 +105,7 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		auth:       a,
 		lock:       lock,
 		log:        log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
-		tracker:    newTracker(cfg.Observer.ConvergenceTimeout.Duration, cfg.Mutation.MinDwell.Duration),
+		tracker:    newTracker(cfg.Observer.ConvergenceTimeout.Duration, config.MinDwell),
 		holds:      make(chan *Hold, 1),
 		lagPods:    map[string]bool{},
 		servers:    map[string][2]string{},
@@ -128,11 +122,6 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		rfHealthy:  m.RFHealthy.With(labels),
 		serverInfo: m.ServerInfo.MustCurryWith(labels),
 		windowOpen: m.WindowOpen.With(labels),
-
-		datasetKeys: m.DatasetKeys.With(labels),
-		usedMemory:  m.UsedMemory.With(labels),
-		maxMemory:   m.MaxMemory.With(labels),
-		evicted:     m.EvictedKeys.With(labels),
 	}
 	// Alerts use the increase of findings_total, which does not show a series
 	// that starts at 1.
@@ -569,7 +558,6 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 	o.observeMaster(s)
 	o.observeServers(s)
 	o.observeOOMKills(s)
-	o.observeData(s)
 	v := &view{
 		at:           now,
 		failing:      failing,

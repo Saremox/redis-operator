@@ -8,8 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Version is a server version in the rotation, by a name that stays the
@@ -18,11 +16,10 @@ type Version struct {
 	Name string `json:"name"`
 	// Image is an exact patch tag, never a floating one.
 	Image string `json:"image"`
-	// Server and Release are what INFO server reports for it, by default
-	// derived from the image: redis or valkey, and the tag up to its first
-	// '-'.
-	Server  string `json:"server"`
-	Release string `json:"release"`
+	// Server and Release are what INFO server reports for it, from the
+	// image: redis or valkey, and the tag up to its first '-'.
+	Server  string `json:"-"`
+	Release string `json:"-"`
 }
 
 // Expectations of an edge, the values of the expect label.
@@ -38,10 +35,6 @@ type Edge struct {
 	From   string `json:"from"`
 	To     string `json:"to"`
 	Expect string `json:"expect"`
-	// Timeout is how long the tester observes a change along the edge before
-	// it judges the change, if the rollout does not get stuck first. The
-	// default is the timeout of the kind.
-	Timeout metav1.Duration `json:"timeout"`
 }
 
 func (e Edge) String() string { return e.From + " -> " + e.To }
@@ -133,12 +126,8 @@ func (c *Config) Reaches(ch *Chain, from, to string) bool {
 
 func (v *Version) setDefaults() {
 	repo, tag := splitImage(v.Image)
-	if v.Server == "" {
-		v.Server = path.Base(repo)
-	}
-	if v.Release == "" {
-		v.Release, _, _ = strings.Cut(tag, "-")
-	}
+	v.Server = path.Base(repo)
+	v.Release, _, _ = strings.Cut(tag, "-")
 }
 
 // splitImage returns an image's repository and tag, without its digest. A
@@ -180,8 +169,6 @@ func (c *Config) validateVersions() error {
 			return fmt.Errorf("edges: %s: expect must be %s, %s or %s", e, ExpectOK, ExpectFail, ExpectUnknown)
 		case edges[e.String()]:
 			return fmt.Errorf("edges: %s is configured twice", e)
-		case e.Timeout.Duration < 0:
-			return fmt.Errorf("edges: %s: negative timeout", e)
 		}
 		from, _ := c.VersionNamed(e.From)
 		to, _ := c.VersionNamed(e.To)

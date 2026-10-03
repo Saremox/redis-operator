@@ -10,7 +10,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
@@ -43,7 +42,6 @@ func maxMemoryMutations() config.Mutations {
 		RedisMemory:       config.Range{Min: 96, Max: 320},
 		MaxMemoryPolicies: []string{"noeviction", "volatile-lru", "volatile-ttl"},
 		MaxMemoryPercent:  config.Range{Min: 10, Max: 95},
-		FillBurstHold:     metav1.Duration{Duration: time.Second},
 	}
 }
 

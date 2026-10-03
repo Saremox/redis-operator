@@ -50,13 +50,12 @@ type Prober struct {
 	auth     *auth.Source
 	interval time.Duration
 	timeout  time.Duration
-	// A successful SET whose sequence number is a multiple of waitEvery is
-	// followed by WAIT 1 waitTimeout.
-	waitEvery   int64
-	waitTimeout time.Duration
-	key         string
-	seq         int64
-	outage      outage
+	// Every waitEvery-th successful SET is followed by a WAIT 1, which
+	// samples how many replicas acknowledge a write.
+	waitEvery int64
+	key       string
+	seq       int64
+	outage    outage
 	// event returns what runs now: a chaos kind, the instance's mutation
 	// kind, or EventNone.
 	event func() string
@@ -80,15 +79,14 @@ func New(in config.Instance, path Path, client Client, probe config.Probe, a *au
 		"client":    string(client),
 	}
 	p := &Prober{
-		path:        path,
-		client:      client,
-		auth:        a,
-		interval:    probe.Interval.Duration,
-		timeout:     probe.Timeout.Duration,
-		waitEvery:   int64(probe.WaitEvery),
-		waitTimeout: probe.WaitTimeout.Duration,
-		key:         fmt.Sprintf("soak:%s:%s:%s:seq", in.Name, path.Name, client),
-		event:       func() string { return EventNone },
+		path:      path,
+		client:    client,
+		auth:      a,
+		interval:  probe.Interval.Duration,
+		timeout:   probe.Timeout.Duration,
+		waitEvery: 10,
+		key:       fmt.Sprintf("soak:%s:%s:%s:seq", in.Name, path.Name, client),
+		event:     func() string { return EventNone },
 		log: log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode,
 			"path", path.Name, "client", client),
 		total:          m.ProbeTotal.MustCurryWith(labels),
@@ -153,7 +151,7 @@ func (p *Prober) probe(ctx context.Context, c *redis.Client) {
 	})
 	if setErr == nil && p.seq%p.waitEvery == 0 {
 		_ = p.do(ctx, "wait", func(ctx context.Context) error {
-			n, err := c.Wait(ctx, 1, p.waitTimeout).Result()
+			n, err := c.Wait(ctx, 1, p.timeout/2).Result()
 			if err == nil {
 				p.waitAcked.Set(float64(n))
 			}

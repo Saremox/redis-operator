@@ -17,7 +17,6 @@ observer:
 mutation:
   interval: 10s
   jitter: 10s
-  minDwell: 15s
   seed: 24080
   stopAfter: 900s
 instances:
@@ -25,8 +24,8 @@ instances:
     namespace: op-basic
     mode: operator
     data:
-      fill: {sizeMi: 32, keysPerSecond: 2000, batch: 100}
-      ledger: {writesPerSecond: 20}
+      fill: {sizeMi: 32}
+      ledger: {}
     mutations:
       kinds:
         redis_replicas: 2
@@ -48,8 +47,8 @@ instances:
     namespace: sent-basic
     mode: sentinel
     data:
-      fill: {sizeMi: 32, keysPerSecond: 2000, batch: 100}
-      ledger: {writesPerSecond: 20}
+      fill: {sizeMi: 32}
+      ledger: {}
     mutations:
       kinds:
         redis_replicas: 2
@@ -68,7 +67,7 @@ instances:
     mode: operator
     maxMemoryPolicy: allkeys-lru
     data:
-      fill: {percent: 90, keysPerSecond: 3000, batch: 100}
+      fill: {percent: 90}
     mutations:
       kinds:
         redis_memory: 2
@@ -86,8 +85,8 @@ instances:
     mode: operator
     maxMemoryPolicy: noeviction
     data:
-      fill: {percent: 70, keysPerSecond: 3000, batch: 100, ttl: 1h}
-      ledger: {writesPerSecond: 20}
+      fill: {percent: 70, ttl: 1h}
+      ledger: {}
     mutations:
       kinds:
         redis_memory: 2
@@ -97,15 +96,14 @@ instances:
       redisMemory: {min: 128, max: 256}
       maxMemoryPolicies: [noeviction, volatile-lru, volatile-ttl]
       maxMemoryPercent: {min: 10, max: 95}
-      fillBurstHold: 10s
   # PVCs and auth. The mutator rotates, removes and adds the password, and
   # changes it while the operator is stopped (scenario C).
   - name: op-full
     namespace: op-full
     mode: operator
     data:
-      fill: {sizeMi: 16, keysPerSecond: 2000, batch: 100}
-      ledger: {writesPerSecond: 20}
+      fill: {sizeMi: 16}
+      ledger: {}
     mutations:
       kinds:
         password_rotate: 2
@@ -122,8 +120,8 @@ instances:
     mode: sentinel
     port: 6380
     data:
-      fill: {sizeMi: 16, keysPerSecond: 2000, batch: 100}
-      ledger: {writesPerSecond: 20}
+      fill: {sizeMi: 16}
+      ledger: {}
     mutations:
       kinds:
         password_rotate: 2
@@ -137,8 +135,8 @@ instances:
     namespace: toggle
     mode: operator
     data:
-      fill: {sizeMi: 16, keysPerSecond: 2000, batch: 100}
-      ledger: {writesPerSecond: 20}
+      fill: {sizeMi: 16}
+      ledger: {}
     mutations:
       kinds:
         sentinel_toggle: 2
@@ -147,7 +145,7 @@ instances:
   - name: bootstrap
     namespace: bootstrap
     mode: operator
-    bootstrap: {source: op-basic, verifyInterval: 1m}
+    bootstrap: {source: op-basic}
     mutations:
       kinds:
         redis_replicas: 1

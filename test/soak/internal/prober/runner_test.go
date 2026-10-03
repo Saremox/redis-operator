@@ -26,7 +26,6 @@ import (
 
 var fastProbe = config.Probe{
 	Interval: metav1.Duration{Duration: 10 * time.Millisecond}, Timeout: metav1.Duration{Duration: time.Second},
-	WaitEvery: 1000, WaitTimeout: metav1.Duration{Duration: 100 * time.Millisecond},
 }
 
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

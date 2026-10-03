@@ -28,9 +28,9 @@ func TestProbe(t *testing.T) {
 	path := Path{Name: PathRFRM, NewClient: func(Client) *redis.Client {
 		return redis.NewClient(&redis.Options{Addr: s.Addr(), MaxRetries: -1})
 	}}
-	probe := config.Probe{Interval: metav1.Duration{Duration: time.Second}, Timeout: metav1.Duration{Duration: time.Second},
-		WaitEvery: 2, WaitTimeout: metav1.Duration{Duration: 100 * time.Millisecond}}
+	probe := config.Probe{Interval: metav1.Duration{Duration: time.Second}, Timeout: metav1.Duration{Duration: 200 * time.Millisecond}}
 	p := New(in, path, Fresh, probe, nil, m, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	p.waitEvery = 2
 	ctx := context.Background()
 	run := func() {
 		c := path.NewClient(Fresh)

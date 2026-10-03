@@ -37,20 +37,15 @@ type Config struct {
 }
 
 // Operator locates the operator Deployment whose image tag is reported as
-// the operator version, and the Lease of its leader.
+// the operator version.
 type Operator struct {
 	Namespace  string `json:"namespace"`
 	Deployment string `json:"deployment"`
-	Lease      string `json:"lease"`
 }
 
 type Probe struct {
 	Interval metav1.Duration `json:"interval"`
 	Timeout  metav1.Duration `json:"timeout"`
-	// WaitEvery sends WAIT 1 <waitTimeout> after a successful SET whose
-	// sequence number is a multiple of WaitEvery.
-	WaitEvery   int             `json:"waitEvery"`
-	WaitTimeout metav1.Duration `json:"waitTimeout"`
 }
 
 // Observer sets how often the invariants are checked, and how long an
@@ -71,19 +66,17 @@ func (o Observer) ReplicaReadyWithoutDataFinding() bool {
 	return o.ReplicaReadyWithoutData == nil || *o.ReplicaReadyWithoutData
 }
 
+// MinDwell is the minimum time that the convergence window of a mutation
+// stays open. Without it, a change that the operator did not see yet can look
+// converged.
+const MinDwell = 15 * time.Second
+
 // Mutation sets how often instances are mutated. A mutation's
 // convergence timeout is observer.convergenceTimeout.
 type Mutation struct {
-	// Enabled defaults to true; instances without mutations are never
-	// mutated.
-	Enabled  *bool           `json:"enabled"`
 	Interval metav1.Duration `json:"interval"`
 	// Jitter is the most that is added at random to every interval.
 	Jitter metav1.Duration `json:"jitter"`
-	// MinDwell is the minimum time that the convergence window of a mutation
-	// stays open. Without it, a change that the operator did not see yet can
-	// look converged.
-	MinDwell metav1.Duration `json:"minDwell"`
 	// Seed makes every pick reproducible. 0 picks a seed at startup.
 	Seed int64 `json:"seed"`
 	// StopAfter stops starting mutations this long after startup, for
@@ -101,9 +94,9 @@ type Timeout struct {
 	PerPod metav1.Duration `json:"perPod"`
 }
 
-func (m Mutation) On() bool {
-	return m.Enabled == nil || *m.Enabled
-}
+// DefaultNamespace holds the instances, apart from the tester, so that a run
+// can start afresh with a new namespace.
+const DefaultNamespace = "redis-soak-instances"
 
 type Instance struct {
 	Name      string `json:"name"`
@@ -113,9 +106,6 @@ type Instance struct {
 	// MaxMemoryPolicy is the spec.redis.maxMemory.policy the instance is
 	// created with, empty without maxMemory.
 	MaxMemoryPolicy string `json:"maxMemoryPolicy"`
-	// AuthSecret is the Secret auth_add creates or updates and names in
-	// spec.auth.secretPath.
-	AuthSecret string `json:"authSecret"`
 	// Template is a RedisFailover manifest, relative to the config file. The
 	// tester creates the instance from it if the instance does not exist, and
 	// recreates the instance from it on a reset.
@@ -137,11 +127,12 @@ type Instance struct {
 // of the source ledger from each pod.
 type Bootstrap struct {
 	Source string `json:"source"`
-	// SampleKeys is the number of the source's ledger keys each
-	// verification reads.
-	SampleKeys int `json:"sampleKeys"`
-	// VerifyInterval verifies the pods when no mutation did for this long.
-	VerifyInterval metav1.Duration `json:"verifyInterval"`
+}
+
+// AuthSecret is the Secret that auth_add creates, and that the tester names
+// in spec.auth.secretPath of an instance made from a template.
+func (in Instance) AuthSecret() string {
+	return in.Name + "-auth"
 }
 
 // Load reads the config file; instance templates are relative to it.
@@ -182,20 +173,11 @@ func (c *Config) setDefaults() {
 	if c.Operator.Deployment == "" {
 		c.Operator.Deployment = "redis-operator"
 	}
-	if c.Operator.Lease == "" {
-		c.Operator.Lease = "redis-failover-lease"
-	}
 	if c.Probe.Interval.Duration == 0 {
 		c.Probe.Interval.Duration = time.Second
 	}
 	if c.Probe.Timeout.Duration == 0 {
 		c.Probe.Timeout.Duration = time.Second
-	}
-	if c.Probe.WaitEvery == 0 {
-		c.Probe.WaitEvery = 10
-	}
-	if c.Probe.WaitTimeout.Duration == 0 {
-		c.Probe.WaitTimeout.Duration = c.Probe.Timeout.Duration / 2
 	}
 	if c.Observer.Interval.Duration == 0 {
 		c.Observer.Interval.Duration = 5 * time.Second
@@ -205,9 +187,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.Mutation.Interval.Duration == 0 {
 		c.Mutation.Interval.Duration = 2 * time.Minute
-	}
-	if c.Mutation.MinDwell.Duration == 0 {
-		c.Mutation.MinDwell.Duration = 15 * time.Second
 	}
 	if c.Mutation.Seed == 0 {
 		c.Mutation.Seed = time.Now().UnixNano()
@@ -233,6 +212,9 @@ func (c *Config) setDefaults() {
 		c.Versions[i].setDefaults()
 	}
 	for i := range c.Instances {
+		if c.Instances[i].Namespace == "" {
+			c.Instances[i].Namespace = DefaultNamespace
+		}
 		if c.Instances[i].Mode == "" {
 			c.Instances[i].Mode = ModeOperator
 		}
@@ -241,20 +223,6 @@ func (c *Config) setDefaults() {
 		}
 		if c.Instances[i].Data != nil {
 			c.Instances[i].Data.setDefaults()
-		}
-		if c.Instances[i].AuthSecret == "" {
-			c.Instances[i].AuthSecret = c.Instances[i].Name + "-auth"
-		}
-		if b := c.Instances[i].Bootstrap; b != nil {
-			if b.SampleKeys == 0 {
-				b.SampleKeys = 100
-			}
-			if b.VerifyInterval.Duration == 0 {
-				b.VerifyInterval.Duration = time.Minute
-			}
-		}
-		if c.Instances[i].Mutations.FillBurstHold.Duration == 0 {
-			c.Instances[i].Mutations.FillBurstHold.Duration = 10 * time.Second
 		}
 		if ch := c.Instances[i].Chain; ch != nil {
 			if c.Instances[i].Version == "" && len(ch.Start) > 0 {
@@ -271,17 +239,14 @@ func (c *Config) validate() error {
 	if len(c.Instances) == 0 {
 		return fmt.Errorf("no instances configured")
 	}
-	if c.Mutation.Interval.Duration < 0 || c.Mutation.Jitter.Duration < 0 || c.Mutation.MinDwell.Duration < 0 || c.Mutation.StopAfter.Duration < 0 {
+	if c.Mutation.Interval.Duration < 0 || c.Mutation.Jitter.Duration < 0 || c.Mutation.StopAfter.Duration < 0 {
 		return fmt.Errorf("mutation: negative duration")
 	}
-	if c.Probe.WaitEvery < 1 || c.Probe.WaitTimeout.Duration < 0 || c.Probe.WaitTimeout.Duration >= c.Probe.Timeout.Duration {
-		return fmt.Errorf("probe: waitEvery must be at least 1 and waitTimeout shorter than timeout")
-	}
-	if c.Mutation.MinDwell.Duration >= c.Observer.ConvergenceTimeout.Duration {
-		return fmt.Errorf("mutation: minDwell must be shorter than observer.convergenceTimeout")
+	if MinDwell >= c.Observer.ConvergenceTimeout.Duration {
+		return fmt.Errorf("observer.convergenceTimeout must be longer than %s", MinDwell)
 	}
 	for k, t := range c.Mutation.Timeouts {
-		if !slices.Contains(kinds, k) || t.Base.Duration <= c.Mutation.MinDwell.Duration || t.PerPod.Duration < 0 {
+		if !slices.Contains(kinds, k) || t.Base.Duration <= MinDwell || t.PerPod.Duration < 0 {
 			return fmt.Errorf("mutation.timeouts: %s: a known kind, base longer than minDwell, perPod not negative", k)
 		}
 	}
@@ -293,8 +258,8 @@ func (c *Config) validate() error {
 	}
 	seen := map[string]bool{}
 	for _, in := range c.Instances {
-		if in.Name == "" || in.Namespace == "" {
-			return fmt.Errorf("instance %q: name and namespace are required", in.Name)
+		if in.Name == "" {
+			return errors.New("instance: name is required")
 		}
 		if len(in.Name) > maxNameLength {
 			return fmt.Errorf("instance %q: name is longer than %d characters", in.Name, maxNameLength)
@@ -339,9 +304,6 @@ func (c *Config) validateTemplate(in Instance) error {
 			return errors.New("chain, version, sentinelVersion and reset need a template")
 		}
 		return nil
-	}
-	if in.Bootstrap != nil {
-		return errors.New("a bootstrapping instance can't be made from a template: its bootstrapNode is another instance's ClusterIP")
 	}
 	for _, v := range []string{in.Version, in.SentinelVersion} {
 		if _, ok := c.VersionNamed(v); v != "" && !ok {
@@ -412,8 +374,6 @@ func (c *Config) validateBootstrap(in Instance) error {
 		return errors.New("a bootstrapping instance runs in operator mode, without Sentinels")
 	case in.Data != nil:
 		return errors.New("a bootstrapping instance is read-only and has no data")
-	case b.SampleKeys < 1 || b.VerifyInterval.Duration < 0:
-		return errors.New("sampleKeys must be at least 1 and verifyInterval positive")
 	}
 	i := slices.IndexFunc(c.Instances, func(s Instance) bool { return s.Name == b.Source })
 	if i < 0 {

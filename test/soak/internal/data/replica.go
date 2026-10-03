@@ -30,6 +30,9 @@ type Pods interface {
 // had when it was read.
 const catchUp = 30 * time.Second
 
+// bootstrapInterval verifies the pods when no mutation did for this long.
+const bootstrapInterval = time.Minute
+
 // position is where a replication stream is: its ID and offset.
 type position struct {
 	replID string
@@ -41,7 +44,6 @@ type position struct {
 // of the source's ledger.
 type Replica struct {
 	in       config.Instance
-	cfg      config.Bootstrap
 	source   *Data
 	pods     Pods
 	auth     *auth.Source
@@ -60,7 +62,6 @@ func NewReplica(in config.Instance, cfg *config.Config, source *Data, pods Pods,
 	_, _ = h.Write([]byte(in.Namespace + "/" + in.Name))
 	r := &Replica{
 		in:         in,
-		cfg:        *in.Bootstrap,
 		source:     source,
 		pods:       pods,
 		auth:       a,
@@ -94,7 +95,7 @@ func (r *Replica) Writable(context.Context) error {
 }
 
 func (r *Replica) Run(ctx context.Context) {
-	t := time.NewTicker(r.cfg.VerifyInterval.Duration)
+	t := time.NewTicker(bootstrapInterval)
 	defer t.Stop()
 	for {
 		select {
@@ -120,7 +121,7 @@ func (r *Replica) verifyRetrying(ctx context.Context, event string, step int) (i
 func (r *Replica) verify(ctx context.Context, event string, step int) (int, error) {
 	start := time.Now()
 	src := r.source
-	seqs := src.ledger.recentSample(r.rnd, r.cfg.SampleKeys)
+	seqs := src.ledger.recentSample(r.rnd, sampleKeys)
 	if len(seqs) == 0 {
 		return 0, errors.New("no source writes since its last verification yet")
 	}
@@ -130,7 +131,7 @@ func (r *Replica) verify(ctx context.Context, event string, step int) (int, erro
 	}
 	c := src.podClient(addr)
 	defer func() { _ = c.Close() }()
-	size := src.cfg.Ledger.ValueBytes
+	size := ledgerValueBytes
 	gone, _, err := src.check(ctx, c, LedgerKey, size, seqs)
 	if err != nil {
 		return 0, err
@@ -183,7 +184,7 @@ func (r *Replica) verifyPod(ctx context.Context, p observer.PodAddr, seqs []int6
 	if err != nil {
 		return 0, err
 	}
-	lost, _, err := r.source.check(ctx, c, LedgerKey, r.source.cfg.Ledger.ValueBytes, seqs)
+	lost, _, err := r.source.check(ctx, c, LedgerKey, ledgerValueBytes, seqs)
 	// The source deletes its old keys, also while the pod catches up, and
 	// the pod replicates the deletes.
 	released := r.source.ledger.releasedBelow()

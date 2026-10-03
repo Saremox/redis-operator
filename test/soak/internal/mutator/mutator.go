@@ -262,9 +262,6 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 	}
 	if p.edge != nil {
 		m.mixed = &mixedWindow{t: p.edge}
-		if d := p.edge.edge.Timeout.Duration; d > 0 {
-			timeout = d
-		}
 		if p.edge.edge.Expect != config.ExpectOK {
 			bound, hold = timeout, 2*timeout
 		}
@@ -570,7 +567,7 @@ func (m *Mutator) fetch(ctx context.Context, opts fetchOpts) (state, error) {
 	m.auth.Update(rf)
 	// Validate applies the operator defaults.
 	_ = rf.Validate()
-	s := state{rf: rf, password: m.auth.Password(), authSecret: m.in.AuthSecret}
+	s := state{rf: rf, password: m.auth.Password(), authSecret: m.in.AuthSecret()}
 	pods, err := m.kube.CoreV1().Pods(m.in.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "app.kubernetes.io/part-of=redis-failover,app.kubernetes.io/name=" + m.in.Name,
 	})

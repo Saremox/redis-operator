@@ -30,7 +30,6 @@ chaos:
 mutation:
   interval: 2m
   jitter: 1m
-  minDwell: 15s
   # perPod, because the operator replaces each redis pod in turn, and
   # each new pod starts and syncs.
   timeouts:

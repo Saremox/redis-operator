@@ -17,7 +17,6 @@ observer:
 mutation:
   interval: 10s
   jitter: 10s
-  minDwell: 15s
   seed: 9
   stopAfter: 3000s
   # perPod, because the operator replaces each redis pod in turn, and
@@ -60,8 +59,8 @@ instances:
     template: rf-redis-chain.yaml
     chain: {start: [redis-7.2], versions: [redis-7.2, redis-7.4, redis-8]}
     data:
-      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
-      ledger: {writesPerSecond: 10}
+      fill: {sizeMi: 8}
+      ledger: {}
     mutations:
       kinds:
         image_upgrade: 4
@@ -78,8 +77,8 @@ instances:
     template: rf-redis-chain-sent.yaml
     chain: {start: [redis-7.2], versions: [redis-7.2, redis-7.4, redis-8], sentinel: follow}
     data:
-      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
-      ledger: {writesPerSecond: 10}
+      fill: {sizeMi: 8}
+      ledger: {}
     mutations:
       kinds:
         image_upgrade: 1
@@ -90,8 +89,8 @@ instances:
     template: rf-migrate.yaml
     chain: {start: [redis-7.2], versions: [redis-7.2, valkey-7.2, valkey-8, valkey-9]}
     data:
-      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
-      ledger: {writesPerSecond: 10}
+      fill: {sizeMi: 8}
+      ledger: {}
     mutations:
       kinds:
         image_upgrade: 1
@@ -103,8 +102,8 @@ instances:
     template: rf-migrate-sent.yaml
     chain: {start: [redis-7.2], versions: [redis-7.2, valkey-7.2, valkey-8, valkey-9], sentinel: separate}
     data:
-      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
-      ledger: {writesPerSecond: 10}
+      fill: {sizeMi: 8}
+      ledger: {}
     mutations:
       kinds:
         image_upgrade: 1
@@ -120,8 +119,8 @@ instances:
       versions: [redis-7.4, redis-8, valkey-7.2, valkey-8, valkey-9]
       expect: [unknown]
     data:
-      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
-      ledger: {writesPerSecond: 10}
+      fill: {sizeMi: 8}
+      ledger: {}
     mutations:
       kinds:
         image_upgrade: 1
@@ -134,7 +133,7 @@ instances:
     version: valkey-9
     maxMemoryPolicy: allkeys-lfu
     data:
-      fill: {percent: 50, keysPerSecond: 2000, batch: 100}
+      fill: {percent: 50}
     mutations:
       kinds:
         redis_replicas: 1
@@ -157,8 +156,8 @@ instances:
     version: valkey-8
     sentinelVersion: valkey-8
     data:
-      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
-      ledger: {writesPerSecond: 10}
+      fill: {sizeMi: 8}
+      ledger: {}
     mutations:
       kinds:
         password_rotate: 1
@@ -175,8 +174,8 @@ instances:
     version: redis-7.2
     sentinelVersion: valkey-9
     data:
-      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
-      ledger: {writesPerSecond: 10}
+      fill: {sizeMi: 8}
+      ledger: {}
     mutations:
       kinds:
         kill_master: 1

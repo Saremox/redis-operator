@@ -15,7 +15,6 @@ observer:
 mutation:
   interval: 90s
   jitter: 30s
-  minDwell: 15s
   seed: 54
   stopAfter: 1500s
 chaos:
@@ -27,7 +26,6 @@ chaos:
   jitter: 30s
   timeout: 5m
   upgrade:
-    timeout: 5m
     # kind-e2e replaces both with the versions that it built, or with the RCs.
     versions:
       - {name: from, chart: chart-from.tgz, image: "redis-operator:from"}
@@ -46,8 +44,8 @@ instances:
     template: rf-chaos-op.yaml
     version: redis-7.2
     data:
-      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
-      ledger: {writesPerSecond: 10}
+      fill: {sizeMi: 8}
+      ledger: {}
   # Three pods with auth, on volumes that move with the pods. Its budget
   # lets a drain evict one pod at a time.
   - name: chaos-pvc
@@ -56,8 +54,8 @@ instances:
     template: rf-chaos-pvc.yaml
     version: redis-7.2
     data:
-      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
-      ledger: {writesPerSecond: 10}
+      fill: {sizeMi: 8}
+      ledger: {}
   - name: chaos-sent
     namespace: chaos-sent
     mode: sentinel
@@ -65,8 +63,8 @@ instances:
     version: redis-7.2
     sentinelVersion: redis-7.2
     data:
-      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
-      ledger: {writesPerSecond: 10}
+      fill: {sizeMi: 8}
+      ledger: {}
   # Redis 7.2 data whose Sentinels flip between Valkey 9 and Redis 7.2.
   - name: mixed-sent
     namespace: mixed-sent
@@ -75,8 +73,8 @@ instances:
     version: redis-7.2
     sentinelVersion: valkey-9
     data:
-      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
-      ledger: {writesPerSecond: 10}
+      fill: {sizeMi: 8}
+      ledger: {}
     mutations:
       kinds:
         sentinel_image_flip: 1

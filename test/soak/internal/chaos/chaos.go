@@ -98,7 +98,7 @@ func New(cfg *config.Config, kube kubernetes.Interface, lock *global.Lock, insta
 		evictionBlocked: m.ChaosEvictionBlocked,
 	}
 	l.helm = func(ctx context.Context, args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, l.cfg.Upgrade.Helm, args...).CombinedOutput()
+		return exec.CommandContext(ctx, "helm", args...).CombinedOutput()
 	}
 	l.actions = map[config.ChaosKind]func(context.Context, *action) outcome{
 		config.OperatorRestart: l.restart,

@@ -21,21 +21,12 @@ instances: [{name: a, namespace: ns, mutations: {kinds: {kill_master: 1}}}]`))
 	if !c.ChaosOn() || ch.Interval.Duration != 10*time.Minute || ch.Timeout.Duration != 7*time.Minute {
 		t.Errorf("chaos defaults: %+v", ch)
 	}
-	if ch.Upgrade.Release != "redis-operator" || ch.Upgrade.HookJob != "redis-operator-crds-upgrade" || ch.Upgrade.Helm != "helm" ||
-		ch.Upgrade.CRD != "redisfailovers.databases.spotahome.com" || c.Operator.Lease != "redis-failover-lease" {
-		t.Errorf("upgrade defaults: %+v, operator %+v", ch.Upgrade, c.Operator)
-	}
-	if ch.Drain.NodeSelector != "!node-role.kubernetes.io/control-plane" || ch.Drain.Hold.Duration != time.Minute || ch.Drain.Timeout.Duration != 5*time.Minute {
+	if ch.Drain.Hold.Duration != time.Minute || ch.Drain.Timeout.Duration != 5*time.Minute {
 		t.Errorf("drain defaults: %+v", ch.Drain)
 	}
 	want := []string{"failover", "kill_master", "node_drain", "operator_restart", "periodic", "reset"}
 	if got := c.Events(c.Instances[0]); !slices.Equal(got, want) {
 		t.Errorf("events %v, want %v", got, want)
-	}
-
-	c, err = Parse([]byte("mutation: {enabled: false}\nchaos: {kinds: {operator_restart: 1}}\ninstances: [{name: a, namespace: ns}]"))
-	if err != nil || c.ChaosOn() {
-		t.Errorf("chaos on with mutation off: %v", err)
 	}
 }
 
