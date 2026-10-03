@@ -446,7 +446,9 @@ func (r *RedisFailoverHandler) waitForFailover(rf *redisfailoverv1.RedisFailover
 	if unreachable >= timeout {
 		return false, nil
 	}
-	msg := fmt.Sprintf("master unreachable for %s, failing over after %s", unreachable.Truncate(time.Second), timeout)
+	// The message holds no elapsed time. Each status change queues a
+	// reconcile at once, and the requeue below must set the next check.
+	msg := fmt.Sprintf("master unreachable since %s, failing over after %s", since.UTC().Format(time.RFC3339), timeout)
 	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).Info(msg)
 	rf.Status = redisfailoverv1.RedisFailoverStatus{
 		State:   redisfailoverv1.NotHealthyState,
@@ -519,14 +521,13 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 // If the checks do not match up to expectations, an attempt will be made to "heal" the RedisFailover into a healthy state.
 func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) error {
 
-	oldState := rf.Status.State
-	oldLastChanged := rf.Status.LastChanged
+	observed := rf.Status
 
 	rf.Status = redisfailoverv1.RedisFailoverStatus{
 		State: redisfailoverv1.HealthyState,
 	}
 
-	defer updateStatus(r.k8sservice, rf, oldState, oldLastChanged)
+	defer updateStatus(r.k8sservice, rf, observed)
 
 	// Every check below authenticates, so a changed password goes first.
 	if err := r.applyPassword(rf); err != nil {
@@ -1052,7 +1053,6 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 			State:   redisfailoverv1.NotHealthyState,
 			Message: errorMsg,
 		}
-		r.k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.REDIS_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of redis mismatch, waiting for redis statefulset reconcile")
 		return nil
@@ -1106,12 +1106,9 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 				State:   redisfailoverv1.NotHealthyState,
 				Message: errorMsg,
 			}
-			r.k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 			setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of sentinel mismatch, waiting for sentinel deployment reconcile")
 			return nil
-		} else {
-			r.k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 		}
 
 		sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
@@ -1260,18 +1257,18 @@ func setRedisCheckerMetrics(metricsClient metrics.Recorder, mode /* redis or sen
 	}
 }
 
-// updateStatus patches rf's status to the API server, stamping LastChanged
-// with the current time only when the health state actually transitioned.
-// The branches leading up to this (checkAndHeal*) each rebuild rf.Status
-// from scratch (State/Message only) without carrying LastChanged forward,
-// so oldLastChanged - captured before any of those run - is what restores
-// it on a non-transition; otherwise every steady-state reconcile would
-// patch LastChanged back to empty, erasing the last recorded transition.
-func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, oldState string, oldLastChanged string) {
-	if oldState != rf.Status.State {
+// updateStatus is the only status write of a reconcile. The checks set only
+// State and Message, so LastChanged comes from the observed status unless the
+// state changed. An unchanged status is not written, because each status
+// change queues the RedisFailover again.
+func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, observed redisfailoverv1.RedisFailoverStatus) {
+	if observed.State != rf.Status.State {
 		rf.Status.LastChanged = time.Now().Format(time.RFC3339)
 	} else {
-		rf.Status.LastChanged = oldLastChanged
+		rf.Status.LastChanged = observed.LastChanged
+	}
+	if rf.Status == observed {
+		return
 	}
 	k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 }
