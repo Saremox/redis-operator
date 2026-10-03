@@ -2,9 +2,6 @@ package k8s
 
 import (
 	"context"
-	"fmt"
-	"strconv"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/labels"
 
@@ -14,7 +11,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
@@ -107,65 +106,13 @@ func (s *StatefulSetService) CreateOrUpdateStatefulSet(namespace string, statefu
 	// namespace is our spec(https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#concurrency-control-and-consistency),
 	// we will replace the current namespace state.
 	statefulSet.ResourceVersion = storedStatefulSet.ResourceVersion
-	// resize pvc
-	// 1.Get the data already stored internally
-	// 2.Get the desired data
-	// 3.Start querying the pvc list when you find data inconsistencies
-	// 3.1 Comparison using real pvc capacity and desired data
-	// 3.1.1 Update if you find inconsistencies
-	// 3.2 Writing successful updates to internal
-	// 4. Set to old VolumeClaimTemplates to update.Prevent update error reporting
-	// 5. Set to old annotations to update
-	annotations := storedStatefulSet.Annotations
-	if annotations == nil {
-		annotations = map[string]string{
-			"storageCapacity": "0",
-		}
-	}
-	storedCapacity, _ := strconv.ParseInt(annotations["storageCapacity"], 0, 64)
 	if len(statefulSet.Spec.VolumeClaimTemplates) != 0 {
-		stateCapacity := statefulSet.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests.Storage().Value()
-		if storedCapacity != stateCapacity {
-			rfName := strings.TrimPrefix(storedStatefulSet.Name, "rfr-")
-			listOpt := metav1.ListOptions{
-				LabelSelector: labels.FormatLabels(
-					map[string]string{
-						"app.kubernetes.io/component": "redis",
-						"app.kubernetes.io/name":      strings.TrimPrefix(storedStatefulSet.Name, "rfr-"),
-						"app.kubernetes.io/part-of":   "redis-failover",
-					},
-				),
-			}
-			pvcs, err := s.kubeClient.CoreV1().PersistentVolumeClaims(storedStatefulSet.Namespace).List(context.Background(), listOpt)
-			if err != nil {
-				return err
-			}
-			updateFailed := false
-			realUpdate := false
-			for _, pvc := range pvcs.Items {
-				realCapacity := pvc.Spec.Resources.Requests.Storage().Value()
-				if realCapacity != stateCapacity {
-					realUpdate = true
-					pvc.Spec.Resources.Requests = statefulSet.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests
-					_, err = s.kubeClient.CoreV1().PersistentVolumeClaims(storedStatefulSet.Namespace).Update(context.Background(), &pvc, metav1.UpdateOptions{})
-					if err != nil {
-						updateFailed = true
-						s.logger.WithField("namespace", namespace).WithField("pvc", pvc.Name).Warningf("resize pvc failed:%s", err.Error())
-					}
-				}
-			}
-			if !updateFailed && len(pvcs.Items) != 0 {
-				annotations["storageCapacity"] = fmt.Sprintf("%d", stateCapacity)
-				storedStatefulSet.Annotations = annotations
-				if realUpdate {
-					s.logger.WithField("namespace", namespace).WithField("statefulSet", statefulSet.Name).Infof("resize statefulset pvcs from %d to %d Success", storedCapacity, stateCapacity)
-				} else {
-					s.logger.WithField("namespace", namespace).WithField("pvc", rfName).Warningf("set annotations,resize nothing")
-				}
-			}
+		if err := s.updateStatefulSetPVCs(namespace, storedStatefulSet, statefulSet); err != nil {
+			return err
 		}
 	}
-	// set stored.volumeClaimTemplates
+	// The volume claim templates of a StatefulSet cannot be changed, so the
+	// update keeps the stored ones.
 	statefulSet.Spec.VolumeClaimTemplates = storedStatefulSet.Spec.VolumeClaimTemplates
 	statefulSet.Annotations = util.MergeAnnotations(storedStatefulSet.Annotations, statefulSet.Annotations)
 
@@ -175,6 +122,84 @@ func (s *StatefulSetService) CreateOrUpdateStatefulSet(namespace string, statefu
 	}
 
 	return s.UpdateStatefulSet(namespace, statefulSet)
+}
+
+// updateStatefulSetPVCs applies the desired volume claim template to the PVCs on
+// each call, because the StatefulSet creates new PVCs from its stored template.
+// It removes the owners that the template does not reference, so that the
+// garbage collector does not delete the PVCs with those owners.
+func (s *StatefulSetService) updateStatefulSetPVCs(namespace string, storedStatefulSet, statefulSet *appsv1.StatefulSet) error {
+	template := statefulSet.Spec.VolumeClaimTemplates[0]
+	desiredStorage := template.Spec.Resources.Requests.Storage()
+	removedOwners := map[types.UID]bool{}
+	for _, owner := range statefulSet.OwnerReferences {
+		if !hasOwnerReference(template.OwnerReferences, owner.UID) {
+			removedOwners[owner.UID] = true
+		}
+	}
+
+	// The StatefulSet controller adds the selector labels of the StatefulSet to each PVC.
+	selector := labels.Set(storedStatefulSet.Spec.Selector.MatchLabels).String()
+	pvcs, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return err
+	}
+	for i := range pvcs.Items {
+		pvc := &pvcs.Items[i]
+		// The owner change is its own update and its error stops the
+		// reconcile: a rejected resize must not keep an owner reference that
+		// lets the garbage collector delete the PVC.
+		if len(withoutOwners(pvc.OwnerReferences, removedOwners)) != len(pvc.OwnerReferences) {
+			// Other controllers also write the PVC, so a conflict is retried on
+			// the current PVC instead of a failed reconcile.
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				current, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Get(context.TODO(), pvc.Name, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				current.OwnerReferences = withoutOwners(current.OwnerReferences, removedOwners)
+				updated, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Update(context.TODO(), current, metav1.UpdateOptions{})
+				if err != nil {
+					return err
+				}
+				pvc = updated
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		// A storage class can refuse the expansion, so a failed resize is
+		// only logged and does not block the reconcile.
+		if pvc.Spec.Resources.Requests.Storage().Cmp(*desiredStorage) < 0 {
+			pvc.Spec.Resources.Requests = template.Spec.Resources.Requests
+			if _, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Update(context.TODO(), pvc, metav1.UpdateOptions{}); err != nil {
+				s.logger.WithField("namespace", namespace).WithField("pvc", pvc.Name).Warningf("resize pvc failed: %s", err.Error())
+				continue
+			}
+			s.logger.WithField("namespace", namespace).WithField("pvc", pvc.Name).Infof("pvc resized")
+		}
+	}
+	return nil
+}
+
+func withoutOwners(ownerReferences []metav1.OwnerReference, removed map[types.UID]bool) []metav1.OwnerReference {
+	kept := []metav1.OwnerReference{}
+	for _, owner := range ownerReferences {
+		if !removed[owner.UID] {
+			kept = append(kept, owner)
+		}
+	}
+	return kept
+}
+
+func hasOwnerReference(ownerReferences []metav1.OwnerReference, uid types.UID) bool {
+	for _, owner := range ownerReferences {
+		if owner.UID == uid {
+			return true
+		}
+	}
+	return false
 }
 
 // DeleteStatefulSet will delete the statefulset
