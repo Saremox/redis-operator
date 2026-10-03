@@ -486,3 +486,23 @@ func TestRFControllerEnqueueAfter(t *testing.T) {
 	assert.Equal(t, 0, c.queue.Len())
 	assert.Eventually(t, func() bool { return c.queue.Len() == 1 }, 5*time.Second, 10*time.Millisecond)
 }
+
+type mutatingHandler struct{}
+
+func (mutatingHandler) Handle(_ context.Context, obj runtime.Object) error {
+	obj.(*redisfailoverv1.RedisFailover).Status.State = redisfailoverv1.HealthyState
+	return nil
+}
+
+// The handler changes the RedisFailover, and the informer cache shares the
+// object with other goroutines.
+func TestRFControllerHandlesACopyOfTheCachedRedisFailover(t *testing.T) {
+	c, err := newRFController(mutatingHandler{}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	require.NoError(t, err)
+	require.NoError(t, c.rfInformer.GetIndexer().Add(&redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}))
+
+	require.NoError(t, c.process(context.Background(), "ns/rf"))
+	cached, _, err := c.rfInformer.GetIndexer().GetByKey("ns/rf")
+	require.NoError(t, err)
+	assert.Empty(t, cached.(*redisfailoverv1.RedisFailover).Status.State)
+}
