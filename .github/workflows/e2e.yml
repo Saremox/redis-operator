@@ -128,35 +128,14 @@ jobs:
 
       - name: Verify master is elected
         run: |
-          echo "Checking that exactly one master exists..."
-          MASTER_COUNT=0
-          for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
-            ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
-            echo "$pod: $ROLE"
-            if [[ "$ROLE" == "role:master" ]]; then
-              MASTER_COUNT=$((MASTER_COUNT + 1))
-              MASTER_POD=$pod
-            fi
-          done
-
-          if [[ "$MASTER_COUNT" -ne 1 ]]; then
-            echo "✗ Expected exactly 1 master, found $MASTER_COUNT"
-            exit 1
-          fi
+          source test/e2e/helpers.sh
+          MASTER_POD=$(master_pod)
           echo "✓ Exactly one master: $MASTER_POD"
 
       - name: Write test data
         run: |
-          echo "Writing test data to master..."
-          MASTER_POD=""
-          for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
-            ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
-            if [[ "$ROLE" == "role:master" ]]; then
-              MASTER_POD=$pod
-              break
-            fi
-          done
-
+          source test/e2e/helpers.sh
+          MASTER_POD=$(master_pod)
           for i in {1..100}; do
             kubectl exec $MASTER_POD -- redis-cli SET "key:$i" "value:$i" > /dev/null
           done
@@ -164,110 +143,74 @@ jobs:
 
       - name: Verify replication
         run: |
-          echo "Verifying data replicated to replica..."
-          sleep 3
-
-          for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
-            ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
-            KEY_COUNT=$(kubectl exec $pod -- redis-cli DBSIZE | grep -oE '[0-9]+')
-            echo "$pod ($ROLE): $KEY_COUNT keys"
+          source test/e2e/helpers.sh
+          for pod in $PODS; do
+            wait_until 60 "$pod does not have the 100 keys" has_test_data $pod || { echo "$pod: $(dbsize $pod) keys"; exit 1; }
+            echo "✓ $pod ($(role $pod)): 100 keys"
           done
 
       - name: Test operator-managed failover
         run: |
-          echo "Testing operator-managed failover..."
-
-          # Find the master
-          MASTER_POD=""
-          REPLICA_POD=""
-          for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
-            ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
-            if [[ "$ROLE" == "role:master" ]]; then
-              MASTER_POD=$pod
-            else
-              REPLICA_POD=$pod
-            fi
-          done
-
-          echo "Current master: $MASTER_POD"
-          echo "Current replica: $REPLICA_POD"
-
-          # Delete the master pod to trigger failover
-          echo "Deleting master pod $MASTER_POD..."
+          source test/e2e/helpers.sh
+          MASTER_POD=$(master_pod)
+          REPLICA_POD=$(other_pod $MASTER_POD)
+          echo "Deleting master pod $MASTER_POD, so $REPLICA_POD must become master..."
           kubectl delete pod $MASTER_POD
 
-          # Wait for failover
-          echo "Waiting for failover (up to 60s)..."
-          for i in {1..20}; do
-            sleep 3
-            # Check if the replica became master
-            ROLE=$(kubectl exec $REPLICA_POD -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r' || echo "")
-            echo "  Check $i: $REPLICA_POD is $ROLE"
-            if [[ "$ROLE" == "role:master" ]]; then
-              echo "✓ Failover complete: $REPLICA_POD is now master"
-              break
-            fi
-          done
-
-          # Verify final state
-          ROLE=$(kubectl exec $REPLICA_POD -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r')
-          if [[ "$ROLE" != "role:master" ]]; then
-            echo "✗ Failover failed: $REPLICA_POD is still $ROLE"
-            kubectl logs -l app.kubernetes.io/name=redisoperator --tail=50 || true
+          if ! wait_until 60 "Failover failed: $REPLICA_POD did not become master" is_master $REPLICA_POD; then
+            kubectl logs -l app.kubernetes.io/name=redis-operator --tail=50 || true
             exit 1
           fi
+          echo "✓ Failover complete: $REPLICA_POD is now master"
 
       - name: Wait for pod recovery
         run: |
-          echo "Waiting for deleted pod to recover..."
-          kubectl wait --for=condition=Ready pod/rfr-test-no-sentinel-0 --timeout=120s || true
-          kubectl wait --for=condition=Ready pod/rfr-test-no-sentinel-1 --timeout=120s || true
+          source test/e2e/helpers.sh
+          # `kubectl wait` fails at once while the deleted pod has no
+          # replacement, and it can find the old pod while it terminates.
+          ready() { [[ "$(kubectl get pod $1 -o jsonpath='{.metadata.deletionTimestamp}/{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" == /True ]]; }
+          for pod in $PODS; do
+            wait_until 180 "$pod did not become Ready" ready $pod
+            echo "✓ $pod is Ready"
+          done
 
       - name: Verify data survived failover
         run: |
-          echo "Verifying data survived failover..."
-
-          # Find current master
-          for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
-            if kubectl get pod $pod 2>/dev/null | grep -q Running; then
-              VALUE=$(kubectl exec $pod -- redis-cli GET "key:50" 2>/dev/null || echo "")
-              if [[ "$VALUE" == "value:50" ]]; then
-                echo "✓ $pod has test data (key:50 = $VALUE)"
-              else
-                echo "⚠ $pod: key:50 = '$VALUE'"
-              fi
+          source test/e2e/helpers.sh
+          # The replacement pod starts empty and gets the keys from the new
+          # master. A pod without all keys shows lost writes.
+          for pod in $PODS; do
+            wait_until 60 "$pod does not have the 100 keys" has_test_data $pod || { echo "$pod: $(dbsize $pod) keys"; exit 1; }
+            VALUE=$(kubectl exec $pod -- redis-cli GET "key:50" 2>/dev/null)
+            if [[ "$VALUE" != "value:50" ]]; then
+              echo "✗ $pod: key:50 = '$VALUE', expected 'value:50'"
+              exit 1
             fi
+            echo "✓ $pod has test data (key:50 = $VALUE)"
           done
 
       - name: Verify master service endpoints
         run: |
-          echo "Checking master service endpoints..."
-
-          # Get the current master IP
-          MASTER_IP=""
-          for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
-            if kubectl get pod $pod 2>/dev/null | grep -q Running; then
-              ROLE=$(kubectl exec $pod -- redis-cli INFO replication 2>/dev/null | grep "role:" | tr -d '\r' || echo "")
-              if [[ "$ROLE" == "role:master" ]]; then
-                MASTER_IP=$(kubectl get pod $pod -o jsonpath='{.status.podIP}')
-                echo "Current master: $pod ($MASTER_IP)"
-                break
-              fi
-            fi
-          done
-
-          # Check master service endpoints
-          ENDPOINTS=$(kubectl get endpoints rfrm-test-no-sentinel -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || echo "")
-          echo "Master service endpoint: $ENDPOINTS"
-
-          if [[ "$ENDPOINTS" == "$MASTER_IP" ]]; then
-            echo "✓ Master service points to correct master"
-          else
-            echo "⚠ Master service endpoint mismatch (may need more time to update)"
+          source test/e2e/helpers.sh
+          # The endpoints follow the role label, which the operator sets
+          # after the promotion.
+          endpoint_is_master() {
+            local pod
+            pod=$(master_pod 2>/dev/null) || return 1
+            MASTER_IP=$(kubectl get pod $pod -o jsonpath='{.status.podIP}')
+            ENDPOINTS=$(kubectl get endpoints rfrm-test-no-sentinel -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)
+            [[ -n "$MASTER_IP" && "$ENDPOINTS" == "$MASTER_IP" ]]
+          }
+          if ! wait_until 60 "Master service endpoints do not match the master" endpoint_is_master; then
+            echo "Master IP: '$MASTER_IP', endpoints: '$ENDPOINTS'"
+            master_pod || true
+            exit 1
           fi
+          echo "✓ Master service points to the master ($MASTER_IP)"
 
       - name: Test clients of a demoted master move to the new master
         run: |
+          source test/e2e/helpers.sh
           # redis-cli -r keeps one connection open and reconnects as soon as it is closed.
           kubectl run demotion-client --image=redis:7.2.12-alpine --image-pull-policy=IfNotPresent --restart=Never --command -- \
             sh -c 'while true; do redis-cli -h rfrm-test-no-sentinel -r -1 -i 0.01 INCR e2e:demotion; sleep 0.01; done'
@@ -275,23 +218,22 @@ jobs:
 
           writing() { local out; out=$(kubectl logs demotion-client --tail=5); [[ -n "$out" ]] && ! grep -qvE '^[0-9]+$' <<<"$out"; }
           readonly_errors() { kubectl logs demotion-client | grep -c READONLY || true; }
+          labelled_slave() { [[ "$(kubectl get pod $1 -o jsonpath='{.metadata.labels.redisfailovers-role}')" == slave ]]; }
+          counter() { kubectl exec $1 -- redis-cli GET e2e:demotion 2>/dev/null | tr -dc '0-9'; }
+          writes_reach() { local before after; before=$(counter $1); sleep 2; after=$(counter $1); (( ${after:-0} > ${before:-0} )); }
           for i in {1..30}; do writing && break; sleep 2; done
           writing || { echo "✗ Client never wrote to the master"; kubectl logs demotion-client --tail=20; exit 1; }
 
           # Both directions, since the operator relabels pods in list order.
           for round in 1 2; do
-            for pod in rfr-test-no-sentinel-0 rfr-test-no-sentinel-1; do
-              if kubectl exec $pod -- redis-cli INFO replication | grep -q "role:master"; then OLD_MASTER=$pod; else NEW_MASTER=$pod; fi
-            done
+            OLD_MASTER=$(master_pod)
+            NEW_MASTER=$(other_pod $OLD_MASTER)
             echo "Round $round: demoting $OLD_MASTER in favour of $NEW_MASTER"
             ERRORS_BEFORE=$(readonly_errors)
             kubectl exec $NEW_MASTER -- redis-cli REPLICAOF NO ONE
             kubectl exec $OLD_MASTER -- redis-cli REPLICAOF $(kubectl get pod $NEW_MASTER -o jsonpath='{.status.podIP}') 6379
 
-            for i in {1..45}; do
-              [[ "$(kubectl get pod $OLD_MASTER -o jsonpath='{.metadata.labels.redisfailovers-role}')" == slave ]] && break
-              sleep 2
-            done
+            wait_until 90 "The operator did not label $OLD_MASTER as slave" labelled_slave $OLD_MASTER
             MOVED=false
             for i in {1..10}; do
               sleep 3
@@ -302,6 +244,14 @@ jobs:
               kubectl logs demotion-client --tail=20
               exit 1
             fi
+            # A client also writes again when the operator makes the old
+            # master the master again. Only the writes on NEW_MASTER show
+            # that the client moved.
+            if ! is_master $NEW_MASTER; then
+              echo "✗ $NEW_MASTER is '$(role $NEW_MASTER)', expected master"
+              exit 1
+            fi
+            wait_until 30 "The client writes do not reach $NEW_MASTER" writes_reach $NEW_MASTER
             echo "✓ Client reconnected to the new master"
           done
 
@@ -309,7 +259,7 @@ jobs:
         if: failure()
         run: |
           echo "=== Operator logs ==="
-          kubectl logs -l app.kubernetes.io/name=redisoperator --tail=100 || true
+          kubectl logs -l app.kubernetes.io/name=redis-operator --tail=100 || true
           echo "=== Redis pod 0 logs ==="
           kubectl logs rfr-test-no-sentinel-0 --tail=50 || true
           echo "=== Redis pod 1 logs ==="
