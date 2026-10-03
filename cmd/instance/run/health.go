@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	defaultHealthPort    = 8080
-	healthCheckInterval  = time.Second
-	redisConnectTimeout  = 2 * time.Second
-	redisCommandTimeout  = time.Second
+	defaultHealthPort   = 8080
+	healthCheckInterval = time.Second
+	redisConnectTimeout = 2 * time.Second
+	redisCommandTimeout = time.Second
 )
 
 // HealthServer provides HTTP health endpoints for the instance manager.
@@ -30,19 +30,20 @@ type HealthServer struct {
 	redisPort     string
 	redisPassword string
 	server        *http.Server
+	listenAddr    net.Addr
 	client        *redis.Client
 
 	// Cached status (updated every healthCheckInterval)
-	mu            sync.RWMutex
-	lastCheck     time.Time
-	cachedInfo    map[string]string
-	redisPid      int
-	startTime     time.Time
-	cleanupDone   bool
+	mu          sync.RWMutex
+	lastCheck   time.Time
+	cachedInfo  map[string]string
+	redisPid    int
+	startTime   time.Time
+	cleanupDone bool
 
 	// Atomic flags
-	redisHealthy  atomic.Bool
-	redisReady    atomic.Bool
+	redisHealthy atomic.Bool
+	redisReady   atomic.Bool
 }
 
 // HealthResponse is the response for /healthz endpoint
@@ -55,12 +56,12 @@ type HealthResponse struct {
 
 // ReadyResponse is the response for /readyz endpoint
 type ReadyResponse struct {
-	Status           string `json:"status"`
-	Role             string `json:"role,omitempty"`
-	ConnectedClients int    `json:"connected_clients,omitempty"`
-	Loading          bool   `json:"loading"`
-	MasterSyncInProgress bool `json:"master_sync_in_progress,omitempty"`
-	Error            string `json:"error,omitempty"`
+	Status               string `json:"status"`
+	Role                 string `json:"role,omitempty"`
+	ConnectedClients     int    `json:"connected_clients,omitempty"`
+	Loading              bool   `json:"loading"`
+	MasterSyncInProgress bool   `json:"master_sync_in_progress,omitempty"`
+	Error                string `json:"error,omitempty"`
 }
 
 // StatusResponse is the detailed response for /status endpoint
@@ -84,22 +85,22 @@ type RedisStatus struct {
 
 // ReplicationStatus contains replication information
 type ReplicationStatus struct {
-	Role                  string `json:"role"`
-	ConnectedSlaves       int    `json:"connected_slaves,omitempty"`
-	MasterHost            string `json:"master_host,omitempty"`
-	MasterPort            int    `json:"master_port,omitempty"`
-	MasterLinkStatus      string `json:"master_link_status,omitempty"`
-	MasterSyncInProgress  bool   `json:"master_sync_in_progress,omitempty"`
-	SlaveReplOffset       int64  `json:"slave_repl_offset,omitempty"`
-	MasterReplOffset      int64  `json:"master_repl_offset,omitempty"`
+	Role                 string `json:"role"`
+	ConnectedSlaves      int    `json:"connected_slaves,omitempty"`
+	MasterHost           string `json:"master_host,omitempty"`
+	MasterPort           int    `json:"master_port,omitempty"`
+	MasterLinkStatus     string `json:"master_link_status,omitempty"`
+	MasterSyncInProgress bool   `json:"master_sync_in_progress,omitempty"`
+	SlaveReplOffset      int64  `json:"slave_repl_offset,omitempty"`
+	MasterReplOffset     int64  `json:"master_repl_offset,omitempty"`
 }
 
 // InstanceManagerStatus contains instance manager status
 type InstanceManagerStatus struct {
-	Version               string `json:"version"`
-	UptimeSeconds         int64  `json:"uptime_seconds"`
-	StartupCleanupDone    bool   `json:"startup_cleanup_done"`
-	HealthPort            int    `json:"health_port"`
+	Version            string `json:"version"`
+	UptimeSeconds      int64  `json:"uptime_seconds"`
+	StartupCleanupDone bool   `json:"startup_cleanup_done"`
+	HealthPort         int    `json:"health_port"`
 }
 
 // NewHealthServer creates a new health server
@@ -128,8 +129,18 @@ func (h *HealthServer) SetCleanupDone(done bool) {
 	h.cleanupDone = done
 }
 
-// Start begins the health server and background health checker
+// Start begins the health server and background health checker.
+// It returns an error if it cannot bind the health port.
 func (h *HealthServer) Start(ctx context.Context) error {
+	// Bind before anything else, so that a bind failure gets to the caller
+	// and Start leaves nothing to clean up.
+	addr := fmt.Sprintf(":%d", h.port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", addr, err)
+	}
+	h.listenAddr = listener.Addr()
+
 	// Create Redis client
 	h.client = redis.NewClient(&redis.Options{
 		Addr:         net.JoinHostPort(h.redisAddr, h.redisPort),
@@ -146,7 +157,7 @@ func (h *HealthServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/status", h.handleStatus)
 
 	h.server = &http.Server{
-		Addr:         fmt.Sprintf(":%d", h.port),
+		Addr:         addr,
 		Handler:      mux,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
@@ -158,7 +169,7 @@ func (h *HealthServer) Start(ctx context.Context) error {
 	// Start HTTP server
 	fmt.Printf("redis-instance: starting health server on port %d\n", h.port)
 	go func() {
-		if err := h.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := h.server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("redis-instance: health server error: %v\n", err)
 		}
 	}()
