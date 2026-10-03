@@ -18,6 +18,8 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/saremox/redis-operator/version"
 )
 
 func TestParseRedisInfo(t *testing.T) {
@@ -277,6 +279,10 @@ func TestHealthServerReadyzNotReadyNoMasterConfigured(t *testing.T) {
 }
 
 func TestHealthServerStatus(t *testing.T) {
+	prev := version.Version
+	t.Cleanup(func() { version.Version = prev })
+	version.Version = "v1.2.3"
+
 	h := NewHealthServer(8080, "6379", "")
 	h.startTime = time.Now().Add(-120 * time.Second)
 	h.SetRedisPID(5678)
@@ -321,7 +327,7 @@ func TestHealthServerStatus(t *testing.T) {
 	assert.Equal(t, int64(99999), resp.Replication.MasterReplOffset)
 
 	// Instance manager status
-	assert.Equal(t, "4.0.0", resp.InstanceManager.Version)
+	assert.Equal(t, "v1.2.3", resp.InstanceManager.Version)
 	assert.GreaterOrEqual(t, resp.InstanceManager.UptimeSeconds, int64(120))
 	assert.True(t, resp.InstanceManager.StartupCleanupDone)
 	assert.Equal(t, 8080, resp.InstanceManager.HealthPort)

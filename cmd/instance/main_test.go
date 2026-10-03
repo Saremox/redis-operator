@@ -3,10 +3,13 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/saremox/redis-operator/version"
 )
 
 // runMain runs main with args and returns the exit code that main gives.
@@ -51,4 +54,15 @@ func TestMainExitsWithOneOnError(t *testing.T) {
 	code := runMain(t, "no-such-command")
 
 	assert.Equal(t, 1, code)
+}
+
+func TestMainPrintsTheVersion(t *testing.T) {
+	var out strings.Builder
+	rootCmd.SetOut(&out)
+	t.Cleanup(func() { rootCmd.SetOut(nil) })
+
+	code := runMain(t, "--version")
+
+	assert.Equal(t, -1, code)
+	assert.Equal(t, "redis-instance version "+version.Version+"\n", out.String())
 }

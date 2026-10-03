@@ -14,7 +14,7 @@ else
 fi
 
 ldf_cmp="-s -w -extldflags '-static'"
-f_ver="-X main.Version=${VERSION:-dev}"
+f_ver="-X github.com/saremox/redis-operator/version.Version=${VERSION:-dev}"
 
 # Build the operator binary
 echo "Building redis-operator binary at ./bin/redis-operator"
