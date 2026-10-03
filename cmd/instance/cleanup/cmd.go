@@ -14,6 +14,9 @@ const (
 	defaultDBFilename = "dump.rdb"
 )
 
+// readDir is a variable so that tests can inject directory read faults.
+var readDir = os.ReadDir
+
 var (
 	dataDir    string
 	dbFilename string
@@ -59,7 +62,7 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 	}
 
 	// Find and remove stale RDB files
-	entries, err := os.ReadDir(dataDir)
+	entries, err := readDir(dataDir)
 	if err != nil {
 		return fmt.Errorf("failed to read data directory: %w", err)
 	}
