@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 
 	"k8s.io/client-go/kubernetes"
@@ -42,16 +43,10 @@ func CreateKubernetesClients(flags *CMDFlags) (kubernetes.Interface, redisfailov
 		return nil, nil, nil, err
 	}
 
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	customClientset, err := redisfailoverclientset.NewForConfig(config)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	metadataClient, err := metadata.NewForConfig(config)
-	if err != nil {
+	clientset, kubeErr := kubernetes.NewForConfig(config)
+	customClientset, customErr := redisfailoverclientset.NewForConfig(config)
+	metadataClient, metadataErr := metadata.NewForConfig(config)
+	if err := errors.Join(kubeErr, customErr, metadataErr); err != nil {
 		return nil, nil, nil, err
 	}
 
