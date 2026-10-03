@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -819,6 +820,88 @@ func TestGetNumberMastersIsMasterError(t *testing.T) {
 
 	_, err := checker.GetNumberMasters(rf)
 	assert.NoError(err)
+}
+
+func TestGetNumberMastersReadyPodUnanswered(t *testing.T) {
+	ready := []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "redis-0"},
+				Status:     corev1.PodStatus{PodIP: "0.0.0.0", Phase: corev1.PodRunning, Conditions: ready},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "redis-1"},
+				Status:     corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning, Conditions: ready},
+			},
+		},
+	}
+
+	tests := []struct {
+		name          string
+		otherIsMaster bool
+		expN          int
+		expErr        bool
+	}{
+		{name: "no master answered", otherIsMaster: false, expN: 0, expErr: true},
+		{name: "another master answered", otherIsMaster: true, expN: 1, expErr: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+			mr := &mRedisService.Client{}
+			mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(false, errors.New("i/o timeout"))
+			mr.On("IsMaster", "1.1.1.1", "0", "").Once().Return(test.otherIsMaster, nil)
+
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+			n, err := checker.GetNumberMasters(rf)
+			assert.Equal(t, test.expN, n)
+			if test.expErr {
+				assert.ErrorContains(t, err, "redis-0")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// A pod that is not running or that is terminating is not asked, and does not
+// make the count unknown.
+func TestGetNumberMastersSkipsPodsNotRunningOrTerminating(t *testing.T) {
+	ready := []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "redis-0"},
+				Status:     corev1.PodStatus{PodIP: "0.0.0.0", Phase: corev1.PodRunning, Conditions: ready},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "redis-1"},
+				Status:     corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodPending},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "redis-2", DeletionTimestamp: &metav1.Time{Time: time.Now()}},
+				Status:     corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodRunning, Conditions: ready},
+			},
+		},
+	}
+
+	rf := generateRF()
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	// The mock panics if IsMaster is called for redis-1 or redis-2.
+	mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(false, nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	n, err := checker.GetNumberMasters(rf)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, n)
+	mr.AssertExpectations(t)
 }
 
 func TestGetNumberMasters(t *testing.T) {
@@ -1775,7 +1858,7 @@ func TestGetReplicaReplicationOffsetsExcludesMaster(t *testing.T) {
 	}
 }
 
-func TestGetReplicaReplicationOffsetsIsReadyFlag(t *testing.T) {
+func TestGetReplicaReplicationOffsetsSyncedFlag(t *testing.T) {
 	tests := []struct {
 		name             string
 		syncInProgress   bool
@@ -1813,7 +1896,7 @@ func TestGetReplicaReplicationOffsetsIsReadyFlag(t *testing.T) {
 			replicas, err := checker.GetReplicaReplicationOffsets(rf)
 			assert.NoError(err)
 			if assert.Len(replicas, 1) {
-				assert.Equal(test.expectedReady, replicas[0].IsReady)
+				assert.Equal(test.expectedReady, replicas[0].Synced)
 				assert.EqualValues(42, replicas[0].ReplicationOffset)
 			}
 		})
@@ -1889,7 +1972,7 @@ func TestGetBestReplicaForPromotionPicksHighestReadyOffset(t *testing.T) {
 	if assert.NotNil(best) {
 		assert.Equal("2.2.2.2", best.IP)
 		assert.EqualValues(500, best.ReplicationOffset)
-		assert.True(best.IsReady)
+		assert.True(best.Synced)
 	}
 }
 
@@ -1924,7 +2007,92 @@ func TestGetBestReplicaForPromotionFallsBackWhenNoneReady(t *testing.T) {
 	assert.NoError(err)
 	if assert.NotNil(best) {
 		assert.Equal("2.2.2.2", best.IP, "fallback should still pick highest offset even though not ready")
-		assert.False(best.IsReady)
+		assert.False(best.Synced)
+	}
+}
+
+func TestGetBestReplicaForPromotionRanking(t *testing.T) {
+	readyCond := []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	notReadyCond := []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}}
+
+	type replica struct {
+		ready  bool
+		linkUp bool
+		offset int64
+	}
+	tests := []struct {
+		name     string
+		replicas []replica
+		expected string
+	}{
+		{
+			// A master that restarted in place can have writes that the
+			// Ready replica did not get. A promotion of that replica drops them.
+			name:     "higher offset wins over a ready pod",
+			replicas: []replica{{ready: false, offset: 900}, {ready: true, offset: 800}},
+			expected: "1.1.1.1",
+		},
+		{
+			// After a graceful shutdown, the restarted old master has the
+			// same offset as its replica.
+			name:     "ready pod wins at equal offset",
+			replicas: []replica{{ready: false, offset: 800}, {ready: true, offset: 800}},
+			expected: "1.1.1.2",
+		},
+		{
+			name:     "synced replica wins over a higher offset",
+			replicas: []replica{{ready: true, offset: 900}, {ready: false, linkUp: true, offset: 800}},
+			expected: "1.1.1.2",
+		},
+		{
+			name:     "highest offset when no pod is ready",
+			replicas: []replica{{ready: false, offset: 700}, {ready: false, offset: 800}},
+			expected: "1.1.1.2",
+		},
+		{
+			name:     "first in list on equal rank and offset",
+			replicas: []replica{{ready: true, offset: 800}, {ready: true, offset: 800}},
+			expected: "1.1.1.1",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF()
+
+			pods := &corev1.PodList{}
+			mr := &mRedisService.Client{}
+			for i, rep := range test.replicas {
+				ip := fmt.Sprintf("1.1.1.%d", i+1)
+				conds := notReadyCond
+				if rep.ready {
+					conds = readyCond
+				}
+				pods.Items = append(pods.Items, corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("rfr-%d", i)},
+					Status:     corev1.PodStatus{PodIP: ip, Phase: corev1.PodRunning, Conditions: conds},
+				})
+				link := "down"
+				if rep.linkUp {
+					link = "up"
+				}
+				mr.On("GetReplicationInfo", ip, "0", "").Once().Return(&redis.ReplicationInfo{
+					Role: "slave", MasterLinkStatus: link, SlaveReplOffset: rep.offset,
+				}, nil)
+			}
+
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+			best, err := checker.GetBestReplicaForPromotion(rf)
+			assert.NoError(err)
+			if assert.NotNil(best) {
+				assert.Equal(test.expected, best.IP)
+			}
+		})
 	}
 }
 

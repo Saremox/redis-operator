@@ -8,6 +8,7 @@ import (
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
+	"github.com/saremox/redis-operator/operator/redisfailover/util"
 	"github.com/saremox/redis-operator/service/k8s"
 	"github.com/saremox/redis-operator/service/redis"
 	v1 "k8s.io/api/core/v1"
@@ -90,20 +91,24 @@ func (r *RedisFailoverHealer) MakeMaster(ip string, rf *redisfailoverv1.RedisFai
 	return nil
 }
 
-// SetOldestAsMaster puts all redis to the same master, choosen by order of appearance
+// SetOldestAsMaster makes the first pod from masterCandidates the master of all redis pods.
 func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailover) error {
 	ssp, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
 		return err
 	}
-	if len(ssp.Items) < 1 {
+	for i := range ssp.Items {
+		// A terminating Ready master still accepts writes. Another master
+		// gives two writable masters.
+		if pod := &ssp.Items[i]; pod.DeletionTimestamp != nil && IsMasterPod(pod) && util.PodIsReady(pod) {
+			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("Master pod %s is stopping, waiting for it to exit before electing a master", pod.Name)
+			return nil
+		}
+	}
+	pods := masterCandidates(ssp.Items)
+	if len(pods) < 1 {
 		return errors.New("number of redis pods are 0")
 	}
-
-	// Order the pods so we start by the oldest one
-	sort.Slice(ssp.Items, func(i, j int) bool {
-		return ssp.Items[i].CreationTimestamp.Before(&ssp.Items[j].CreationTimestamp)
-	})
 
 	password, err := k8s.GetRedisPassword(r.k8sService, rf)
 	if err != nil {
@@ -112,7 +117,7 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 
 	port := getRedisPort(rf.Spec.Redis.Port)
 	newMasterIP := ""
-	for _, pod := range ssp.Items {
+	for _, pod := range pods {
 		if newMasterIP == "" {
 			newMasterIP = pod.Status.PodIP
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("New master is %s with ip %s", pod.Name, newMasterIP)
@@ -130,7 +135,7 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 			newMasterIP = pod.Status.PodIP
 		} else {
 			r.logger.Infof("Making pod %s slave of %s", pod.Name, newMasterIP)
-			if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, newMasterIP, port, password); err != nil {
+			if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, newMasterIP, port, password); err != nil {
 				r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Errorf("Make slave failed, slave pod ip: %s, master ip: %s, error: %v", pod.Status.PodIP, newMasterIP, err)
 			}
 
@@ -145,6 +150,24 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 	} else {
 		return nil
 	}
+}
+
+// masterCandidates removes terminating pods, because they stop soon. Ready
+// pods come first, because a Ready replica synced recently.
+func masterCandidates(items []v1.Pod) []v1.Pod {
+	pods := make([]v1.Pod, 0, len(items))
+	for _, pod := range items {
+		if pod.DeletionTimestamp == nil {
+			pods = append(pods, pod)
+		}
+	}
+	sort.SliceStable(pods, func(i, j int) bool {
+		if ri, rj := util.PodIsReady(&pods[i]), util.PodIsReady(&pods[j]); ri != rj {
+			return ri
+		}
+		return pods[i].CreationTimestamp.Before(&pods[j].CreationTimestamp)
+	})
+	return pods
 }
 
 // podIPBelongsTo reports whether ip is currently the PodIP of one of the
@@ -199,7 +222,7 @@ func (r *RedisFailoverHealer) SetMasterOnAll(masterIP string, rf *redisfailoverv
 				continue
 			}
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("Making pod %s slave of %s", pod.Name, masterIP)
-			if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, masterIP, port, password); err != nil {
+			if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, masterIP, port, password); err != nil {
 				// The pod is unreachable - typically the old master on a downed
 				// node. Skip it and keep repointing the reachable slaves instead
 				// of aborting; it will re-sync via sentinel once its node is back.
@@ -229,9 +252,13 @@ func (r *RedisFailoverHealer) SetExternalMasterOnAll(masterIP, masterPort string
 		return err
 	}
 
+	// The target pods' own port, which is not necessarily masterPort - the
+	// external bootstrap master can be configured on a different port than
+	// this RedisFailover's own Redis pods.
+	port := getRedisPort(rf.Spec.Redis.Port)
 	for _, pod := range ssp.Items {
 		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("Making pod %s slave of %s:%s", pod.Name, masterIP, masterPort)
-		if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, masterIP, masterPort, password); err != nil {
+		if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, masterIP, masterPort, password); err != nil {
 			return err
 		}
 
@@ -358,7 +385,7 @@ func (r *RedisFailoverHealer) PromoteBestReplica(newMasterIP string, rf *redisfa
 		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
 			Infof("Making pod %s slave of %s", rp.Name, newMasterIP)
 
-		if err := r.redisClient.MakeSlaveOfWithPort(rp.Status.PodIP, newMasterIP, port, password); err != nil {
+		if err := r.redisClient.MakeSlaveOfWithPort(rp.Status.PodIP, port, newMasterIP, port, password); err != nil {
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
 				Errorf("Failed to make %s slave of %s: %v", rp.Status.PodIP, newMasterIP, err)
 			reconcileErrs = append(reconcileErrs, err)

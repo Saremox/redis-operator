@@ -5,8 +5,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"fmt"
+	"strconv"
 	"strings"
 	"text/template"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -260,46 +262,86 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	name := GetRedisShutdownConfigMapName(rf)
 	port := rf.Spec.Redis.Port
 	namespace := rf.Namespace
-	rfName := strings.ReplaceAll(strings.ToUpper(rf.Name), "-", "_")
 
 	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
 	// Runs as the preStop hook under /bin/sh, which is BusyBox ash on the
 	// alpine redis images, so this has to stay POSIX: no "let", no "[[ ]]".
 	// A single failed sentinel query used to be enough to skip the failover
 	// and shut the master down anyway, so both sentinel calls are retried.
-	shutdownContent := fmt.Sprintf(`master=""
+	// The redis pods have no service links, so the script finds Sentinel
+	// through the DNS name of the Sentinel Service.
+	// The kubelet stops the hook at the end of the grace period (30s by
+	// default), and then the script cannot SAVE. Thus each call has a 2s
+	// limit, and the Sentinel part ends before 19s: the last failover request
+	// or poll starts before the 12s deadline and ends before 15s, and
+	// REPLICAOF and CLIENT UNPAUSE add a maximum of 4s.
+	// Until Sentinel promotes a replica, the master still accepts writes, and
+	// the promotion loses those that did not reach the replica. Thus the script
+	// pauses the writes, and makes the old master a replica of the new master
+	// before it ends the pause: the clients then get READONLY and not a lost
+	// OK. The pause stops 6s after the deadline, also if the script stops.
+	// Sentinel has no password, so only the local calls send REDIS_PASSWORD.
+	shutdownContent := ""
+	if rf.SentinelsAllowed() {
+		shutdownContent = fmt.Sprintf(`t=; command -v timeout >/dev/null 2>&1 && t="timeout 2"
+local_cli() {
+	if [ -n "${REDIS_PASSWORD}" ]; then
+		REDISCLI_AUTH="${REDIS_PASSWORD}" $t redis-cli -p %[2]v "$@"
+	else
+		$t redis-cli -p %[2]v "$@"
+	fi
+}
+deadline=$(($(date +%%s) + 12))
+self=$(hostname -i)
+master=""
 retries=0
 while [ -z "$master" ] && [ "$retries" -lt 3 ]; do
 	retries=$((retries + 1))
-	master=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+	master=$($t redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
 	if [ -z "$master" ]; then
-		sleep 3
+		sleep 1
 	fi
 done
 if [ -z "$master" ]; then
 	echo "shutdown.sh: could not resolve the master from sentinel after $retries attempts" >&2
 fi
-if [ "$master" = "$(hostname -i)" ]; then
+if [ "$master" = "$self" ]; then
+  paused=$(local_cli CLIENT PAUSE $(((deadline + 6 - $(date +%%s)) * 1000)) WRITE)
+  if [ "$paused" != "OK" ]; then
+  	echo "shutdown.sh: could not pause the writes (CLIENT PAUSE WRITE needs Redis 6.2): $paused" >&2
+  fi
   failover=""
   retries=0
-  while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ]; do
+  while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ] && [ "$(date +%%s)" -lt "$deadline" ]; do
   	retries=$((retries + 1))
-  	failover=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} SENTINEL failover mymaster)
+  	failover=$($t redis-cli -h %[1]v -p 26379 SENTINEL failover mymaster)
   	if [ "$failover" != "OK" ]; then
-  		sleep 3
+  		sleep 1
   	fi
   done
   if [ "$failover" != "OK" ]; then
   	echo "shutdown.sh: sentinel did not accept the failover after $retries attempts: $failover" >&2
+  else
+  	while { [ -z "$master" ] || [ "$master" = "$self" ]; } && [ "$(date +%%s)" -lt "$deadline" ]; do
+  		sleep 1
+  		master=$($t redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+  	done
+  	if [ -z "$master" ] || [ "$master" = "$self" ]; then
+  		echo "shutdown.sh: sentinel did not report a new master before the deadline" >&2
+  	else
+  		local_cli REPLICAOF "$master" %[2]v
+  	fi
   fi
-  sleep 31
+  local_cli CLIENT UNPAUSE
 fi
-cmd="redis-cli -p %[2]v"
+`, GetSentinelName(rf), port)
+	}
+	shutdownContent += fmt.Sprintf(`cmd="redis-cli -p %v"
 if [ ! -z "${REDIS_PASSWORD}" ]; then
 	export REDISCLI_AUTH=${REDIS_PASSWORD}
 fi
 save_command="${cmd} save"
-eval $save_command`, rfName, port)
+eval $save_command`, port)
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -314,6 +356,36 @@ eval $save_command`, rfName, port)
 	}
 }
 
+// redisReadinessMaxLinkDownSeconds is how long ready.sh keeps a replica ready
+// after its link to the master dropped: a base window plus the time the
+// configured failover takes to start and finish.
+func redisReadinessMaxLinkDownSeconds(rf *redisfailoverv1.RedisFailover) int64 {
+	window := 60 * time.Second
+	if rf.OperatorManagedFailover() {
+		window += rf.GetFailoverTimeoutDuration()
+	} else {
+		window += sentinelConfigMilliseconds(rf, "down-after-milliseconds", 5000)
+		window += sentinelConfigMilliseconds(rf, "failover-timeout", 10000)
+	}
+	return int64(window.Round(time.Second) / time.Second)
+}
+
+// sentinelConfigMilliseconds returns the value sentinel customConfig gives
+// param, the last one as the operator applies them in order, or def.
+func sentinelConfigMilliseconds(rf *redisfailoverv1.RedisFailover, param string, def int64) time.Duration {
+	ms := def
+	for _, c := range rf.Spec.Sentinel.CustomConfig {
+		s := strings.Split(c, " ")
+		if len(s) != 2 || s[0] != param {
+			continue
+		}
+		if v, err := strconv.ParseInt(s[1], 10, 64); err == nil && v >= 0 {
+			ms = v
+		}
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
 func generateRedisReadinessConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.ConfigMap {
 	name := GetRedisReadinessName(rf)
 	port := rf.Spec.Redis.Port
@@ -325,8 +397,18 @@ ROLE_MASTER="role:master"
 ROLE_SLAVE="role:slave"
 IN_SYNC="master_sync_in_progress:1"
 NO_MASTER="master_host:127.0.0.1"
+LINK_UP="master_link_status:up"
+LINK_DOWN_SINCE="master_link_down_since_seconds:"
+# A replica stays ready this long after losing its master, so it outlasts a
+# failover, during which every replica's link is down.
+MAX_LINK_DOWN_SECONDS=%[2]v
 
 cmd="redis-cli -p %[1]v"
+# A frozen server still accepts connections, and redis-cli would wait for its
+# reply forever, holding the probe open past its timeout on some runtimes.
+if command -v timeout >/dev/null 2>&1; then
+	cmd="timeout 2 ${cmd}"
+fi
 if [ ! -z "${REDIS_PASSWORD}" ]; then
 	export REDISCLI_AUTH=${REDIS_PASSWORD}
 fi
@@ -341,7 +423,19 @@ check_slave(){
 		in_sync=$(echo "${cmd} | grep ${IN_SYNC} | tr -d \"\\r\" | tr -d \"\\n\"" | xargs -0 sh -c)
 		no_master=$(echo "${cmd} | grep ${NO_MASTER} | tr -d \"\\r\" | tr -d \"\\n\"" |  xargs -0 sh -c)
 
-		if [ -z "$in_sync" ] && [ -z "$no_master" ]; then
+		if [ -n "$in_sync" ] || [ -n "$no_master" ]; then
+				exit 1
+		fi
+
+		link_up=$(echo "${cmd} | grep ${LINK_UP} | tr -d \"\\r\" | tr -d \"\\n\"" | xargs -0 sh -c)
+		if [ -n "$link_up" ]; then
+				exit 0
+		fi
+
+		# -1 means the link has not been up since redis started: this replica
+		# has never loaded the master's data, e.g. it can't read its RDB format.
+		down_since=$(echo "${cmd} | grep ${LINK_DOWN_SINCE} | cut -d: -f2 | tr -d \"\\r\" | tr -d \"\\n\"" | xargs -0 sh -c)
+		if [ "$down_since" -ge 0 ] 2>/dev/null && [ "$down_since" -le "$MAX_LINK_DOWN_SECONDS" ]; then
 				exit 0
 		fi
 
@@ -359,7 +453,7 @@ case $role in
 		*)
 				echo "unexpected"
 				exit 1
-esac`, port)
+esac`, port, redisReadinessMaxLinkDownSeconds(rf))
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -498,7 +592,8 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 					Command: []string{
 						"sh",
 						"-c",
-						fmt.Sprintf("redis-cli -h $(hostname) -p %[1]v --user pinger --pass pingpass --no-auth-warning ping | grep PONG", rf.Spec.Redis.Port),
+						// Bounded like ready.sh: a frozen server never answers.
+						fmt.Sprintf("t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p %[1]v --user pinger --pass pingpass --no-auth-warning ping | grep PONG", rf.Spec.Redis.Port),
 					},
 				},
 			},
@@ -677,7 +772,7 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 					Command: []string{
 						"sh",
 						"-c",
-						"redis-cli -h $(hostname) -p 26379 ping",
+						"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 ping",
 					},
 				},
 			},
@@ -704,7 +799,7 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 					Command: []string{
 						"sh",
 						"-c",
-						"redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1' && redis-cli -h $(hostname) -p 26379 sentinel ckquorum mymaster | grep -q '^OK'",
+						"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1' && $t redis-cli -h $(hostname) -p 26379 sentinel ckquorum mymaster | grep -q '^OK'",
 					},
 				},
 			},

@@ -66,6 +66,12 @@ kubectl apply -f https://raw.githubusercontent.com/Saremox/redis-operator/${REDI
 
 This will create a deployment named `redisoperator`.
 
+The manifests at a release tag deploy the operator image of that tag. The release workflow stops a release when they do not agree. In tags 4.2.0-rc2, 4.1.2 and older, the manifests deploy an older operator image. For these tags, set the image after the install:
+
+```
+kubectl set image deployment/redisoperator app=ghcr.io/saremox/redis-operator:${REDIS_OPERATOR_VERSION}
+```
+
 ### Using kustomize
 
 The kustomize setup included in this repo is highly customizable using [components](https://kubectl.docs.kubernetes.io/guides/config_management/components/),
@@ -85,6 +91,14 @@ It's always a good practice to pin the version of the operator in your configura
 
 ```shell
 kustomize build github.com/Saremox/redis-operator/manifests/kustomize/overlays/default?ref=<release-tag>
+```
+
+The `?ref=<release-tag>` also pins the operator image. In tags 4.2.0-rc2, 4.1.2 and older, the overlays deploy operator `v1.4.0`. For these tags, add the image to your `kustomization.yaml`:
+
+```yaml
+images:
+  - name: ghcr.io/saremox/redis-operator
+    newTag: <release-tag>
 ```
 
 You can create your own config by creating a `kustomization.yaml` file
@@ -162,13 +176,37 @@ To have the ability of this configuration to be changed "on the fly," without th
 
 **Important 2**: do **NOT** change the options used for control the redis/sentinel such as `port`, `bind`, `dir`, etc.
 
+### Pod updates
+
+A changed spec replaces the redis pods one at a time, replicas first and the master last, each once the previous one is ready and every replica is synced with the master. The operator replaces an unsynced replica that is not on the current spec first, because that replica has no data to lose. When the rollout waits on the same pod for more than 10 minutes, e.g. on a new image that can't load the master's data, the status message names the pod and the reason, e.g. `rollout waiting on pod rfr-<NAME>-1 for more than 10m: not synced with the master`. The state stays `Healthy`, as the master still serves, and the message clears once the rollout moves on.
+
 ### Custom shutdown script
 
-By default, a custom shutdown file is given. This file makes redis to `SAVE` it's data, and when Sentinel is enabled and redis is master, it'll call sentinel to ask for failover.
+By default, the operator gives each redis pod a shutdown script. The script makes redis `SAVE` its data before it stops. When Sentinel runs and the pod is the master, the script first asks Sentinel to fail over. Thus Sentinel moves the master immediately and does not wait for `down-after-milliseconds`. The redis pods have no service links, so the script finds Sentinel through the Service name `rfs-<NAME>` on port 26379.
+
+During the failover, the script pauses the writes on the old master, and then makes it a replica of the new master. This prevents the loss of writes that the old master acknowledged, because the clients get `READONLY` instead. The pause needs Redis 6.2 or later. On an earlier version, the script continues without the pause. The script waits a maximum of 12 seconds for the new master. Thus the script ends inside the default 30-second grace period, and the `SAVE` can run.
 
 This behavior is configurable, creating a configmap and indicating to use it. An example about how to use this option can be found in the [shutdown example file](example/redisfailover/custom-shutdown.yaml).
 
 **Important**: the configmap has to be in the same namespace. The configmap has to have a `shutdown.sh` data, containing the script.
+
+### Sentinel failover and write loss
+
+Sentinel does not stop writes on the old master in a failover. If the old master still runs, it accepts writes until Sentinel makes it a replica. With the default timings, this occurs about 10 seconds after the promotion. The old master then copies the data of the new master, and the writes that it acknowledged in that interval are lost. The interval ends earlier if the operator moves the master label or makes the old master a replica first. In a test on kind, a `SENTINEL FAILOVER` lost 11 seconds of writes through `rfrm-<NAME>`.
+
+The default shutdown script prevents this loss when the master pod is deleted. Before it requests the failover, it pauses the writes on the master (`CLIENT PAUSE ... WRITE`). After the promotion, it makes the old master a replica of the new master. Thus clients get an error, not an acknowledgement that is lost. In 3 deletions on kind, no acknowledged write was lost, and the new master was ready after about 1 second. The pause needs Redis 6.2 or later. On an older Redis, the script requests the failover without the pause.
+
+A custom shutdown script that requests a failover without this pause causes the loss. In a test without the pause, 2 deletions lost 8 seconds and 0.1 seconds of writes through `rfrm-<NAME>`.
+
+The loss can still occur when Sentinel fails over for another reason, for example when the master stops to answer but its pod continues to run.
+
+To lose fewer writes:
+
+- Use a Sentinel client. It gets the new master from Sentinel, and lost 1 to 6 seconds of writes in the tests, not 11 seconds.
+- Send `WAIT 1 <timeout>` after an important write, and treat a result of `0` as a failed write. On the old master, `WAIT` returns `0`, because its replicas replicate from the new master. `WAIT` does not undo the write and does not prevent all loss in a failover. It only lets the client detect this case.
+- Set `min-replicas-to-write 1` in `redis.customConfig`. The old master then refuses writes when its replicas disconnect. In a test with plain Redis, this reduced the loss from 11 seconds to 0.9 seconds. The master also refuses writes when no replica is connected.
+
+**Known limitation**: the wait for a master pod that stops finds the pod by its `redisfailovers-role=master` label. The operator sets this label only after it counts exactly one master. Sentinel can promote a pod that already stops. An example is a scale-down from 3 to 1 that removes two pods at the same time (`Parallel` pod management). That pod does not have the label yet, so nothing waits for it.
 
 ### Custom SecurityContext
 
@@ -303,6 +341,8 @@ url: rfrm-<NAME>
 port: <redis-port> # defaults to 6379
 ```
 
+Reads can also go to the replicas through `rfrs-<NAME>`. A replica is ready, and so behind that service, only while it has the master's data. It is not ready during a full sync, until its first sync since it started has completed (a replica that can't load the master's RDB format never gets there), and once its link to the master has been down for longer than the failover can take: 60 seconds plus `spec.sentinel.failoverTimeout` without Sentinel, or plus Sentinel's `down-after-milliseconds` and `failover-timeout` (from `spec.sentinel.customConfig`) with it. So the replicas stay ready through a failover.
+
 ### Enabling redis auth
 
 To enable auth, create a secret with a password field:
@@ -361,6 +401,12 @@ When `allowSentinels` is provided and `spec.sentinel.enabled` is `true`, the Ope
 ### Default versions
 
 The image versions deployed by the operator can be found on the [defaults file](api/redisfailover/v1/defaults.go).
+
+### Migrating to Valkey
+
+Valkey images ship `redis-server` and `redis-cli`, so switching `redis.image` and `sentinel.image` to a Valkey image is an ordinary rolling update.
+
+Migrate from Redis 7.2 only. Valkey forked from Redis 7.2 and can't load the data of Redis 7.4 or later (`Can't handle RDB format version 12`). The first replica on Valkey then never syncs, so the operator doesn't replace the master: the RedisFailover keeps running on Redis, but the rollout never completes. To end the migration, revert `redis.image`. The operator then replaces the unsynced Valkey replica, because that replica has no data to lose.
 ## Cleanup
 
 ### Operator and CRD

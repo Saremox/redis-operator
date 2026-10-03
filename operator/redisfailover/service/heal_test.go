@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
@@ -96,7 +97,7 @@ func TestSetOldestAsMasterMultiplePodsMakeSlaveOfError(t *testing.T) {
 	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", "0.0.0.0", "0", "").Once().Return(nil)
-	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0.0.0.0", "0", "").Once().Return(errors.New(""))
+	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(errors.New(""))
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
@@ -129,7 +130,7 @@ func TestSetOldestAsMasterMultiplePods(t *testing.T) {
 	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", "0.0.0.0", "0", "").Once().Return(nil)
-	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0.0.0.0", "0", "").Once().Return(nil)
+	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(nil)
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
@@ -172,12 +173,201 @@ func TestSetOldestAsMasterOrdering(t *testing.T) {
 	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", "1.1.1.1", "0", "").Once().Return(nil)
-	mr.On("MakeSlaveOfWithPort", "0.0.0.0", "1.1.1.1", "0", "").Once().Return(nil)
+	mr.On("MakeSlaveOfWithPort", "0.0.0.0", "0", "1.1.1.1", "0", "").Once().Return(nil)
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetOldestAsMaster(rf)
 	assert.NoError(err)
+}
+
+func TestSetOldestAsMasterCandidates(t *testing.T) {
+	now := time.Now()
+	pod := func(ip string, age time.Duration, ready, terminating bool) corev1.Pod {
+		p := corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				CreationTimestamp: metav1.NewTime(now.Add(-age)),
+			},
+			Status: corev1.PodStatus{PodIP: ip},
+		}
+		if ready {
+			p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+		} else {
+			p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}}
+		}
+		if terminating {
+			p.DeletionTimestamp = &metav1.Time{Time: now}
+		}
+		return p
+	}
+
+	master := func(p corev1.Pod) corev1.Pod {
+		p.Labels = map[string]string{"redisfailovers-role": "master"}
+		return p
+	}
+
+	tests := []struct {
+		name       string
+		pods       []corev1.Pod
+		wantMaster string
+		wantSlaves []string
+		wantErr    bool
+	}{
+		{
+			name: "ready terminating master blocks the election",
+			pods: []corev1.Pod{
+				pod("0.0.0.0", 3*time.Hour, true, false),
+				master(pod("1.1.1.1", 2*time.Hour, true, true)),
+				pod("2.2.2.2", time.Hour, true, false),
+			},
+		},
+		{
+			name: "not ready terminating master does not block the election",
+			pods: []corev1.Pod{
+				master(pod("0.0.0.0", 3*time.Hour, false, true)),
+				pod("1.1.1.1", 2*time.Hour, true, false),
+				pod("2.2.2.2", time.Hour, true, false),
+			},
+			wantMaster: "1.1.1.1",
+			wantSlaves: []string{"2.2.2.2"},
+		},
+		{
+			name: "terminating oldest pod is skipped",
+			pods: []corev1.Pod{
+				pod("0.0.0.0", 3*time.Hour, true, true),
+				pod("1.1.1.1", 2*time.Hour, true, false),
+				pod("2.2.2.2", time.Hour, true, false),
+			},
+			wantMaster: "1.1.1.1",
+			wantSlaves: []string{"2.2.2.2"},
+		},
+		{
+			name: "not ready oldest pod loses to younger ready pod",
+			pods: []corev1.Pod{
+				pod("0.0.0.0", 3*time.Hour, false, false),
+				pod("1.1.1.1", time.Hour, true, false),
+			},
+			wantMaster: "1.1.1.1",
+			wantSlaves: []string{"0.0.0.0"},
+		},
+		{
+			name: "oldest ready pod wins among ready pods",
+			pods: []corev1.Pod{
+				pod("0.0.0.0", time.Hour, true, false),
+				pod("1.1.1.1", 3*time.Hour, true, false),
+				pod("2.2.2.2", 2*time.Hour, true, false),
+			},
+			wantMaster: "1.1.1.1",
+			wantSlaves: []string{"2.2.2.2", "0.0.0.0"},
+		},
+		{
+			name: "no ready pod falls back to oldest non-terminating pod",
+			pods: []corev1.Pod{
+				pod("0.0.0.0", 3*time.Hour, false, true),
+				pod("1.1.1.1", time.Hour, false, false),
+				pod("2.2.2.2", 2*time.Hour, false, false),
+			},
+			wantMaster: "2.2.2.2",
+			wantSlaves: []string{"1.1.1.1"},
+		},
+		{
+			name: "all pods terminating",
+			pods: []corev1.Pod{
+				pod("0.0.0.0", 2*time.Hour, true, true),
+				pod("1.1.1.1", time.Hour, true, true),
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			rf := generateRF()
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: test.pods}, nil)
+			ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
+			mr := &mRedisService.Client{}
+			mr.On("MakeMaster", mock.Anything, "0", "").Return(nil)
+			mr.On("MakeSlaveOfWithPort", mock.Anything, "0", mock.Anything, "0", "").Return(nil)
+
+			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+			err := healer.SetOldestAsMaster(rf)
+
+			if test.wantMaster == "" {
+				assert.Equal(test.wantErr, err != nil)
+				mr.AssertNotCalled(t, "MakeMaster", mock.Anything, mock.Anything, mock.Anything)
+				mr.AssertNotCalled(t, "MakeSlaveOfWithPort", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+				return
+			}
+			assert.NoError(err)
+			mr.AssertNumberOfCalls(t, "MakeMaster", 1)
+			mr.AssertCalled(t, "MakeMaster", test.wantMaster, "0", "")
+			mr.AssertNumberOfCalls(t, "MakeSlaveOfWithPort", len(test.wantSlaves))
+			for _, ip := range test.wantSlaves {
+				mr.AssertCalled(t, "MakeSlaveOfWithPort", ip, "0", test.wantMaster, "0", "")
+			}
+		})
+	}
+}
+
+func TestSetOldestAsMasterErrors(t *testing.T) {
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{ObjectMeta: metav1.ObjectMeta{Name: "master"}, Status: corev1.PodStatus{PodIP: "0.0.0.0"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "slave"}, Status: corev1.PodStatus{PodIP: "1.1.1.1"}},
+		},
+	}
+
+	tests := []struct {
+		name  string
+		setup func(rf *redisfailoverv1.RedisFailover, ms *mK8SService.Services)
+	}{
+		{
+			name: "list pods fails",
+			setup: func(rf *redisfailoverv1.RedisFailover, ms *mK8SService.Services) {
+				ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(nil, errors.New(""))
+			},
+		},
+		{
+			name: "get password fails",
+			setup: func(rf *redisfailoverv1.RedisFailover, ms *mK8SService.Services) {
+				rf.Spec.Auth.SecretPath = "secret"
+				ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+				ms.On("GetSecret", namespace, "secret").Once().Return(nil, errors.New(""))
+			},
+		},
+		{
+			name: "master label fails",
+			setup: func(rf *redisfailoverv1.RedisFailover, ms *mK8SService.Services) {
+				ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+				ms.On("UpdatePodLabels", namespace, "master", mock.Anything).Once().Return(errors.New(""))
+			},
+		},
+		{
+			name: "slave label fails",
+			setup: func(rf *redisfailoverv1.RedisFailover, ms *mK8SService.Services) {
+				ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+				ms.On("UpdatePodLabels", namespace, "master", mock.Anything).Once().Return(nil)
+				ms.On("UpdatePodLabels", namespace, "slave", mock.Anything).Once().Return(errors.New(""))
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			ms := &mK8SService.Services{}
+			test.setup(rf, ms)
+			mr := &mRedisService.Client{}
+			mr.On("MakeMaster", "0.0.0.0", "0", "").Return(nil)
+			mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Return(nil)
+
+			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+			assert.Error(t, healer.SetOldestAsMaster(rf))
+		})
+	}
 }
 
 func TestSetMasterOnAllMakeMasterError(t *testing.T) {
@@ -277,9 +467,9 @@ func TestSetMasterOnAllMakeSlaveOfErrorIsSkipped(t *testing.T) {
 	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("IsMaster", "0.0.0.0", "0", "").Return(true, nil)
-	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0.0.0.0", "0", "").Once().Return(errors.New("i/o timeout"))
+	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(errors.New("i/o timeout"))
 	// The reachable slave must still be repointed even though the previous pod failed.
-	mr.On("MakeSlaveOfWithPort", "2.2.2.2", "0.0.0.0", "0", "").Once().Return(nil)
+	mr.On("MakeSlaveOfWithPort", "2.2.2.2", "0", "0.0.0.0", "0", "").Once().Return(nil)
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
@@ -313,7 +503,7 @@ func TestSetMasterOnAll(t *testing.T) {
 	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Return(nil)
 	mr := &mRedisService.Client{}
 	mr.On("IsMaster", "0.0.0.0", "0", "").Return(true, nil)
-	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0.0.0.0", "0", "").Once().Return(nil)
+	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(nil)
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
@@ -376,7 +566,7 @@ func TestSetMasterOnAllSlaveAlreadyLabeled(t *testing.T) {
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
 	mr := &mRedisService.Client{}
 	mr.On("IsMaster", "0.0.0.0", "0", "").Return(true, nil)
-	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0.0.0.0", "0", "").Once().Return(nil)
+	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(nil)
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
@@ -435,12 +625,12 @@ func TestSetExternalMasterOnAll(t *testing.T) {
 
 			mr := &mRedisService.Client{}
 			if !expectError {
-				mr.On("MakeSlaveOfWithPort", "0.0.0.0", "5.5.5.5", "6379", "").Once().Return(nil)
+				mr.On("MakeSlaveOfWithPort", "0.0.0.0", "0", "5.5.5.5", "6379", "").Once().Return(nil)
 				if test.errorOnMakeSlaveOf {
 					expectError = true
-					mr.On("MakeSlaveOfWithPort", "1.1.1.1", "5.5.5.5", "6379", "").Once().Return(errors.New(""))
+					mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "5.5.5.5", "6379", "").Once().Return(errors.New(""))
 				} else {
-					mr.On("MakeSlaveOfWithPort", "1.1.1.1", "5.5.5.5", "6379", "").Once().Return(nil)
+					mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "5.5.5.5", "6379", "").Once().Return(nil)
 				}
 			}
 
@@ -491,7 +681,7 @@ func TestPromoteBestReplicaSuccess(t *testing.T) {
 
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", newMasterIP, "0", "").Once().Return(nil)
-	mr.On("MakeSlaveOfWithPort", replicaIP, newMasterIP, "0", "").Once().Return(nil)
+	mr.On("MakeSlaveOfWithPort", replicaIP, "0", newMasterIP, "0", "").Once().Return(nil)
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
@@ -533,7 +723,7 @@ func TestPromoteBestReplicaReplicaRepointerFails(t *testing.T) {
 
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", newMasterIP, "0", "").Once().Return(nil)
-	mr.On("MakeSlaveOfWithPort", replicaIP, newMasterIP, "0", "").Once().Return(errors.New("replica repoint failed"))
+	mr.On("MakeSlaveOfWithPort", replicaIP, "0", newMasterIP, "0", "").Once().Return(errors.New("replica repoint failed"))
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
@@ -577,7 +767,7 @@ func TestPromoteBestReplicaLabelUpdateFails(t *testing.T) {
 
 	mr := &mRedisService.Client{}
 	mr.On("MakeMaster", newMasterIP, "0", "").Once().Return(nil)
-	mr.On("MakeSlaveOfWithPort", replicaIP, newMasterIP, "0", "").Once().Return(nil)
+	mr.On("MakeSlaveOfWithPort", replicaIP, "0", newMasterIP, "0", "").Once().Return(nil)
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
