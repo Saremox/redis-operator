@@ -143,30 +143,34 @@ func (s *StatefulSetService) updateStatefulSetPVCs(namespace string, storedState
 	if err != nil {
 		return err
 	}
-	for _, pvc := range pvcs.Items {
-		changed := false
-		if pvc.Spec.Resources.Requests.Storage().Cmp(*desiredStorage) < 0 {
-			pvc.Spec.Resources.Requests = template.Spec.Resources.Requests
-			changed = true
-		}
+	for i := range pvcs.Items {
+		pvc := &pvcs.Items[i]
+		// The owner change is its own update and its error stops the
+		// reconcile: a rejected resize must not keep an owner reference that
+		// lets the garbage collector delete the PVC.
 		ownerReferences := []metav1.OwnerReference{}
 		for _, owner := range pvc.OwnerReferences {
-			if removedOwners[owner.UID] {
-				changed = true
+			if !removedOwners[owner.UID] {
+				ownerReferences = append(ownerReferences, owner)
+			}
+		}
+		if len(ownerReferences) != len(pvc.OwnerReferences) {
+			pvc.OwnerReferences = ownerReferences
+			pvc, err = s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Update(context.TODO(), pvc, metav1.UpdateOptions{})
+			if err != nil {
+				return err
+			}
+		}
+		// A storage class can refuse the expansion, so a failed resize is
+		// only logged and does not block the reconcile.
+		if pvc.Spec.Resources.Requests.Storage().Cmp(*desiredStorage) < 0 {
+			pvc.Spec.Resources.Requests = template.Spec.Resources.Requests
+			if _, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Update(context.TODO(), pvc, metav1.UpdateOptions{}); err != nil {
+				s.logger.WithField("namespace", namespace).WithField("pvc", pvc.Name).Warningf("resize pvc failed: %s", err.Error())
 				continue
 			}
-			ownerReferences = append(ownerReferences, owner)
+			s.logger.WithField("namespace", namespace).WithField("pvc", pvc.Name).Infof("pvc resized")
 		}
-		if !changed {
-			continue
-		}
-		pvc.OwnerReferences = ownerReferences
-		_, err = s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Update(context.TODO(), &pvc, metav1.UpdateOptions{})
-		if err != nil {
-			s.logger.WithField("namespace", namespace).WithField("pvc", pvc.Name).Warningf("update pvc failed: %s", err.Error())
-			continue
-		}
-		s.logger.WithField("namespace", namespace).WithField("pvc", pvc.Name).Infof("pvc updated")
 	}
 	return nil
 }

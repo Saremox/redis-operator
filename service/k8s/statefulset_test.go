@@ -406,6 +406,7 @@ func TestStatefulSetServiceCreateOrUpdatePVCs(t *testing.T) {
 		pvcs              []*v1.PersistentVolumeClaim
 		errorOnList       error
 		errorOnUpdate     error
+		rejectResize      bool
 		expErr            bool
 		expStorage        map[string]string
 		expOwners         map[string][]metav1.OwnerReference
@@ -476,6 +477,29 @@ func TestStatefulSetServiceCreateOrUpdatePVCs(t *testing.T) {
 			expStorage:    map[string]string{"data-rfr-test-0": "1Gi"},
 		},
 		{
+			name:           "A rejected resize does not keep the owner reference that keepAfterDeletion removes.",
+			storedStorage:  "1Gi",
+			desiredStorage: "2Gi",
+			desiredOwners:  nil,
+			pvcs: []*v1.PersistentVolumeClaim{
+				statefulSetPVC("data-rfr-test-0", "1Gi", rfOwnerReference),
+			},
+			rejectResize: true,
+			expStorage:   map[string]string{"data-rfr-test-0": "1Gi"},
+			expOwners:    map[string][]metav1.OwnerReference{"data-rfr-test-0": nil},
+		},
+		{
+			name:           "A failed owner reference removal returns an error.",
+			storedStorage:  "1Gi",
+			desiredStorage: "1Gi",
+			desiredOwners:  nil,
+			pvcs: []*v1.PersistentVolumeClaim{
+				statefulSetPVC("data-rfr-test-0", "1Gi", rfOwnerReference),
+			},
+			errorOnUpdate: errors.New("wanted error"),
+			expErr:        true,
+		},
+		{
 			name:           "A failed PVC list returns an error.",
 			storedStorage:  "1Gi",
 			desiredStorage: "2Gi",
@@ -504,6 +528,16 @@ func TestStatefulSetServiceCreateOrUpdatePVCs(t *testing.T) {
 			if test.errorOnUpdate != nil {
 				mcli.PrependReactor("update", "persistentvolumeclaims", func(action kubetesting.Action) (bool, runtime.Object, error) {
 					return true, nil, test.errorOnUpdate
+				})
+			}
+
+			if test.rejectResize {
+				mcli.PrependReactor("update", "persistentvolumeclaims", func(action kubetesting.Action) (bool, runtime.Object, error) {
+					pvc := action.(kubetesting.UpdateAction).GetObject().(*v1.PersistentVolumeClaim)
+					if pvc.Spec.Resources.Requests.Storage().String() != "1Gi" {
+						return true, nil, errors.New("the storage class does not allow expansion")
+					}
+					return false, nil, nil
 				})
 			}
 
