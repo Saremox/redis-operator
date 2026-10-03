@@ -1,9 +1,6 @@
 operator:
   namespace: redis-operator
   deployment: redis-operator
-observer:
-  interval: 5s
-  convergenceTimeout: 10m
 # Without kinds, the chaos lane is off. Its rights are equal to
 # cluster-admin, so they are in the opt-in component chaos/. Add that
 # component to the kustomization before you enable a kind.
@@ -62,8 +59,7 @@ edges:
   - {from: redis-8, to: valkey-9, expect: unknown}
 instances:
   - name: op-basic
-    namespace: op-basic
-    mode: operator
+    template: instances.yaml
     data:
       fill: {sizeMi: 32}
       ledger: {}
@@ -83,7 +79,7 @@ instances:
           memory: {min: 192, max: 512}
       forceDeleteProbability: 0.5
   - name: sent-basic
-    namespace: sent-basic
+    template: instances.yaml
     mode: sentinel
     data:
       fill: {sizeMi: 32}
@@ -100,8 +96,7 @@ instances:
       sentinelReplicas: {min: 3, max: 5}
       forceDeleteProbability: 0.5
   - name: op-maxmem
-    namespace: op-maxmem
-    mode: operator
+    template: instances.yaml
     maxMemoryPolicy: allkeys-lru
     data:
       fill: {percent: 90}
@@ -116,8 +111,7 @@ instances:
       maxMemoryPercent: {min: 10, max: 95}
       forceDeleteProbability: 0.5
   - name: op-noevict
-    namespace: op-noevict
-    mode: operator
+    template: instances.yaml
     maxMemoryPolicy: noeviction
     data:
       fill: {percent: 70, ttl: 24h}
@@ -134,8 +128,7 @@ instances:
   # PVCs and auth (secret op-full-auth). The mutator rotates, removes and
   # adds the password, and changes it while the operator is stopped.
   - name: op-full
-    namespace: op-full
-    mode: operator
+    template: instances.yaml
     data:
       fill: {sizeMi: 16}
       ledger: {}
@@ -151,7 +144,7 @@ instances:
       redisReplicas: {min: 1, max: 3}
   # Sentinel, auth, port 6380, exporters and customConfig.
   - name: sent-full
-    namespace: sent-full
+    template: instances.yaml
     mode: sentinel
     port: 6380
     data:
@@ -167,8 +160,7 @@ instances:
       forceDeleteProbability: 0.5
   # Starts without Sentinel. sentinel_toggle switches Sentinel on and off.
   - name: toggle
-    namespace: toggle
-    mode: operator
+    template: instances.yaml
     data:
       fill: {sizeMi: 16}
       ledger: {}
@@ -176,10 +168,9 @@ instances:
       kinds:
         sentinel_toggle: 2
         kill_master: 1
-  # spec.bootstrapNode.host is the ClusterIP of rfrm-op-basic.
+  # Read-only: it replicates from the master of op-basic.
   - name: bootstrap
-    namespace: bootstrap
-    mode: operator
+    template: instances.yaml
     bootstrap: {source: op-basic}
     mutations:
       kinds:
@@ -189,9 +180,7 @@ instances:
       forceDeleteProbability: 0.5
   # Redis 7.2 -> 7.4 -> 8, then reset; with replica and resource changes.
   - name: redis-chain
-    namespace: redis-chain
-    mode: operator
-    template: rf-redis-chain.yaml
+    template: instances.yaml
     chain: {start: [redis-7.2], versions: [redis-7.2, redis-7.4, redis-8]}
     data:
       fill: {sizeMi: 16}
@@ -207,9 +196,8 @@ instances:
           cpu: {min: 25, max: 100}
   # The same chain with Sentinels that follow the data image.
   - name: redis-chain-sent
-    namespace: redis-chain-sent
+    template: instances.yaml
     mode: sentinel
-    template: rf-redis-chain-sent.yaml
     chain: {start: [redis-7.2], versions: [redis-7.2, redis-7.4, redis-8], sentinel: follow}
     data:
       fill: {sizeMi: 16}
@@ -219,9 +207,7 @@ instances:
         image_upgrade: 1
   # Redis 7.2 -> Valkey 7.2 -> 8 -> 9, then reset.
   - name: migrate
-    namespace: migrate
-    mode: operator
-    template: rf-migrate.yaml
+    template: instances.yaml
     chain: {start: [redis-7.2], versions: [redis-7.2, valkey-7.2, valkey-8, valkey-9]}
     data:
       fill: {sizeMi: 16}
@@ -232,9 +218,8 @@ instances:
   # The same migration with Sentinels: the data image first, then the
   # Sentinel image.
   - name: migrate-sent
-    namespace: migrate-sent
+    template: instances.yaml
     mode: sentinel
-    template: rf-migrate-sent.yaml
     chain: {start: [redis-7.2], versions: [redis-7.2, valkey-7.2, valkey-8, valkey-9], sentinel: separate}
     data:
       fill: {sizeMi: 16}
@@ -246,9 +231,7 @@ instances:
   # Starts on Redis 7.4 or 8, in turn for each reset, and takes only the
   # unknown edges into Valkey.
   - name: edge
-    namespace: edge
-    mode: operator
-    template: rf-edge.yaml
+    template: instances.yaml
     chain:
       start: [redis-7.4, redis-8]
       versions: [redis-7.4, redis-8, valkey-7.2, valkey-8, valkey-9]
@@ -262,9 +245,7 @@ instances:
   # Valkey 9 with maxMemory allkeys-lfu. Filler only, because allkeys-*
   # can evict ledger keys.
   - name: valkey-op
-    namespace: valkey-op
-    mode: operator
-    template: rf-valkey-op.yaml
+    template: instances.yaml
     version: valkey-9
     maxMemoryPolicy: allkeys-lfu
     data:
@@ -285,9 +266,8 @@ instances:
       forceDeleteProbability: 0.5
   # Valkey 8 data and Sentinels.
   - name: valkey-sent
-    namespace: valkey-sent
+    template: instances.yaml
     mode: sentinel
-    template: rf-valkey-sent.yaml
     version: valkey-8
     sentinelVersion: valkey-8
     data:
@@ -303,9 +283,8 @@ instances:
       forceDeleteProbability: 0.5
   # Redis 7.2 data with Valkey 9 Sentinels.
   - name: mixed-sent
-    namespace: mixed-sent
+    template: instances.yaml
     mode: sentinel
-    template: rf-mixed-sent.yaml
     version: redis-7.2
     sentinelVersion: valkey-9
     data:

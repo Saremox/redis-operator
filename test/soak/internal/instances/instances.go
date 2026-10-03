@@ -3,16 +3,20 @@
 package instances
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	crand "crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/yaml"
 
@@ -23,21 +27,40 @@ import (
 	"github.com/saremox/redis-operator/test/soak/internal/poll"
 )
 
-// LoadTemplate reads a RedisFailover manifest. Its name and namespace are
-// the instance's, whatever the file says.
-func LoadTemplate(path string) (*redisfailoverv1.RedisFailover, error) {
+// LoadTemplate reads the RedisFailover of that name from a file of
+// manifests, or the only one of the file. The instance sets its name and
+// namespace.
+func LoadTemplate(path, name string) (*redisfailoverv1.RedisFailover, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var rf redisfailoverv1.RedisFailover
-	if err := yaml.UnmarshalStrict(b, &rf); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+	r := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(b)))
+	var rfs []*redisfailoverv1.RedisFailover
+	for {
+		doc, err := r.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		var rf redisfailoverv1.RedisFailover
+		if err == nil {
+			err = yaml.UnmarshalStrict(doc, &rf)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		if rf.Kind != "RedisFailover" {
+			return nil, fmt.Errorf("%s: kind %q, want RedisFailover", path, rf.Kind)
+		}
+		if rf.Name == name {
+			return &rf, nil
+		}
+		rfs = append(rfs, &rf)
 	}
-	if rf.Kind != "RedisFailover" {
-		return nil, fmt.Errorf("%s: kind %q, want RedisFailover", path, rf.Kind)
+	if len(rfs) != 1 {
+		return nil, fmt.Errorf("%s: no RedisFailover %s", path, name)
 	}
-	return &rf, nil
+	return rfs[0], nil
 }
 
 // Instance makes an instance's RedisFailover from its template.
@@ -52,7 +75,7 @@ type Instance struct {
 }
 
 func New(in config.Instance, kube kubernetes.Interface, rfs versioned.Interface, log *slog.Logger) (*Instance, error) {
-	t, err := LoadTemplate(in.Template)
+	t, err := LoadTemplate(in.Template, in.Name)
 	if err != nil {
 		return nil, err
 	}

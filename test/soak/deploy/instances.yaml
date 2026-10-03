@@ -1,0 +1,300 @@
+# The RedisFailover templates of the instances in config.yaml, by name. The
+# tester creates each instance in its namespace, sets its images by version,
+# and creates its auth Secret with a random password.
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: op-basic
+spec:
+  sentinel:
+    enabled: false
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 256Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: sent-basic
+spec:
+  sentinel:
+    enabled: true
+    replicas: 3
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 256Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: op-maxmem
+spec:
+  sentinel:
+    enabled: false
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 256Mi}
+    maxMemory: {percent: 75, policy: allkeys-lru}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: op-noevict
+spec:
+  sentinel:
+    enabled: false
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 96Mi}
+      limits: {memory: 192Mi}
+    maxMemory: {percent: 75, policy: noeviction}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: op-full
+spec:
+  sentinel:
+    enabled: false
+  auth:
+    secretPath: op-full-auth
+  redis:
+    replicas: 3
+    preventMasterEviction: true
+    exporter:
+      enabled: true
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}
+    storage:
+      persistentVolumeClaim:
+        metadata:
+          name: redis-data
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests: {storage: 256Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: sent-full
+spec:
+  auth:
+    secretPath: sent-full-auth
+  sentinel:
+    enabled: true
+    replicas: 3
+    exporter:
+      enabled: true
+    customConfig:
+      - down-after-milliseconds 4000
+      - failover-timeout 9000
+      - parallel-syncs 1
+  redis:
+    port: 6380
+    replicas: 3
+    exporter:
+      enabled: true
+    customConfig:
+      - hz 20
+      - slowlog-log-slower-than 20000
+      - maxmemory-samples 7
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: toggle
+spec:
+  auth:
+    secretPath: toggle-auth
+  sentinel:
+    enabled: false
+    replicas: 3
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}
+---
+# The pods replicate from the master of op-basic through its Service, by
+# the short name that resolves in their namespace.
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: bootstrap
+spec:
+  bootstrapNode:
+    host: rfrm-op-basic
+  sentinel:
+    enabled: false
+  redis:
+    replicas: 2
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: redis-chain
+spec:
+  sentinel:
+    enabled: false
+  auth:
+    secretPath: redis-chain-auth
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}
+    storage:
+      persistentVolumeClaim:
+        metadata:
+          name: redis-data
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests: {storage: 128Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: redis-chain-sent
+spec:
+  sentinel:
+    enabled: true
+    replicas: 3
+  auth:
+    secretPath: redis-chain-sent-auth
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: migrate
+spec:
+  sentinel:
+    enabled: false
+  auth:
+    secretPath: migrate-auth
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}
+    storage:
+      persistentVolumeClaim:
+        metadata:
+          name: redis-data
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests: {storage: 128Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: migrate-sent
+spec:
+  sentinel:
+    enabled: true
+    replicas: 3
+  auth:
+    secretPath: migrate-sent-auth
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}
+    storage:
+      persistentVolumeClaim:
+        metadata:
+          name: redis-data
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests: {storage: 128Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: edge
+spec:
+  sentinel:
+    enabled: false
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: valkey-op
+spec:
+  sentinel:
+    enabled: false
+  auth:
+    secretPath: valkey-op-auth
+  redis:
+    replicas: 3
+    exporter:
+      enabled: true
+    maxMemory: {policy: allkeys-lfu}
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 256Mi}
+    storage:
+      persistentVolumeClaim:
+        metadata:
+          name: redis-data
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests: {storage: 256Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: valkey-sent
+spec:
+  sentinel:
+    enabled: true
+    replicas: 3
+  auth:
+    secretPath: valkey-sent-auth
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: mixed-sent
+spec:
+  sentinel:
+    enabled: true
+    replicas: 3
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}

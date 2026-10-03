@@ -31,7 +31,8 @@ subjects:
     namespace: redis-soak
 ---
 # The observer reads the RedisFailover, the pods and the rfrm
-# EndpointSlices of each instance, in the namespace of the instance.
+# EndpointSlices of each instance. Scenario C and the chaos lane read the
+# operator pods.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -60,16 +61,15 @@ subjects:
     name: soak
     namespace: redis-soak
 ---
-# The rules of the mutator, and the auth Secrets that give each client its
-# password. The RoleBindings in rbac-instances.yaml grant them only in the
-# instance namespaces. A ClusterRole keeps one copy of the rules for all
-# namespaces.
+# The mutator, and the auth Secrets that give each client its password, in
+# the namespace of the instances.
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: redis-soak-mutator
+  namespace: redis-soak-instances
 rules:
-  # The tester creates and resets the instances that have a template.
+  # The tester creates and resets the instances from their templates.
   - apiGroups: ["databases.spotahome.com"]
     resources: ["redisfailovers"]
     verbs: ["patch", "create", "delete"]
@@ -90,8 +90,22 @@ rules:
   - apiGroups: [""]
     resources: ["services", "configmaps"]
     verbs: ["get"]
-  # auth_add creates the Secret that it names. A reset deletes and
-  # recreates the Secret that its template names.
+  # The tester and auth_add create the auth Secrets. A reset deletes and
+  # creates them again.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: redis-soak-instances
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak

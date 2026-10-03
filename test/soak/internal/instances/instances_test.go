@@ -23,49 +23,43 @@ import (
 )
 
 func TestLoadTemplate(t *testing.T) {
-	rf, err := LoadTemplate("testdata/chain.yaml")
+	rf, err := LoadTemplate("testdata/chain.yaml", "chain")
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if rf.Spec.Redis.Replicas != 2 || rf.Spec.Auth.SecretPath != "chain-auth" || rf.Spec.Redis.Storage.PersistentVolumeClaim == nil {
 		t.Errorf("template spec: %+v", rf.Spec)
 	}
 
 	dir := t.TempDir()
 	for name, body := range map[string]string{
-		"unknown field": "apiVersion: databases.spotahome.com/v1\nkind: RedisFailover\nspec: {redis: {replica: 3}}\n",
-		"other kind":    "apiVersion: v1\nkind: Secret\n",
-		"not yaml":      "{",
+		"unknown field": "apiVersion: databases.spotahome.com/v1\nkind: RedisFailover\nmetadata: {name: chain}\nspec: {redis: {replica: 3}}\n",
+		"other kind":    "apiVersion: v1\nkind: Secret\nmetadata: {name: chain}\n",
+		"other names": "apiVersion: databases.spotahome.com/v1\nkind: RedisFailover\nmetadata: {name: x}\n---\n" +
+			"apiVersion: databases.spotahome.com/v1\nkind: RedisFailover\nmetadata: {name: y}\n",
+		"not yaml": "{",
 	} {
 		path := filepath.Join(dir, "t.yaml")
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := LoadTemplate(path); err == nil {
+		if _, err := LoadTemplate(path, "chain"); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
 	}
 }
 
-// Every template the shipped configs name loads.
+// The tester creates every instance of the shipped config from its
+// template.
 func TestShippedTemplates(t *testing.T) {
-	for _, path := range []string{"../../deploy/config.yaml", "../../e2e/config-versions.yaml"} {
-		cfg, err := config.Load(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		n := 0
-		for _, in := range cfg.Instances {
-			if in.Template == "" {
-				continue
-			}
-			n++
-			if _, err := LoadTemplate(in.Template); err != nil {
-				t.Error(err)
-			}
-		}
-		if n == 0 {
-			t.Errorf("%s: no templates", path)
+	cfg, err := config.Load("../../deploy/config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range cfg.Instances {
+		if rf, err := LoadTemplate(in.Template, in.Name); err != nil || rf.Name != in.Name {
+			t.Errorf("%s: %v", in.Name, err)
 		}
 	}
 }

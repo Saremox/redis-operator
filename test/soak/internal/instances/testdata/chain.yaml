@@ -1,7 +1,7 @@
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover
 metadata:
-  name: ignored
+  name: chain
   labels:
     soak: "true"
 spec:
