@@ -12,12 +12,12 @@ import (
 // ApplyPassword brings every Redis onto password. Redis reads requirepass only
 // at startup, and restarting the pods one at a time can't apply a new one: a
 // restarted replica can't authenticate to a master still on the old password.
-// So a Redis still on previous is changed in place, and the rolling update then
-// restarts the pods onto the secret.
+// So a Redis still on one of the previous passwords is changed in place, and the
+// rolling update then restarts the pods onto the secret.
 //
 // It returns an error if a running Redis refuses password and can't be
 // changed, and true once every Redis pod runs and accepts it.
-func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, password, previous string) (bool, error) {
+func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, password string, previous []string) (bool, error) {
 	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
 		return false, err
@@ -43,15 +43,26 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 			complete = false
 			continue
 		}
-		current := previous
+		candidates := previous
 		if redis.IsNoPasswordError(err) {
-			current = ""
+			candidates = []string{""}
 		}
-		if current == password {
+		tried := false
+		for _, current := range candidates {
+			if current == password {
+				continue
+			}
+			tried = true
+			// A Redis refuses each password except the one it runs with.
+			if err = r.redisClient.SetPassword(rp.Status.PodIP, port, current, password); !redis.IsAuthError(err) {
+				break
+			}
+		}
+		if !tried {
 			errs = append(errs, fmt.Errorf("redis pod %s refuses the configured password and the operator doesn't know the one it runs with; put the previous password back in the secret until the RedisFailover is healthy, then change it again", rp.Name))
 			continue
 		}
-		if err := r.redisClient.SetPassword(rp.Status.PodIP, port, current, password); err != nil {
+		if err != nil {
 			errs = append(errs, fmt.Errorf("changing the password of redis pod %s: %w", rp.Name, err))
 			continue
 		}

@@ -33,7 +33,10 @@ type RedisFailoverSpec struct {
 	BootstrapNode  *BootstrapSettings `json:"bootstrapNode,omitempty"`
 }
 
-// RedisCommandRename defines the specification of a "rename-command" configuration option
+// RedisCommandRename defines the specification of a "rename-command" configuration option.
+// It must not rename a command that the operator, the pod scripts or the replicas send:
+// AUTH, CLIENT, CONFIG, INFO, PING, PSYNC, REPLCONF, REPLICAOF or SLAVEOF. With Sentinels,
+// it must not rename EXEC, MULTI, PUBLISH or SUBSCRIBE. With an aclfile, it must not rename ACL.
 type RedisCommandRename struct {
 	From string `json:"from,omitempty"`
 	To   string `json:"to,omitempty"`

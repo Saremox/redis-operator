@@ -1,6 +1,7 @@
 package service
 
 import (
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -90,6 +91,8 @@ func (r *RedisFailoverKubeClient) EnsureSentinelDeployment(rf *redisfailoverv1.R
 		if err := r.ensurePodDisruptionBudget(rf, sentinelName, sentinelRoleName, rf.Spec.Sentinel.PodDisruptionBudgetMinAvailable, labels, ownerRefs, rf.Spec.Sentinel.Replicas); err != nil {
 			return err
 		}
+	} else if err := r.deletePodDisruptionBudget(rf, sentinelName); err != nil {
+		return err
 	}
 
 	// Only auto-provision a ServiceAccount when the user hasn't set one themselves:
@@ -105,7 +108,34 @@ func (r *RedisFailoverKubeClient) EnsureSentinelDeployment(rf *redisfailoverv1.R
 	err := r.K8SService.CreateOrUpdateDeployment(rf.Namespace, d)
 
 	r.setEnsureOperationMetrics(d.Namespace, d.Name, "Deployment", rf.Name, err)
-	return err
+	if err != nil {
+		return err
+	}
+	return r.deleteUnusedSentinelServiceAccount(rf)
+}
+
+// deleteUnusedSentinelServiceAccount removes the ServiceAccount that the operator
+// created before the user set sentinel.serviceAccountName. It waits until no
+// Sentinel pod uses it, because the old ReplicaSet cannot recreate a pod without it.
+func (r *RedisFailoverKubeClient) deleteUnusedSentinelServiceAccount(rf *redisfailoverv1.RedisFailover) error {
+	name := GetSentinelServiceAccountName(rf)
+	if rf.Spec.Sentinel.ServiceAccountName == "" || rf.Spec.Sentinel.ServiceAccountName == name {
+		return nil
+	}
+	sa, err := r.K8SService.GetServiceAccount(rf.Namespace, name)
+	if err != nil || !metav1.IsControlledBy(sa, rf) {
+		return r.cleanupError(rf, "ServiceAccount", name, err)
+	}
+	pods, err := r.K8SService.GetDeploymentPods(rf.Namespace, GetSentinelName(rf))
+	if err != nil {
+		return r.cleanupError(rf, "ServiceAccount", name, err)
+	}
+	for _, pod := range pods.Items {
+		if pod.Spec.ServiceAccountName == name {
+			return nil
+		}
+	}
+	return r.cleanupError(rf, "ServiceAccount", name, r.K8SService.DeleteServiceAccount(rf.Namespace, name))
 }
 
 // ensureSentinelServiceAccount makes sure the auto-provisioned Sentinel ServiceAccount exists.
@@ -122,6 +152,8 @@ func (r *RedisFailoverKubeClient) EnsureRedisStatefulset(rf *redisfailoverv1.Red
 		if err := r.ensurePodDisruptionBudget(rf, redisName, redisRoleName, rf.Spec.Redis.PodDisruptionBudgetMinAvailable, labels, ownerRefs, rf.Spec.Redis.Replicas); err != nil {
 			return err
 		}
+	} else if err := r.deletePodDisruptionBudget(rf, redisName); err != nil {
+		return err
 	}
 
 	password, err := k8s.GetRedisPassword(r.K8SService, rf)
@@ -283,6 +315,31 @@ func (r *RedisFailoverKubeClient) ensurePodDisruptionBudget(rf *redisfailoverv1.
 	pdb := generatePodDisruptionBudget(name, namespace, metaLabels, ownerRefs, minAvailable, selectorLabels)
 	err := r.K8SService.CreateOrUpdatePodDisruptionBudget(namespace, pdb)
 	r.setEnsureOperationMetrics(pdb.Namespace, pdb.Name, "PodDisruptionBudget" /* pdb.TypeMeta.Kind isnt working;  pdb.Kind isnt working either */, rf.Name, err)
+	return err
+}
+
+// deletePodDisruptionBudget removes the PDB of a component whose PDB the user disabled.
+// A PDB that stays blocks the node drains that the user disabled it for.
+func (r *RedisFailoverKubeClient) deletePodDisruptionBudget(rf *redisfailoverv1.RedisFailover, name string) error {
+	pdbName := generateName(name, rf.Name)
+	pdb, err := r.K8SService.GetPodDisruptionBudget(rf.Namespace, pdbName)
+	if err != nil || !metav1.IsControlledBy(pdb, rf) {
+		return r.cleanupError(rf, "PodDisruptionBudget", pdbName, err)
+	}
+	return r.cleanupError(rf, "PodDisruptionBudget", pdbName, r.K8SService.DeletePodDisruptionBudget(rf.Namespace, pdbName))
+}
+
+// cleanupError ignores a missing object, and logs a missing RBAC verb. The
+// RedisFailover works with an unused object, so the cleanup must not stop the reconcile.
+func (r *RedisFailoverKubeClient) cleanupError(rf *redisfailoverv1.RedisFailover, kind, name string, err error) error {
+	if errors.IsForbidden(err) {
+		r.logger.WithField("namespace", rf.Namespace).WithField("redisfailover", rf.Name).
+			Warningf("cannot delete the unused %s %s: %v", kind, name, err)
+		return nil
+	}
+	if errors.IsNotFound(err) {
+		return nil
+	}
 	return err
 }
 

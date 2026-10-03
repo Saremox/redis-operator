@@ -181,14 +181,26 @@ func TestHandleValidateError(t *testing.T) {
 
 	// Finalizer registration runs before Validate(), so it's still expected
 	// even though this RF fails validation.
-	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Once().Return(nil)
+	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Twice().Return(nil)
+	// The status shows the error, because the last status is not correct.
+	var written redisfailoverv1.RedisFailoverStatus
+	mk.On("UpdateRedisFailoverStatus", mock.Anything, rf.Namespace, rf, mock.Anything).Once().Run(func(args mock.Arguments) {
+		written = args.Get(2).(*redisfailoverv1.RedisFailover).Status
+	})
+	rf.Status = redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.HealthyState, LastChanged: "2026-01-01T00:00:00Z"}
 
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 	err := handler.Handle(context.Background(), rf)
 
 	assert.Error(err)
+	assert.Equal(redisfailoverv1.NotHealthyState, written.State)
+	assert.Equal(err.Error(), written.Message)
+	assert.NotEqual("2026-01-01T00:00:00Z", written.LastChanged)
 	mrfs.AssertNotCalled(t, "EnsureNotPresentRedisService", mock.Anything)
 	mrfc.AssertNotCalled(t, "IsRedisRunning", mock.Anything)
+
+	// An unchanged error is not written again.
+	assert.Error(handler.Handle(context.Background(), rf))
 	mk.AssertExpectations(t)
 }
 

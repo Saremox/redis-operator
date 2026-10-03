@@ -179,7 +179,9 @@ Sentinels run when `spec.sentinel.enabled` is `true`. With `bootstrapNode`, they
 Setting `redis.preventMasterEviction: true` makes the operator annotate the current master pod with
 `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` (and mark slaves `"true"`), so the
 cluster-autoscaler will not drain the node running the master and trigger an avoidable failover. The
-annotation follows the master as it moves. Defaults to `false` (no annotation is managed).
+annotation follows the master as it moves. Defaults to `false`. When it is `false`, the operator
+sets the value from `redis.podAnnotations`, or removes the value `"false"`. It keeps a `"true"`,
+because a policy or the user can set it.
 
 ### Sentinel update strategy and PodDisruptionBudget
 
@@ -237,6 +239,14 @@ To have the ability of this configuration to be changed "on the fly," without th
 The operator adds `down-after-milliseconds 5000` and `failover-timeout 10000` to the Sentinel `customConfig`, unless `customConfig` sets that option. Thus all the Sentinels use the same timeouts, also after a restart. The operator applies these values to the running Sentinels at the next reconcile, also after an upgrade, without a restart. To use the Sentinel built-in values, set `down-after-milliseconds 30000` and `failover-timeout 180000`. The [4.2.0 migration guide](docs/migrations/4.2.0.md) tells which RedisFailovers get new values on the upgrade to 4.2.0.
 
 **Important 2**: do **NOT** change the options used for control the redis/sentinel such as `port`, `bind`, `dir`, etc.
+
+Validation rejects a `redis.customCommandRenames` entry for a command that the RedisFailover needs:
+
+- `AUTH`, `CLIENT`, `CONFIG`, `INFO`, `PING`, `PSYNC`, `REPLCONF`, `REPLICAOF` and `SLAVEOF`. The operator, the pod scripts or the replicas send them.
+- `EXEC`, `MULTI`, `PUBLISH` and `SUBSCRIBE` when Sentinels run. Sentinel sends them.
+- `ACL` when `redis.customConfig` sets `aclfile`. The operator sends `ACL LOAD` to apply the file.
+
+The operator does not reconcile a RedisFailover that fails validation. The status shows `NotHealthy` and the error.
 
 ### Managed maxmemory
 

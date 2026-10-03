@@ -501,7 +501,10 @@ func (r *RedisFailoverHandler) waitForFailover(rf *redisfailoverv1.RedisFailover
 // passwordState is the password the Redis pods and the Sentinels were last
 // brought onto.
 type passwordState struct {
-	redis    string
+	redis string
+	// applied is the password that the running Redis pods were last changed to.
+	// It is not redis while a pod yet to start keeps redis in use.
+	applied  string
 	sentinel string
 }
 
@@ -519,19 +522,23 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 	key := passwordKey(rf)
 	v, known := r.passwords.Load(key)
 	state, _ := v.(passwordState)
-	if known && state.redis == password && state.sentinel == password {
+	if known && state.redis == password && state.applied == password && state.sentinel == password {
 		return nil
 	}
 
-	if !known || state.redis != password {
-		previous := password
+	if !known || state.redis != password || state.applied != password {
+		previous := []string{password}
 		if known {
-			previous = state.redis
+			previous = []string{state.redis}
+			if state.applied != state.redis {
+				previous = append(previous, state.applied)
+			}
 		}
 		complete, err := r.rfHealer.ApplyPassword(rf, password, previous)
 		if err != nil {
 			return err
 		}
+		state.applied = password
 		// A pod yet to start keeps the old password in play. With none known,
 		// the one every running pod accepts is the best there is.
 		if complete || !known {

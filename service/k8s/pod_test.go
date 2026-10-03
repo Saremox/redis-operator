@@ -276,3 +276,19 @@ func TestPodServiceUpdatePodAnnotations(t *testing.T) {
 		assert.True(t, kubeerrors.IsNotFound(err))
 	})
 }
+
+func TestPodServiceRemovePodAnnotation(t *testing.T) {
+	testns := "testns"
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "testpod", Namespace: testns, Annotations: map[string]string{"other": "kept", "safe-to-evict": "false"}}}
+	mcli := kubernetes.NewClientset(pod)
+	service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
+
+	assert.NoError(t, service.RemovePodAnnotation(testns, "testpod", "safe-to-evict"))
+
+	got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, map[string]string{"other": "kept"}, got.Annotations)
+
+	err = service.RemovePodAnnotation(testns, "missing", "safe-to-evict")
+	assert.True(t, kubeerrors.IsNotFound(err))
+}
