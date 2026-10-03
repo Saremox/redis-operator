@@ -66,9 +66,9 @@ func (c *ommClients) prepareNS() error {
 	return err
 }
 
-func (c *ommClients) cleanup(stopC chan struct{}) {
+func (c *ommClients) cleanup(cancel context.CancelFunc) {
 	c.k8sClient.CoreV1().Namespaces().Delete(context.Background(), ommNamespace, metav1.DeleteOptions{})
-	close(stopC)
+	cancel()
 }
 
 func (c *ommClients) waitForPodsReady(labelSelector string, expectedCount int, timeout time.Duration) error {
@@ -187,7 +187,6 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 
 	require := require.New(t)
 
-	stopC := make(chan struct{})
 	errC := make(chan error)
 
 	kubeconfig := os.Getenv("KUBECONFIG")
@@ -221,10 +220,12 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{SyncInterval: 600, SupportedNamespacesRegex: "^" + ommNamespace + "$"}, k8sservice, k8sClient, ommNamespace, redisClient, metrics.Dummy, log.Dummy)
 	require.NoError(err)
 
+	// Run stops only when its context is canceled.
+	runCtx, cancelRun := context.WithCancel(context.Background())
 	go func() {
-		errC <- redisfailoverOperator.Run(context.Background())
+		errC <- redisfailoverOperator.Run(runCtx)
 	}()
-	defer c.cleanup(stopC)
+	defer c.cleanup(cancelRun)
 
 	// There's no external readiness signal for "the operator started"; this
 	// just fails fast if it crashed immediately instead of silently waiting
