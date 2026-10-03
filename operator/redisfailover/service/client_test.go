@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/saremox/redis-operator/log"
@@ -78,8 +79,9 @@ func TestEnsureSentinelDeploymentDoesNotTouchExistingServiceAccount(t *testing.T
 	ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 		gotDeployment = args.Get(1).(*appsv1.Deployment)
 	}).Return(nil)
-	// Only the ServiceAccount that the operator created earlier is deleted.
-	ms.On("DeleteServiceAccount", namespace, rfservice.GetSentinelServiceAccountName(rf)).Once().Return(nil)
+	// Only the ServiceAccount that the operator created earlier is looked up for a delete.
+	autoName := rfservice.GetSentinelServiceAccountName(rf)
+	ms.On("GetServiceAccount", namespace, autoName).Once().Return(nil, apierrors.NewNotFound(corev1.Resource("serviceaccounts"), autoName))
 
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
@@ -87,7 +89,7 @@ func TestEnsureSentinelDeploymentDoesNotTouchExistingServiceAccount(t *testing.T
 	assert.NoError(err)
 	ms.AssertExpectations(t)
 	ms.AssertNotCalled(t, "CreateOrUpdateServiceAccount", mock.Anything, mock.Anything)
-	ms.AssertNotCalled(t, "GetServiceAccount", mock.Anything, mock.Anything)
+	ms.AssertNotCalled(t, "GetServiceAccount", namespace, "user-provided-sa")
 
 	if assert.NotNil(gotDeployment) {
 		assert.Equal("user-provided-sa", gotDeployment.Spec.Template.Spec.ServiceAccountName)

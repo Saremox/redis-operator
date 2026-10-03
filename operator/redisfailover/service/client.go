@@ -115,18 +115,27 @@ func (r *RedisFailoverKubeClient) EnsureSentinelDeployment(rf *redisfailoverv1.R
 }
 
 // deleteUnusedSentinelServiceAccount removes the ServiceAccount that the operator
-// created before the user set sentinel.serviceAccountName. It runs after the
-// Deployment update, because a pod from the old template cannot start without it.
+// created before the user set sentinel.serviceAccountName. It waits until no
+// Sentinel pod uses it, because the old ReplicaSet cannot recreate a pod without it.
 func (r *RedisFailoverKubeClient) deleteUnusedSentinelServiceAccount(rf *redisfailoverv1.RedisFailover) error {
 	name := GetSentinelServiceAccountName(rf)
 	if rf.Spec.Sentinel.ServiceAccountName == "" || rf.Spec.Sentinel.ServiceAccountName == name {
 		return nil
 	}
-	err := r.K8SService.DeleteServiceAccount(rf.Namespace, name)
-	if errors.IsNotFound(err) {
-		return nil
+	sa, err := r.K8SService.GetServiceAccount(rf.Namespace, name)
+	if err != nil || !metav1.IsControlledBy(sa, rf) {
+		return r.cleanupError(rf, "ServiceAccount", name, err)
 	}
-	return err
+	pods, err := r.K8SService.GetDeploymentPods(rf.Namespace, GetSentinelName(rf))
+	if err != nil {
+		return r.cleanupError(rf, "ServiceAccount", name, err)
+	}
+	for _, pod := range pods.Items {
+		if pod.Spec.ServiceAccountName == name {
+			return nil
+		}
+	}
+	return r.cleanupError(rf, "ServiceAccount", name, r.K8SService.DeleteServiceAccount(rf.Namespace, name))
 }
 
 // ensureSentinelServiceAccount makes sure the auto-provisioned Sentinel ServiceAccount exists.
@@ -312,7 +321,22 @@ func (r *RedisFailoverKubeClient) ensurePodDisruptionBudget(rf *redisfailoverv1.
 // deletePodDisruptionBudget removes the PDB of a component whose PDB the user disabled.
 // A PDB that stays blocks the node drains that the user disabled it for.
 func (r *RedisFailoverKubeClient) deletePodDisruptionBudget(rf *redisfailoverv1.RedisFailover, name string) error {
-	err := r.K8SService.DeletePodDisruptionBudget(rf.Namespace, generateName(name, rf.Name))
+	pdbName := generateName(name, rf.Name)
+	pdb, err := r.K8SService.GetPodDisruptionBudget(rf.Namespace, pdbName)
+	if err != nil || !metav1.IsControlledBy(pdb, rf) {
+		return r.cleanupError(rf, "PodDisruptionBudget", pdbName, err)
+	}
+	return r.cleanupError(rf, "PodDisruptionBudget", pdbName, r.K8SService.DeletePodDisruptionBudget(rf.Namespace, pdbName))
+}
+
+// cleanupError ignores a missing object, and logs a missing RBAC verb. The
+// RedisFailover works with an unused object, so the cleanup must not stop the reconcile.
+func (r *RedisFailoverKubeClient) cleanupError(rf *redisfailoverv1.RedisFailover, kind, name string, err error) error {
+	if errors.IsForbidden(err) {
+		r.logger.WithField("namespace", rf.Namespace).WithField("redisfailover", rf.Name).
+			Warningf("cannot delete the unused %s %s: %v", kind, name, err)
+		return nil
+	}
 	if errors.IsNotFound(err) {
 		return nil
 	}
