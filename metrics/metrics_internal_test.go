@@ -137,3 +137,36 @@ func TestRemoveStaleMetricsDeletesBothStatusesOfAnInstance(t *testing.T) {
 		return testutil.CollectAndCount(rec.redisCheck) == 0 && testutil.CollectAndCount(rec.sentinelCheck) == 0
 	}, 3*time.Second, 50*time.Millisecond, "expected removeStaleMetrics to delete the HEALTHY and the UNHEALTHY series")
 }
+
+// The GC uses the labels of a stale RedisFailover for each recorder, so the
+// first recorder must not change them for the next one.
+func TestRemoveStaleMetricsDeletesStaleResourceInEachRecorder(t *testing.T) {
+	const (
+		namespace = "ns6"
+		resource  = "rf6"
+	)
+	recs := []recorder{
+		NewRecorder("stale_resource_test_a", prometheus.NewRegistry()).(recorder),
+		NewRecorder("stale_resource_test_b", prometheus.NewRegistry()).(recorder),
+	}
+	for _, rec := range recs {
+		rec.RecordRedisCheck(namespace, resource, REDIS_REPLICA_MISMATCH, "10.0.0.50", STATUS_UNHEALTHY)
+		rec.RecordSentinelCheck(namespace, resource, SENTINEL_NOT_READY, "10.0.0.51", STATUS_UNHEALTHY)
+		rec.SetClusterError(namespace, resource)
+	}
+
+	mutex.Lock()
+	resourceMetricLastUpdated[namespace+"/redisfailover/"+resource] = time.Now().Add(-2 * metricsGCIntervalMinutes * time.Minute)
+	mutex.Unlock()
+
+	go removeStaleMetrics()
+
+	assert.Eventually(t, func() bool {
+		for _, rec := range recs {
+			if testutil.CollectAndCount(rec.redisCheck)+testutil.CollectAndCount(rec.sentinelCheck)+testutil.CollectAndCount(rec.clusterOK) != 0 {
+				return false
+			}
+		}
+		return true
+	}, 3*time.Second, 50*time.Millisecond, "expected removeStaleMetrics to delete the series of the stale RedisFailover in each recorder")
+}

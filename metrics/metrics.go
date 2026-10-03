@@ -289,10 +289,9 @@ func removeStaleMetrics() {
 			for _, label := range customResourceBasedLabels {
 				metricsDeletedCount += recorder.redisCheck.DeletePartialMatch(label)
 				metricsDeletedCount += recorder.sentinelCheck.DeletePartialMatch(label)
-				labelWithName := label
-				labelWithName["name"] = labelWithName["resource"]
-				delete(labelWithName, "resource")
-				metricsDeletedCount += recorder.clusterOK.DeletePartialMatch(label)
+				// A new map, because label is used again for the next recorder.
+				labelWithName := prometheus.Labels{"namespace": label["namespace"], "name": label["resource"]}
+				metricsDeletedCount += recorder.clusterOK.DeletePartialMatch(labelWithName)
 			}
 			for _, label := range ipBasedLabels {
 				metricsDeletedCount += recorder.redisOperations.DeletePartialMatch(label)
