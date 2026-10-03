@@ -2935,6 +2935,7 @@ func TestOperatorManagedModeDemotesTheMastersThatAreNotLabelledMaster(t *testing
 		wantDemote  string
 		wantErr     error
 		wantMessage string
+		wantStatus  string
 	}{
 		{
 			name: "one pod is labelled master",
@@ -2944,6 +2945,7 @@ func TestOperatorManagedModeDemotesTheMastersThatAreNotLabelledMaster(t *testing
 				pod("rfr-2", "10.0.0.3", false, corev1.PodRunning, false),
 			},
 			wantDemote: "10.0.0.2",
+			wantStatus: "multiple masters detected, made the other masters replicas of rfr-1",
 		},
 		{
 			name: "a labelled master pod that does not run or is in deletion does not count",
@@ -2953,6 +2955,7 @@ func TestOperatorManagedModeDemotesTheMastersThatAreNotLabelledMaster(t *testing
 				pod("rfr-2", "10.0.0.3", true, corev1.PodRunning, true),
 			},
 			wantDemote: "10.0.0.2",
+			wantStatus: "multiple masters detected, made the other masters replicas of rfr-1",
 		},
 		{
 			name: "the demotion fails",
@@ -3016,12 +3019,12 @@ func TestOperatorManagedModeDemotesTheMastersThatAreNotLabelledMaster(t *testing
 			default:
 				assert.NoError(t, err)
 			}
-			if test.wantMessage != "" {
-				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
-				assert.Equal(t, test.wantMessage, rf.Status.Message)
-			} else {
-				assert.Equal(t, v1.HealthyState, rf.Status.State)
+			wantStatus := test.wantStatus
+			if wantStatus == "" {
+				wantStatus = test.wantMessage
 			}
+			assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+			assert.Equal(t, wantStatus, rf.Status.Message)
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
 			mk.AssertExpectations(t)
