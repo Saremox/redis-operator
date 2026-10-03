@@ -67,11 +67,10 @@ func TestApplyPasswordRemembersAcceptedPassword(t *testing.T) {
 	mrfh.AssertNumberOfCalls(t, "ApplySentinelPassword", 3)
 }
 
-// TestApplyPasswordSecondChangeWhilePodIsPending covers a second change while
-// a pod is yet to start. The running pod is on the password that the operator
-// applied last, not on the one that all pods accepted.
-func TestApplyPasswordSecondChangeWhilePodIsPending(t *testing.T) {
-	password := "v1"
+// newPendingPodPasswordHandler returns a handler with the real healer, one
+// running Redis pod and one pod yet to start. The running Redis accepts only
+// the password in *running, and SetPassword changes it.
+func newPendingPodPasswordHandler(password, running *string) (*RedisFailoverHandler, *redisfailoverv1.RedisFailover) {
 	rf := &redisfailoverv1.RedisFailover{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"},
 		Spec:       redisfailoverv1.RedisFailoverSpec{Auth: redisfailoverv1.AuthSettings{SecretPath: "redis-auth"}},
@@ -82,32 +81,39 @@ func TestApplyPasswordSecondChangeWhilePodIsPending(t *testing.T) {
 	}}
 	ms := &mK8SService.Services{}
 	ms.On("GetSecret", "testns", "redis-auth").Return(func(string, string) (*corev1.Secret, error) {
-		return &corev1.Secret{Data: map[string][]byte{"password": []byte(password)}}, nil
+		return &corev1.Secret{Data: map[string][]byte{"password": []byte(*password)}}, nil
 	})
 	ms.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(rf)).Return(pods, nil)
 	ms.On("GetDeploymentPods", "testns", rfservice.GetSentinelName(rf)).Return(&corev1.PodList{}, nil)
 
-	// The running Redis accepts only the password it runs with.
-	running := "v1"
 	wrongpass := errors.New("WRONGPASS invalid username-password pair or user is disabled.")
 	mr := &mRedisService.Client{}
 	mr.On("IsMaster", "10.0.0.1", "0", mock.Anything).Return(func(_, _, pw string) (bool, error) {
-		if pw != running {
+		if pw != *running {
 			return false, wrongpass
 		}
 		return true, nil
 	})
 	mr.On("SetPassword", "10.0.0.1", "0", mock.Anything, mock.Anything).Return(func(_, _, pw, newPw string) error {
-		if pw != running {
+		if pw != *running {
 			return wrongpass
 		}
-		running = newPw
+		*running = newPw
 		return nil
 	})
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.Dummy)
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, healer, ms, metrics.Dummy, log.Dummy)
-	handler.passwords.Store(passwordKey(rf), passwordState{redis: "v1", sentinel: "v1"})
+	handler.passwords.Store(passwordKey(rf), passwordState{redis: "v1", applied: "v1", sentinel: "v1"})
+	return handler, rf
+}
+
+// TestApplyPasswordSecondChangeWhilePodIsPending covers a second change while
+// a pod is yet to start. The running pod is on the password that the operator
+// applied last, not on the one that all pods accepted.
+func TestApplyPasswordSecondChangeWhilePodIsPending(t *testing.T) {
+	password, running := "v1", "v1"
+	handler, rf := newPendingPodPasswordHandler(&password, &running)
 
 	password = "v2"
 	assert.NoError(t, handler.applyPassword(rf))
@@ -116,6 +122,22 @@ func TestApplyPasswordSecondChangeWhilePodIsPending(t *testing.T) {
 	password = "v3"
 	assert.NoError(t, handler.applyPassword(rf))
 	assert.Equal(t, "v3", running)
+}
+
+// TestApplyPasswordRevertWhilePodIsPending covers a user who puts the old
+// password back while a pod is yet to start. The running pod is on the
+// password that the operator applied last, so it must change back.
+func TestApplyPasswordRevertWhilePodIsPending(t *testing.T) {
+	password, running := "v1", "v1"
+	handler, rf := newPendingPodPasswordHandler(&password, &running)
+
+	password = "v2"
+	assert.NoError(t, handler.applyPassword(rf))
+	assert.Equal(t, "v2", running)
+
+	password = "v1"
+	assert.NoError(t, handler.applyPassword(rf))
+	assert.Equal(t, "v1", running)
 }
 
 func TestApplyPasswordForgetsDeletedRedisFailover(t *testing.T) {

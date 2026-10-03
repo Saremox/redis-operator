@@ -483,11 +483,11 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 	key := passwordKey(rf)
 	v, known := r.passwords.Load(key)
 	state, _ := v.(passwordState)
-	if known && state.redis == password && state.sentinel == password {
+	if known && state.redis == password && state.applied == password && state.sentinel == password {
 		return nil
 	}
 
-	if !known || state.redis != password {
+	if !known || state.redis != password || state.applied != password {
 		previous := []string{password}
 		if known {
 			previous = []string{state.redis}
