@@ -208,8 +208,9 @@ func (m Mutations) validate(in Instance) error {
 		}
 	}
 	if _, ok := m.Kinds[MaxMemoryPolicy]; ok {
-		if len(m.MaxMemoryPolicies) < 2 {
-			return errors.New("maxMemoryPolicies: at least two policies")
+		// The mutation picks a policy other than the current one.
+		if len(slices.Compact(slices.Sorted(slices.Values(m.MaxMemoryPolicies)))) < 2 {
+			return errors.New("maxMemoryPolicies: at least two different policies")
 		}
 		for _, p := range m.MaxMemoryPolicies {
 			if !slices.Contains(maxMemoryPolicies, p) {
