@@ -77,3 +77,45 @@ grep -qx '      serviceAccountName: custom' <<<"${out}" \
 [ ${fail} -eq 0 ]
 
 echo "> Chart OK"
+
+# Prints "sa <namespace>/<name>" for each ServiceAccount and "subject
+# <namespace>/<name>" for each ServiceAccount subject in kustomize output.
+service_accounts() {
+    awk '
+        function item_end() {
+            if (ikind == "ServiceAccount") print "subject " ins "/" iname
+            ikind = iname = ins = ""
+        }
+        function doc_end() {
+            item_end()
+            if (kind == "ServiceAccount") print "sa " ns "/" name
+            kind = name = ns = ""; insub = inmeta = 0
+        }
+        /^---/ { doc_end(); next }
+        insub && /^- / { item_end(); sub(/^- /, "  ") }
+        insub && /^  [a-zA-Z]+: / { if ($1 == "kind:") ikind = $2; if ($1 == "name:") iname = $2; if ($1 == "namespace:") ins = $2; next }
+        insub { item_end(); insub = 0 }
+        /^[a-z]/ { inmeta = 0 }
+        /^subjects:$/ { insub = 1; next }
+        /^metadata:$/ { inmeta = 1; next }
+        /^kind: / { kind = $2 }
+        inmeta && /^  name: / { name = $2 }
+        inmeta && /^  namespace: / { ns = $2 }
+        END { doc_end() }'
+}
+
+# The API server rejects a ServiceAccount subject without a namespace.
+fail=0
+for dir in manifests/kustomize/overlays/*/; do
+  echo ">> Testing kustomize ${dir}"
+  refs=$(kubectl kustomize "${dir}" 2>/dev/null | service_accounts)
+  grep -q '^subject ' <<<"${refs}" || { echo "FAIL: ${dir} binds no ServiceAccount" >&2; fail=1; }
+  while read -r _ ref; do
+    [ "${ref#/}" = "${ref}" ] || { echo "FAIL: ${dir}: subject ${ref#/} has no namespace" >&2; fail=1; }
+    grep -qx "sa ${ref}" <<<"${refs}" || { echo "FAIL: ${dir}: no ServiceAccount ${ref}" >&2; fail=1; }
+  done < <(grep '^subject ' <<<"${refs}")
+done
+
+[ ${fail} -eq 0 ]
+
+echo "> Manifests OK"
