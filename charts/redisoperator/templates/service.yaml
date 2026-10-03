@@ -18,6 +18,7 @@ spec:
     - name: metrics
       port: {{ $svcPort }}
       protocol: TCP
+      targetPort: metrics
   selector:
     {{- include "chart.selectorLabels" $data | nindent 4 }}
 

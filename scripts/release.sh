@@ -5,6 +5,7 @@
 #   scripts/release.sh check-version <version>
 #   scripts/release.sh chart-values <chart-dir> <repository> <version>
 #   <published release tags> | scripts/release.sh floating <version>
+#   <tags> | scripts/release.sh previous <version>
 #
 # A release workflow runs after its tag exists, so it cannot change the files
 # at the tag. Users pin a tag in the raw manifest URLs and in the kustomize
@@ -29,7 +30,7 @@ version_fields=(
 mapfile -t version_files < <(printf '%s\n' "${version_fields[@]%%|*}" | uniq)
 
 usage() {
-    sed -n '3,7p' "$0" | sed 's/^# *//' >&2
+    sed -n '3,8p' "$0" | sed 's/^# *//' >&2
     exit 2
 }
 
@@ -122,6 +123,16 @@ floating() {
     echo "minor=$(highest_is "${major}\.${minor}\.")"
 }
 
+# Prints the highest full release below the version, the baseline of its
+# changelog. A patch on an older release line must not use a newer line as the
+# baseline. A pre-release has the same baseline as its full release. Reads the
+# tags on stdin.
+previous() {
+    local base=${1%-rc*}
+    (cat; echo "$base") | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -u -V \
+        | grep -B1 -x -F "$base" | head -n1 | grep -v -x -F "$base" || true
+}
+
 root=$(dirname "$0")/..
 
 case "${1:-}" in
@@ -146,6 +157,11 @@ floating)
     [ $# -eq 2 ] || usage
     validate_version "$2"
     floating "$2"
+    ;;
+previous)
+    [ $# -eq 2 ] || usage
+    validate_version "$2"
+    previous "$2"
     ;;
 *)
     usage

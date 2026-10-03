@@ -502,6 +502,8 @@ func TestCheckSentinelSlavesNumberInMemoryBootstrappingMismatch(t *testing.T) {
 	rf.Spec.Redis.Replicas = 3
 
 	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
+		Return(podsWithPhases(corev1.PodRunning, corev1.PodRunning, corev1.PodRunning), nil)
 	mr := &mRedisService.Client{}
 	mr.On("GetNumberSentinelSlavesInMemory", "1.1.1.1").Once().Return(int32(2), nil)
 
@@ -526,6 +528,77 @@ func TestCheckSentinelSlavesNumberInMemoryBootstrappingMatch(t *testing.T) {
 
 	err := checker.CheckSentinelSlavesNumberInMemory("1.1.1.1", rf)
 	assert.NoError(err)
+}
+
+// TestCheckSentinelNumberInMemoryRunningPods checks that a Sentinel that
+// knows fewer Sentinels than the spec is reset only when it does not know all
+// the running Sentinels. A reset does not add a Pending Sentinel.
+func TestCheckSentinelNumberInMemoryRunningPods(t *testing.T) {
+	run, pend := corev1.PodRunning, corev1.PodPending
+	tests := []struct {
+		name      string
+		inMemory  int32
+		pods      *corev1.PodList
+		podsErr   error
+		wantReset bool
+	}{
+		{name: "one sentinel pending", inMemory: 2, pods: podsWithPhases(run, run, pend)},
+		{name: "a running sentinel not known", inMemory: 2, pods: podsWithPhases(run, run, run), wantReset: true},
+		{name: "pods not listed", inMemory: 2, podsErr: errors.New("list error"), wantReset: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			ms := &mK8SService.Services{}
+			ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(test.pods, test.podsErr)
+			mr := &mRedisService.Client{}
+			mr.On("GetNumberSentinelsInMemory", "1.1.1.1").Once().Return(test.inMemory, nil)
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+			err := checker.CheckSentinelNumberInMemory("1.1.1.1", rf)
+
+			assert.Equal(t, test.wantReset, err != nil, "error: %v", err)
+			ms.AssertExpectations(t)
+		})
+	}
+}
+
+// TestCheckSentinelSlavesNumberInMemoryRunningPods checks that a Sentinel
+// that knows fewer slaves than the spec is reset only when it does not know
+// all the running slaves.
+func TestCheckSentinelSlavesNumberInMemoryRunningPods(t *testing.T) {
+	run, pend := corev1.PodRunning, corev1.PodPending
+	tests := []struct {
+		name      string
+		bootstrap bool
+		inMemory  int32
+		pods      *corev1.PodList
+		podsErr   error
+		wantReset bool
+	}{
+		{name: "one redis pending", inMemory: 1, pods: podsWithPhases(run, run, pend)},
+		{name: "a running slave not known", inMemory: 1, pods: podsWithPhases(run, run, run), wantReset: true},
+		{name: "bootstrapping, one redis pending", bootstrap: true, inMemory: 2, pods: podsWithPhases(run, run, pend)},
+		{name: "pods not listed", inMemory: 1, podsErr: errors.New("list error"), wantReset: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			if test.bootstrap {
+				rf.Spec.BootstrapNode = &redisfailoverv1.BootstrapSettings{Host: "127.0.0.1"}
+			}
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(test.pods, test.podsErr)
+			mr := &mRedisService.Client{}
+			mr.On("GetNumberSentinelSlavesInMemory", "1.1.1.1").Once().Return(test.inMemory, nil)
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+			err := checker.CheckSentinelSlavesNumberInMemory("1.1.1.1", rf)
+
+			assert.Equal(t, test.wantReset, err != nil, "error: %v", err)
+			ms.AssertExpectations(t)
+		})
+	}
 }
 
 func TestCheckSentinelSlavesNumberQuorumInMemoryGetNumberSentinelSlavesInMemoryError(t *testing.T) {
@@ -1554,21 +1627,86 @@ func TestIsSentinelRunningQuorum(t *testing.T) {
 // IsMaster call directly against the resolved master IP as the actual health
 // check. Tests below account for both calls.
 
-func TestCheckMasterHealthNoMasterFound(t *testing.T) {
+func TestCheckMasterHealthPodListError(t *testing.T) {
 	assert := assert.New(t)
 
 	rf := generateRF()
 
 	ms := &mK8SService.Services{}
-	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(nil, errors.New(""))
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(nil, errors.New("list err"))
 	mr := &mRedisService.Client{}
 
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
 
 	healthy, masterIP, err := checker.CheckMasterHealth(rf)
-	assert.NoError(err)
+	assert.EqualError(err, "list err", "an API error is no reason to promote a replica")
 	assert.False(healthy)
 	assert.Equal("", masterIP)
+}
+
+// GetMasterIP finds no master. Only a second count that confirms it lets the
+// caller promote a replica without the failoverTimeout wait.
+func TestCheckMasterHealthNoMasterFound(t *testing.T) {
+	ready := []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	stall := errors.New("i/o timeout")
+	tests := []struct {
+		name        string
+		secondCount error
+		wantErr     error
+		wantErrMsg  string
+	}{
+		{
+			name: "the second count finds no master",
+		},
+		{
+			name:        "the ready master does not answer the second count",
+			secondCount: stall,
+			wantErr:     rfservice.ErrRedisNotAnswering,
+		},
+		{
+			name:       "the master answers the second count",
+			wantErrMsg: "the master did not answer every check, checking again on the next reconcile",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			pods := &corev1.PodList{Items: []corev1.Pod{
+				{Status: corev1.PodStatus{PodIP: "0.0.0.0", Phase: corev1.PodRunning, Conditions: ready}},
+				{Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning, Conditions: ready}},
+			}}
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Twice().Return(pods, nil)
+			mr := &mRedisService.Client{}
+			// GetMasterIP: the master stalls.
+			mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(false, stall)
+			mr.On("IsMaster", "1.1.1.1", "0", "").Twice().Return(false, nil)
+			// The second count.
+			switch {
+			case test.secondCount != nil:
+				mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(false, test.secondCount)
+			case test.wantErrMsg != "":
+				mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(true, nil)
+			default:
+				mr.On("IsMaster", "0.0.0.0", "0", "").Once().Return(false, nil)
+			}
+
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+			healthy, masterIP, err := checker.CheckMasterHealth(rf)
+			switch {
+			case test.wantErr != nil:
+				assert.ErrorIs(t, err, test.wantErr)
+			case test.wantErrMsg != "":
+				assert.EqualError(t, err, test.wantErrMsg)
+			default:
+				assert.NoError(t, err)
+			}
+			assert.False(t, healthy)
+			assert.Equal(t, "", masterIP)
+			mr.AssertExpectations(t)
+		})
+	}
 }
 
 // TestCheckMasterHealthSplitBrainDetected covers the case GetMasterIP

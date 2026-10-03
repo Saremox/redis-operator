@@ -162,11 +162,14 @@ func TestOperatorManagedModeFailsOverAfterTheFailoverTimeout(t *testing.T) {
 
 			assert.NoError(t, ft.unhealthyMaster(0, false))
 			assert.Equal(t, redisfailoverv1.NotHealthyState, ft.rf.Status.State)
-			assert.Equal(t, fmt.Sprintf("master unreachable for 0s, failing over after %s", test.want), ft.rf.Status.Message)
+			assert.Equal(t, fmt.Sprintf("master unreachable since 2026-10-02T12:00:00Z, failing over after %s", test.want), ft.rf.Status.Message)
 			assert.Equal(t, "2026-10-02T12:00:00Z", ft.unreachableSince(), "recorded on the master pod")
+			waiting := ft.rf.Status
 
+			// Each status change queues a reconcile at once, so the status
+			// stays the same during the wait.
 			assert.NoError(t, ft.unhealthyMaster(test.want-1500*time.Millisecond, false))
-			assert.Equal(t, fmt.Sprintf("master unreachable for %s, failing over after %s", test.want-2*time.Second, test.want), ft.rf.Status.Message)
+			assert.Equal(t, waiting, ft.rf.Status)
 			assert.Equal(t, []time.Duration{test.want, 1500 * time.Millisecond}, ft.requeues, "reconciled again when the timeout runs out")
 			assert.Equal(t, "2026-10-02T12:00:00Z", ft.unreachableSince(), "recorded once")
 
@@ -201,7 +204,7 @@ func TestOperatorManagedModeFailoverTimeoutSurvivesARestart(t *testing.T) {
 	ft.pods[0].Annotations[masterUnreachableAnnotation] = ft.now.Add(-25 * time.Second).Format(time.RFC3339)
 
 	assert.NoError(t, ft.unhealthyMaster(0, false))
-	assert.Equal(t, "master unreachable for 25s, failing over after 30s", ft.rf.Status.Message)
+	assert.Equal(t, "master unreachable since 2026-10-02T11:59:35Z, failing over after 30s", ft.rf.Status.Message)
 	assert.Equal(t, []time.Duration{5 * time.Second}, ft.requeues)
 	assert.Equal(t, "2026-10-02T11:59:35Z", ft.unreachableSince(), "kept")
 
@@ -230,7 +233,7 @@ func TestOperatorManagedModeFailoverTimeoutRestartsWhenTheMasterAnswers(t *testi
 
 	// A new stall gets the full timeout again.
 	assert.NoError(t, ft.unhealthyMaster(4*time.Second, false))
-	assert.Equal(t, "master unreachable for 0s, failing over after 10s", ft.rf.Status.Message)
+	assert.Equal(t, "master unreachable since 2026-10-02T12:00:12Z, failing over after 10s", ft.rf.Status.Message)
 	assert.NoError(t, ft.unhealthyMaster(9*time.Second, false))
 	assert.NoError(t, ft.unhealthyMaster(time.Second, true))
 
@@ -294,7 +297,7 @@ func TestOperatorManagedModeWaitsForAnUnreachableMasterPod(t *testing.T) {
 		return ft.handler.CheckAndHeal(ft.rf)
 	}
 	assert.NoError(t, noMaster(6*time.Second))
-	assert.Equal(t, "master unreachable for 6s, failing over after 10s", ft.rf.Status.Message)
+	assert.Equal(t, "master unreachable since 2026-10-02T12:00:00Z, failing over after 10s", ft.rf.Status.Message)
 	assert.Equal(t, []time.Duration{4 * time.Second}, ft.requeues)
 
 	ft.expectPromotion()

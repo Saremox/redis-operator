@@ -236,7 +236,21 @@ func (r *RedisFailoverChecker) CheckSentinelNumberInMemory(sentinel string, rf *
 	nSentinels, err := r.redisClient.GetNumberSentinelsInMemory(sentinel)
 	if err != nil {
 		return err
-	} else if nSentinels != rf.Spec.Sentinel.Replicas {
+	}
+	if nSentinels < rf.Spec.Sentinel.Replicas {
+		// A Sentinel does not know a pod that does not run, for example a
+		// Pending pod, and a reset does not change that. After a reset, the
+		// Sentinels forget each other for some seconds, and a failover
+		// cannot start in that time.
+		running, err := r.GetSentinelsIPs(rf)
+		if err != nil {
+			return err
+		}
+		if int(nSentinels) >= len(running) {
+			return nil
+		}
+	}
+	if nSentinels != rf.Spec.Sentinel.Replicas {
 		return errors.New("sentinels in memory mismatch")
 	}
 	return nil
@@ -322,16 +336,26 @@ func (r *RedisFailoverChecker) CheckSentinelSlavesNumberInMemory(sentinel string
 	nSlaves, err := r.redisClient.GetNumberSentinelSlavesInMemory(sentinel)
 	if err != nil {
 		return err
-	} else {
-		if rf.Bootstrapping() {
-			if nSlaves != rf.Spec.Redis.Replicas {
-				return errors.New("redis slaves in sentinel memory mismatch")
-			}
-		} else {
-			if nSlaves != rf.Spec.Redis.Replicas-1 {
-				return errors.New("redis slaves in sentinel memory mismatch")
-			}
+	}
+	// While bootstrapping, all the Redis pods are slaves of the bootstrap node.
+	masters := 1
+	if rf.Bootstrapping() {
+		masters = 0
+	}
+	expected := rf.Spec.Redis.Replicas - int32(masters)
+	if nSlaves < expected {
+		// CheckSentinelNumberInMemory gives the reason to not reset for a
+		// pod that does not run.
+		running, err := r.GetRedisesIPs(rf)
+		if err != nil {
+			return err
 		}
+		if int(nSlaves) >= len(running)-masters {
+			return nil
+		}
+	}
+	if nSlaves != expected {
+		return errors.New("redis slaves in sentinel memory mismatch")
 	}
 	return nil
 }
@@ -648,21 +672,22 @@ func (r *RedisFailoverChecker) IsClusterRunning(rFailover *redisfailoverv1.Redis
 func (r *RedisFailoverChecker) CheckMasterHealth(rf *redisfailoverv1.RedisFailover) (bool, string, error) {
 	masterIP, err := r.GetMasterIP(rf)
 	if err != nil {
-		// ErrAmbiguousMasterCount covers both "no master" and "more than one
-		// master" (split-brain); silently treating both as "no master, go
-		// promote a replica" would make an existing split-brain worse by
-		// promoting yet another one. Corroborate with a second, independent
-		// count: this isn't perfectly atomic with the scan GetMasterIP just
-		// did, but it correctly catches the common case where more than one
-		// master is already present.
-		if errors.Is(err, ErrAmbiguousMasterCount) {
-			if n, nErr := r.GetNumberMasters(rf); nErr == nil && n > 1 {
-				return false, "", fmt.Errorf("split-brain detected: %d redis nodes claim to be master, refusing to promote another replica", n)
-			}
+		if !errors.Is(err, ErrAmbiguousMasterCount) {
+			return false, "", err
 		}
-		// No master found (or GetMasterIP failed for an unrelated reason,
-		// e.g. listing pods failed - treated the same as "no master" here,
-		// matching this function's prior behavior for those cases).
+		// The caller promotes a replica at once when no master is found. A
+		// master that stalls for a moment is also not found, so a second
+		// count must confirm that there is no master.
+		n, nErr := r.GetNumberMasters(rf)
+		if nErr != nil {
+			return false, "", nErr
+		}
+		if n > 1 {
+			return false, "", fmt.Errorf("split-brain detected: %d redis nodes claim to be master, refusing to promote another replica", n)
+		}
+		if n == 1 {
+			return false, "", errors.New("the master did not answer every check, checking again on the next reconcile")
+		}
 		return false, "", nil
 	}
 

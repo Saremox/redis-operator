@@ -2610,7 +2610,7 @@ func TestRedisCustomLivenessProbe(t *testing.T) {
 						Command: []string{
 							"sh",
 							"-c",
-							"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep PONG",
+							"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'",
 						},
 					},
 				},
@@ -3280,11 +3280,11 @@ func TestEnsureSentinelConfigMapContent(t *testing.T) {
 
 	assert.NoError(err)
 	if assert.NotNil(gotCM) {
-		// This pins down the current fixed sentinel.conf values so a future
-		// accidental change to the template is caught.
+		// The timeouts must be the sentinel customConfig defaults. Otherwise a
+		// restarted Sentinel disagrees with the other Sentinels.
 		expected := `sentinel monitor mymaster 127.0.0.1 6379 2
-sentinel down-after-milliseconds mymaster 1000
-sentinel failover-timeout mymaster 3000
+sentinel down-after-milliseconds mymaster 5000
+sentinel failover-timeout mymaster 10000
 sentinel parallel-syncs mymaster 2`
 		assert.Equal(expected, gotCM.Data["sentinel.conf"])
 	}
@@ -3692,6 +3692,8 @@ func TestRedisReadinessScript(t *testing.T) {
 // TestProbeCommands runs the default Redis and Sentinel liveness commands and
 // the Sentinel readiness command against a fake redis-cli that answers like a
 // healthy server or hangs like a frozen one, with and without timeout on PATH.
+// The Redis liveness command also gets the replies of a server that loads its
+// dataset or refuses the login.
 func TestProbeCommands(t *testing.T) {
 	if _, err := exec.LookPath("timeout"); err != nil {
 		t.Skip("timeout is not installed")
@@ -3718,7 +3720,9 @@ func TestProbeCommands(t *testing.T) {
 case "$*" in
 *get-master-addr-by-name*) printf '10.0.0.1\n6379\n' ;;
 *ckquorum*) echo "OK 3 usable Sentinels. Quorum and failover authorization can be reached" ;;
-*) echo PONG ;;
+*)
+	[ -n "$FAKE_STDERR" ] && echo "$FAKE_STDERR" >&2
+	echo "${FAKE_REPLY:-PONG}" ;;
 esac
 `
 	dir := t.TempDir()
@@ -3731,28 +3735,50 @@ esac
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(bare, "redis-cli"), []byte(fakeCLI), 0o755))
 
-	tests := []struct {
-		name   string
-		path   string
-		frozen bool
-		alive  bool
-	}{
+	type probeTest struct {
+		name  string
+		path  string
+		env   []string
+		alive bool
+	}
+	tests := []probeTest{
 		{name: "answers", path: dir + ":" + os.Getenv("PATH"), alive: true},
-		{name: "frozen", path: dir + ":" + os.Getenv("PATH"), frozen: true},
+		{name: "frozen", path: dir + ":" + os.Getenv("PATH"), env: []string{"FAKE_FROZEN=1"}},
 		{name: "answers, without timeout", path: bare, alive: true},
+	}
+	// redis-cli prints an error reply on stdout and exits 0. With a Redis
+	// password, a wrong pinger password gives WRONGPASS on stderr, and then
+	// NOAUTH for the PING.
+	redisReplies := []probeTest{
+		{
+			name:  "loading",
+			path:  dir + ":" + os.Getenv("PATH"),
+			env:   []string{"FAKE_REPLY=LOADING Redis is loading the dataset in memory"},
+			alive: true,
+		},
+		{
+			name: "wrong password",
+			path: dir + ":" + os.Getenv("PATH"),
+			env: []string{
+				"FAKE_STDERR=AUTH failed: WRONGPASS invalid username-password pair or user is disabled.",
+				"FAKE_REPLY=NOAUTH Authentication required.",
+			},
+		},
 	}
 	for _, component := range []string{"redis liveness", "sentinel liveness", "sentinel readiness"} {
 		probe := probes[component]
 		require.Equal(t, "sh", probe.Exec.Command[0])
-		for _, test := range tests {
+		componentTests := tests
+		if component == "redis liveness" {
+			componentTests = append(componentTests, redisReplies...)
+		}
+		for _, test := range componentTests {
 			t.Run(component+", "+test.name, func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 				defer cancel()
 				cmd := exec.CommandContext(ctx, "sh", probe.Exec.Command[1:]...)
 				cmd.Env = append(os.Environ(), "PATH="+test.path)
-				if test.frozen {
-					cmd.Env = append(cmd.Env, "FAKE_FROZEN=1")
-				}
+				cmd.Env = append(cmd.Env, test.env...)
 				cmd.WaitDelay = time.Second
 				start := time.Now()
 				out, err := cmd.CombinedOutput()
@@ -3795,6 +3821,14 @@ func TestRedisReadinessLinkDownWindow(t *testing.T) {
 			modify: func(rf *redisfailoverv1.RedisFailover) {
 				rf.Spec.Sentinel.Enabled = ptr.To(true)
 				rf.Spec.Sentinel.CustomConfig = []string{"down-after-milliseconds 120000", "parallel-syncs 1", "failover-timeout 30000"}
+			},
+			window: "210",
+		},
+		{
+			name: "sentinel mode, customConfig keys in upper case",
+			modify: func(rf *redisfailoverv1.RedisFailover) {
+				rf.Spec.Sentinel.Enabled = ptr.To(true)
+				rf.Spec.Sentinel.CustomConfig = []string{"DOWN-AFTER-MILLISECONDS 120000", "Failover-Timeout 30000"}
 			},
 			window: "210",
 		},

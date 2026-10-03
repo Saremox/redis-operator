@@ -346,6 +346,7 @@ func (r *RedisFailoverKubeClient) cleanupError(rf *redisfailoverv1.RedisFailover
 func (r *RedisFailoverKubeClient) setEnsureOperationMetrics(objectNamespace string, objectName string, objectKind string, ownerName string, err error) {
 	if nil != err {
 		r.metricsClient.RecordEnsureOperation(objectNamespace, objectName, objectKind, ownerName, metrics.FAIL)
+		return
 	}
 	r.metricsClient.RecordEnsureOperation(objectNamespace, objectName, objectKind, ownerName, metrics.SUCCESS)
 }

@@ -30,8 +30,8 @@ A pod rollout updates one stale pod in each reconcile: the replicas first, the m
 This is the default since 4.0 (`sentinel.enabled` not set or `false`). There is no Sentinel, so the operator elects the master itself. It checks:
 
 - A quorum of Redis pods runs.
-- Only one Redis works as a master.
-- No master: if the old master pod is still stopping, the operator waits, because that master can still take writes. Otherwise it promotes the replica with the highest replication offset, to lose the least data. If it cannot read the offsets, it promotes the oldest pod.
+- Only one Redis works as a master. An old master that did not answer during a failover can come back as a second master. If exactly one running pod has the master label, the other masters become replicas of that pod, because the label shows the master that the operator elected. Otherwise the operator reports `multiple masters detected, fix manually`.
+- No master: if the old master pod is still stopping, the operator waits, because that master can still take writes. The status is `NotHealthy` while it waits. Otherwise it promotes the replica with the highest replication offset, to lose the least data. If it cannot read the offsets, it promotes the oldest pod.
 - The master does not answer, or is not a master: the operator promotes the replica with the highest replication offset.
 - All Redis slaves replicate from the master.
 - Redis has the custom configuration and the managed `maxmemory`.
@@ -43,16 +43,16 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
 
 - A quorum of Redis pods and a quorum of Sentinel pods run.
 - Only one Redis works as a master.
-- No master: the operator sets the oldest pod as master if there is one Redis, if the Sentinels have no quorum, or if all Redis replicate from localhost (first boot). Otherwise it waits for the Sentinel failover.
+- No master: the operator sets the oldest pod as master if there is one Redis, if the Sentinels have no quorum, or if all Redis replicate from localhost (first boot). Otherwise it waits for the Sentinel failover. The status is `NotHealthy` while it waits.
 - All Redis slaves replicate from the master.
 - Redis has the custom configuration and the managed `maxmemory`.
 - Stale Redis pods get the new statefulset revision. The operator deletes the master pod only when every Sentinel knows a quorum of the slaves. Otherwise, Sentinel has no replica to promote.
 - All Sentinels monitor the same Redis master.
-- Each Sentinel knows the correct number of Sentinels and slaves. If not, the operator resets that Sentinel.
+- Each Sentinel knows the correct number of Sentinels and slaves. If not, the operator resets that Sentinel. A pod that does not run, for example a Pending pod, is no reason for a reset, because a reset does not add it.
 - Sentinel has the custom configuration.
 
 ### Bootstrap mode
 
 This mode is on when `bootstrapNode` is set, in either of the modes above. It waits until all Redis pods run. All Redis pods replicate from the external bootstrap node. If Sentinel is on and `bootstrapNode.allowSentinels` is true, the Sentinels monitor that node.
 
-Most of the problems that may occur will be treated and tried to fix by the controller, except the case that there are a [split-brain](<https://en.wikipedia.org/wiki/Split-brain_(computing)>). **If happens to be a split-brain, an error will be logged waiting for manual fix**.
+The controller tries to repair most problems. A [split-brain](<https://en.wikipedia.org/wiki/Split-brain_(computing)>) needs a manual fix, except in operator-managed mode when exactly one master has the master label. **For a split-brain that it cannot repair, the controller logs an error and waits for a manual fix**.
