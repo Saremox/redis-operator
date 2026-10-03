@@ -15,6 +15,8 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 	mRFService "github.com/saremox/redis-operator/mocks/operator/redisfailover/service"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
+	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
+	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
 func newPasswordTestHandler(password *string) (*RedisFailoverHandler, *redisfailoverv1.RedisFailover, *mRFService.RedisFailoverHeal) {
@@ -38,7 +40,7 @@ func TestApplyPasswordRemembersAcceptedPassword(t *testing.T) {
 
 	// With none known, the password every running pod accepts is remembered,
 	// and the Sentinels are retried until every one has it.
-	mrfh.On("ApplyPassword", rf, "v1", "v1").Once().Return(false, nil)
+	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Once().Return(false, nil)
 	mrfh.On("ApplySentinelPassword", rf, "v1").Once().Return(false, nil)
 	assert.NoError(t, handler.applyPassword(rf))
 	mrfh.On("ApplySentinelPassword", rf, "v1").Once().Return(true, nil)
@@ -51,17 +53,69 @@ func TestApplyPasswordRemembersAcceptedPassword(t *testing.T) {
 	// Sentinels get it as soon as the running pods do, while a pod yet to
 	// start keeps the old password in use for the pods.
 	password = "v2"
-	mrfh.On("ApplyPassword", rf, "v2", "v1").Twice().Return(false, nil)
+	mrfh.On("ApplyPassword", rf, "v2", []string{"v1"}).Once().Return(false, nil)
 	mrfh.On("ApplySentinelPassword", rf, "v2").Once().Return(true, nil)
 	assert.NoError(t, handler.applyPassword(rf))
+	mrfh.On("ApplyPassword", rf, "v2", []string{"v1", "v2"}).Once().Return(false, nil)
 	assert.NoError(t, handler.applyPassword(rf))
-	mrfh.On("ApplyPassword", rf, "v2", "v1").Once().Return(true, nil)
+	mrfh.On("ApplyPassword", rf, "v2", []string{"v1", "v2"}).Once().Return(true, nil)
 	assert.NoError(t, handler.applyPassword(rf))
 	assert.NoError(t, handler.applyPassword(rf))
 
 	mrfh.AssertExpectations(t)
 	mrfh.AssertNumberOfCalls(t, "ApplyPassword", 4)
 	mrfh.AssertNumberOfCalls(t, "ApplySentinelPassword", 3)
+}
+
+// TestApplyPasswordSecondChangeWhilePodIsPending covers a second change while
+// a pod is yet to start. The running pod is on the password that the operator
+// applied last, not on the one that all pods accepted.
+func TestApplyPasswordSecondChangeWhilePodIsPending(t *testing.T) {
+	password := "v1"
+	rf := &redisfailoverv1.RedisFailover{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"},
+		Spec:       redisfailoverv1.RedisFailoverSpec{Auth: redisfailoverv1.AuthSettings{SecretPath: "redis-auth"}},
+	}
+	pods := &corev1.PodList{Items: []corev1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-0"}, Status: corev1.PodStatus{PodIP: "10.0.0.1", Phase: corev1.PodRunning}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-1"}, Status: corev1.PodStatus{Phase: corev1.PodPending}},
+	}}
+	ms := &mK8SService.Services{}
+	ms.On("GetSecret", "testns", "redis-auth").Return(func(string, string) (*corev1.Secret, error) {
+		return &corev1.Secret{Data: map[string][]byte{"password": []byte(password)}}, nil
+	})
+	ms.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(rf)).Return(pods, nil)
+	ms.On("GetDeploymentPods", "testns", rfservice.GetSentinelName(rf)).Return(&corev1.PodList{}, nil)
+
+	// The running Redis accepts only the password it runs with.
+	running := "v1"
+	wrongpass := errors.New("WRONGPASS invalid username-password pair or user is disabled.")
+	mr := &mRedisService.Client{}
+	mr.On("IsMaster", "10.0.0.1", "0", mock.Anything).Return(func(_, _, pw string) (bool, error) {
+		if pw != running {
+			return false, wrongpass
+		}
+		return true, nil
+	})
+	mr.On("SetPassword", "10.0.0.1", "0", mock.Anything, mock.Anything).Return(func(_, _, pw, newPw string) error {
+		if pw != running {
+			return wrongpass
+		}
+		running = newPw
+		return nil
+	})
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.Dummy)
+	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, healer, ms, metrics.Dummy, log.Dummy)
+	handler.passwords.Store(passwordKey(rf), passwordState{redis: "v1", sentinel: "v1"})
+
+	password = "v2"
+	assert.NoError(t, handler.applyPassword(rf))
+	assert.Equal(t, "v2", running)
+
+	password = "v3"
+	assert.NoError(t, handler.applyPassword(rf))
+	assert.Equal(t, "v3", running)
 }
 
 func TestApplyPasswordForgetsDeletedRedisFailover(t *testing.T) {
@@ -95,7 +149,7 @@ func TestCheckAndHealReportsAnUnappliedPassword(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			password := "v1"
 			handler, rf, mrfh := newPasswordTestHandler(&password)
-			mrfh.On("ApplyPassword", rf, "v1", "v1").Return(true, test.applyErr)
+			mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(true, test.applyErr)
 			mrfh.On("ApplySentinelPassword", rf, "v1").Return(false, test.sentinelErr)
 
 			assert.ErrorIs(t, handler.CheckAndHeal(rf), boom)
