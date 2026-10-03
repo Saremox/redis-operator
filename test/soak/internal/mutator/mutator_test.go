@@ -106,7 +106,7 @@ func TestResetNotCreated(t *testing.T) {
 // done at once, so that the test need not wait for verifyBound.
 type noMasterData struct{ fakeData }
 
-func (noMasterData) Verify(ctx context.Context, _ string, _ int) (int, error) {
+func (noMasterData) Verify(ctx context.Context, _ string, _ int, _ bool) (int, error) {
 	if _, ok := ctx.Deadline(); ok {
 		return 0, context.DeadlineExceeded
 	}

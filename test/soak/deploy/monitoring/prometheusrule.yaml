@@ -52,12 +52,9 @@ spec:
           annotations:
             summary: "A {{ $labels.kind }} chaos action ended {{ $labels.result }}: the instances or the operator didn't converge in time, or the action failed."
         - alert: RedisSoakLostWritesLossless
-          # Events that must lose no acknowledged write: auth changes, a
-          # Sentinel toggle or image flip, and the chaos actions, because
-          # their evictions are graceful. A drain that evicts the only pod
-          # of an instance without a volume counts as a reset.
-          expr: |
-            increase(redis_soak_lost_writes_total{event=~"password_rotate|password_rotate_offline|auth_add|auth_remove|sentinel_toggle|sentinel_image_flip|operator_restart|operator_upgrade|node_drain"}[15m]) > 0
+          # The tester decides which events must lose no acknowledged
+          # write, for example a drain only on volumes.
+          expr: increase(redis_soak_unexpected_lost_writes_total[15m]) > 0
           labels:
             severity: critical
           annotations:

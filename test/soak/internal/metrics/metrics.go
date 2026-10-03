@@ -46,6 +46,7 @@ type Metrics struct {
 	OOMRejections     *prometheus.CounterVec
 	EvictedKeys       *prometheus.CounterVec
 	LostWrites        *prometheus.CounterVec
+	UnexpectedLost    *prometheus.CounterVec
 	LedgerVerified    *prometheus.CounterVec
 
 	VersionTransition *prometheus.CounterVec
@@ -204,6 +205,11 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 			Name:      "lost_writes_total",
 			Help:      "Acknowledged writes found missing or wrong, by the mutation kind or failover they were verified after.",
 		}, labels("event")),
+		UnexpectedLost: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "unexpected_lost_writes_total",
+			Help:      "Lost writes of an event that must lose none, and source writes that a caught-up bootstrap pod misses.",
+		}, labels("event")),
 		LedgerVerified: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "ledger_verified_total",
@@ -253,7 +259,7 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration, m.BuildInfo,
 		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.ServerInfo, m.WindowOpen,
 		m.MutationTotal, m.MutationConverge, m.PodsRecreated, m.MutationInProgress,
-		m.WaitAckedReplicas, m.DatasetKeys, m.UsedMemory, m.MaxMemory, m.OOMRejections, m.EvictedKeys, m.LostWrites, m.LedgerVerified,
+		m.WaitAckedReplicas, m.DatasetKeys, m.UsedMemory, m.MaxMemory, m.OOMRejections, m.EvictedKeys, m.LostWrites, m.UnexpectedLost, m.LedgerVerified,
 		m.VersionTransition, m.VersionMixed,
 		m.ChaosTotal, m.ChaosConverge, m.ChaosInProgress, m.ChaosOperatorDown, m.ChaosEvictionBlocked,
 		collectors.NewGoCollector(),

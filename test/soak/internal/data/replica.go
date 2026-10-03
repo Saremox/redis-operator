@@ -49,8 +49,9 @@ type Replica struct {
 	log      *slog.Logger
 	requests chan *request
 
-	lost     *prometheus.CounterVec
-	verified *prometheus.CounterVec
+	lost       *prometheus.CounterVec
+	unexpected *prometheus.CounterVec
+	verified   *prometheus.CounterVec
 }
 
 func NewReplica(in config.Instance, cfg *config.Config, source *Data, pods Pods, a *auth.Source, m *metrics.Metrics, log *slog.Logger) *Replica {
@@ -58,18 +59,19 @@ func NewReplica(in config.Instance, cfg *config.Config, source *Data, pods Pods,
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(in.Namespace + "/" + in.Name))
 	r := &Replica{
-		in:       in,
-		cfg:      *in.Bootstrap,
-		source:   source,
-		pods:     pods,
-		auth:     a,
-		rnd:      rand.New(rand.NewPCG(uint64(cfg.Mutation.Seed), h.Sum64())),
-		log:      log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
-		requests: make(chan *request),
-		lost:     m.LostWrites.MustCurryWith(labels),
-		verified: m.LedgerVerified.MustCurryWith(labels),
+		in:         in,
+		cfg:        *in.Bootstrap,
+		source:     source,
+		pods:       pods,
+		auth:       a,
+		rnd:        rand.New(rand.NewPCG(uint64(cfg.Mutation.Seed), h.Sum64())),
+		log:        log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
+		requests:   make(chan *request),
+		lost:       m.LostWrites.MustCurryWith(labels),
+		unexpected: m.UnexpectedLost.MustCurryWith(labels),
+		verified:   m.LedgerVerified.MustCurryWith(labels),
 	}
-	initEvents(r.lost, cfg, in)
+	initEvents(cfg, in, r.lost, r.unexpected)
 	return r
 }
 
@@ -77,8 +79,10 @@ func (r *Replica) Filled() bool { return true }
 func (r *Replica) Begin()       {}
 func (r *Replica) Refill()      {}
 
-func (r *Replica) Verify(ctx context.Context, event string, step int) (int, error) {
-	return verifyAfter(ctx, r.requests, event, step)
+// Verify checks the pods. A pod that caught up holds every write of the
+// source, so each loss is unexpected, whatever the event.
+func (r *Replica) Verify(ctx context.Context, event string, step int, _ bool) (int, error) {
+	return verifyAfter(ctx, r.requests, &request{ctx: ctx, event: event, step: step})
 }
 
 func (r *Replica) Burst(context.Context, time.Duration) (string, error) {
@@ -163,6 +167,7 @@ func (r *Replica) verify(ctx context.Context, event string, step int) (int, erro
 		lost += n
 	}
 	r.lost.WithLabelValues(event).Add(float64(lost))
+	r.unexpected.WithLabelValues(event).Add(float64(lost))
 	r.verified.WithLabelValues(event).Inc()
 	log := r.log.With("event", event, "step", step, "source", src.in.Name, "keys", len(present),
 		"pods", len(pods), "lost", lost, "duration_seconds", time.Since(start).Seconds())

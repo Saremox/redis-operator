@@ -42,7 +42,7 @@ type Watched interface {
 // Data is what the lane needs of an instance's data.
 type Data interface {
 	Begin()
-	Verify(ctx context.Context, event string, step int) (int, error)
+	Verify(ctx context.Context, event string, step int, lossless bool) (int, error)
 }
 
 // Instance is an instance every action disturbs.
@@ -277,8 +277,11 @@ func (l *Lane) waitQuiet(ctx context.Context) []string {
 }
 
 // verify verifies every instance's data after the action, event being its
-// kind, or config.EventReset for an instance it reset.
+// kind, or config.EventReset for an instance it reset. An operator restart or
+// upgrade does not touch a redis pod, and a drain evicts gracefully, so it
+// loses no write on volumes.
 func (l *Lane) verify(ctx context.Context, a *action, log *slog.Logger) {
+	reports := l.reports()
 	ctx, cancel := context.WithTimeout(ctx, l.cfg.Timeout.Duration)
 	defer cancel()
 	var mu sync.Mutex
@@ -289,11 +292,12 @@ func (l *Lane) verify(ctx context.Context, a *action, log *slog.Logger) {
 			continue
 		}
 		event := string(a.kind)
+		lossless := a.kind != config.NodeDrain || reports[in.Name].Volumes
 		if a.resets[in.Name] {
-			event = config.EventReset
+			event, lossless = config.EventReset, false
 		}
 		wg.Go(func() {
-			n, err := in.Data.Verify(ctx, event, a.step)
+			n, err := in.Data.Verify(ctx, event, a.step, lossless)
 			if err != nil {
 				log.Warn("verifying the data after chaos", "rf", in.Name, "error", err.Error())
 				return

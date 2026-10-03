@@ -50,7 +50,7 @@ type Data interface {
 	// it, and returns the writes it lost. event is the mutation's kind, or
 	// config.EventReset.
 	Begin()
-	Verify(ctx context.Context, event string, step int) (int, error)
+	Verify(ctx context.Context, event string, step int, lossless bool) (int, error)
 	Burst(ctx context.Context, hold time.Duration) (string, error)
 	Writable(ctx context.Context) error
 }
@@ -360,7 +360,7 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 		event = config.EventReset
 	}
 	vctx, cancel := context.WithTimeout(ctx, verifyBound)
-	lost, verr := m.verify(vctx, event, step)
+	lost, verr := m.verify(vctx, event, step, lossless(p, s))
 	cancel()
 	if p.edge == nil || applyErr != nil {
 		if verr != nil && ctx.Err() == nil {
@@ -380,11 +380,30 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 // during the verification.
 const verifyBound = 2 * time.Minute
 
-func (m *Mutator) verify(ctx context.Context, event string, step int) (int, error) {
+func (m *Mutator) verify(ctx context.Context, event string, step int, lossless bool) (int, error) {
 	if m.data == nil {
 		return 0, nil
 	}
-	return m.data.Verify(ctx, event, step)
+	return m.data.Verify(ctx, event, step, lossless)
+}
+
+// lossless reports whether a mutation must lose no acknowledged write. Auth
+// and Sentinel changes stop each redis pod gracefully at most, and Redis waits
+// for its replicas on SIGTERM. A graceful master kill, a scale-down or a
+// rollover along an ok edge also keep the data on a volume. A forced kill and
+// a failover can lose writes to asynchronous replication.
+func lossless(p plan, s state) bool {
+	volumes := s.rf.Spec.Redis.Storage.PersistentVolumeClaim != nil
+	switch p.kind {
+	case config.PasswordRotate, config.AuthAdd, config.AuthRemove, config.PasswordRotateOffline,
+		config.SentinelToggle, config.SentinelImageFlip:
+		return true
+	case config.KillMaster, config.RedisReplicas:
+		return volumes
+	case config.ImageUpgrade:
+		return volumes && p.edge != nil && p.edge.edge.Expect == config.ExpectOK
+	}
+	return false
 }
 
 func (m *Mutator) plan(r *rand.Rand, kind config.Kind, s state) plan {

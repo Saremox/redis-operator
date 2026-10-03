@@ -315,3 +315,33 @@ func TestKillPlans(t *testing.T) {
 		t.Errorf("not skipped without replicas: %+v", p)
 	}
 }
+
+// The tester, not the alert or the e2e script, decides which mutations must
+// lose no acknowledged write.
+func TestLossless(t *testing.T) {
+	ok := &transition{edge: config.Edge{Expect: config.ExpectOK}}
+	unknown := &transition{edge: config.Edge{Expect: config.ExpectUnknown}}
+	cases := []struct {
+		p                 plan
+		emptyDir, volumes bool
+	}{
+		{plan{kind: config.PasswordRotate}, true, true},
+		{plan{kind: config.SentinelToggle}, true, true},
+		{plan{kind: config.KillMaster}, false, true},
+		{plan{kind: config.KillMasterForce}, false, false},
+		{plan{kind: config.RedisReplicas}, false, true},
+		{plan{kind: config.KillReplica}, false, false},
+		{plan{kind: config.ImageUpgrade, edge: ok}, false, true},
+		{plan{kind: config.ImageUpgrade, edge: unknown}, false, false},
+	}
+	for _, c := range cases {
+		s := testState()
+		if got := lossless(c.p, s); got != c.emptyDir {
+			t.Errorf("%s on emptyDir: %v", c.p.kind, got)
+		}
+		s.rf.Spec.Redis.Storage.PersistentVolumeClaim = &redisfailoverv1.EmbeddedPersistentVolumeClaim{}
+		if got := lossless(c.p, s); got != c.volumes {
+			t.Errorf("%s on volumes: %v", c.p.kind, got)
+		}
+	}
+}

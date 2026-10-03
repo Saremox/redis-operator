@@ -76,7 +76,7 @@ func TestReplicaSourceAgedOut(t *testing.T) {
 		// replicates its deletes.
 		once.Do(func() {
 			for range 2 {
-				if _, err := src.verify(ctx, config.EventPeriodic, 0); err != nil {
+				if _, err := src.verify(ctx, config.EventPeriodic, 0, false); err != nil {
 					t.Error(err)
 				}
 			}
@@ -89,15 +89,17 @@ func TestReplicaSourceAgedOut(t *testing.T) {
 		c.WriteBulk(replication)
 		return true
 	})
+	labels := prometheus.Labels{"rf": "b", "namespace": "ns", "mode": "operator"}
 	r := &Replica{
-		in:       config.Instance{Name: "b", Namespace: "ns", Mode: config.ModeOperator},
-		cfg:      config.Bootstrap{SampleKeys: 100},
-		source:   src,
-		pods:     fakePods{{Name: "rfr-b-0", Addr: pod.Addr()}},
-		rnd:      rand.New(rand.NewPCG(1, 2)),
-		log:      slog.New(slog.DiscardHandler),
-		lost:     mt.LostWrites.MustCurryWith(prometheus.Labels{"rf": "b", "namespace": "ns", "mode": "operator"}),
-		verified: mt.LedgerVerified.MustCurryWith(prometheus.Labels{"rf": "b", "namespace": "ns", "mode": "operator"}),
+		in:         config.Instance{Name: "b", Namespace: "ns", Mode: config.ModeOperator},
+		cfg:        config.Bootstrap{SampleKeys: 100},
+		source:     src,
+		pods:       fakePods{{Name: "rfr-b-0", Addr: pod.Addr()}},
+		rnd:        rand.New(rand.NewPCG(1, 2)),
+		log:        slog.New(slog.DiscardHandler),
+		lost:       mt.LostWrites.MustCurryWith(labels),
+		unexpected: mt.UnexpectedLost.MustCurryWith(labels),
+		verified:   mt.LedgerVerified.MustCurryWith(labels),
 	}
 	lost, err := r.verify(ctx, config.EventPeriodic, 0)
 	if err != nil {

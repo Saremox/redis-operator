@@ -183,6 +183,7 @@ type view struct {
 	failing []string
 	// ephemeral is an instance whose only redis pod has no volume.
 	ephemeral bool
+	volumes   bool
 	master    string
 	masterIP  string
 	// sentinelPath is whether the instance runs Sentinels that are Ready
@@ -226,6 +227,8 @@ type Report struct {
 	// Ephemeral is an instance whose only redis pod has no volume: losing
 	// the pod loses the data by design, a reset.
 	Ephemeral bool
+	// Volumes is an instance whose redis pods keep their data on volumes.
+	Volumes bool
 }
 
 // Report returns what the last round found, a zero Report before the first.
@@ -234,7 +237,7 @@ func (o *Observer) Report() Report {
 	if v == nil {
 		return Report{}
 	}
-	return Report{At: v.at, Quiet: v.quiet, Failing: v.failing, Ephemeral: v.ephemeral}
+	return Report{At: v.at, Quiet: v.quiet, Failing: v.failing, Ephemeral: v.ephemeral, Volumes: v.volumes}
 }
 
 // Master returns the name of the pod that last was the single master.
@@ -564,6 +567,7 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 		at:           now,
 		failing:      failing,
 		ephemeral:    s.bootstrap == nil && s.redisReplicas == 1 && !s.pvc,
+		volumes:      s.pvc,
 		quiet:        allOK && !o.tracker.windowOpen(),
 		windowOpen:   o.tracker.windowOpen(),
 		master:       o.master.Name,

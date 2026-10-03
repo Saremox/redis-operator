@@ -237,7 +237,7 @@ func TestVerify(t *testing.T) {
 	}
 	d.writeFill(ctx, 50)
 
-	if _, err := d.verify(ctx, "kill_master", 1); err != nil {
+	if _, err := d.verify(ctx, "kill_master", 1, false); err != nil {
 		t.Fatal(err)
 	}
 	if lost("kill_master") != 0 {
@@ -258,7 +258,7 @@ func TestVerify(t *testing.T) {
 	_ = m.Set(FillKey("x", 4), "garbage")
 	d.cfg.Fill.SampleKeys = 50
 	d.failedOver.Store(true)
-	n, err := d.verify(ctx, config.EventFailover, 0)
+	n, err := d.verify(ctx, config.EventFailover, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestVerify(t *testing.T) {
 	}
 	// Each loss is counted once, and the samples of the second round
 	// pass.
-	if _, err := d.verify(ctx, config.EventPeriodic, 0); err != nil {
+	if _, err := d.verify(ctx, config.EventPeriodic, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := lost(config.EventPeriodic); got != 0 {
@@ -286,6 +286,18 @@ func TestVerify(t *testing.T) {
 	}
 	if m.Exists(LedgerKey("x", 105)) || len(d.ledger.acked.spans) != 0 {
 		t.Errorf("second round not aged out: %s", format(d.ledger.acked.spans))
+	}
+	// A loss in a failover is expected, a loss in a lossless event is not.
+	seq := d.ledger.begin()
+	d.ledger.end(seq, true)
+	if _, err := d.verify(ctx, "password_rotate", 2, true); err != nil {
+		t.Fatal(err)
+	}
+	unexpected := func(event string) float64 {
+		return testutil.ToFloat64(mt.UnexpectedLost.WithLabelValues("x", "ns", "operator", event))
+	}
+	if unexpected(config.EventFailover) != 0 || unexpected("password_rotate") != 1 {
+		t.Errorf("unexpected losses: failover %v, password_rotate %v", unexpected(config.EventFailover), unexpected("password_rotate"))
 	}
 }
 
@@ -304,13 +316,13 @@ func TestVerifyAfterReset(t *testing.T) {
 	}
 	write(100)
 	d.writeFill(ctx, 1000)
-	if _, err := d.verify(ctx, config.EventPeriodic, 0); err != nil {
+	if _, err := d.verify(ctx, config.EventPeriodic, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	write(30)
 	// The only pod is killed: everything is gone.
 	m.FlushAll()
-	if _, err := d.verify(ctx, "kill_master", 1); err != nil {
+	if _, err := d.verify(ctx, "kill_master", 1, false); err != nil {
 		t.Fatal(err)
 	}
 	// Every ledger write, though only 5 older ones are sampled, and the
@@ -320,7 +332,7 @@ func TestVerifyAfterReset(t *testing.T) {
 	}
 	write(10)
 	d.writeFill(ctx, 10)
-	if _, err := d.verify(ctx, "redis_replicas", 2); err != nil {
+	if _, err := d.verify(ctx, "redis_replicas", 2, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := lost("redis_replicas"); got != 0 {
@@ -342,7 +354,7 @@ func TestVerifyRefilled(t *testing.T) {
 	}
 	write(100)
 	d.writeFill(ctx, 1000)
-	if _, err := d.verify(ctx, config.EventPeriodic, 0); err != nil {
+	if _, err := d.verify(ctx, config.EventPeriodic, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	write(30)
@@ -354,7 +366,7 @@ func TestVerifyRefilled(t *testing.T) {
 	write(10)
 	d.writeFill(ctx, 10)
 	m.Del(LedgerKey("x", 135))
-	if n, err := d.verify(ctx, config.EventReset, 3); err != nil || n != 1 {
+	if n, err := d.verify(ctx, config.EventReset, 3, false); err != nil || n != 1 {
 		t.Errorf("verify = %d, %v, want 1 lost", n, err)
 	}
 	if got := testutil.ToFloat64(mt.LostWrites.WithLabelValues("x", "ns", "operator", config.EventReset)); got != 1 {
@@ -373,7 +385,7 @@ func TestVerifyEvictable(t *testing.T) {
 	policy := "allkeys-lru"
 	fi.policy.Store(&policy)
 	d.cfg.Fill.SampleKeys = 50
-	if _, err := d.verify(ctx, "redis_memory", 1); err != nil {
+	if _, err := d.verify(ctx, "redis_memory", 1, false); err != nil {
 		t.Fatal(err)
 	}
 	// Evicted keys are expected; a wrong value isn't.
@@ -389,7 +401,7 @@ func TestVerifyTimeoutEndsMutation(t *testing.T) {
 	d.Begin()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	if _, err := d.Verify(ctx, "kill_master", 1); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := d.Verify(ctx, "kill_master", 1, false); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Verify: %v", err)
 	}
 	if d.mutating.Load() {

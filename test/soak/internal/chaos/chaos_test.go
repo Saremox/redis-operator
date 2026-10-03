@@ -25,12 +25,13 @@ type fakeObserver struct {
 	mu        sync.Mutex
 	failing   []string
 	ephemeral bool
+	volumes   bool
 }
 
 func (f *fakeObserver) Report() observer.Report {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return observer.Report{At: time.Now(), Quiet: len(f.failing) == 0, Failing: f.failing, Ephemeral: f.ephemeral}
+	return observer.Report{At: time.Now(), Quiet: len(f.failing) == 0, Failing: f.failing, Ephemeral: f.ephemeral, Volumes: f.volumes}
 }
 
 type fakeData struct {
@@ -46,9 +47,12 @@ func (f *fakeData) Begin() {
 	f.mutating = true
 }
 
-func (f *fakeData) Verify(_ context.Context, event string, step int) (int, error) {
+func (f *fakeData) Verify(_ context.Context, event string, step int, lossless bool) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if lossless {
+		event += " lossless"
+	}
 	f.calls = append(f.calls, "verify "+event)
 	f.mutating = false
 	return 0, nil
@@ -149,7 +153,7 @@ func TestActPausesMutators(t *testing.T) {
 	if lock.Disturbance() != "" || lock.Chaos() != "" {
 		t.Errorf("after the action: disturbance %q, chaos %q", lock.Disturbance(), lock.Chaos())
 	}
-	if !slices.Equal(data.calls, []string{"begin", "verify operator_restart"}) {
+	if !slices.Equal(data.calls, []string{"begin", "verify operator_restart lossless"}) {
 		t.Errorf("data calls %v", data.calls)
 	}
 	if v := testutil.ToFloat64(m.ChaosTotal.WithLabelValues("operator_restart", resultConverged)); v != 1 {

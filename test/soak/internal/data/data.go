@@ -55,18 +55,20 @@ type Data struct {
 	failedOver atomic.Bool
 	requests   chan *request
 
-	oom      prometheus.Counter
-	lost     *prometheus.CounterVec
-	verified *prometheus.CounterVec
+	oom        prometheus.Counter
+	lost       *prometheus.CounterVec
+	unexpected *prometheus.CounterVec
+	verified   *prometheus.CounterVec
 }
 
 type request struct {
-	ctx   context.Context
-	event string
-	step  int
-	done  chan struct{}
-	lost  int
-	err   error
+	ctx      context.Context
+	event    string
+	step     int
+	lossless bool
+	done     chan struct{}
+	lost     int
+	err      error
 }
 
 func New(in config.Instance, cfg *config.Config, master Master, a *auth.Source, m *metrics.Metrics, log *slog.Logger) *Data {
@@ -74,32 +76,34 @@ func New(in config.Instance, cfg *config.Config, master Master, a *auth.Source, 
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(in.Namespace + "/" + in.Name))
 	d := &Data{
-		in:       in,
-		cfg:      *in.Data,
-		timeout:  cfg.Probe.Timeout.Duration,
-		client:   prober.MasterService(in, cfg.Probe.Timeout.Duration, a).NewClient(prober.Pooled),
-		master:   master,
-		auth:     a,
-		rnd:      rand.New(rand.NewPCG(uint64(cfg.Mutation.Seed), h.Sum64())),
-		log:      log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
-		requests: make(chan *request),
-		oom:      m.OOMRejections.With(labels),
-		lost:     m.LostWrites.MustCurryWith(labels),
-		verified: m.LedgerVerified.MustCurryWith(labels),
+		in:         in,
+		cfg:        *in.Data,
+		timeout:    cfg.Probe.Timeout.Duration,
+		client:     prober.MasterService(in, cfg.Probe.Timeout.Duration, a).NewClient(prober.Pooled),
+		master:     master,
+		auth:       a,
+		rnd:        rand.New(rand.NewPCG(uint64(cfg.Mutation.Seed), h.Sum64())),
+		log:        log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
+		requests:   make(chan *request),
+		oom:        m.OOMRejections.With(labels),
+		lost:       m.LostWrites.MustCurryWith(labels),
+		unexpected: m.UnexpectedLost.MustCurryWith(labels),
+		verified:   m.LedgerVerified.MustCurryWith(labels),
 	}
 	if in.Data.Ledger != nil {
 		d.ledger = newLedger()
 	}
-	initEvents(d.lost, cfg, in)
+	initEvents(cfg, in, d.lost, d.unexpected)
 	return d
 }
 
-// initEvents creates the lost_writes_total series of each event at 0, because
-// the alerts use their increase, which does not show a series that starts
-// above 0.
-func initEvents(lost *prometheus.CounterVec, cfg *config.Config, in config.Instance) {
+// initEvents creates the series of each event at 0, because the alerts use
+// their increase, which does not show a series that starts above 0.
+func initEvents(cfg *config.Config, in config.Instance, counters ...*prometheus.CounterVec) {
 	for _, e := range cfg.Events(in) {
-		lost.WithLabelValues(e)
+		for _, c := range counters {
+			c.WithLabelValues(e)
+		}
 	}
 }
 
@@ -141,16 +145,17 @@ func (d *Data) Refill() {
 
 // Verify verifies the data after a mutation and ends the mutation. event is
 // the kind of the mutation, or config.EventReset for a mutation that loses the
-// data by design. It returns the number of lost writes, or an error if ctx is
-// done before the verification.
-func (d *Data) Verify(ctx context.Context, event string, step int) (int, error) {
+// data by design. Lost writes of a lossless event are unexpected. Verify
+// returns the number of lost writes, or an error if ctx is done before the
+// verification.
+func (d *Data) Verify(ctx context.Context, event string, step int, lossless bool) (int, error) {
 	// The verifier does not get the request if ctx is done first.
 	defer d.mutating.Store(false)
-	return verifyAfter(ctx, d.requests, event, step)
+	return verifyAfter(ctx, d.requests, &request{ctx: ctx, event: event, step: step, lossless: lossless})
 }
 
-func verifyAfter(ctx context.Context, requests chan<- *request, event string, step int) (int, error) {
-	r := &request{ctx: ctx, event: event, step: step, done: make(chan struct{})}
+func verifyAfter(ctx context.Context, requests chan<- *request, r *request) (int, error) {
+	r.done = make(chan struct{})
 	select {
 	case requests <- r:
 	case <-ctx.Done():
@@ -176,26 +181,26 @@ func (d *Data) runVerifier(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case r := <-d.requests:
-			r.lost, r.err = d.verifyRetrying(r.ctx, r.event, r.step)
+			r.lost, r.err = d.verifyRetrying(r.ctx, r.event, r.step, r.lossless)
 			d.mutating.Store(false)
 			close(r.done)
 		case event := <-d.master.Failovers():
 			d.failedOver.Store(true)
 			if !d.mutating.Load() {
-				_, _ = d.verifyRetrying(ctx, event, 0)
+				_, _ = d.verifyRetrying(ctx, event, 0, false)
 			}
 		case <-periodic:
 			if !d.mutating.Load() {
-				_, _ = d.verifyRetrying(ctx, config.EventPeriodic, 0)
+				_, _ = d.verifyRetrying(ctx, config.EventPeriodic, 0, false)
 			}
 		}
 	}
 }
 
 // verifyRetrying verifies until it succeeds or ctx is done.
-func (d *Data) verifyRetrying(ctx context.Context, event string, step int) (int, error) {
+func (d *Data) verifyRetrying(ctx context.Context, event string, step int, lossless bool) (int, error) {
 	for attempt := 1; ; attempt++ {
-		lost, err := d.verify(ctx, event, step)
+		lost, err := d.verify(ctx, event, step, lossless)
 		if err == nil || ctx.Err() != nil {
 			return lost, err
 		}
@@ -212,7 +217,7 @@ var errNoMaster = errors.New("no single master")
 
 // verify checks the writes acknowledged since the previous verification,
 // a sample of older ones and a sample of fill keys on the master.
-func (d *Data) verify(ctx context.Context, event string, step int) (int, error) {
+func (d *Data) verify(ctx context.Context, event string, step int, lossless bool) (int, error) {
 	addr := d.master.MasterAddr()
 	if addr == "" {
 		return 0, errNoMaster
@@ -274,8 +279,11 @@ func (d *Data) verify(ctx context.Context, event string, step int) (int, error) 
 
 	lost := len(lostRecent) + len(lostOlder) + len(lostFill)
 	d.lost.WithLabelValues(event).Add(float64(lost))
+	if lossless {
+		d.unexpected.WithLabelValues(event).Add(float64(lost))
+	}
 	d.verified.WithLabelValues(event).Inc()
-	log := d.log.With("event", event, "step", step, "failover", d.failedOver.Swap(false),
+	log := d.log.With("event", event, "step", step, "lossless", lossless, "failover", d.failedOver.Swap(false),
 		"recent", count(r.recent), "recent_seqs", format(r.recent), "older", len(r.older), "fill", len(fillSeqs),
 		"lost", lost, "duration_seconds", time.Since(start).Seconds())
 	if lost > 0 {

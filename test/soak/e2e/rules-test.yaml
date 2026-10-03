@@ -66,11 +66,14 @@ tests:
         values: '0 0 1x8'
       - series: 'redis_soak_chaos_total{kind="operator_restart",result="converged"}'
         values: '0+1x10'
-      - series: 'redis_soak_lost_writes_total{rf="a",namespace="a",mode="operator",event="operator_upgrade"}'
+      # A graceful master kill on volumes must lose none.
+      - series: 'redis_soak_unexpected_lost_writes_total{rf="a",namespace="a",mode="operator",event="kill_master"}'
         values: '0 0 3x8'
-      # Async replication may lose writes in a failover.
-      - series: 'redis_soak_lost_writes_total{rf="a",namespace="a",mode="operator",event="kill_master_force"}'
+      # A drain on emptyDir may lose writes to asynchronous replication.
+      - series: 'redis_soak_lost_writes_total{rf="b",namespace="b",mode="operator",event="node_drain"}'
         values: '0 0 3x8'
+      - series: 'redis_soak_unexpected_lost_writes_total{rf="b",namespace="b",mode="operator",event="node_drain"}'
+        values: '0x10'
       - series: 'redis_soak_version_transition_total{rf="edge",namespace="edge",mode="operator",from="redis-8",to="valkey-9",expect="unknown",result="failed_unsafe"}'
         values: '1x10'
       - series: 'redis_soak_version_transition_total{rf="edge",namespace="edge",mode="operator",from="redis-8",to="valkey-8",expect="unknown",result="failed_safe"}'
@@ -97,9 +100,9 @@ tests:
       - eval_time: 2m
         alertname: RedisSoakLostWritesLossless
         exp_alerts:
-          - exp_labels: {severity: critical, rf: a, namespace: a, mode: operator, event: operator_upgrade}
+          - exp_labels: {severity: critical, rf: a, namespace: a, mode: operator, event: kill_master}
             exp_annotations:
-              summary: "a/a lost acknowledged writes in a operator_upgrade, which should lose none."
+              summary: "a/a lost acknowledged writes in a kill_master, which should lose none."
       - eval_time: 2m
         alertname: RedisSoakVersionTransitionUnsafe
         exp_alerts:
