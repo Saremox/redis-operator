@@ -49,12 +49,22 @@ func (m *Mutator) rotateOffline(ctx context.Context, o *offline, log *slog.Logge
 		}
 		return err
 	}
+	// Start the operator again with its replicas, for example two with
+	// leader election.
+	d, err := m.kube.AppsV1().Deployments(m.operator.Namespace).Get(ctx, m.operator.Deployment, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	replicas := int32(1)
+	if d.Spec.Replicas != nil {
+		replicas = *d.Spec.Replicas
+	}
 	m.lock.Disturb(operatorStopped)
 	running := false
 	defer func() {
 		if !running {
 			// Never leave the operator stopped.
-			err = errors.Join(err, m.scaleOperator(context.WithoutCancel(ctx), 1))
+			err = errors.Join(err, m.scaleOperator(context.WithoutCancel(ctx), replicas))
 		}
 		m.lock.Disturb("")
 	}()
@@ -64,7 +74,7 @@ func (m *Mutator) rotateOffline(ctx context.Context, o *offline, log *slog.Logge
 	if err := phase("rotate the password", func() error { return m.setPassword(ctx, o.secret, o.first) }); err != nil {
 		return err
 	}
-	if err := phase("start the operator", func() error { return m.scaleOperator(ctx, 1) }); err != nil {
+	if err := phase("start the operator", func() error { return m.scaleOperator(ctx, replicas) }); err != nil {
 		return err
 	}
 	running = true
@@ -105,8 +115,7 @@ func (m *Mutator) rotateOffline(ctx context.Context, o *offline, log *slog.Logge
 // at all.
 func (m *Mutator) scaleOperator(ctx context.Context, replicas int32) error {
 	body := fmt.Appendf(nil, `{"spec":{"replicas":%d}}`, replicas)
-	err := m.kube.AppsV1().RESTClient().Patch(types.MergePatchType).Namespace(m.operator.Namespace).
-		Resource("deployments").Name(m.operator.Deployment).SubResource("scale").Body(body).Do(ctx).Error()
+	_, err := m.kube.AppsV1().Deployments(m.operator.Namespace).Patch(ctx, m.operator.Deployment, types.MergePatchType, body, metav1.PatchOptions{}, "scale")
 	if err != nil {
 		return err
 	}
