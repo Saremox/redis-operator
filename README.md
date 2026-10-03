@@ -174,7 +174,8 @@ Setting `redis.preventMasterEviction: true` makes the operator annotate the curr
 `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` (and mark slaves `"true"`), so the
 cluster-autoscaler will not drain the node running the master and trigger an avoidable failover. The
 annotation follows the master as it moves. Defaults to `false`. When it is `false`, the operator
-removes the annotation from the pods, or sets the value from `redis.podAnnotations`.
+sets the value from `redis.podAnnotations`, or removes the value `"false"`. It keeps a `"true"`,
+because a policy or the user can set it.
 
 ### Sentinel update strategy and PodDisruptionBudget
 

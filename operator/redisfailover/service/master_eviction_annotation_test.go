@@ -90,6 +90,14 @@ func TestApplyMasterEvictionAnnotationFlagOff(t *testing.T) {
 		ms.AssertExpectations(t)
 	})
 
+	t.Run("keeps a true that the operator did not set", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		pod := podNamed("p0", map[string]string{masterSafeToEvictAnnotation: "true"})
+
+		assert.NoError(t, applyMasterEvictionAnnotation(ms, rfWithEvictionProtection(false), pod, false))
+		ms.AssertNotCalled(t, "RemovePodAnnotation", mock.Anything, mock.Anything, mock.Anything)
+	})
+
 	t.Run("no call when the pod has the value from podAnnotations", func(t *testing.T) {
 		rf := rfWithEvictionProtection(false)
 		rf.Spec.Redis.PodAnnotations = map[string]string{masterSafeToEvictAnnotation: "false"}

@@ -142,9 +142,9 @@ func applyMasterEvictionAnnotation(k8sService k8s.Services, rf *redisfailoverv1.
 }
 
 // resetMasterEvictionAnnotation gives the pod the safe-to-evict value from
-// spec.redis.podAnnotations, or removes the annotation. A "false" that stays
+// spec.redis.podAnnotations, or removes the master pin "false". A pin that stays
 // after the user turns preventMasterEviction off blocks the node drains of the
-// cluster autoscaler.
+// cluster autoscaler. A "true" can come from a policy or the user, so it stays.
 func resetMasterEvictionAnnotation(k8sService k8s.Services, rf *redisfailoverv1.RedisFailover, pod corev1.Pod) error {
 	current, present := pod.Annotations[masterSafeToEvictAnnotation]
 	if desired, ok := rf.Spec.Redis.PodAnnotations[masterSafeToEvictAnnotation]; ok {
@@ -153,7 +153,7 @@ func resetMasterEvictionAnnotation(k8sService k8s.Services, rf *redisfailoverv1.
 		}
 		return k8sService.UpdatePodAnnotations(rf.Namespace, pod.Name, map[string]string{masterSafeToEvictAnnotation: desired})
 	}
-	if !present {
+	if !present || current != "false" {
 		return nil
 	}
 	return k8sService.RemovePodAnnotation(rf.Namespace, pod.Name, masterSafeToEvictAnnotation)
