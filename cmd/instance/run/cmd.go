@@ -121,7 +121,8 @@ func runInstance(cmd *cobra.Command, args []string) error {
 	healthServer = NewHealthServer(healthPort, redisPort, redisPassword)
 	healthServer.SetCleanupDone(cleanupErr == nil)
 	if err := healthServer.Start(ctx); err != nil {
-		fmt.Printf("redis-instance: warning: failed to start health server: %v\n", err)
+		// Without the health endpoints the probes fail for ever, so stop here.
+		return fmt.Errorf("failed to start health server: %w", err)
 	}
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)

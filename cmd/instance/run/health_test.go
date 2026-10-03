@@ -3,6 +3,8 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -276,15 +278,15 @@ func TestHealthServerStatus(t *testing.T) {
 
 	h.mu.Lock()
 	h.cachedInfo = map[string]string{
-		"role":                   "master",
-		"connected_clients":      "15",
-		"used_memory":            "2048000",
-		"used_memory_human":      "2M",
-		"loading":                "0",
-		"rdb_bgsave_in_progress": "0",
+		"role":                    "master",
+		"connected_clients":       "15",
+		"used_memory":             "2048000",
+		"used_memory_human":       "2M",
+		"loading":                 "0",
+		"rdb_bgsave_in_progress":  "0",
 		"aof_rewrite_in_progress": "0",
-		"connected_slaves":       "2",
-		"master_repl_offset":     "99999",
+		"connected_slaves":        "2",
+		"master_repl_offset":      "99999",
 	}
 	h.mu.Unlock()
 
@@ -383,4 +385,60 @@ func TestHealthServerStartStop(t *testing.T) {
 	defer stopCancel()
 	err = h.Stop(stopCtx)
 	assert.NoError(t, err)
+}
+
+func TestHealthServerStartReturnsBindError(t *testing.T) {
+	occupied, err := net.Listen("tcp", ":0")
+	require.NoError(t, err)
+	defer func() { _ = occupied.Close() }()
+
+	tests := []struct {
+		name string
+		port int
+	}{
+		{"port in use", occupied.Addr().(*net.TCPAddr).Port},
+		{"invalid port", 70000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			h := NewHealthServer(tt.port, "6379", "")
+			err := h.Start(ctx)
+			if err == nil {
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer stopCancel()
+				_ = h.Stop(stopCtx)
+			}
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestHealthServerStartServesHealthz(t *testing.T) {
+	// Port "0" makes the Redis ping fail, so /healthz reports unhealthy.
+	h := NewHealthServer(0, "0", "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, h.Start(ctx))
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		assert.NoError(t, h.Stop(stopCtx))
+	}()
+
+	port := h.listenAddr.(*net.TCPAddr).Port
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+
+	var body HealthResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "unhealthy", body.Status)
 }
