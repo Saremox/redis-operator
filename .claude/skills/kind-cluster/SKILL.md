@@ -65,7 +65,8 @@ helm upgrade --install redis-operator ./charts/redisoperator \
 ```
 
 - `docker/app/Dockerfile` fails here, because `apk add` can't reach the
-  package mirrors. `build-image.sh` builds the binary on the host instead.
+  package mirrors. `build-image.sh` builds the binaries on the host and uses
+  the runtime stage of the Dockerfile.
 - Install helm with `GOBIN=/usr/local/bin go install helm.sh/helm/v3/cmd/helm@v3.19.0`
   if it's missing.
 - `.github/workflows/e2e.yml` has a RedisFailover manifest and checks you

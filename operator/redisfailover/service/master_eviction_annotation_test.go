@@ -66,6 +66,50 @@ func TestApplyMasterEvictionAnnotation(t *testing.T) {
 	})
 }
 
+// TestApplyMasterEvictionAnnotationFlagOff covers a pod that the operator
+// pinned before the user turned preventMasterEviction off. A pin that stays
+// blocks the node drains of the cluster autoscaler.
+func TestApplyMasterEvictionAnnotationFlagOff(t *testing.T) {
+	t.Run("removes the pin of a former master", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("RemovePodAnnotation", "testns", "p0", masterSafeToEvictAnnotation).Once().Return(nil)
+		pod := podNamed("p0", map[string]string{masterSafeToEvictAnnotation: "false"})
+
+		assert.NoError(t, applyMasterEvictionAnnotation(ms, rfWithEvictionProtection(false), pod, true))
+		ms.AssertExpectations(t)
+	})
+
+	t.Run("sets back the value from podAnnotations", func(t *testing.T) {
+		rf := rfWithEvictionProtection(false)
+		rf.Spec.Redis.PodAnnotations = map[string]string{masterSafeToEvictAnnotation: "true"}
+		ms := &mK8SService.Services{}
+		ms.On("UpdatePodAnnotations", "testns", "p0", map[string]string{masterSafeToEvictAnnotation: "true"}).Once().Return(nil)
+		pod := podNamed("p0", map[string]string{masterSafeToEvictAnnotation: "false"})
+
+		assert.NoError(t, applyMasterEvictionAnnotation(ms, rf, pod, true))
+		ms.AssertExpectations(t)
+	})
+
+	t.Run("keeps a true that the operator did not set", func(t *testing.T) {
+		ms := &mK8SService.Services{}
+		pod := podNamed("p0", map[string]string{masterSafeToEvictAnnotation: "true"})
+
+		assert.NoError(t, applyMasterEvictionAnnotation(ms, rfWithEvictionProtection(false), pod, false))
+		ms.AssertNotCalled(t, "RemovePodAnnotation", mock.Anything, mock.Anything, mock.Anything)
+	})
+
+	t.Run("no call when the pod has the value from podAnnotations", func(t *testing.T) {
+		rf := rfWithEvictionProtection(false)
+		rf.Spec.Redis.PodAnnotations = map[string]string{masterSafeToEvictAnnotation: "false"}
+		ms := &mK8SService.Services{}
+		pod := podNamed("p0", map[string]string{masterSafeToEvictAnnotation: "false"})
+
+		assert.NoError(t, applyMasterEvictionAnnotation(ms, rf, pod, false))
+		ms.AssertNotCalled(t, "UpdatePodAnnotations", mock.Anything, mock.Anything, mock.Anything)
+		ms.AssertNotCalled(t, "RemovePodAnnotation", mock.Anything, mock.Anything, mock.Anything)
+	})
+}
+
 func TestSetSlaveLabelMarksSlavesEvictable(t *testing.T) {
 	ms := &mK8SService.Services{}
 	ms.On("UpdatePodAnnotations", "testns", "p1", map[string]string{

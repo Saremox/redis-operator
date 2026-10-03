@@ -51,6 +51,9 @@ jobs:
         id: floating
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # With pipefail, a failed release listing stops the job. Without it,
+        # release.sh sees no releases and moves latest to this release.
+        shell: bash
         run: |
           gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq '.[] | select(.draft | not) | .tag_name' \
             | ./scripts/release.sh floating "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
@@ -187,6 +190,8 @@ jobs:
         id: relinfo
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # pipefail, as in the floating step of the image job.
+        shell: bash
         run: |
           TAG="${GITHUB_REF_NAME}"
 
@@ -199,13 +204,7 @@ jobs:
             exit 1
           fi
 
-          # Last FULL release tag before this one (rc tags never count as a
-          # baseline, so both full and rc releases changelog against the
-          # same "last full release" point of reference).
-          PREV_TAG=$(git tag --list --sort=-v:refname \
-            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-            | grep -v -x "$TAG" \
-            | head -n1 || true)
+          PREV_TAG=$(git tag --list | ./scripts/release.sh previous "$TAG")
           echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
           echo "Previous full release: ${PREV_TAG:-<none>}"
           gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq '.[] | select(.draft | not) | .tag_name' \
@@ -267,13 +266,14 @@ jobs:
           helm package "${CHART_PATH}" --destination release-artifacts
           echo "CHART_PACKAGE=$(ls release-artifacts/*.tgz)" >> "$GITHUB_ENV"
 
+      # The base has no ServiceAccount and no RBAC, so the asset uses an overlay.
       - name: Generate deployment manifests
         run: |
-          cd manifests/kustomize/base
+          cd manifests/kustomize/overlays/default
           kustomize edit set image ghcr.io/saremox/redis-operator=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
-          cd ../../..
+          cd ../../../..
 
-          kustomize build manifests/kustomize/base > release-artifacts/redis-operator.yaml
+          kustomize build manifests/kustomize/overlays/default > release-artifacts/redis-operator.yaml
           cp -r manifests/*.yaml release-artifacts/ 2>/dev/null || true
 
       - name: Create Release

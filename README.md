@@ -91,6 +91,10 @@ To install the operator with default settings and every necessary resource (incl
 kustomize build github.com/Saremox/redis-operator/manifests/kustomize/overlays/default
 ```
 
+The overlays install the operator in the `default` namespace, because the ClusterRoleBinding must name the namespace of the ServiceAccount. The `redis-operator.yaml` file of each GitHub release contains the `default` overlay. To use a different namespace, set `namespace:` in your own `kustomization.yaml`, as in the example below. `kubectl apply -n <namespace>` does not work with these files.
+
+Run only one operator in a cluster. Each operator takes the leader lease in its own namespace, so two operators in different namespaces both change the RedisFailovers. When you move the operator to a different namespace, delete the old operator Deployment.
+
 The `minimal` overlay is the `default` overlay without the resource limits. It also creates the RBAC and the service account. To use your own RBAC or service account, use the `base` and the [components](manifests/kustomize/components) in your own kustomization.
 
 Finally, you can install the `full` overlay if you want everything this operator has to offer, including Prometheus ServiceMonitor resources.
@@ -147,6 +151,8 @@ The wait starts at the first missed check. The operator records this time on the
 
 The operator does not replace a master that answers no check while its pod is ready, because a promotion can then give two masters. When the pod becomes not ready, the operator promotes a replica after the timeout. When the operator finds no master, for example because its pod is gone, it elects a master immediately. A master pod in deletion gets a wait while it is ready, because it can still accept writes.
 
+An old master that did not answer during a failover can come back as a second master. The operator then makes it a replica of the pod labelled master, because that label shows the master that the operator elected. If the elected master also does not answer when the old master comes back, the operator can move the label back to the old master. Then the writes since the failover are lost. The operator also closes the client connections of the old master, because after `REPLICAOF` their writes fail with `READONLY` until the clients connect again. The flag `--disconnect-clients-on-demotion=false` keeps them open. When the label does not identify one master, the status shows `multiple masters detected, fix manually`.
+
 This redis-failover will be managed by the operator, resulting in the following elements created inside Kubernetes:
 
 - `rfr-<NAME>`: Redis configmap
@@ -173,7 +179,9 @@ Sentinels run when `spec.sentinel.enabled` is `true`. With `bootstrapNode`, they
 Setting `redis.preventMasterEviction: true` makes the operator annotate the current master pod with
 `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` (and mark slaves `"true"`), so the
 cluster-autoscaler will not drain the node running the master and trigger an avoidable failover. The
-annotation follows the master as it moves. Defaults to `false` (no annotation is managed).
+annotation follows the master as it moves. Defaults to `false`. When it is `false`, the operator
+sets the value from `redis.podAnnotations`, or removes the value `"false"`. It keeps a `"true"`,
+because a policy or the user can set it.
 
 ### Sentinel update strategy and PodDisruptionBudget
 
@@ -201,7 +209,13 @@ The operator can add persistence to Redis data. By default, an `emptyDir` will b
 
 To have persistence, a `PersistentVolumeClaim` usage is allowed. The full [PVC definition has to be added](example/redisfailover/persistent-storage.yaml) to the Redis Failover Spec under the `Storage` section.
 
-**IMPORTANT**: By default, the persistent volume claims will be deleted when the Redis Failover is. If this is not the expected usage, a `keepAfterDeletion` flag can be added under the `storage` section of Redis. [An example is given](example/redisfailover/persistent-storage-no-pvc-deletion.yaml).
+**IMPORTANT**: By default, the persistent volume claims will be deleted when the Redis Failover is. If this is not the expected usage, a `keepAfterDeletion` flag can be added under the `storage` section of Redis. [An example is given](example/redisfailover/persistent-storage-no-pvc-deletion.yaml). When you add the flag to an existing Redis Failover, the operator removes the owner reference of the Redis Failover from its PVCs. When you remove the flag again, the operator does not add the owner reference back, so these PVCs stay after the Redis Failover is deleted.
+
+The operator removes the owner reference in its next reconcile. Before you delete the Redis Failover, check that no PVC shows the owner `RedisFailover`. Replace `<NAME>` with the name of the Redis Failover:
+
+```bash
+kubectl get pvc -l app.kubernetes.io/component=redis,app.kubernetes.io/name=<NAME> -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.ownerReferences[*].kind}{"\n"}{end}'
+```
 
 ### NodeAffinity and Tolerations
 
@@ -222,7 +236,17 @@ To have the ability of this configuration to be changed "on the fly," without th
 - Configuration on the `sentinel.conf`: `sentinel down-after-milliseconds mymaster 2000`
 - Configuration on the `customConfig`: `down-after-milliseconds 2000`
 
+The operator adds `down-after-milliseconds 5000` and `failover-timeout 10000` to the Sentinel `customConfig`, unless `customConfig` sets that option. Thus all the Sentinels use the same timeouts, also after a restart. The operator applies these values to the running Sentinels at the next reconcile, also after an upgrade, without a restart. To use the Sentinel built-in values, set `down-after-milliseconds 30000` and `failover-timeout 180000`. The [4.2.0 migration guide](docs/migrations/4.2.0.md) tells which RedisFailovers get new values on the upgrade to 4.2.0.
+
 **Important 2**: do **NOT** change the options used for control the redis/sentinel such as `port`, `bind`, `dir`, etc.
+
+Validation rejects a `redis.customCommandRenames` entry for a command that the RedisFailover needs:
+
+- `AUTH`, `CLIENT`, `CONFIG`, `INFO`, `PING`, `PSYNC`, `REPLCONF`, `REPLICAOF` and `SLAVEOF`. The operator, the pod scripts or the replicas send them.
+- `EXEC`, `MULTI`, `PUBLISH` and `SUBSCRIBE` when Sentinels run. Sentinel sends them.
+- `ACL` when `redis.customConfig` sets `aclfile`. The operator sends `ACL LOAD` to apply the file.
+
+The operator does not reconcile a RedisFailover that fails validation. The status shows `NotHealthy` and the error.
 
 ### Managed maxmemory
 

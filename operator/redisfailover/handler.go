@@ -127,6 +127,7 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 
 	if err := rf.Validate(); err != nil {
 		r.mClient.SetClusterError(rf.Namespace, rf.Name)
+		r.reportInvalid(rf, err)
 		return err
 	}
 
@@ -177,6 +178,24 @@ func (r *RedisFailoverHandler) getLabels(rf *redisfailoverv1.RedisFailover) map[
 		filteredCustomLabels = rf.Labels
 	}
 	return util.MergeLabels(defaultLabels, dynLabels, filteredCustomLabels)
+}
+
+// reportInvalid shows the validation error in the status. The operator does
+// not reconcile an invalid RedisFailover, so the last status can be wrong.
+func (r *RedisFailoverHandler) reportInvalid(rf *redisfailoverv1.RedisFailover, err error) {
+	status := redisfailoverv1.RedisFailoverStatus{
+		State:       redisfailoverv1.NotHealthyState,
+		Message:     err.Error(),
+		LastChanged: rf.Status.LastChanged,
+	}
+	if rf.Status == status {
+		return
+	}
+	if rf.Status.State != status.State {
+		status.LastChanged = time.Now().Format(time.RFC3339)
+	}
+	rf.Status = status
+	r.k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 }
 
 func (r *RedisFailoverHandler) createOwnerReferences(rf *redisfailoverv1.RedisFailover) []metav1.OwnerReference {

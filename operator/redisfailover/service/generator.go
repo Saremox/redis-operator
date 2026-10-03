@@ -36,11 +36,6 @@ rename-command "{{.From}}" "{{.To}}"
 {{- end}}
 `
 
-	sentinelConfigTemplate = `sentinel monitor mymaster 127.0.0.1 {{.Spec.Redis.Port}} 2
-sentinel down-after-milliseconds mymaster 1000
-sentinel failover-timeout mymaster 3000
-sentinel parallel-syncs mymaster 2`
-
 	redisShutdownConfigurationVolumeName   = "redis-shutdown-config"
 	redisStartupConfigurationVolumeName    = "redis-startup-config"
 	redisReadinessVolumeName               = "redis-readiness-config"
@@ -49,6 +44,16 @@ sentinel parallel-syncs mymaster 2`
 
 	graceTime = 30
 )
+
+// sentinelConfigTemplate monitors a placeholder master. The operator replaces
+// that monitor with SENTINEL MONITOR, which uses the Sentinel built-in
+// timeouts, and then applies customConfig. Thus the timeouts here apply only to
+// the placeholder. They are the customConfig defaults, so that each timeout has
+// one value in the code.
+var sentinelConfigTemplate = fmt.Sprintf(`sentinel monitor mymaster 127.0.0.1 {{.Spec.Redis.Port}} 2
+sentinel down-after-milliseconds mymaster %d
+sentinel failover-timeout mymaster %d
+sentinel parallel-syncs mymaster 2`, redisfailoverv1.DefaultSentinelDownAfterMilliseconds, redisfailoverv1.DefaultSentinelFailoverTimeoutMilliseconds)
 
 func generateSentinelService(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.Service {
 	name := GetSentinelName(rf)
@@ -366,8 +371,8 @@ func redisReadinessMaxLinkDownSeconds(rf *redisfailoverv1.RedisFailover) int64 {
 	if rf.OperatorManagedFailover() {
 		window += rf.GetFailoverTimeoutDuration()
 	} else {
-		window += sentinelConfigMilliseconds(rf, "down-after-milliseconds", 5000)
-		window += sentinelConfigMilliseconds(rf, "failover-timeout", 10000)
+		window += sentinelConfigMilliseconds(rf, "down-after-milliseconds", redisfailoverv1.DefaultSentinelDownAfterMilliseconds)
+		window += sentinelConfigMilliseconds(rf, "failover-timeout", redisfailoverv1.DefaultSentinelFailoverTimeoutMilliseconds)
 	}
 	return int64(window.Round(time.Second) / time.Second)
 }
@@ -378,7 +383,7 @@ func sentinelConfigMilliseconds(rf *redisfailoverv1.RedisFailover, param string,
 	ms := def
 	for _, c := range rf.Spec.Sentinel.CustomConfig {
 		s := strings.Split(c, " ")
-		if len(s) != 2 || s[0] != param {
+		if len(s) != 2 || !strings.EqualFold(s[0], param) {
 			continue
 		}
 		if v, err := strconv.ParseInt(s[1], 10, 64); err == nil && v >= 0 {
@@ -484,6 +489,9 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 	redisCommand := getRedisCommand(rf)
 	selectorLabels := generateSelectorLabels(redisRoleName, rf.Name)
 	labels = util.MergeLabels(labels, selectorLabels)
+	// The operator changes the role label of the master pod, so a pod
+	// anti-affinity that matches on it does not count the master.
+	affinityLabels := labels
 	labels = util.MergeLabels(labels, generateRedisDefaultRoleLabel())
 
 	mac := hmac.New(sha256.New, []byte(rf.Namespace+"/"+rf.Name))
@@ -521,7 +529,7 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					Affinity:                      getAffinity(rf.Spec.Redis.Affinity, labels),
+					Affinity:                      getAffinity(rf.Spec.Redis.Affinity, affinityLabels),
 					Tolerations:                   rf.Spec.Redis.Tolerations,
 					TopologySpreadConstraints:     rf.Spec.Redis.TopologySpreadConstraints,
 					NodeSelector:                  rf.Spec.Redis.NodeSelector,
@@ -602,7 +610,11 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 						"sh",
 						"-c",
 						// Bounded like ready.sh: a frozen server never answers.
-						fmt.Sprintf("t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p %[1]v --user pinger --pass pingpass --no-auth-warning ping | grep PONG", rf.Spec.Redis.Port),
+						// redis-cli exits 0 on an error reply. With a Redis password,
+						// a refused login gets NOAUTH, and the grep fails the probe.
+						// A server that loads its dataset answers LOADING and is
+						// alive: a restart starts the load again.
+						fmt.Sprintf("t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p %[1]v --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'", rf.Spec.Redis.Port),
 					},
 				},
 			},

@@ -4,9 +4,9 @@
 #
 # Usage: build-image.sh [TAG]   (default TAG: dev)
 #
-# docker/app/Dockerfile can't be used in the sandbox: its `apk add` steps have
-# no route to the package mirrors. Build the binary on the host instead and
-# copy it into the same alpine base with the same non-root user.
+# The build stage of docker/app/Dockerfile can't run in the sandbox: its
+# `apk add` has no route to the package mirrors. Build the binaries on the
+# host with scripts/build.sh instead, and use the runtime stage as it is.
 set -euo pipefail
 
 tag=${1:-dev}
@@ -15,15 +15,11 @@ here=$(cd "$(dirname "$0")" && pwd)
 ctx=$(mktemp -d)
 trap 'rm -rf "$ctx"' EXIT
 
-(cd "$repo" && CGO_ENABLED=0 go build -o "$ctx/redis-operator" -ldflags "-w" ./cmd/redisoperator)
-cat >"$ctx/Dockerfile" <<'EOF'
-FROM alpine:latest
-COPY redis-operator /usr/local/bin/redis-operator
-RUN addgroup -g 1000 rf && adduser -D -u 1000 -G rf rf
-USER rf
-ENTRYPOINT ["/usr/local/bin/redis-operator"]
-EOF
-# docker build pulls a missing base image straight from Docker Hub.
-"$here/registry.sh" pull alpine:latest
+(cd "$repo" && ./scripts/build.sh >/dev/null)
+mkdir -p "$ctx/src"
+cp -r "$repo/bin" "$ctx/src/"
+awk '/^FROM /{n++} n==2' "$repo/docker/app/Dockerfile" |
+  sed 's#COPY --from=build #COPY #' >"$ctx/Dockerfile"
+"$here/registry.sh" pull "$(awk '/^FROM /{print $2}' "$ctx/Dockerfile")"
 docker build -q -t "redis-operator:$tag" "$ctx" >/dev/null
 "$here/registry.sh" push "redis-operator:$tag"

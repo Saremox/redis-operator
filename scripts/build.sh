@@ -13,9 +13,13 @@ else
     echo "Building native release..."
 fi
 
-ldf_cmp="-w -extldflags '-static'"
-f_ver="-X main.Version=${VERSION:-dev}"
+ldf_cmp="-s -w -extldflags '-static'"
+f_ver="-X github.com/saremox/redis-operator/version.Version=${VERSION:-dev}"
 
 # Build the operator binary
 echo "Building redis-operator binary at ./bin/redis-operator"
-CGO_ENABLED=0 go build -o ./bin/redis-operator --ldflags "${ldf_cmp} ${f_ver}" ./cmd/redisoperator
+CGO_ENABLED=0 go build -trimpath -o ./bin/redis-operator --ldflags "${ldf_cmp} ${f_ver}" ./cmd/redisoperator
+
+# Build the instance manager binary
+echo "Building redis-instance binary at ./bin/redis-instance"
+CGO_ENABLED=0 go build -trimpath -o ./bin/redis-instance --ldflags "${ldf_cmp} ${f_ver}" ./cmd/instance

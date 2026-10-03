@@ -68,9 +68,10 @@ func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, na
 	// omitting an empty Message here would leave a stale one from a previous
 	// status on the server.
 	//
-	// The marshal error is ignored (matching pod.go's UpdatePodLabels, which
-	// does the same for its own JSON Patch payload): every value here is a
-	// plain string, and json.Marshal cannot fail on a map of strings.
+	// The marshal error is ignored (matching pod.go's UpdatePodLabels and
+	// UpdatePodAnnotations, which do the same for their merge patches): every
+	// value here is a plain string, and json.Marshal cannot fail on a map of
+	// strings.
 	patch := map[string]interface{}{
 		"status": map[string]interface{}{
 			"state":       rf.Status.State,

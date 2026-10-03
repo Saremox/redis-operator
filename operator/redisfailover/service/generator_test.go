@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,8 +20,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8slabels "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
@@ -889,6 +892,9 @@ func TestSentinelDeploymentServiceAccountName(t *testing.T) {
 			ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
 			if test.expectServiceAccountCreated {
 				ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
+			} else {
+				autoName := rfservice.GetSentinelServiceAccountName(rf)
+				ms.On("GetServiceAccount", namespace, autoName).Once().Return(nil, apierrors.NewNotFound(corev1.Resource("serviceaccounts"), autoName))
 			}
 			ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 				d := args.Get(1).(*appsv1.Deployment)
@@ -2604,7 +2610,7 @@ func TestRedisCustomLivenessProbe(t *testing.T) {
 						Command: []string{
 							"sh",
 							"-c",
-							"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep PONG",
+							"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'",
 						},
 					},
 				},
@@ -3274,11 +3280,11 @@ func TestEnsureSentinelConfigMapContent(t *testing.T) {
 
 	assert.NoError(err)
 	if assert.NotNil(gotCM) {
-		// This pins down the current fixed sentinel.conf values so a future
-		// accidental change to the template is caught.
+		// The timeouts must be the sentinel customConfig defaults. Otherwise a
+		// restarted Sentinel disagrees with the other Sentinels.
 		expected := `sentinel monitor mymaster 127.0.0.1 6379 2
-sentinel down-after-milliseconds mymaster 1000
-sentinel failover-timeout mymaster 3000
+sentinel down-after-milliseconds mymaster 5000
+sentinel failover-timeout mymaster 10000
 sentinel parallel-syncs mymaster 2`
 		assert.Equal(expected, gotCM.Data["sentinel.conf"])
 	}
@@ -3686,6 +3692,8 @@ func TestRedisReadinessScript(t *testing.T) {
 // TestProbeCommands runs the default Redis and Sentinel liveness commands and
 // the Sentinel readiness command against a fake redis-cli that answers like a
 // healthy server or hangs like a frozen one, with and without timeout on PATH.
+// The Redis liveness command also gets the replies of a server that loads its
+// dataset or refuses the login.
 func TestProbeCommands(t *testing.T) {
 	if _, err := exec.LookPath("timeout"); err != nil {
 		t.Skip("timeout is not installed")
@@ -3712,7 +3720,9 @@ func TestProbeCommands(t *testing.T) {
 case "$*" in
 *get-master-addr-by-name*) printf '10.0.0.1\n6379\n' ;;
 *ckquorum*) echo "OK 3 usable Sentinels. Quorum and failover authorization can be reached" ;;
-*) echo PONG ;;
+*)
+	[ -n "$FAKE_STDERR" ] && echo "$FAKE_STDERR" >&2
+	echo "${FAKE_REPLY:-PONG}" ;;
 esac
 `
 	dir := t.TempDir()
@@ -3725,28 +3735,50 @@ esac
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(bare, "redis-cli"), []byte(fakeCLI), 0o755))
 
-	tests := []struct {
-		name   string
-		path   string
-		frozen bool
-		alive  bool
-	}{
+	type probeTest struct {
+		name  string
+		path  string
+		env   []string
+		alive bool
+	}
+	tests := []probeTest{
 		{name: "answers", path: dir + ":" + os.Getenv("PATH"), alive: true},
-		{name: "frozen", path: dir + ":" + os.Getenv("PATH"), frozen: true},
+		{name: "frozen", path: dir + ":" + os.Getenv("PATH"), env: []string{"FAKE_FROZEN=1"}},
 		{name: "answers, without timeout", path: bare, alive: true},
+	}
+	// redis-cli prints an error reply on stdout and exits 0. With a Redis
+	// password, a wrong pinger password gives WRONGPASS on stderr, and then
+	// NOAUTH for the PING.
+	redisReplies := []probeTest{
+		{
+			name:  "loading",
+			path:  dir + ":" + os.Getenv("PATH"),
+			env:   []string{"FAKE_REPLY=LOADING Redis is loading the dataset in memory"},
+			alive: true,
+		},
+		{
+			name: "wrong password",
+			path: dir + ":" + os.Getenv("PATH"),
+			env: []string{
+				"FAKE_STDERR=AUTH failed: WRONGPASS invalid username-password pair or user is disabled.",
+				"FAKE_REPLY=NOAUTH Authentication required.",
+			},
+		},
 	}
 	for _, component := range []string{"redis liveness", "sentinel liveness", "sentinel readiness"} {
 		probe := probes[component]
 		require.Equal(t, "sh", probe.Exec.Command[0])
-		for _, test := range tests {
+		componentTests := tests
+		if component == "redis liveness" {
+			componentTests = append(componentTests, redisReplies...)
+		}
+		for _, test := range componentTests {
 			t.Run(component+", "+test.name, func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 				defer cancel()
 				cmd := exec.CommandContext(ctx, "sh", probe.Exec.Command[1:]...)
 				cmd.Env = append(os.Environ(), "PATH="+test.path)
-				if test.frozen {
-					cmd.Env = append(cmd.Env, "FAKE_FROZEN=1")
-				}
+				cmd.Env = append(cmd.Env, test.env...)
 				cmd.WaitDelay = time.Second
 				start := time.Now()
 				out, err := cmd.CombinedOutput()
@@ -3789,6 +3821,14 @@ func TestRedisReadinessLinkDownWindow(t *testing.T) {
 			modify: func(rf *redisfailoverv1.RedisFailover) {
 				rf.Spec.Sentinel.Enabled = ptr.To(true)
 				rf.Spec.Sentinel.CustomConfig = []string{"down-after-milliseconds 120000", "parallel-syncs 1", "failover-timeout 30000"}
+			},
+			window: "210",
+		},
+		{
+			name: "sentinel mode, customConfig keys in upper case",
+			modify: func(rf *redisfailoverv1.RedisFailover) {
+				rf.Spec.Sentinel.Enabled = ptr.To(true)
+				rf.Spec.Sentinel.CustomConfig = []string{"DOWN-AFTER-MILLISECONDS 120000", "Failover-Timeout 30000"}
 			},
 			window: "210",
 		},
@@ -4420,6 +4460,35 @@ func TestGetAffinityUsesUserSuppliedValue(t *testing.T) {
 	// getAffinity must return the user-supplied Affinity unchanged, instead of
 	// building the default soft anti-affinity.
 	assert.Same(customAffinity, gotAffinity)
+}
+
+// TestGetAffinityDefaultMatchesMasterPod checks that the default soft
+// anti-affinity also selects the master pod, whose role label the operator
+// changes. Otherwise a replica can go to the node of the master.
+func TestGetAffinityDefaultMatchesMasterPod(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	var ss *appsv1.StatefulSet
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		ss = args.Get(1).(*appsv1.StatefulSet)
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	assert.NoError(client.EnsureRedisStatefulset(rf, map[string]string{"some": "label"}, []metav1.OwnerReference{}))
+
+	terms := ss.Spec.Template.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	if assert.Len(terms, 1) {
+		selector, err := metav1.LabelSelectorAsSelector(terms[0].PodAffinityTerm.LabelSelector)
+		assert.NoError(err)
+		masterPodLabels := map[string]string{}
+		maps.Copy(masterPodLabels, ss.Spec.Template.Labels)
+		masterPodLabels["redisfailovers-role"] = "master"
+		assert.True(selector.Matches(k8slabels.Set(masterPodLabels)), "selector %v must match the master pod", selector)
+		assert.True(selector.Matches(k8slabels.Set(ss.Spec.Template.Labels)), "selector %v must match a replica pod", selector)
+	}
 }
 
 // TestGetSecurityContextUsesUserSuppliedValue used to assert that a partial
