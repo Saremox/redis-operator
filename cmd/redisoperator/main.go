@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	_ "net/http/pprof"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"strings"
@@ -67,8 +67,7 @@ func (m *Main) Run() error {
 	// Serve metrics.
 	go func() {
 		log.Infof("Listening on %s for metrics exposure on URL %s", m.flags.ListenAddr, m.flags.MetricsPath)
-		http.Handle(m.flags.MetricsPath, promhttp.Handler())
-		err := http.ListenAndServe(m.flags.ListenAddr, nil)
+		err := http.ListenAndServe(m.flags.ListenAddr, newHTTPHandler(m.flags.MetricsPath, m.flags.EnablePprof))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -119,6 +118,21 @@ func (m *Main) Run() error {
 		m.logger.Errorf("Error received: %s, exiting...", err)
 		return err
 	}
+}
+
+// newHTTPHandler serves the metrics, and the profiler only when enabled,
+// because a heap profile can contain the Redis passwords.
+func newHTTPHandler(metricsPath string, enablePprof bool) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle(metricsPath, promhttp.Handler())
+	if enablePprof {
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	}
+	return mux
 }
 
 func (m *Main) createSignalCapturer() <-chan os.Signal {
