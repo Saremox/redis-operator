@@ -821,10 +821,10 @@ The tester found these issues in 4.2.0-rc2. Each issue has a fix PR.
 
 | Issue | Seen as | Fix | Status |
 |---|---|---|---|
-| A graceful master rollover in operator mode can promote the restarted old master (the same pod with a new UID) instead of a Ready replica. `GetBestReplicaForPromotion` falls back to the highest offset without a readiness check. | Outages of 40-46s on `rfrm`; a `failover` from a pod to itself. | PR #203, `claude/fix-promote-ready-replica` | open |
+| A graceful master rollover in operator mode can promote the restarted old master (the same pod with a new UID) instead of a Ready replica. `GetBestReplicaForPromotion` falls back to the highest offset without a readiness check. | Outages of 40-46s on `rfrm`; a `failover` from a pod to itself. | PR #203, `claude/fix-promote-ready-replica` | merged |
 | A replica that never completed a sync is Ready, because `ready.sh` fails only a full sync in progress. Example: a Valkey replica that cannot read a Redis 7.4/8 RDB. `rfrs` then serves empty reads. | `replica_ready_without_data`. | PR #205, `claude/fix-readiness-link-down` | merged |
 | A scale-down that removes the master in operator mode promotes a replica while the old master still accepts writes. Case 1 of `checkAndHealOperatorManagedMode` does not check `masterPodStopping`. | Writes lost by `redis_replicas` on volumes. | PR #210, `claude/fix-scale-down-master-race` | merged |
-| A memory limit decrease below the page cache in use: the kubelet refuses the in-place resize, and the operator waits 5m for each pod before it recreates the pod. | `redis_memory` takes more than 18m on 3 pods. | PR #204, `claude/fix-resize-below-usage` | open |
+| A memory limit decrease below the page cache in use: the kubelet refuses the in-place resize, and the operator waits 5m for each pod before it recreates the pod. | `redis_memory` takes more than 18m on 3 pods. | PR #204, `claude/fix-resize-below-usage` | merged |
 | A changed password applies only at the next resync (30s), because nothing watches the auth Secret. | `follower` `auth` outages of up to 30s. | PR #212, `claude/watch-auth-secret` | open |
 | The CRD has no status subresource, so each status update increases `metadata.generation`. | A window opened by each status change. | PR #207, `claude/crd-status-subresource` | merged |
 | A rollout that cannot continue, for example onto a server that cannot load the data, stays `Healthy` with an empty message. | Stuck `unknown` edges that only the tester reports. | PR #206, `claude/report-stalled-rollout` | merged |
