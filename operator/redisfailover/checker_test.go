@@ -19,8 +19,10 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 	mRFService "github.com/saremox/redis-operator/mocks/operator/redisfailover/service"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
+	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
 	rfOperator "github.com/saremox/redis-operator/operator/redisfailover"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
+	"github.com/saremox/redis-operator/service/redis"
 )
 
 func TestCheckAndHeal(t *testing.T) {
@@ -93,6 +95,9 @@ func TestCheckAndHeal(t *testing.T) {
 			redisSetMasterOnAllOK:          true,
 			bootstrapping:                  false,
 			allowSentinels:                 false,
+
+			// There is no master until the Sentinel failover ends.
+			wantState: v1.NotHealthyState,
 		},
 		{
 			name:                           "No masters, only one redis available, make master",
@@ -2627,6 +2632,9 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) 
 			if test.podsErr != nil {
 				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
 				assert.Equal(t, "unable to check whether the master is stopping", rf.Status.Message)
+			} else if !test.wantElect {
+				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+				assert.Equal(t, "no master, waiting for the stopping master pod to exit", rf.Status.Message)
 			}
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
@@ -2704,6 +2712,9 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeFailover(t *testing.T) 
 			if test.podsErr != nil {
 				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
 				assert.Equal(t, "unable to check whether the master is stopping", rf.Status.Message)
+			} else if !test.wantElect {
+				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+				assert.Equal(t, "no master, waiting for the stopping master pod to exit", rf.Status.Message)
 			}
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
@@ -2810,6 +2821,10 @@ func TestSentinelModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) {
 				assert.Equal(t, "unable to check whether the master is stopping", rf.Status.Message)
 			case test.wantElect && test.replicas > 1:
 				assert.EqualError(t, err, "stop here")
+			case !test.wantElect:
+				assert.NoError(t, err)
+				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+				assert.Equal(t, "no master, waiting for the stopping master pod to exit", rf.Status.Message)
 			default:
 				assert.NoError(t, err)
 			}
@@ -3046,6 +3061,220 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 			} else {
 				assert.NoError(t, handler.UpdateRedisesPods(rf))
 			}
+			mrfc.AssertExpectations(t)
+			mrfh.AssertExpectations(t)
+			mk.AssertExpectations(t)
+		})
+	}
+}
+
+// The master answers the first count and then stalls. The operator must not
+// replace it in this reconcile: it can still take writes, and REPLICAOF to it
+// fails, so two pods keep the master label. Its wait starts at this check.
+func TestOperatorManagedModeDoesNotReplaceAStalledMaster(t *testing.T) {
+	const (
+		masterIP  = "10.0.0.1"
+		replicaIP = "10.0.0.2"
+	)
+	tests := []struct {
+		name        string
+		ready       bool
+		wantErr     error
+		wantMessage string
+	}{
+		{
+			name:        "the master pod is ready",
+			ready:       true,
+			wantErr:     rfservice.ErrRedisNotAnswering,
+			wantMessage: "unable to check master health",
+		},
+		{
+			name:        "the master pod is not ready",
+			wantMessage: `^master unreachable since \S+, failing over after 10s$`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := operatorManagedRF()
+			rf.Spec.Redis.Replicas = 2
+			master := masterPod(redisPod("1", test.ready, false))
+			master.Name, master.Status.Phase, master.Status.PodIP = "rfr-0", corev1.PodRunning, masterIP
+			replica := redisPod("1", true, false)
+			replica.Name, replica.Status.Phase, replica.Status.PodIP = "rfr-1", corev1.PodRunning, replicaIP
+
+			mk := &mK8SService.Services{}
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Return(&corev1.PodList{Items: []corev1.Pod{master, replica}}, nil)
+			mk.On("UpdatePodAnnotations", rf.Namespace, "rfr-0", mock.MatchedBy(func(a map[string]string) bool {
+				return a["redisfailovers.databases.spotahome.com/unreachable-since"] != ""
+			})).Once().Return(nil)
+			stall := errors.New("i/o timeout")
+			mr := &mRedisService.Client{}
+			mr.On("IsMaster", masterIP, "0", "").Once().Return(true, nil)
+			mr.On("IsMaster", masterIP, "0", "").Return(false, stall)
+			mr.On("IsMaster", replicaIP, "0", "").Return(false, nil)
+			mr.On("GetReplicationInfo", masterIP, "0", "").Maybe().Return(nil, stall)
+			mr.On("GetReplicationInfo", replicaIP, "0", "").Maybe().Return(&redis.ReplicationInfo{Role: "slave", SlaveReplOffset: 100, MasterLinkStatus: "up"}, nil)
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfh.On("PromoteBestReplica", replicaIP, rf).Maybe().Return(nil)
+
+			checker := rfservice.NewRedisFailoverChecker(mk, mr, log.Dummy, metrics.Dummy)
+			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, checker, mrfh, mk, metrics.Dummy, log.Dummy)
+
+			err := handler.CheckAndHeal(rf)
+
+			if test.wantErr != nil {
+				assert.ErrorIs(t, err, test.wantErr)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+			assert.Regexp(t, test.wantMessage, rf.Status.Message)
+			mrfh.AssertNotCalled(t, "PromoteBestReplica", replicaIP, rf)
+			mk.AssertExpectations(t)
+		})
+	}
+}
+
+// A failed lookup of the master pod must not give a promotion without the wait.
+func TestOperatorManagedModeDoesNotReplaceAStalledMasterWhenThePodLookupFails(t *testing.T) {
+	rf := operatorManagedRF()
+	listErr := errors.New("list err")
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mk := &mK8SService.Services{}
+	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+	mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+	mrfc.On("CheckMasterHealth", rf).Once().Return(false, "", nil)
+	// masterPodStopping lists the pods, then unreachableMasterPod fails.
+	mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: []corev1.Pod{redisPod("1", true, false)}}, nil)
+	mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(nil, listErr)
+
+	handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+	err := handler.CheckAndHeal(rf)
+
+	assert.ErrorIs(t, err, listErr)
+	assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+	assert.Equal(t, "unable to look up the master pod", rf.Status.Message)
+	mrfc.AssertExpectations(t)
+	mrfh.AssertExpectations(t)
+	mk.AssertExpectations(t)
+}
+
+// After a failover, the old master can come back as a master. The pod
+// labelled master is the master that the operator elected.
+func TestOperatorManagedModeDemotesTheMastersThatAreNotLabelledMaster(t *testing.T) {
+	pod := func(name, ip string, master bool, phase corev1.PodPhase, deleting bool) corev1.Pod {
+		p := redisPod("1", true, deleting)
+		if master {
+			p = masterPod(p)
+		}
+		p.Name, p.Status.Phase, p.Status.PodIP = name, phase, ip
+		return p
+	}
+	listErr := errors.New("list err")
+	setErr := errors.New("set err")
+	tests := []struct {
+		name        string
+		pods        []corev1.Pod
+		podsErr     error
+		setErr      error
+		wantDemote  string
+		wantErr     error
+		wantMessage string
+		wantStatus  string
+	}{
+		{
+			name: "one pod is labelled master",
+			pods: []corev1.Pod{
+				pod("rfr-0", "10.0.0.1", false, corev1.PodRunning, false),
+				pod("rfr-1", "10.0.0.2", true, corev1.PodRunning, false),
+				pod("rfr-2", "10.0.0.3", false, corev1.PodRunning, false),
+			},
+			wantDemote: "10.0.0.2",
+			wantStatus: "multiple masters detected, made the other masters replicas of rfr-1",
+		},
+		{
+			name: "a labelled master pod that does not run or is in deletion does not count",
+			pods: []corev1.Pod{
+				pod("rfr-0", "10.0.0.1", true, corev1.PodPending, false),
+				pod("rfr-1", "10.0.0.2", true, corev1.PodRunning, false),
+				pod("rfr-2", "10.0.0.3", true, corev1.PodRunning, true),
+			},
+			wantDemote: "10.0.0.2",
+			wantStatus: "multiple masters detected, made the other masters replicas of rfr-1",
+		},
+		{
+			name: "the demotion fails",
+			pods: []corev1.Pod{
+				pod("rfr-0", "10.0.0.1", false, corev1.PodRunning, false),
+				pod("rfr-1", "10.0.0.2", true, corev1.PodRunning, false),
+			},
+			setErr:      setErr,
+			wantDemote:  "10.0.0.2",
+			wantErr:     setErr,
+			wantMessage: "unable to make the other masters replicas of the labelled master",
+		},
+		{
+			name: "two pods are labelled master",
+			pods: []corev1.Pod{
+				pod("rfr-0", "10.0.0.1", true, corev1.PodRunning, false),
+				pod("rfr-1", "10.0.0.2", true, corev1.PodRunning, false),
+			},
+			wantMessage: "multiple masters detected, fix manually",
+		},
+		{
+			name: "no pod is labelled master",
+			pods: []corev1.Pod{
+				pod("rfr-0", "10.0.0.1", false, corev1.PodRunning, false),
+				pod("rfr-1", "10.0.0.2", false, corev1.PodRunning, false),
+			},
+			wantMessage: "multiple masters detected, fix manually",
+		},
+		{
+			name:        "listing pods fails",
+			podsErr:     listErr,
+			wantErr:     listErr,
+			wantMessage: "unable to look up the master pod",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := operatorManagedRF()
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mk := &mK8SService.Services{}
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: test.pods}, test.podsErr)
+			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+			mrfc.On("GetNumberMasters", rf).Once().Return(2, nil)
+			if test.wantDemote != "" {
+				mrfh.On("SetMasterOnAll", test.wantDemote, rf).Once().Return(test.setErr)
+			}
+
+			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+			err := handler.CheckAndHeal(rf)
+
+			switch {
+			case test.wantErr != nil:
+				assert.ErrorIs(t, err, test.wantErr)
+			case test.wantMessage != "":
+				assert.EqualError(t, err, test.wantMessage)
+			default:
+				assert.NoError(t, err)
+			}
+			wantStatus := test.wantStatus
+			if wantStatus == "" {
+				wantStatus = test.wantMessage
+			}
+			assert.Equal(t, v1.NotHealthyState, rf.Status.State)
+			assert.Equal(t, wantStatus, rf.Status.Message)
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
 			mk.AssertExpectations(t)
