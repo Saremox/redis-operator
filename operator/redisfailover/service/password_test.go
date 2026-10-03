@@ -29,7 +29,7 @@ func TestApplyPassword(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		previous string
+		previous []string
 		pending  bool
 		deleting bool
 		// errors IsMaster returns with the new password, per pod IP
@@ -42,44 +42,44 @@ func TestApplyPassword(t *testing.T) {
 	}{
 		{
 			name:        "every pod accepts the password",
-			previous:    "new",
+			previous:    []string{"new"},
 			expComplete: true,
 		},
 		{
 			name:        "a pod on the previous password is changed in place",
-			previous:    "old",
+			previous:    []string{"old"},
 			refuse:      map[string]error{"10.0.0.2": wrongpass},
 			expSet:      map[string]string{"10.0.0.2": "old"},
 			expComplete: true,
 		},
 		{
 			name:        "a pod without a password is changed without knowing the previous one",
-			previous:    "new",
+			previous:    []string{"new"},
 			refuse:      map[string]error{"10.0.0.1": nopass},
 			expSet:      map[string]string{"10.0.0.1": ""},
 			expComplete: true,
 		},
 		{
 			name:        "a pod yet to start leaves it incomplete",
-			previous:    "new",
+			previous:    []string{"new"},
 			pending:     true,
 			expComplete: false,
 		},
 		{
 			name:        "a pod being deleted is skipped",
-			previous:    "new",
+			previous:    []string{"new"},
 			deleting:    true,
 			expComplete: true,
 		},
 		{
 			name:     "a refused password with no previous one to use",
-			previous: "new",
+			previous: []string{"new"},
 			refuse:   map[string]error{"10.0.0.1": wrongpass},
 			expErr:   "put the previous password back in the secret",
 		},
 		{
 			name:     "a failed change is returned",
-			previous: "old",
+			previous: []string{"old"},
 			refuse:   map[string]error{"10.0.0.2": wrongpass},
 			setErr:   errors.New("i/o timeout"),
 			expSet:   map[string]string{"10.0.0.2": "old"},
@@ -87,7 +87,7 @@ func TestApplyPassword(t *testing.T) {
 		},
 		{
 			name:        "an unreachable pod leaves it incomplete",
-			previous:    "old",
+			previous:    []string{"old"},
 			refuse:      map[string]error{"10.0.0.1": errors.New("i/o timeout")},
 			expComplete: false,
 		},
@@ -137,9 +137,29 @@ func TestApplyPasswordListError(t *testing.T) {
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(nil, boom)
 
 	healer := rfservice.NewRedisFailoverHealer(ms, &mRedisService.Client{}, log.DummyLogger{})
-	complete, err := healer.ApplyPassword(rf, "new", "old")
+	complete, err := healer.ApplyPassword(rf, "new", []string{"old"})
 	assert.ErrorIs(t, err, boom)
 	assert.False(t, complete)
+}
+
+// TestApplyPasswordTriesEachPreviousPassword covers a second change while a
+// pod is yet to start: the running pods are on the password applied last, not
+// on the one that all pods accepted.
+func TestApplyPasswordTriesEachPreviousPassword(t *testing.T) {
+	wrongpass := errors.New("WRONGPASS invalid username-password pair or user is disabled.")
+	rf := generateRF()
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(&corev1.PodList{Items: []corev1.Pod{runningPod("rfr-0", "10.0.0.1")}}, nil)
+	mr := &mRedisService.Client{}
+	mr.On("IsMaster", "10.0.0.1", "0", "v3").Return(false, wrongpass)
+	mr.On("SetPassword", "10.0.0.1", "0", "v1", "v3").Once().Return(wrongpass)
+	mr.On("SetPassword", "10.0.0.1", "0", "v2", "v3").Once().Return(nil)
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+	complete, err := healer.ApplyPassword(rf, "v3", []string{"v1", "v2"})
+	assert.NoError(t, err)
+	assert.True(t, complete)
+	mr.AssertExpectations(t)
 }
 
 func TestApplySentinelPassword(t *testing.T) {

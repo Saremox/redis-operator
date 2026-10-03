@@ -16,6 +16,7 @@ The Redis-Operator creates Redis Failovers, with all the needed pieces. When an 
    - Redis configmap
    - Redis statefulset, and its PodDisruptionBudget unless `redis.disablePodDisruptionBudget` is true
    - Sentinel service, configmap and deployment. Only when Sentinel is on and, in bootstrap mode, `allowSentinels` is true. Otherwise, the operator deletes them. With them, the operator also creates a Sentinel PodDisruptionBudget unless `sentinel.disablePodDisruptionBudget` is true, and a Sentinel service account unless `sentinel.serviceAccountName` is set.
+   - When a flag disables a PodDisruptionBudget or `sentinel.serviceAccountName` is set, the operator deletes the object that it created before. An old PodDisruptionBudget would block node drains. The operator deletes only an object that the RedisFailover owns. It deletes the ServiceAccount when no Sentinel pod uses it, because the old ReplicaSet cannot create a pod without it. Without the RBAC verb, the operator logs a warning and keeps the object.
 6. Check & Heal: connects to every Redis and Sentinel and moves them to the desired state. First, it applies a changed password, because every later check authenticates. Then it uses one mode, described below.
 
 ## Check & Heal modes
@@ -47,7 +48,7 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
 - Redis has the custom configuration and the managed `maxmemory`.
 - Stale Redis pods get the new statefulset revision. The operator deletes the master pod only when every Sentinel knows a quorum of the slaves. Otherwise, Sentinel has no replica to promote.
 - All Sentinels monitor the same Redis master.
-- Each Sentinel knows the correct number of Sentinels and slaves. If not, the operator resets that Sentinel.
+- Each Sentinel knows the correct number of Sentinels and slaves. If not, the operator resets that Sentinel. A pod that does not run, for example a Pending pod, is no reason for a reset, because a reset does not add it.
 - Sentinel has the custom configuration.
 
 ### Bootstrap mode

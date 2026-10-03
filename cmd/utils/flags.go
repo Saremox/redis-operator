@@ -25,6 +25,7 @@ type CMDFlags struct {
 	LogLevel                    string
 	DisconnectClientsOnDemotion bool
 	WatchAuthSecrets            bool
+	EnablePprof                 bool
 }
 
 // Init initializes and parse the flags
@@ -44,6 +45,7 @@ func (c *CMDFlags) Init() {
 	flag.StringVar(&c.LogLevel, "log-level", "info", "set log level")
 	flag.BoolVar(&c.DisconnectClientsOnDemotion, "disconnect-clients-on-demotion", true, "Close a redis pod's normal and pub/sub client connections when it stops being the master, so clients reconnect to the new master instead of staying on a replica")
 	flag.BoolVar(&c.WatchAuthSecrets, "watch-auth-secrets", false, "Apply an auth Secret (spec.auth.secretPath) change immediately, not at the next sync. This needs list and watch on secrets in all namespaces, which can read every Secret")
+	flag.BoolVar(&c.EnablePprof, "enable-pprof", false, "Serve the Go profiler on /debug/pprof/ at the listen address. A heap profile can contain the Redis passwords.")
 	// Parse flags
 	flag.Parse()
 

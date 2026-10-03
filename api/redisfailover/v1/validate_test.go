@@ -15,8 +15,10 @@ func TestValidate(t *testing.T) {
 		rfRedisCustomConfig    []string
 		rfSentinelCustomConfig []string
 		rfCommandRenames       []RedisCommandRename
-		expectedError          string
-		expectedBootstrapNode  *BootstrapSettings
+		// expectedSentinelCustomConfig is nil when Validate adds all the defaults.
+		expectedSentinelCustomConfig []string
+		expectedError                string
+		expectedBootstrapNode        *BootstrapSettings
 	}{
 		{
 			name:   "populates default values",
@@ -28,9 +30,28 @@ func TestValidate(t *testing.T) {
 			expectedError: "name length can't be higher than 48",
 		},
 		{
-			name:                   "SentinelCustomConfig provided",
-			rfName:                 "test",
-			rfSentinelCustomConfig: []string{"failover-timeout 500"},
+			name:                         "SentinelCustomConfig value wins over its default",
+			rfName:                       "test",
+			rfSentinelCustomConfig:       []string{"failover-timeout 500"},
+			expectedSentinelCustomConfig: []string{"down-after-milliseconds 5000", "failover-timeout 500"},
+		},
+		{
+			name:                         "SentinelCustomConfig keeps the defaults it does not set",
+			rfName:                       "test",
+			rfSentinelCustomConfig:       []string{"parallel-syncs 1"},
+			expectedSentinelCustomConfig: []string{"down-after-milliseconds 5000", "failover-timeout 10000", "parallel-syncs 1"},
+		},
+		{
+			name:                         "SentinelCustomConfig that sets all defaults keeps its order",
+			rfName:                       "test",
+			rfSentinelCustomConfig:       []string{"failover-timeout 500", "parallel-syncs 1", "down-after-milliseconds 2000"},
+			expectedSentinelCustomConfig: []string{"failover-timeout 500", "parallel-syncs 1", "down-after-milliseconds 2000"},
+		},
+		{
+			name:                         "SentinelCustomConfig key in upper case replaces its default",
+			rfName:                       "test",
+			rfSentinelCustomConfig:       []string{"DOWN-AFTER-MILLISECONDS 60000"},
+			expectedSentinelCustomConfig: []string{"failover-timeout 10000", "DOWN-AFTER-MILLISECONDS 60000"},
 		},
 		{
 			name:            "BootstrapNode provided without a host",
@@ -69,7 +90,7 @@ func TestValidate(t *testing.T) {
 		{
 			name:             "Allows valid command renames, including disabling a command",
 			rfName:           "test",
-			rfCommandRenames: []RedisCommandRename{{From: "CONFIG", To: "MYCONFIG"}, {From: "FLUSHALL", To: ""}},
+			rfCommandRenames: []RedisCommandRename{{From: "KEYS", To: "MYKEYS"}, {From: "FLUSHALL", To: ""}},
 		},
 		{
 			name:             "Rejects command rename injection via quotes in from",
@@ -80,7 +101,7 @@ func TestValidate(t *testing.T) {
 		{
 			name:             "Rejects command rename injection via quotes in to",
 			rfName:           "test",
-			rfCommandRenames: []RedisCommandRename{{From: "CONFIG", To: `" shutdown nosave #`}},
+			rfCommandRenames: []RedisCommandRename{{From: "KEYS", To: `" shutdown nosave #`}},
 			expectedError:    `customCommandRenames: invalid "to" command name "\" shutdown nosave #", must match ^[A-Za-z_]+$`,
 		},
 	}
@@ -109,9 +130,9 @@ func TestValidate(t *testing.T) {
 				}
 
 				expectedRedisCustomConfig = append(expectedRedisCustomConfig, test.rfRedisCustomConfig...)
-				expectedSentinelCustomConfig := defaultSentinelCustomConfig
-				if len(test.rfSentinelCustomConfig) > 0 {
-					expectedSentinelCustomConfig = test.rfSentinelCustomConfig
+				expectedSentinelCustomConfig := test.expectedSentinelCustomConfig
+				if expectedSentinelCustomConfig == nil {
+					expectedSentinelCustomConfig = defaultSentinelCustomConfig
 				}
 
 				expectedRF := &RedisFailover{
@@ -149,6 +170,10 @@ func TestValidate(t *testing.T) {
 					Status: RedisFailoverStatus{},
 				}
 				assert.Equal(expectedRF, rf)
+
+				// Validate runs again on each reconcile of the same object.
+				assert.NoError(rf.Validate())
+				assert.Equal(expectedSentinelCustomConfig, rf.Spec.Sentinel.CustomConfig)
 			} else {
 				if assert.Error(err) {
 					assert.Contains(test.expectedError, err.Error())
@@ -203,4 +228,66 @@ func TestValidateExporterPort(t *testing.T) {
 	rf = generateRedisFailover("test", nil)
 	rf.Spec.Sentinel.Exporter.Port = 65536
 	assert.EqualError(t, rf.Validate(), "sentinel.exporter.port 65536 must be between 1 and 65535, or 0 for the default")
+}
+
+func TestValidateCommandRenames(t *testing.T) {
+	tests := []struct {
+		name            string
+		renames         []RedisCommandRename
+		customConfig    []string
+		sentinelEnabled bool
+		expectedError   string
+	}{
+		{
+			name:          "Rejects a rename of a command that the operator sends, in any case",
+			renames:       []RedisCommandRename{{From: "FLUSHALL", To: ""}, {From: "config", To: "MYCONFIG"}},
+			expectedError: `customCommandRenames: "config" cannot be renamed, because the operator, the pod scripts or the replicas send it (AUTH, CLIENT, CONFIG, INFO, PING, PSYNC, REPLCONF, REPLICAOF, SLAVEOF)`,
+		},
+		{
+			name:          "Rejects disabling a command that the pod scripts send",
+			renames:       []RedisCommandRename{{From: "Replicaof", To: ""}},
+			expectedError: `customCommandRenames: "Replicaof" cannot be renamed, because the operator, the pod scripts or the replicas send it (AUTH, CLIENT, CONFIG, INFO, PING, PSYNC, REPLCONF, REPLICAOF, SLAVEOF)`,
+		},
+		{
+			name:          "Rejects a rename of a command that the replicas send",
+			renames:       []RedisCommandRename{{From: "psync", To: "MYPSYNC"}},
+			expectedError: `customCommandRenames: "psync" cannot be renamed, because the operator, the pod scripts or the replicas send it (AUTH, CLIENT, CONFIG, INFO, PING, PSYNC, REPLCONF, REPLICAOF, SLAVEOF)`,
+		},
+		{
+			name:    "Allows a rename of ACL and SAVE without an aclfile",
+			renames: []RedisCommandRename{{From: "ACL", To: ""}, {From: "save", To: "MYSAVE"}},
+		},
+		{
+			name:          "Rejects a rename of ACL with an aclfile",
+			renames:       []RedisCommandRename{{From: "acl", To: ""}},
+			customConfig:  []string{"aclfile /data/users.acl"},
+			expectedError: `customCommandRenames: "acl" cannot be renamed, because the operator sends ACL LOAD to apply the aclfile of customConfig`,
+		},
+		{
+			name:            "Rejects a rename of a command that Sentinel sends",
+			renames:         []RedisCommandRename{{From: "Publish", To: ""}},
+			sentinelEnabled: true,
+			expectedError:   `customCommandRenames: "Publish" cannot be renamed, because Sentinel sends it (EXEC, MULTI, PUBLISH, SUBSCRIBE)`,
+		},
+		{
+			name:    "Allows a rename of a Sentinel command without Sentinels",
+			renames: []RedisCommandRename{{From: "PUBLISH", To: ""}, {From: "EXEC", To: "MYEXEC"}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRedisFailoverWithSentinel("test", &test.sentinelEnabled)
+			rf.Spec.Redis.CustomConfig = test.customConfig
+			rf.Spec.Redis.CustomCommandRenames = test.renames
+
+			err := rf.Validate()
+
+			if test.expectedError == "" {
+				assert.NoError(t, err)
+			} else {
+				assert.EqualError(t, err, test.expectedError)
+			}
+		})
+	}
 }

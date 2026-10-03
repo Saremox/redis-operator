@@ -129,7 +129,7 @@ func IsMasterPod(pod *corev1.Pod) bool {
 // safe to call on every reconcile without extra API writes.
 func applyMasterEvictionAnnotation(k8sService k8s.Services, rf *redisfailoverv1.RedisFailover, pod corev1.Pod, isMaster bool) error {
 	if !rf.Spec.Redis.PreventMasterEviction {
-		return nil
+		return resetMasterEvictionAnnotation(k8sService, rf, pod)
 	}
 	desired := "true"
 	if isMaster {
@@ -139,6 +139,24 @@ func applyMasterEvictionAnnotation(k8sService k8s.Services, rf *redisfailoverv1.
 		return nil
 	}
 	return k8sService.UpdatePodAnnotations(rf.Namespace, pod.Name, map[string]string{masterSafeToEvictAnnotation: desired})
+}
+
+// resetMasterEvictionAnnotation gives the pod the safe-to-evict value from
+// spec.redis.podAnnotations, or removes the master pin "false". A pin that stays
+// after the user turns preventMasterEviction off blocks the node drains of the
+// cluster autoscaler. A "true" can come from a policy or the user, so it stays.
+func resetMasterEvictionAnnotation(k8sService k8s.Services, rf *redisfailoverv1.RedisFailover, pod corev1.Pod) error {
+	current, present := pod.Annotations[masterSafeToEvictAnnotation]
+	if desired, ok := rf.Spec.Redis.PodAnnotations[masterSafeToEvictAnnotation]; ok {
+		if present && current == desired {
+			return nil
+		}
+		return k8sService.UpdatePodAnnotations(rf.Namespace, pod.Name, map[string]string{masterSafeToEvictAnnotation: desired})
+	}
+	if !present || current != "false" {
+		return nil
+	}
+	return k8sService.RemovePodAnnotation(rf.Namespace, pod.Name, masterSafeToEvictAnnotation)
 }
 
 func (r *RedisFailoverChecker) setMasterLabelIfNecessary(rf *redisfailoverv1.RedisFailover, pod corev1.Pod) error {
@@ -218,7 +236,21 @@ func (r *RedisFailoverChecker) CheckSentinelNumberInMemory(sentinel string, rf *
 	nSentinels, err := r.redisClient.GetNumberSentinelsInMemory(sentinel)
 	if err != nil {
 		return err
-	} else if nSentinels != rf.Spec.Sentinel.Replicas {
+	}
+	if nSentinels < rf.Spec.Sentinel.Replicas {
+		// A Sentinel does not know a pod that does not run, for example a
+		// Pending pod, and a reset does not change that. After a reset, the
+		// Sentinels forget each other for some seconds, and a failover
+		// cannot start in that time.
+		running, err := r.GetSentinelsIPs(rf)
+		if err != nil {
+			return err
+		}
+		if int(nSentinels) >= len(running) {
+			return nil
+		}
+	}
+	if nSentinels != rf.Spec.Sentinel.Replicas {
 		return errors.New("sentinels in memory mismatch")
 	}
 	return nil
@@ -304,16 +336,26 @@ func (r *RedisFailoverChecker) CheckSentinelSlavesNumberInMemory(sentinel string
 	nSlaves, err := r.redisClient.GetNumberSentinelSlavesInMemory(sentinel)
 	if err != nil {
 		return err
-	} else {
-		if rf.Bootstrapping() {
-			if nSlaves != rf.Spec.Redis.Replicas {
-				return errors.New("redis slaves in sentinel memory mismatch")
-			}
-		} else {
-			if nSlaves != rf.Spec.Redis.Replicas-1 {
-				return errors.New("redis slaves in sentinel memory mismatch")
-			}
+	}
+	// While bootstrapping, all the Redis pods are slaves of the bootstrap node.
+	masters := 1
+	if rf.Bootstrapping() {
+		masters = 0
+	}
+	expected := rf.Spec.Redis.Replicas - int32(masters)
+	if nSlaves < expected {
+		// CheckSentinelNumberInMemory gives the reason to not reset for a
+		// pod that does not run.
+		running, err := r.GetRedisesIPs(rf)
+		if err != nil {
+			return err
 		}
+		if int(nSlaves) >= len(running)-masters {
+			return nil
+		}
+	}
+	if nSlaves != expected {
+		return errors.New("redis slaves in sentinel memory mismatch")
 	}
 	return nil
 }
