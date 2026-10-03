@@ -99,6 +99,25 @@ func TestGetSlaveOf(t *testing.T) {
 	assert.Equal(t, env.master.IP, masterOf)
 }
 
+// A replica on an IPv6 cluster, or a replica of a hostname, must report its
+// full master_host. An empty or cut value hides a replica of the wrong master.
+func TestGetSlaveOf_NonIPv4MasterHost(t *testing.T) {
+	requireRedisServer(t)
+	c := newTestClient()
+	for _, masterHost := range []string{"fd00:10:244::5", "2001:db8::5", "rfr-test-0.rfr-test.ns.svc.cluster.local"} {
+		t.Run(masterHost, func(t *testing.T) {
+			replica := startRedisProcess(t)
+			rc := rediscli.NewClient(&rediscli.Options{Addr: replica.Addr()})
+			defer func() { _ = rc.Close() }()
+			require.NoError(t, rc.SlaveOf(bgCtx(), masterHost, "6379").Err())
+
+			masterOf, err := c.GetSlaveOf(replica.IP, strconv.Itoa(replica.Port), "")
+			require.NoError(t, err)
+			assert.Equal(t, masterHost, masterOf)
+		})
+	}
+}
+
 // TestSlaveIsReady_LoopbackMasterHostNeverReady documents a real quirk found
 // while building this test suite (not fixed here, per instructions - see the
 // task summary for the full report):
