@@ -89,6 +89,62 @@ grep -qx '      serviceAccountName: custom' <<<"${out}" \
   || { echo "FAIL: Deployment serviceAccountName is not custom" >&2; fail=1; }
 [ ${fail} -eq 0 ]
 
+# Prints the document of kind $2 and metadata.name $3 from the YAML stream $1.
+manifest() {
+    awk -v kind="kind: $2" -v name="  name: $3" '
+        /^---/ { if (k && n) printf "%s", doc; doc = ""; k = n = 0; next }
+        { doc = doc $0 "\n" }
+        $0 == kind { k = 1 }
+        $0 == name { n = 1 }
+        END { if (k && n) printf "%s", doc }' <<<"$1"
+}
+
+fail=0
+echo ">> Testing imageCredentials"
+out=$(helm template t ${chart} --kube-version ${kube_version} --set crds.upgradeHook.enabled=true \
+  --set imageCredentials.create=true --set 'imageCredentials.existsSecrets={a,b}')
+for pod in "Deployment t-redis-operator" "Job t-redis-operator-crds-upgrade"; do
+  doc=$(manifest "${out}" ${pod})
+  # A YAML decoder keeps only the last copy of a repeated key.
+  [ "$(grep -c 'imagePullSecrets:' <<<"${doc}")" -eq 1 ] \
+    || { echo "FAIL: ${pod} does not have exactly one imagePullSecrets key" >&2; fail=1; }
+  grep -qx '        - name: a' <<<"${doc}" && grep -qx '        - name: b' <<<"${doc}" \
+    || { echo "FAIL: ${pod} does not pull with the secrets a and b" >&2; fail=1; }
+done
+out=$(helm template t ${chart} --kube-version ${kube_version} --set crds.upgradeHook.enabled=true \
+  --set imageCredentials.create=true)
+manifest "${out}" Secret t-redis-operator-registry | grep -q '^type: kubernetes.io/dockerconfigjson$' \
+  || { echo "FAIL: imageCredentials.create=true creates no registry Secret" >&2; fail=1; }
+manifest "${out}" Deployment t-redis-operator | grep -qx '        - name: t-redis-operator-registry' \
+  || { echo "FAIL: Deployment does not pull with the registry Secret" >&2; fail=1; }
+# Helm creates the ordinary chart resources after the pre-install hooks.
+secret=$(manifest "${out}" Job t-redis-operator-crds-upgrade \
+  | sed -n '/imagePullSecrets:/,/containers:/s/^ *- name: //p')
+manifest "${out}" Secret "${secret}" | grep -q 'helm.sh/hook: pre-install' \
+  || { echo "FAIL: hook Job pulls with '${secret}', which is not a pre-install hook" >&2; fail=1; }
+
+echo ">> Testing the CRD upgrade hook securityContext"
+job=$(manifest "${out}" Job t-redis-operator-crds-upgrade)
+for setting in 'runAsNonRoot: true' 'allowPrivilegeEscalation: false' 'type: RuntimeDefault' '- ALL'; do
+  grep -q -- "${setting}" <<<"${job}" \
+    || { echo "FAIL: hook Job does not set '${setting}' for restricted Pod Security" >&2; fail=1; }
+done
+
+echo ">> Testing image.cli_args"
+for args in 'image.cli_args=--concurrency=5 --log-level=debug' 'image.cli_args={--concurrency=5,--log-level=debug}'; do
+  out=$(helm template t ${chart} --kube-version ${kube_version} --set "${args}")
+  grep -qx '        - "--concurrency=5"' <<<"${out}" && grep -qx '        - "--log-level=debug"' <<<"${out}" \
+    || { echo "FAIL: --set '${args}' does not give one argument for each flag" >&2; fail=1; }
+done
+
+echo ">> Testing container.port and service.port"
+out=$(helm template t ${chart} --kube-version ${kube_version} --set container.port=8080 --set service.port=80)
+grep -qx -- '        - --listen-address=:8080' <<<"${out}" \
+  || { echo "FAIL: container.port=8080 does not set --listen-address=:8080" >&2; fail=1; }
+manifest "${out}" Service t-redis-operator | grep -q 'targetPort: metrics' \
+  || { echo "FAIL: Service does not forward to the metrics container port" >&2; fail=1; }
+[ ${fail} -eq 0 ]
+
 echo "> Chart OK"
 
 # Prints "sa <namespace>/<name>" for each ServiceAccount and "subject

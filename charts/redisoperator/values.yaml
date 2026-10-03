@@ -7,17 +7,21 @@ image:
   repository: ghcr.io/saremox/redis-operator
   pullPolicy: IfNotPresent
   tag: ""
-  cli_args: ""
+  # Extra arguments of the operator, one flag in each item. A string is split
+  # at whitespace. The chart sets `--listen-address` from container.port.
+  cli_args: []
 
 imageCredentials:
+  # true gives the operator pod and the CRD upgrade hook pod image pull secrets:
+  # the existsSecrets, or if existsSecrets is empty, a Secret that the chart
+  # creates from registry, username, password and email.
   create: false
   registry: url.private.registry
   username: someone
   password: somepassword
   email: someone@example.com
-  # Use exists secrets in namespace
-  existsSecrets:
-    - registrysecret
+  # Names of pull Secrets that exist in the namespace. Example: [registrysecret]
+  existsSecrets: []
 
 updateStrategy:
   type: RollingUpdate
@@ -46,9 +50,11 @@ serviceAccount:
 
 service:
   type: ClusterIP
+  # The Service forwards this port to container.port.
   port: 9710
 
 container:
+  # The operator serves its metrics on this port. The probes use it too.
   port: 9710
 
 # Container [security context](https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-container).
@@ -120,6 +126,9 @@ crds:
   # ServiceAccount and ClusterRole, not the operator's. Disabled by default
   # because it grants a Helm hook Job permission to modify a cluster-scoped
   # resource - review before enabling on a shared cluster.
+  #
+  # The hook Job uses the securityContext and podSecurityContext of the operator,
+  # so it can run in a namespace where the operator can run.
   upgradeHook:
     enabled: false
     image:

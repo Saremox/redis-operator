@@ -78,6 +78,22 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
+The imagePullSecrets key of a pod spec. Takes the root context as "root" and
+the name of the Secret that the chart creates from imageCredentials as
+"secret". A pod spec must have the key only once, because a YAML decoder
+keeps only the last copy of a key.
+*/}}
+{{- define "chart.imagePullSecrets" -}}
+{{- $creds := .root.Values.imageCredentials -}}
+{{- if $creds.create -}}
+imagePullSecrets:
+{{- range ($creds.existsSecrets | default (list .secret)) }}
+  - name: {{ . }}
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
 Create the name of the namespace
 */}}
 {{- define "chart.namespaceName" -}}
