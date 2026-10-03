@@ -602,9 +602,10 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 						"sh",
 						"-c",
 						// Bounded like ready.sh: a frozen server never answers.
-						// redis-cli exits 0 on an error reply, so the grep makes a
-						// refused login fail. A server that loads its dataset
-						// answers LOADING and is alive: a restart starts the load again.
+						// redis-cli exits 0 on an error reply. With a Redis password,
+						// a refused login gets NOAUTH, and the grep fails the probe.
+						// A server that loads its dataset answers LOADING and is
+						// alive: a restart starts the load again.
 						fmt.Sprintf("t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p %[1]v --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'", rf.Spec.Redis.Port),
 					},
 				},

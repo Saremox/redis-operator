@@ -3740,8 +3740,9 @@ esac
 		{name: "frozen", path: dir + ":" + os.Getenv("PATH"), env: []string{"FAKE_FROZEN=1"}},
 		{name: "answers, without timeout", path: bare, alive: true},
 	}
-	// redis-cli prints an error reply on stdout and exits 0. A wrong password
-	// gives WRONGPASS on stderr, and then NOAUTH for the PING.
+	// redis-cli prints an error reply on stdout and exits 0. With a Redis
+	// password, a wrong pinger password gives WRONGPASS on stderr, and then
+	// NOAUTH for the PING.
 	redisReplies := []probeTest{
 		{
 			name:  "loading",
