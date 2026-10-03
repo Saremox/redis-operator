@@ -375,7 +375,44 @@ func (r *RedisFailoverHandler) unreachableMasterPod(rf *redisfailoverv1.RedisFai
 	})
 }
 
-const masterPodLookupFailed = "unable to look up the master pod"
+// recordMasterNotAnswering starts the wait of a ready master pod that does not
+// answer at its first missed check. Errors are ignored, because the reconcile
+// fails already.
+func (r *RedisFailoverHandler) recordMasterNotAnswering(rf *redisfailoverv1.RedisFailover, err error) {
+	if !errors.Is(err, rfservice.ErrRedisNotAnswering) {
+		return
+	}
+	if pod, _ := r.findRedisPod(rf, rfservice.IsMasterPod); pod != nil {
+		_, _ = r.masterUnreachableSince(rf, pod)
+	}
+}
+
+// labelledMasterPod returns the pod labelled master only when exactly one
+// pod has the label. With more than one, the label does not show which master
+// the operator elected.
+func (r *RedisFailoverHandler) labelledMasterPod(rf *redisfailoverv1.RedisFailover) (*corev1.Pod, error) {
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return nil, err
+	}
+	var master *corev1.Pod
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil || !rfservice.IsMasterPod(pod) {
+			continue
+		}
+		if master != nil {
+			return nil, nil
+		}
+		master = pod
+	}
+	return master, nil
+}
+
+const (
+	masterPodLookupFailed = "unable to look up the master pod"
+	masterStoppingMsg     = "no master, waiting for the stopping master pod to exit"
+)
 
 func failoverKey(rf *redisfailoverv1.RedisFailover) string {
 	return rf.Namespace + "/" + rf.Name
@@ -446,7 +483,9 @@ func (r *RedisFailoverHandler) waitForFailover(rf *redisfailoverv1.RedisFailover
 	if unreachable >= timeout {
 		return false, nil
 	}
-	msg := fmt.Sprintf("master unreachable for %s, failing over after %s", unreachable.Truncate(time.Second), timeout)
+	// The message holds no elapsed time. Each status change queues a
+	// reconcile at once, and the requeue below must set the next check.
+	msg := fmt.Sprintf("master unreachable since %s, failing over after %s", since.UTC().Format(time.RFC3339), timeout)
 	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).Info(msg)
 	rf.Status = redisfailoverv1.RedisFailoverStatus{
 		State:   redisfailoverv1.NotHealthyState,
@@ -519,14 +558,13 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 // If the checks do not match up to expectations, an attempt will be made to "heal" the RedisFailover into a healthy state.
 func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) error {
 
-	oldState := rf.Status.State
-	oldLastChanged := rf.Status.LastChanged
+	observed := rf.Status
 
 	rf.Status = redisfailoverv1.RedisFailoverStatus{
 		State: redisfailoverv1.HealthyState,
 	}
 
-	defer updateStatus(r.k8sservice, rf, oldState, oldLastChanged)
+	defer updateStatus(r.k8sservice, rf, observed)
 
 	// Every check below authenticates, so a changed password goes first.
 	if err := r.applyPassword(rf); err != nil {
@@ -605,6 +643,10 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 			return err
 		}
 		if stopping {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: masterStoppingMsg,
+			}
 			return nil
 		}
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no masters detected"))
@@ -687,6 +729,10 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 				// We'll wait until failover is done
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("no master found, wait until failover or fix manually")
 				setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no master not fixed, wait until failover or fix manually"))
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: "no master, waiting for the Sentinel failover",
+				}
 				return nil
 			}
 
@@ -825,14 +871,7 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 
 	nMasters, err := r.rfChecker.GetNumberMasters(rf)
 	if err != nil {
-		// The master can be a ready pod that does not answer. Its wait starts
-		// at this first missed check. Errors are ignored, because this
-		// reconcile fails already.
-		if errors.Is(err, rfservice.ErrRedisNotAnswering) {
-			if pod, _ := r.findRedisPod(rf, rfservice.IsMasterPod); pod != nil {
-				_, _ = r.masterUnreachableSince(rf, pod)
-			}
-		}
+		r.recordMasterNotAnswering(rf, err)
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: "unable to get number of masters",
@@ -855,6 +894,10 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 			return err
 		}
 		if stopping {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: masterStoppingMsg,
+			}
 			return nil
 		}
 		// A master pod that does not answer gets failoverTimeout to recover.
@@ -916,6 +959,7 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 
 		healthy, masterIP, err := r.rfChecker.CheckMasterHealth(rf)
 		if err != nil {
+			r.recordMasterNotAnswering(rf, err)
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
 				State:   redisfailoverv1.NotHealthyState,
 				Message: "unable to check master health",
@@ -924,10 +968,12 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		}
 
 		if !healthy {
-			// The master counted above may have started stopping since; then
-			// it is no longer found but may still take writes, as in case 0.
+			var pod *corev1.Pod
 			if masterIP == "" {
-				stopping, err := r.masterPodStopping(rf)
+				// The master counted above may have started stopping since; then
+				// it is no longer found but may still take writes, as in case 0.
+				var stopping bool
+				stopping, err = r.masterPodStopping(rf)
 				if err != nil {
 					rf.Status = redisfailoverv1.RedisFailoverStatus{
 						State:   redisfailoverv1.NotHealthyState,
@@ -936,24 +982,28 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 					return err
 				}
 				if stopping {
-					return nil
-				}
-			}
-			// Only a master that was found gets the wait. A master that was
-			// not found can be gone, and a wait only makes the outage longer.
-			if masterIP != "" {
-				pod, err := r.findRedisPod(rf, func(pod *corev1.Pod) bool { return pod.Status.PodIP == masterIP })
-				if err != nil {
 					rf.Status = redisfailoverv1.RedisFailoverStatus{
 						State:   redisfailoverv1.NotHealthyState,
-						Message: masterPodLookupFailed,
+						Message: masterStoppingMsg,
 					}
-					return err
+					return nil
 				}
-				if pod != nil {
-					if wait, err := r.waitForFailover(rf, pod); err != nil || wait {
-						return err
-					}
+				// The second count does not count a master pod that is not
+				// ready. As in case 0, that pod gets failoverTimeout to recover.
+				pod, err = r.unreachableMasterPod(rf)
+			} else {
+				pod, err = r.findRedisPod(rf, func(pod *corev1.Pod) bool { return pod.Status.PodIP == masterIP })
+			}
+			if err != nil {
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: masterPodLookupFailed,
+				}
+				return err
+			}
+			if pod != nil {
+				if wait, err := r.waitForFailover(rf, pod); err != nil || wait {
+					return err
 				}
 			}
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
@@ -1004,8 +1054,36 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		}
 
 	default:
-		// Multiple masters - error state
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NUMBER_OF_MASTERS, metrics.NOT_APPLICABLE, errors.New("multiple masters detected"))
+		// An old master that did not answer during a failover can come back
+		// as a master. The pod labelled master is the master that the
+		// operator elected, so the other masters become its replicas.
+		labelled, err := r.labelledMasterPod(rf)
+		if err != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: masterPodLookupFailed,
+			}
+			return err
+		}
+		if labelled != nil {
+			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
+				Warningf("Multiple masters detected, making all pods replicas of the labelled master %s", labelled.Name)
+			if err := r.rfHealer.SetMasterOnAll(labelled.Status.PodIP, rf); err != nil {
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: "unable to make the other masters replicas of the labelled master",
+				}
+				return err
+			}
+			// A master that refused REPLICAOF is skipped, so the next
+			// reconcile counts the masters again before the status is Healthy.
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: fmt.Sprintf("multiple masters detected, made the other masters replicas of %s", labelled.Name),
+			}
+			return nil
+		}
 		errorMsg := "multiple masters detected, fix manually"
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
@@ -1052,7 +1130,6 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 			State:   redisfailoverv1.NotHealthyState,
 			Message: errorMsg,
 		}
-		r.k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.REDIS_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of redis mismatch, waiting for redis statefulset reconcile")
 		return nil
@@ -1106,12 +1183,9 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 				State:   redisfailoverv1.NotHealthyState,
 				Message: errorMsg,
 			}
-			r.k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 			setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of sentinel mismatch, waiting for sentinel deployment reconcile")
 			return nil
-		} else {
-			r.k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 		}
 
 		sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
@@ -1260,18 +1334,18 @@ func setRedisCheckerMetrics(metricsClient metrics.Recorder, mode /* redis or sen
 	}
 }
 
-// updateStatus patches rf's status to the API server, stamping LastChanged
-// with the current time only when the health state actually transitioned.
-// The branches leading up to this (checkAndHeal*) each rebuild rf.Status
-// from scratch (State/Message only) without carrying LastChanged forward,
-// so oldLastChanged - captured before any of those run - is what restores
-// it on a non-transition; otherwise every steady-state reconcile would
-// patch LastChanged back to empty, erasing the last recorded transition.
-func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, oldState string, oldLastChanged string) {
-	if oldState != rf.Status.State {
+// updateStatus is the only status write of a reconcile. The checks set only
+// State and Message, so LastChanged comes from the observed status unless the
+// state changed. An unchanged status is not written, which saves one API call
+// on each resync and pod event.
+func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, observed redisfailoverv1.RedisFailoverStatus) {
+	if observed.State != rf.Status.State {
 		rf.Status.LastChanged = time.Now().Format(time.RFC3339)
 	} else {
-		rf.Status.LastChanged = oldLastChanged
+		rf.Status.LastChanged = observed.LastChanged
+	}
+	if rf.Status == observed {
+		return
 	}
 	k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 }

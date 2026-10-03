@@ -52,6 +52,7 @@ make helm-test
 - All Kubernetes resource manipulation must go through the service layer (`service/` package), not directly in the operator
 - Unit tests use `github.com/stretchr/testify` (assert/require); mock interfaces are in `mocks/` and generated with `go generate`
 - Keep generated code (`client/`, `mocks/`) separate from hand-written code; regenerate with `make update-codegen` or `make generate`
+- Write documentation, comments and pull request descriptions as `docs/writing.md` says (ASD-STE100: the why, short sentences, no fluff)
 
 ## CRD and API Changes
 

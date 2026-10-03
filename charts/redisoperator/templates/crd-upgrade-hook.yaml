@@ -113,26 +113,26 @@ spec:
       serviceAccountName: {{ $hookName }}
       restartPolicy: Never
       enableServiceLinks: false
-      {{- if (and .Values.imageCredentials.create (not .Values.imageCredentials.existsSecrets)) }}
-      imagePullSecrets:
-        - name: {{ $fullName }}-registry
-      {{- else if (and .Values.imageCredentials.create .Values.imageCredentials.existsSecrets) }}
-      {{- range .Values.imageCredentials.existsSecrets }}
-      imagePullSecrets:
-        {{ printf "- name: %s" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with include "chart.imagePullSecrets" (dict "root" . "secret" (printf "%s-registry" $hookName)) }}
+      {{- . | nindent 6 }}
       {{- end }}
       containers:
         - name: crds-upgrade
           image: "{{ .Values.crds.upgradeHook.image.repository }}:{{ .Values.crds.upgradeHook.image.tag | default "v1.36.2" }}"
           imagePullPolicy: {{ .Values.crds.upgradeHook.image.pullPolicy }}
           # Server-side, as the CRD is too large for the last-applied
-          # annotation of a client-side apply.
+          # annotation of a client-side apply. The root filesystem can be
+          # read-only, so the discovery cache goes to an emptyDir.
           command:
             - kubectl
             - apply
             - --server-side
             - --force-conflicts
+            - --cache-dir=/cache
             {{- range $path, $_ := .Files.Glob "crds/*.yaml" }}
             - -f
             - /crds/{{ base $path | trimSuffix ".yaml" }}.json
@@ -141,10 +141,35 @@ spec:
             - name: crds
               mountPath: /crds
               readOnly: true
+            - name: cache
+              mountPath: /cache
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
           resources:
             {{- toYaml .Values.crds.upgradeHook.resources | nindent 12 }}
       volumes:
         - name: crds
           configMap:
             name: {{ $fullName }}-crds
+        - name: cache
+          emptyDir: {}
+{{- if (and .Values.imageCredentials.create (not .Values.imageCredentials.existsSecrets)) }}
+---
+# Helm creates the registry Secret of the chart after the pre-install hooks,
+# so the hook Job pulls its image with this copy.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $hookName }}-registry
+  namespace: {{ include "chart.namespaceName" . }}
+  labels:
+    {{- include "chart.labels" $data | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-6"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: {{ template "imagePullSecret" . }}
+{{- end }}
 {{- end }}

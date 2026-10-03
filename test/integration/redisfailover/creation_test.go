@@ -228,19 +228,20 @@ func TestRedisFailover(t *testing.T) {
 	// Wait for Redis pods to be Ready before running connectivity tests
 	redisLabelSelector := fmt.Sprintf("app.kubernetes.io/component=redis,redisfailovers.databases.spotahome.com/name=%s", name)
 	if err := clients.waitForPodsReady(redisLabelSelector, int(redisSize), 3*time.Minute); err != nil {
-		t.Logf("Warning: Redis pods not ready: %v", err)
 		clients.printPodDiagnostics()
+		require.NoError(err, "Redis pods not ready")
 	}
 
 	// Wait for Sentinel pods to be Ready
 	sentinelLabelSelector := fmt.Sprintf("app.kubernetes.io/component=sentinel,redisfailovers.databases.spotahome.com/name=%s", name)
 	if err := clients.waitForPodsReady(sentinelLabelSelector, int(sentinelSize), 2*time.Minute); err != nil {
-		t.Logf("Warning: Sentinel pods not ready: %v", err)
 		clients.printPodDiagnostics()
+		require.NoError(err, "Sentinel pods not ready")
 	}
 
-	// Verify that auth is set and actually working
-	t.Run("Check that auth is set in sentinel and redis configs", clients.testAuth)
+	// The Sentinel auth-pass is set at runtime, so this checks only the Redis
+	// config and pod spec.
+	t.Run("Check that auth is set in the redis config and pod spec", clients.testAuth)
 
 	// Check custom config is set
 	t.Run("Check that custom config is behave expected", clients.testCustomConfig)

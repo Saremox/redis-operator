@@ -304,7 +304,8 @@ func (c *rfController) process(ctx context.Context, key string) error {
 	if err != nil || !exists {
 		return err
 	}
-	return c.handler.Handle(ctx, obj.(runtime.Object))
+	// The handler changes the object, and the informer cache shares it.
+	return c.handler.Handle(ctx, obj.(runtime.Object).DeepCopyObject())
 }
 
 // newPodListWatch lists and watches the pods of every RedisFailover.

@@ -13,10 +13,10 @@ spec:
         preferredDuringSchedulingIgnoredDuringExecution:
           - weight: 100
             podAffinityTerm:
+              # The labels that the operator sets on the Redis pods of this RedisFailover.
               labelSelector:
-                matchExpressions:
-                  - key: security
-                    operator: In
-                    values:
-                      - us-west-1
+                matchLabels:
+                  app.kubernetes.io/component: redis
+                  app.kubernetes.io/name: redisfailover
+                  app.kubernetes.io/part-of: redis-failover
               topologyKey: topology.kubernetes.io/zone

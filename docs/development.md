@@ -1,5 +1,7 @@
 # Development
 
+Write documentation, comments and pull request descriptions as [docs/writing.md](writing.md) says.
+
 ## Folder structure
 
 ### Code folder structure

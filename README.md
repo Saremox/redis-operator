@@ -53,6 +53,8 @@ REDIS_OPERATOR_VERSION=<release-tag>
 kubectl replace -f https://raw.githubusercontent.com/Saremox/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
 ```
 
+The chart can also apply its CRD before each install and upgrade. Set `crds.upgradeHook.enabled=true`. A Helm hook Job then runs `kubectl apply` with its own ServiceAccount, which can change the RedisFailover CRD. The hook is off by default because of this permission. The charts of 4.2.0-rc2 and earlier run the hook with the operator image, which has no `kubectl`. Use the hook only with a later release.
+
 ```
 helm upgrade redis-operator redis-operator/redis-operator
 ```
@@ -88,6 +90,10 @@ To install the operator with default settings and every necessary resource (incl
 ```shell
 kustomize build github.com/Saremox/redis-operator/manifests/kustomize/overlays/default
 ```
+
+The overlays install the operator in the `default` namespace, because the ClusterRoleBinding must name the namespace of the ServiceAccount. The `redis-operator.yaml` file of each GitHub release contains the `default` overlay. To use a different namespace, set `namespace:` in your own `kustomization.yaml`, as in the example below. `kubectl apply -n <namespace>` does not work with these files.
+
+Run only one operator in a cluster. Each operator takes the leader lease in its own namespace, so two operators in different namespaces both change the RedisFailovers. When you move the operator to a different namespace, delete the old operator Deployment.
 
 The `minimal` overlay is the `default` overlay without the resource limits. It also creates the RBAC and the service account. To use your own RBAC or service account, use the `base` and the [components](manifests/kustomize/components) in your own kustomization.
 
@@ -145,6 +151,8 @@ The wait starts at the first missed check. The operator records this time on the
 
 The operator does not replace a master that answers no check while its pod is ready, because a promotion can then give two masters. When the pod becomes not ready, the operator promotes a replica after the timeout. When the operator finds no master, for example because its pod is gone, it elects a master immediately. A master pod in deletion gets a wait while it is ready, because it can still accept writes.
 
+An old master that did not answer during a failover can come back as a second master. The operator then makes it a replica of the pod labelled master, because that label shows the master that the operator elected. If the elected master also does not answer when the old master comes back, the operator can move the label back to the old master. Then the writes since the failover are lost. The operator also closes the client connections of the old master, because after `REPLICAOF` their writes fail with `READONLY` until the clients connect again. The flag `--disconnect-clients-on-demotion=false` keeps them open. When the label does not identify one master, the status shows `multiple masters detected, fix manually`.
+
 This redis-failover will be managed by the operator, resulting in the following elements created inside Kubernetes:
 
 - `rfr-<NAME>`: Redis configmap
@@ -199,7 +207,13 @@ The operator can add persistence to Redis data. By default, an `emptyDir` will b
 
 To have persistence, a `PersistentVolumeClaim` usage is allowed. The full [PVC definition has to be added](example/redisfailover/persistent-storage.yaml) to the Redis Failover Spec under the `Storage` section.
 
-**IMPORTANT**: By default, the persistent volume claims will be deleted when the Redis Failover is. If this is not the expected usage, a `keepAfterDeletion` flag can be added under the `storage` section of Redis. [An example is given](example/redisfailover/persistent-storage-no-pvc-deletion.yaml).
+**IMPORTANT**: By default, the persistent volume claims will be deleted when the Redis Failover is. If this is not the expected usage, a `keepAfterDeletion` flag can be added under the `storage` section of Redis. [An example is given](example/redisfailover/persistent-storage-no-pvc-deletion.yaml). When you add the flag to an existing Redis Failover, the operator removes the owner reference of the Redis Failover from its PVCs. When you remove the flag again, the operator does not add the owner reference back, so these PVCs stay after the Redis Failover is deleted.
+
+The operator removes the owner reference in its next reconcile. Before you delete the Redis Failover, check that no PVC shows the owner `RedisFailover`. Replace `<NAME>` with the name of the Redis Failover:
+
+```bash
+kubectl get pvc -l app.kubernetes.io/component=redis,app.kubernetes.io/name=<NAME> -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.ownerReferences[*].kind}{"\n"}{end}'
+```
 
 ### NodeAffinity and Tolerations
 

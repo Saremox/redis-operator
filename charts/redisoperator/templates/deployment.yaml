@@ -34,26 +34,24 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if (and .Values.imageCredentials.create (not .Values.imageCredentials.existsSecrets)) }}
-      imagePullSecrets:
-        - name: {{ $fullName }}-{{ $name }}
-      {{- else if (and .Values.imageCredentials.create .Values.imageCredentials.existsSecrets) }}
-      {{- range .Values.imageCredentials.existsSecrets }}
-      imagePullSecrets:
-        {{ printf "- name: %s" . }}
-      {{- end }}
+      {{- with include "chart.imagePullSecrets" (dict "root" . "secret" (printf "%s-%s" $fullName $name)) }}
+      {{- . | nindent 6 }}
       {{- end }}
       containers:
       - name: {{ .Chart.Name }}
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion}}"
-        {{- if or .Values.image.cli_args .Values.watchAuthSecrets }}
-        args: 
-        {{- if .Values.image.cli_args }}
-        - {{ quote .Values.image.cli_args }}
+        # The probes and the Services use container.port, so the operator must listen on it.
+        args:
+        - --listen-address=:{{ .Values.container.port }}
+        {{- $args := .Values.image.cli_args }}
+        {{- if kindIs "string" $args }}
+        {{- $args = regexSplit "\\s+" (trim $args) -1 | compact }}
+        {{- end }}
+        {{- range $args }}
+        - {{ quote . }}
         {{- end }}
         {{- if .Values.watchAuthSecrets }}
         - --watch-auth-secrets
-        {{- end }}
         {{- end }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:

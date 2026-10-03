@@ -148,6 +148,7 @@ func TestSetMasterOnAllDisconnectsOnlyTheDemotedMaster(t *testing.T) {
 	mr := &mRedisService.Client{}
 	mr.On("IsMaster", "0.0.0.0", "0", "").Return(true, nil)
 	mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(nil)
+	mr.On("IsMaster", "2.2.2.2", "0", "").Once().Return(false, nil)
 	mr.On("MakeSlaveOfWithPort", "2.2.2.2", "0", "0.0.0.0", "0", "").Once().Return(nil)
 	var disconnects []string
 
@@ -159,6 +160,97 @@ func TestSetMasterOnAllDisconnectsOnlyTheDemotedMaster(t *testing.T) {
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 	assert.Equal([]string{"disconnect old-master"}, disconnects)
+}
+
+// An old master that comes back after a failover usually has the slave label
+// already. It answers as a master, so its clients must reconnect too.
+func TestSetMasterOnAllDisconnectsAMasterWithoutTheMasterLabel(t *testing.T) {
+	tests := []struct {
+		name            string
+		labels          map[string]string
+		isMaster        bool
+		isMasterErr     error
+		noDisconnector  bool
+		relabelErr      error
+		skipReplicaOf   bool
+		expectedActions []string
+	}{
+		{
+			name:            "a pod labelled slave answers as master",
+			labels:          slaveRoleLabel,
+			isMaster:        true,
+			expectedActions: []string{"disconnect old-master"},
+		},
+		{
+			name:            "an unlabelled pod answers as master",
+			isMaster:        true,
+			expectedActions: []string{"disconnect old-master", "relabel"},
+		},
+		{
+			name:            "a failed relabel does not keep the clients",
+			isMaster:        true,
+			relabelErr:      errors.New("conflict"),
+			expectedActions: []string{"disconnect old-master", "relabel"},
+		},
+		{
+			name:   "a replica keeps its clients",
+			labels: slaveRoleLabel,
+		},
+		{
+			name:          "a pod that does not answer is skipped",
+			labels:        slaveRoleLabel,
+			isMasterErr:   errors.New("i/o timeout"),
+			skipReplicaOf: true,
+		},
+		{
+			name:        "a pod that answers with an error keeps its clients",
+			labels:      slaveRoleLabel,
+			isMasterErr: errors.New("NOAUTH Authentication required"),
+		},
+		{
+			name:           "without a disconnector the pod is not checked",
+			labels:         slaveRoleLabel,
+			noDisconnector: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			pods := &corev1.PodList{Items: []corev1.Pod{
+				podWithRole("new-master", "0.0.0.0", masterRoleLabel),
+				podWithRole("old-master", "1.1.1.1", test.labels),
+			}}
+
+			var actions []string
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+			if test.labels == nil {
+				ms.On("UpdatePodLabels", namespace, "old-master", slaveRoleLabel).Once().Return(test.relabelErr).
+					Run(func(mock.Arguments) { actions = append(actions, "relabel") })
+			}
+			mr := &mRedisService.Client{}
+			mr.On("IsMaster", "0.0.0.0", "0", "").Return(true, nil)
+			if !test.noDisconnector {
+				mr.On("IsMaster", "1.1.1.1", "0", "").Once().Return(test.isMaster, test.isMasterErr)
+			}
+			if !test.skipReplicaOf {
+				mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Once().Return(nil)
+			}
+
+			var opts []rfservice.Option
+			if !test.noDisconnector {
+				opts = append(opts, rfservice.WithClientDisconnector(fakeDisconnector{calls: &actions}))
+			}
+			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{}, opts...)
+			err := healer.SetMasterOnAll("0.0.0.0", rf)
+
+			assert.ErrorIs(t, err, test.relabelErr)
+			ms.AssertExpectations(t)
+			mr.AssertExpectations(t)
+			assert.Equal(t, test.expectedActions, actions)
+		})
+	}
 }
 
 // Bootstrap mode re-issues SLAVEOF on every reconcile; that must not disconnect anyone.
@@ -301,4 +393,35 @@ func TestClientDisconnectorFallsBackToDisconnecting(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClientDisconnectorRunsAgainAfterAFailureWhenDemotedAgain(t *testing.T) {
+	rf := generateRF()
+	kubeClient := fake.NewClientset(masterEndpointSlice(rf, "1.1.1.1"))
+	called := make(chan struct{}, 2)
+	mr := &mRedisService.Client{}
+	mr.On("DisconnectClients", "1.1.1.1", "0", "").Once().Return(errors.New("i/o timeout")).
+		Run(func(mock.Arguments) { called <- struct{}{} })
+	mr.On("DisconnectClients", "1.1.1.1", "0", "").Once().Return(nil).
+		Run(func(mock.Arguments) { called <- struct{}{} })
+	disconnector := rfservice.NewClientDisconnector(kubeClient, mr, log.DummyLogger{}, time.Minute, 0)
+
+	demoted := podWithRole("old-master", "1.1.1.1", slaveRoleLabel)
+	disconnector.DisconnectDemoted(rf, demoted, "0", "")
+	// The first run still waits for the endpoint, so this call only asks for
+	// one more run.
+	disconnector.DisconnectDemoted(rf, demoted, "0", "")
+	_, err := kubeClient.DiscoveryV1().EndpointSlices(namespace).
+		Update(context.Background(), masterEndpointSlice(rf), metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-called:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("disconnect %d did not run", i+1)
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+	mr.AssertNumberOfCalls(t, "DisconnectClients", 2)
 }
