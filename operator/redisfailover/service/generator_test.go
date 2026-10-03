@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8slabels "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
@@ -4422,6 +4424,35 @@ func TestGetAffinityUsesUserSuppliedValue(t *testing.T) {
 	// getAffinity must return the user-supplied Affinity unchanged, instead of
 	// building the default soft anti-affinity.
 	assert.Same(customAffinity, gotAffinity)
+}
+
+// TestGetAffinityDefaultMatchesMasterPod checks that the default soft
+// anti-affinity also selects the master pod, whose role label the operator
+// changes. Otherwise a replica can go to the node of the master.
+func TestGetAffinityDefaultMatchesMasterPod(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	var ss *appsv1.StatefulSet
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		ss = args.Get(1).(*appsv1.StatefulSet)
+	}).Return(nil)
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	assert.NoError(client.EnsureRedisStatefulset(rf, map[string]string{"some": "label"}, []metav1.OwnerReference{}))
+
+	terms := ss.Spec.Template.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	if assert.Len(terms, 1) {
+		selector, err := metav1.LabelSelectorAsSelector(terms[0].PodAffinityTerm.LabelSelector)
+		assert.NoError(err)
+		masterPodLabels := map[string]string{}
+		maps.Copy(masterPodLabels, ss.Spec.Template.Labels)
+		masterPodLabels["redisfailovers-role"] = "master"
+		assert.True(selector.Matches(k8slabels.Set(masterPodLabels)), "selector %v must match the master pod", selector)
+		assert.True(selector.Matches(k8slabels.Set(ss.Spec.Template.Labels)), "selector %v must match a replica pod", selector)
+	}
 }
 
 // TestGetSecurityContextUsesUserSuppliedValue used to assert that a partial

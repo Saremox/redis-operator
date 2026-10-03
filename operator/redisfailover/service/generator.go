@@ -484,6 +484,9 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 	redisCommand := getRedisCommand(rf)
 	selectorLabels := generateSelectorLabels(redisRoleName, rf.Name)
 	labels = util.MergeLabels(labels, selectorLabels)
+	// The operator changes the role label of the master pod, so a pod
+	// anti-affinity that matches on it does not count the master.
+	affinityLabels := labels
 	labels = util.MergeLabels(labels, generateRedisDefaultRoleLabel())
 
 	mac := hmac.New(sha256.New, []byte(rf.Namespace+"/"+rf.Name))
@@ -521,7 +524,7 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					Affinity:                      getAffinity(rf.Spec.Redis.Affinity, labels),
+					Affinity:                      getAffinity(rf.Spec.Redis.Affinity, affinityLabels),
 					Tolerations:                   rf.Spec.Redis.Tolerations,
 					TopologySpreadConstraints:     rf.Spec.Redis.TopologySpreadConstraints,
 					NodeSelector:                  rf.Spec.Redis.NodeSelector,
