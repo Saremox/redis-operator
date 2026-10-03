@@ -1203,8 +1203,10 @@ spec:
                     type: object
                   customCommandRenames:
                     items:
-                      description: RedisCommandRename defines the specification of
-                        a "rename-command" configuration option
+                      description: |-
+                        RedisCommandRename defines the specification of a "rename-command" configuration option.
+                        It must not rename a command that the operator or the pod scripts send: ACL, AUTH,
+                        CLIENT, CONFIG, INFO, PING, REPLICAOF, SAVE or SLAVEOF.
                       properties:
                         from:
                           type: string

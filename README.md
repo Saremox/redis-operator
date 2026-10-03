@@ -225,6 +225,8 @@ To have the ability of this configuration to be changed "on the fly," without th
 
 **Important 2**: do **NOT** change the options used for control the redis/sentinel such as `port`, `bind`, `dir`, etc.
 
+Validation rejects a `redis.customCommandRenames` entry for a command that the operator or the pod scripts send: `ACL`, `AUTH`, `CLIENT`, `CONFIG`, `INFO`, `PING`, `REPLICAOF`, `SAVE` or `SLAVEOF`.
+
 ### Managed maxmemory
 
 With `redis.maxMemory` the operator sets `maxmemory` and `maxmemory-policy` from the redis container's memory limit, see the [maxmemory example file](example/redisfailover/maxmemory.yaml). It requires a memory limit of at least 64Mi; otherwise `maxmemory` is not managed and the reason is in the status message.

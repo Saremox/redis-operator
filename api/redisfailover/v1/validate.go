@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -19,6 +21,10 @@ const (
 // arbitrary directives into redis.conf.
 var validCommandRenamePattern = regexp.MustCompile(`^[A-Za-z_]+$`)
 
+// operatorRedisCommands are the Redis commands that the operator and the pod
+// scripts send. A rename of one of them makes each reconcile or a probe fail.
+var operatorRedisCommands = []string{"ACL", "AUTH", "CLIENT", "CONFIG", "INFO", "PING", "REPLICAOF", "SAVE", "SLAVEOF"}
+
 // Validate set the values by default if not defined and checks if the values given are valid
 func (r *RedisFailover) Validate() error {
 	if len(r.Name) > maxNameLength {
@@ -28,6 +34,9 @@ func (r *RedisFailover) Validate() error {
 	for _, rename := range r.Spec.Redis.CustomCommandRenames {
 		if !validCommandRenamePattern.MatchString(rename.From) {
 			return fmt.Errorf("customCommandRenames: invalid \"from\" command name %q, must match %s", rename.From, validCommandRenamePattern.String())
+		}
+		if slices.Contains(operatorRedisCommands, strings.ToUpper(rename.From)) {
+			return fmt.Errorf("customCommandRenames: %q cannot be renamed, because the operator or the pod scripts send it (%s)", rename.From, strings.Join(operatorRedisCommands, ", "))
 		}
 		// "to" may be empty to disable the command entirely.
 		if rename.To != "" && !validCommandRenamePattern.MatchString(rename.To) {

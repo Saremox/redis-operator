@@ -69,7 +69,19 @@ func TestValidate(t *testing.T) {
 		{
 			name:             "Allows valid command renames, including disabling a command",
 			rfName:           "test",
-			rfCommandRenames: []RedisCommandRename{{From: "CONFIG", To: "MYCONFIG"}, {From: "FLUSHALL", To: ""}},
+			rfCommandRenames: []RedisCommandRename{{From: "KEYS", To: "MYKEYS"}, {From: "FLUSHALL", To: ""}},
+		},
+		{
+			name:             "Rejects a rename of a command that the operator sends, in any case",
+			rfName:           "test",
+			rfCommandRenames: []RedisCommandRename{{From: "FLUSHALL", To: ""}, {From: "config", To: "MYCONFIG"}},
+			expectedError:    `customCommandRenames: "config" cannot be renamed, because the operator or the pod scripts send it (ACL, AUTH, CLIENT, CONFIG, INFO, PING, REPLICAOF, SAVE, SLAVEOF)`,
+		},
+		{
+			name:             "Rejects disabling a command that the pod scripts send",
+			rfName:           "test",
+			rfCommandRenames: []RedisCommandRename{{From: "Replicaof", To: ""}},
+			expectedError:    `customCommandRenames: "Replicaof" cannot be renamed, because the operator or the pod scripts send it (ACL, AUTH, CLIENT, CONFIG, INFO, PING, REPLICAOF, SAVE, SLAVEOF)`,
 		},
 		{
 			name:             "Rejects command rename injection via quotes in from",
@@ -80,7 +92,7 @@ func TestValidate(t *testing.T) {
 		{
 			name:             "Rejects command rename injection via quotes in to",
 			rfName:           "test",
-			rfCommandRenames: []RedisCommandRename{{From: "CONFIG", To: `" shutdown nosave #`}},
+			rfCommandRenames: []RedisCommandRename{{From: "KEYS", To: `" shutdown nosave #`}},
 			expectedError:    `customCommandRenames: invalid "to" command name "\" shutdown nosave #", must match ^[A-Za-z_]+$`,
 		},
 	}
