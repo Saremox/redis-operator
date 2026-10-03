@@ -30,6 +30,9 @@ const (
 	metricsNamespace = "redis_operator"
 )
 
+// Version is set by scripts/build.sh.
+var Version = "dev"
+
 // Main is the  main runner.
 type Main struct {
 	flags  *utils.CMDFlags
@@ -51,6 +54,8 @@ func New(logger log.Logger) Main {
 // Run execs the program.
 func (m *Main) Run() error {
 	errC := make(chan error, 1)
+
+	m.logger.Infof("Starting redis-operator %s", Version)
 
 	// Set correct logging.
 	err := m.logger.Set(log.Level(strings.ToLower(m.flags.LogLevel)))
