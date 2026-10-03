@@ -289,10 +289,9 @@ func removeStaleMetrics() {
 			for _, label := range customResourceBasedLabels {
 				metricsDeletedCount += recorder.redisCheck.DeletePartialMatch(label)
 				metricsDeletedCount += recorder.sentinelCheck.DeletePartialMatch(label)
-				labelWithName := label
-				labelWithName["name"] = labelWithName["resource"]
-				delete(labelWithName, "resource")
-				metricsDeletedCount += recorder.clusterOK.DeletePartialMatch(label)
+				// A new map, because label is used again for the next recorder.
+				labelWithName := prometheus.Labels{"namespace": label["namespace"], "name": label["resource"]}
+				metricsDeletedCount += recorder.clusterOK.DeletePartialMatch(labelWithName)
 			}
 			for _, label := range ipBasedLabels {
 				metricsDeletedCount += recorder.redisOperations.DeletePartialMatch(label)
@@ -304,17 +303,15 @@ func removeStaleMetrics() {
 			// this dedicated per-instance sweep every old IP's series would remain registered for
 			// the lifetime of the process, growing metric cardinality (and memory) without bound.
 			for _, entry := range staleCheckMetrics {
-				var deleted bool
-				switch entry.kind {
-				case "redis":
-					deleted = recorder.redisCheck.DeleteLabelValues(entry.namespace, entry.resource, entry.indicator, entry.instance, STATUS_HEALTHY) ||
-						recorder.redisCheck.DeleteLabelValues(entry.namespace, entry.resource, entry.indicator, entry.instance, STATUS_UNHEALTHY)
-				case "sentinel":
-					deleted = recorder.sentinelCheck.DeleteLabelValues(entry.namespace, entry.resource, entry.indicator, entry.instance, STATUS_HEALTHY) ||
-						recorder.sentinelCheck.DeleteLabelValues(entry.namespace, entry.resource, entry.indicator, entry.instance, STATUS_UNHEALTHY)
+				check := recorder.redisCheck
+				if entry.kind == "sentinel" {
+					check = recorder.sentinelCheck
 				}
-				if deleted {
-					metricsDeletedCount++
+				// The tracker forgets the entry, so delete both status series now.
+				for _, status := range []string{STATUS_HEALTHY, STATUS_UNHEALTHY} {
+					if check.DeleteLabelValues(entry.namespace, entry.resource, entry.indicator, entry.instance, status) {
+						metricsDeletedCount++
+					}
 				}
 			}
 		}

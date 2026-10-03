@@ -99,6 +99,25 @@ func TestGetSlaveOf(t *testing.T) {
 	assert.Equal(t, env.master.IP, masterOf)
 }
 
+// A replica on an IPv6 cluster, or a replica of a hostname, must report its
+// full master_host. An empty or cut value hides a replica of the wrong master.
+func TestGetSlaveOf_NonIPv4MasterHost(t *testing.T) {
+	requireRedisServer(t)
+	c := newTestClient()
+	for _, masterHost := range []string{"fd00:10:244::5", "2001:db8::5", "rfr-test-0.rfr-test.ns.svc.cluster.local"} {
+		t.Run(masterHost, func(t *testing.T) {
+			replica := startRedisProcess(t)
+			rc := rediscli.NewClient(&rediscli.Options{Addr: replica.Addr()})
+			defer func() { _ = rc.Close() }()
+			require.NoError(t, rc.SlaveOf(bgCtx(), masterHost, "6379").Err())
+
+			masterOf, err := c.GetSlaveOf(replica.IP, strconv.Itoa(replica.Port), "")
+			require.NoError(t, err)
+			assert.Equal(t, masterHost, masterOf)
+		})
+	}
+}
+
 // TestSlaveIsReady_LoopbackMasterHostNeverReady documents a real quirk found
 // while building this test suite (not fixed here, per instructions - see the
 // task summary for the full report):
@@ -813,6 +832,54 @@ func TestGetNumberSentinelsInMemory_NotMonitoringAnything(t *testing.T) {
 	// GetNumberSentinelSlavesInMemory shares the same isSentinelReady gate.
 	_, err = c.GetNumberSentinelSlavesInMemory(env.sentinel.IP)
 	assert.Error(t, err)
+}
+
+// startFakeSentinel listens on ip:sentinelPort and answers each command with
+// info as a bulk string. A real Sentinel cannot report more than 65536
+// sentinels or replicas.
+func startFakeSentinel(t *testing.T, ip, info string) {
+	t.Helper()
+	l, err := net.Listen("tcp", net.JoinHostPort(ip, sentinelPort))
+	if err != nil {
+		t.Skipf("cannot listen on %s: %v", net.JoinHostPort(ip, sentinelPort), err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	reply := []byte("$" + strconv.Itoa(len(info)) + "\r\n" + info + "\r\n")
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				buf := make([]byte, 4096)
+				for {
+					if _, err := conn.Read(buf); err != nil {
+						return
+					}
+					if _, err := conn.Write(reply); err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+}
+
+func TestGetNumberSentinelsInMemory_TooMany(t *testing.T) {
+	const target = "127.0.0.2"
+	startFakeSentinel(t, target, "# Sentinel\r\nsentinel_masters:1\r\n"+
+		"master0:name=mymaster,status=ok,address=10.0.0.1:6379,slaves=70000,sentinels=70000\r\n")
+	c := newTestClient()
+
+	n, err := c.GetNumberSentinelsInMemory(target)
+	assert.Error(t, err)
+	assert.Zero(t, n)
+
+	n, err = c.GetNumberSentinelSlavesInMemory(target)
+	assert.Error(t, err)
+	assert.Zero(t, n)
 }
 
 // ---------------------------------------------------------------------

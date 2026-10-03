@@ -75,7 +75,6 @@ const (
 	sentinelsNumberREString = "sentinels=([0-9]+)"
 	slaveNumberREString     = "slaves=([0-9]+)"
 	sentinelStatusREString  = "status=([a-z]+)"
-	redisMasterHostREString = "master_host:([0-9.]+)"
 	redisRoleMaster         = "role:master"
 	redisSyncing            = "master_sync_in_progress:1"
 	redisMasterSillPending  = "master_host:127.0.0.1"
@@ -86,10 +85,9 @@ const (
 )
 
 var (
-	sentinelNumberRE  = regexp.MustCompile(sentinelsNumberREString)
-	sentinelStatusRE  = regexp.MustCompile(sentinelStatusREString)
-	slaveNumberRE     = regexp.MustCompile(slaveNumberREString)
-	redisMasterHostRE = regexp.MustCompile(redisMasterHostREString)
+	sentinelNumberRE = regexp.MustCompile(sentinelsNumberREString)
+	sentinelStatusRE = regexp.MustCompile(sentinelStatusREString)
+	slaveNumberRE    = regexp.MustCompile(slaveNumberREString)
 )
 
 // Redis answers the operator in milliseconds. The go-redis defaults (3s read
@@ -137,7 +135,7 @@ func (c *client) GetNumberSentinelsInMemory(ip string) (int32, error) {
 	}
 	if nSentinels > 65536 {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, metrics.SENTINEL_TOO_MANY)
-		return 0, err
+		return 0, fmt.Errorf("sentinel reports %d sentinels, more than 65536", nSentinels)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return int32(nSentinels), nil
@@ -174,7 +172,7 @@ func (c *client) GetNumberSentinelSlavesInMemory(ip string) (int32, error) {
 	}
 	if nSlaves > 65536 {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, metrics.SENTINEL_TOO_MANY)
-		return 0, err
+		return 0, fmt.Errorf("sentinel reports %d replicas, more than 65536", nSlaves)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return int32(nSlaves), nil
@@ -213,7 +211,7 @@ func (c *client) ResetSentinel(ip string) error {
 	return nil
 }
 
-// GetSlaveOf returns the master of the given redis, or nil if it's master
+// GetSlaveOf returns the master_host of the given Redis, or "" for a master.
 func (c *client) GetSlaveOf(ip, port, password string) (string, error) {
 
 	options := redisOptions(net.JoinHostPort(ip, port), password)
@@ -230,13 +228,14 @@ func (c *client) GetSlaveOf(ip, port, password string) (string, error) {
 		log.Errorf("error while getting masterIP : Failed to get info replication while querying redis instance %v", ip)
 		return "", err
 	}
-	match := redisMasterHostRE.FindStringSubmatch(info)
-	if len(match) == 0 {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_SLAVE_OF, metrics.SUCCESS, metrics.NOT_APPLICABLE)
-		return "", nil
-	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_SLAVE_OF, metrics.SUCCESS, metrics.NOT_APPLICABLE)
-	return match[1], nil
+	// master_host can be an IPv6 address or a hostname, so take the full value.
+	for _, line := range strings.Split(info, "\n") {
+		if value, ok := strings.CutPrefix(strings.TrimSpace(line), "master_host:"); ok {
+			return value, nil
+		}
+	}
+	return "", nil
 }
 
 func (c *client) IsMaster(ip, port, password string) (bool, error) {
