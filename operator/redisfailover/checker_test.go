@@ -1319,6 +1319,7 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel}, nil)
 				mrfc.On("CheckSentinelMonitor", sentinel, master, port).Once().Return(errors.New("mon err"))
 				mrfc.On("GetMasterIP", rf).Once().Return(newMaster, nil)
+				mrfc.On("CheckSentinelMonitor", sentinel, newMaster, port).Once().Return(errors.New("mon err"))
 				mrfh.On("NewSentinelMonitor", sentinel, newMaster, rf).Once().Return(errors.New("new monitor err"))
 			},
 			wantErr:   true,
