@@ -218,7 +218,21 @@ func (r *RedisFailoverChecker) CheckSentinelNumberInMemory(sentinel string, rf *
 	nSentinels, err := r.redisClient.GetNumberSentinelsInMemory(sentinel)
 	if err != nil {
 		return err
-	} else if nSentinels != rf.Spec.Sentinel.Replicas {
+	}
+	if nSentinels < rf.Spec.Sentinel.Replicas {
+		// A Sentinel does not know a pod that does not run, for example a
+		// Pending pod, and a reset does not change that. After a reset, the
+		// Sentinels forget each other for some seconds, and a failover
+		// cannot start in that time.
+		running, err := r.GetSentinelsIPs(rf)
+		if err != nil {
+			return err
+		}
+		if int(nSentinels) >= len(running) {
+			return nil
+		}
+	}
+	if nSentinels != rf.Spec.Sentinel.Replicas {
 		return errors.New("sentinels in memory mismatch")
 	}
 	return nil
@@ -304,16 +318,26 @@ func (r *RedisFailoverChecker) CheckSentinelSlavesNumberInMemory(sentinel string
 	nSlaves, err := r.redisClient.GetNumberSentinelSlavesInMemory(sentinel)
 	if err != nil {
 		return err
-	} else {
-		if rf.Bootstrapping() {
-			if nSlaves != rf.Spec.Redis.Replicas {
-				return errors.New("redis slaves in sentinel memory mismatch")
-			}
-		} else {
-			if nSlaves != rf.Spec.Redis.Replicas-1 {
-				return errors.New("redis slaves in sentinel memory mismatch")
-			}
+	}
+	// While bootstrapping, all the Redis pods are slaves of the bootstrap node.
+	masters := 1
+	if rf.Bootstrapping() {
+		masters = 0
+	}
+	expected := rf.Spec.Redis.Replicas - int32(masters)
+	if nSlaves < expected {
+		// CheckSentinelNumberInMemory gives the reason to not reset for a
+		// pod that does not run.
+		running, err := r.GetRedisesIPs(rf)
+		if err != nil {
+			return err
 		}
+		if int(nSlaves) >= len(running)-masters {
+			return nil
+		}
+	}
+	if nSlaves != expected {
+		return errors.New("redis slaves in sentinel memory mismatch")
 	}
 	return nil
 }

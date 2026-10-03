@@ -454,7 +454,9 @@ func (c *client) sentinelConfigsToApply(current map[string]string, configs []str
 		if err != nil {
 			return nil, err
 		}
-		if current != nil && current[param] == value {
+		// SENTINEL SET takes the name in any case. SENTINEL MASTER gives it in
+		// lower case.
+		if current != nil && current[strings.ToLower(param)] == value {
 			continue
 		}
 		toApply = append(toApply, sentinelConfigParam{param: param, value: value})

@@ -3274,11 +3274,11 @@ func TestEnsureSentinelConfigMapContent(t *testing.T) {
 
 	assert.NoError(err)
 	if assert.NotNil(gotCM) {
-		// This pins down the current fixed sentinel.conf values so a future
-		// accidental change to the template is caught.
+		// The timeouts must be the sentinel customConfig defaults. Otherwise a
+		// restarted Sentinel disagrees with the other Sentinels.
 		expected := `sentinel monitor mymaster 127.0.0.1 6379 2
-sentinel down-after-milliseconds mymaster 1000
-sentinel failover-timeout mymaster 3000
+sentinel down-after-milliseconds mymaster 5000
+sentinel failover-timeout mymaster 10000
 sentinel parallel-syncs mymaster 2`
 		assert.Equal(expected, gotCM.Data["sentinel.conf"])
 	}
@@ -3815,6 +3815,14 @@ func TestRedisReadinessLinkDownWindow(t *testing.T) {
 			modify: func(rf *redisfailoverv1.RedisFailover) {
 				rf.Spec.Sentinel.Enabled = ptr.To(true)
 				rf.Spec.Sentinel.CustomConfig = []string{"down-after-milliseconds 120000", "parallel-syncs 1", "failover-timeout 30000"}
+			},
+			window: "210",
+		},
+		{
+			name: "sentinel mode, customConfig keys in upper case",
+			modify: func(rf *redisfailoverv1.RedisFailover) {
+				rf.Spec.Sentinel.Enabled = ptr.To(true)
+				rf.Spec.Sentinel.CustomConfig = []string{"DOWN-AFTER-MILLISECONDS 120000", "Failover-Timeout 30000"}
 			},
 			window: "210",
 		},

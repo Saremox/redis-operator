@@ -234,6 +234,8 @@ To have the ability of this configuration to be changed "on the fly," without th
 - Configuration on the `sentinel.conf`: `sentinel down-after-milliseconds mymaster 2000`
 - Configuration on the `customConfig`: `down-after-milliseconds 2000`
 
+The operator adds `down-after-milliseconds 5000` and `failover-timeout 10000` to the Sentinel `customConfig`, unless `customConfig` sets that option. Thus all the Sentinels use the same timeouts, also after a restart. The operator applies these values to the running Sentinels at the next reconcile, also after an upgrade, without a restart. To use the Sentinel built-in values, set `down-after-milliseconds 30000` and `failover-timeout 180000`. The [4.2.0 migration guide](docs/migrations/4.2.0.md) tells which RedisFailovers get new values on the upgrade to 4.2.0.
+
 **Important 2**: do **NOT** change the options used for control the redis/sentinel such as `port`, `bind`, `dir`, etc.
 
 ### Managed maxmemory

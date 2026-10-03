@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"fmt"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,6 +20,13 @@ const (
 	NotHealthyState              = "NotHealthy"
 )
 
+// The Sentinel timeouts that apply when sentinel.customConfig does not set them.
+// sentinel.conf and the readiness script of the Redis pods use the same values.
+const (
+	DefaultSentinelDownAfterMilliseconds       = 5000
+	DefaultSentinelFailoverTimeoutMilliseconds = 10000
+)
+
 var (
 	// DefaultSentinelEnabled is the default value for sentinel.enabled
 	// Starting with 4.0.0, sentinel is DISABLED by default (operator-managed failover)
@@ -30,8 +38,8 @@ var (
 
 var (
 	defaultSentinelCustomConfig = []string{
-		"down-after-milliseconds 5000",
-		"failover-timeout 10000",
+		fmt.Sprintf("down-after-milliseconds %d", DefaultSentinelDownAfterMilliseconds),
+		fmt.Sprintf("failover-timeout %d", DefaultSentinelFailoverTimeoutMilliseconds),
 	}
 	defaultRedisCustomConfig = []string{
 		"replica-priority 100",

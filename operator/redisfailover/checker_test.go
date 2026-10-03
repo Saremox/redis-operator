@@ -1324,6 +1324,7 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel}, nil)
 				mrfc.On("CheckSentinelMonitor", sentinel, master, port).Once().Return(errors.New("mon err"))
 				mrfc.On("GetMasterIP", rf).Once().Return(newMaster, nil)
+				mrfc.On("CheckSentinelMonitor", sentinel, newMaster, port).Once().Return(errors.New("mon err"))
 				mrfh.On("NewSentinelMonitor", sentinel, newMaster, rf).Once().Return(errors.New("new monitor err"))
 			},
 			wantErr:   true,
@@ -1450,6 +1451,79 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				assertTest.Equal(test.wantMessage, rf.Status.Message)
 			}
 
+			mrfc.AssertExpectations(t)
+			mrfh.AssertExpectations(t)
+		})
+	}
+}
+
+// TestCheckAndHealSentinelMonitorUsesRefreshedMaster checks that after a
+// master refresh, the Sentinels are checked against the new master. A new
+// monitor for a Sentinel that already monitors the new master resets its state.
+func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
+	const (
+		oldMaster = "0.0.0.0"
+		newMaster = "0.0.0.1"
+		sentinel1 = "1.1.1.1"
+		sentinel2 = "1.1.1.2"
+		port      = "0"
+	)
+	tests := []struct {
+		name string
+		// sentinel1Err is the result of the check of sentinel1 against the new master.
+		sentinel1Err    error
+		wantNewMonitor1 bool
+	}{
+		{name: "the first Sentinel monitors the new master"},
+		{name: "the first Sentinel monitors another master", sentinel1Err: errors.New("monitors 0.0.0.2"), wantNewMonitor1: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF(false, false)
+
+			mk := settledK8sServices()
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
+
+			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+			mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
+			mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+			mrfc.On("GetMasterIP", rf).Once().Return(oldMaster, nil)
+			mrfc.On("CheckAllSlavesFromMaster", oldMaster, rf).Once().Return(nil)
+			mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{oldMaster}, nil)
+			mrfh.On("SetRedisCustomConfig", oldMaster, rf).Once().Return(nil)
+			mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("1", nil)
+			mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
+			mrfc.On("GetRedisesMasterPod", rf).Once().Return(oldMaster, nil)
+			mrfc.On("GetRedisRevisionHash", oldMaster, rf).Once().Return("1", nil)
+			// UpdateRedisesPods resolves the master itself.
+			mrfc.On("GetMasterIP", rf).Once().Return(oldMaster, nil)
+			mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel1, sentinel2}, nil)
+			// The master changed before the Sentinel checks.
+			mrfc.On("CheckSentinelMonitor", sentinel1, oldMaster, port).Once().Return(errors.New("monitors " + newMaster))
+			mrfc.On("GetMasterIP", rf).Once().Return(newMaster, nil)
+			mrfc.On("CheckSentinelMonitor", sentinel1, newMaster, port).Once().Return(test.sentinel1Err)
+			if test.wantNewMonitor1 {
+				mrfh.On("NewSentinelMonitor", sentinel1, newMaster, rf).Once().Return(nil)
+			}
+			mrfc.On("CheckSentinelMonitor", sentinel2, newMaster, port).Once().Return(nil)
+			for _, s := range []string{sentinel1, sentinel2} {
+				mrfc.On("CheckSentinelNumberInMemory", s, rf).Once().Return(nil)
+				mrfc.On("CheckSentinelSlavesNumberInMemory", s, rf).Once().Return(nil)
+				mrfh.On("SetSentinelCustomConfig", s, rf).Once().Return(nil)
+			}
+
+			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+			assert.NoError(handler.CheckAndHeal(rf))
+
+			if !test.wantNewMonitor1 {
+				mrfh.AssertNotCalled(t, "NewSentinelMonitor", sentinel1, mock.Anything, mock.Anything)
+			}
+			mrfh.AssertNotCalled(t, "NewSentinelMonitor", sentinel2, mock.Anything, mock.Anything)
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
 		})
