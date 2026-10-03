@@ -62,10 +62,13 @@ type Observer struct {
 	master    pod
 	// synced are the redis pods, by UID, that were the master or a replica
 	// with its link up: they hold the data.
-	synced     map[string]bool
-	lagPods    map[string]bool
-	servers    map[string][2]string
-	oomSeen    map[string]bool
+	synced  map[string]bool
+	lagPods map[string]bool
+	servers map[string][2]string
+	oomSeen map[string]bool
+	// started is when the tester started. An earlier run counted the OOM
+	// kills before it.
+	started    time.Time
 	evictions  evictions
 	failoverCh chan string
 	// evaluated are the invariants of the last round.
@@ -115,6 +118,7 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		failoverCh: make(chan string, 1),
 		reportOnly: map[string]bool{invReplicaReadyWithoutData: !cfg.Observer.ReplicaReadyWithoutDataFinding()},
 		noted:      map[string]time.Time{},
+		started:    time.Now().Truncate(time.Second),
 		ok:         m.InvariantOK.MustCurryWith(labels),
 		violation:  m.InvariantViolation.MustCurryWith(labels),
 		findings:   m.Findings.MustCurryWith(labels),

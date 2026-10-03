@@ -67,7 +67,8 @@ func oomKills(p *corev1.Pod) []string {
 	return kills
 }
 
-// observeOOMKills counts every OOM kill not seen before as a finding.
+// observeOOMKills counts every OOM kill not seen before as a finding. It
+// ignores the kills before the start of the tester.
 func (o *Observer) observeOOMKills(s snapshot) {
 	pods := make([]pod, 0, len(s.redis)+len(s.sentinels))
 	for _, p := range s.redis {
@@ -79,11 +80,14 @@ func (o *Observer) observeOOMKills(s snapshot) {
 	seen := map[string]bool{}
 	for _, p := range pods {
 		for _, k := range p.OOMKills {
+			container, at, _ := strings.Cut(k[strings.Index(k, "/")+1:], "@")
+			if t, err := time.Parse(time.RFC3339, at); err == nil && t.Before(o.started) {
+				continue
+			}
 			seen[k] = true
 			if o.oomSeen[k] {
 				continue
 			}
-			container, at, _ := strings.Cut(k[strings.Index(k, "/")+1:], "@")
 			o.findings.WithLabelValues(invOOMKilled).Inc()
 			o.log.Warn("invariant violated", "invariant", invOOMKilled, "finding", true,
 				"reason", "OOM-killed", "pod", p.Name, "container", container, "at", at)

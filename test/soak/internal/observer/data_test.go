@@ -59,6 +59,7 @@ func TestOOMKills(t *testing.T) {
 	}
 
 	o, _ := newTestObserver(t)
+	o.started = at.Add(-time.Minute)
 	s := healthy(true)
 	o.apply(at.Time, s, 1, false)
 	s.redis[1].OOMKills = want
@@ -76,6 +77,22 @@ func TestOOMKills(t *testing.T) {
 	o.apply(at.Add(15*time.Second), s, 1, false)
 	if v := testutil.ToFloat64(o.ok.WithLabelValues(invOOMKilled)); v != 1 {
 		t.Errorf("invariant_ok = %v after the pod was replaced, want 1", v)
+	}
+}
+
+// A restarted tester sees the kills that its earlier run counted, in the
+// last state of a container. They are not findings again.
+func TestOOMKillBeforeStart(t *testing.T) {
+	o, _ := newTestObserver(t)
+	at := o.started.Add(-time.Hour).UTC().Format(time.RFC3339)
+	s := healthy(true)
+	s.redis[1].OOMKills = []string{"u0/redis@" + at}
+	o.apply(o.started, s, 1, false)
+	if n := testutil.ToFloat64(o.findings.WithLabelValues(invOOMKilled)); n != 0 {
+		t.Errorf("findings = %v, want 0", n)
+	}
+	if v := testutil.ToFloat64(o.ok.WithLabelValues(invOOMKilled)); v != 1 {
+		t.Errorf("invariant_ok = %v, want 1", v)
 	}
 }
 
