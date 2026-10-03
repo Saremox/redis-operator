@@ -141,6 +141,29 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 		assertTest.NoError(err)
 		assertTest.Equal(map[string]string{"role": "master"}, got.Labels)
 	})
+
+	t.Run("keeps the labels when no labels are given", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		labels := map[string]string{"role": "slave", "app.kubernetes.io/component": "redis"}
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "testpod",
+				Namespace: testns,
+				Labels:    labels,
+			},
+		}
+		mcli := kubernetes.NewClientset(pod)
+		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
+
+		for _, empty := range []map[string]string{nil, {}} {
+			assertTest.NoError(service.UpdatePodLabels(testns, "testpod", empty))
+		}
+
+		got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
+		assertTest.NoError(err)
+		assertTest.Equal(labels, got.Labels)
+	})
 }
 
 func TestPodServiceDelete(t *testing.T) {

@@ -88,8 +88,12 @@ func (p *PodService) ListPods(namespace string) (*corev1.PodList, error) {
 
 // UpdatePodLabels sets the given labels on a pod. It uses a JSON merge patch
 // because a JSON patch path needs `/` and `~` escaped in label keys such as
-// `app.kubernetes.io/component`.
+// `app.kubernetes.io/component`. An empty map sends no patch, because the
+// merge patch `"labels": null` deletes all labels of the pod.
 func (p *PodService) UpdatePodLabels(namespace, podName string, labels map[string]string) error {
+	if len(labels) == 0 {
+		return nil
+	}
 	p.logger.Infof("Update pod label, namespace: %s, pod name: %s, labels: %v", namespace, podName, labels)
 
 	patch := map[string]interface{}{
