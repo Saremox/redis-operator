@@ -232,6 +232,8 @@ Validation rejects a `redis.customCommandRenames` entry for a command that the R
 - `EXEC`, `MULTI`, `PUBLISH` and `SUBSCRIBE` when Sentinels run. Sentinel sends them.
 - `ACL` when `redis.customConfig` sets `aclfile`. The operator sends `ACL LOAD` to apply the file.
 
+The operator does not reconcile a RedisFailover that fails validation. The status shows `NotHealthy` and the error.
+
 ### Managed maxmemory
 
 With `redis.maxMemory` the operator sets `maxmemory` and `maxmemory-policy` from the redis container's memory limit, see the [maxmemory example file](example/redisfailover/maxmemory.yaml). It requires a memory limit of at least 64Mi; otherwise `maxmemory` is not managed and the reason is in the status message.
