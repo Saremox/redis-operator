@@ -734,6 +734,51 @@ func TestPromoteBestReplicaReplicaRepointerFails(t *testing.T) {
 	mr.AssertExpectations(t)
 }
 
+func TestPromoteBestReplicaRelabelsAnOldMasterThatDoesNotAnswer(t *testing.T) {
+	t.Run("the relabel succeeds", func(t *testing.T) { testPromoteBestReplicaRelabelsOldMaster(t, nil) })
+	t.Run("the relabel fails", func(t *testing.T) { testPromoteBestReplicaRelabelsOldMaster(t, errors.New("relabel failed")) })
+}
+
+func testPromoteBestReplicaRelabelsOldMaster(t *testing.T, labelErr error) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	newMasterIP := "1.1.1.1"
+	oldMasterIP := "2.2.2.2"
+
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-new-master"},
+				Status:     corev1.PodStatus{PodIP: newMasterIP, Phase: corev1.PodRunning},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-old-master", Labels: map[string]string{"redisfailovers-role": "master"}},
+				Status:     corev1.PodStatus{PodIP: oldMasterIP, Phase: corev1.PodRunning},
+			},
+		},
+	}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	ms.On("UpdatePodLabels", namespace, "pod-new-master", map[string]string{"redisfailovers-role": "master"}).Once().Return(nil)
+	ms.On("UpdatePodLabels", namespace, "pod-old-master", map[string]string{"redisfailovers-role": "slave"}).Once().Return(labelErr)
+
+	mr := &mRedisService.Client{}
+	mr.On("MakeMaster", newMasterIP, "0", "").Once().Return(nil)
+	mr.On("MakeSlaveOfWithPort", oldMasterIP, "0", newMasterIP, "0", "").Once().Return(errors.New("i/o timeout"))
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+
+	err := healer.PromoteBestReplica(newMasterIP, rf)
+	assert.ErrorIs(err, rfservice.ErrPartialReconciliation)
+	if labelErr != nil {
+		assert.ErrorIs(err, labelErr)
+	}
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t)
+}
+
 func TestPromoteBestReplicaLabelUpdateFails(t *testing.T) {
 	assert := assert.New(t)
 	rf := generateRF()

@@ -396,6 +396,14 @@ func (r *RedisFailoverHealer) PromoteBestReplica(newMasterIP string, rf *redisfa
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
 				Errorf("Failed to make %s slave of %s: %v", rp.Status.PodIP, newMasterIP, err)
 			reconcileErrs = append(reconcileErrs, err)
+			// The old master that does not answer loses its master label, so
+			// that the new master is the only pod with the label when the old
+			// one answers again as a master.
+			if rp.Labels[redisRoleLabelKey] == redisRoleLabelMaster {
+				if err := r.setSlaveLabelIfNecessary(rf, rp, port, password); err != nil {
+					reconcileErrs = append(reconcileErrs, err)
+				}
+			}
 			continue
 		}
 

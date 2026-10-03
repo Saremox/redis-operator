@@ -1067,6 +1067,12 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 				}
 				return err
 			}
+			// A master that refused REPLICAOF is skipped, so the next
+			// reconcile counts the masters again before the status is Healthy.
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: fmt.Sprintf("multiple masters detected, made the other masters replicas of %s", labelled.Name),
+			}
 			return nil
 		}
 		errorMsg := "multiple masters detected, fix manually"
