@@ -1,0 +1,81 @@
+# "Outside a window" is redis_soak_window_open == 0: no mutation, chaos
+# action or spec change of the instance is in progress, so a violation is
+# not expected.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: redis-soak
+  namespace: redis-soak
+  labels:
+    app.kubernetes.io/name: redis-soak
+spec:
+  groups:
+    - name: redis-soak
+      rules:
+        - alert: RedisSoakNotWritable
+          expr: |
+            (redis_soak_writable == 0)
+            unless on (rf, namespace) (redis_soak_window_open == 1)
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.rf }} has not been writable through {{ $labels.path }} ({{ $labels.client }} client) for over 1m outside a convergence window."
+        - alert: RedisSoakMasters
+          # Only a bootstrapping instance has the rfrs path, and it has no
+          # master.
+          expr: |
+            (redis_soak_masters != 1)
+            unless on (rf, namespace) (redis_soak_window_open == 1)
+            unless on (rf, namespace) redis_soak_readable{path="rfrs"}
+          for: 30s
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.rf }} has {{ $value }} masters outside a convergence window: 0 is no master, 2 or more a split brain."
+        - alert: RedisSoakFinding
+          expr: increase(redis_soak_findings_total[15m]) > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.rf }} violated {{ $labels.invariant }} outside a convergence window, or past its timeout."
+        - alert: RedisSoakMutationTimeout
+          expr: increase(redis_soak_mutation_total{result="timeout"}[15m]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: "A {{ $labels.kind }} mutation of {{ $labels.namespace }}/{{ $labels.rf }} didn't converge in time."
+        - alert: RedisSoakChaosTimeout
+          expr: increase(redis_soak_chaos_total{result=~"timeout|failed"}[30m]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: "A {{ $labels.kind }} chaos action ended {{ $labels.result }}: the instances or the operator didn't converge in time, or the action failed."
+        - alert: RedisSoakLostWritesLossless
+          # Events that must lose no acknowledged write: auth changes, a
+          # Sentinel toggle or image flip, and the chaos actions, because
+          # their evictions are graceful. A drain that evicts the only pod
+          # of an instance without a volume counts as a reset.
+          expr: |
+            increase(redis_soak_lost_writes_total{event=~"password_rotate|password_rotate_offline|auth_add|auth_remove|sentinel_toggle|sentinel_image_flip|operator_restart|operator_upgrade|node_drain"}[15m]) > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.rf }} lost acknowledged writes in a {{ $labels.event }}, which should lose none."
+        - alert: RedisSoakFollowerAuthOutage
+          # The follower client uses a changed password immediately. Auth
+          # failures for this long mean that the operator did not apply it.
+          expr: increase(redis_soak_probe_total{client="follower", op="set", result="auth"}[1m]) > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.rf }} has refused the current password through {{ $labels.path }} for over 2m."
+        - alert: RedisSoakVersionTransitionUnsafe
+          # Fires until the tester restarts, because an unsafe transition is
+          # rare and each one needs an investigation.
+          expr: redis_soak_version_transition_total{result="failed_unsafe"} > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.rf }} failed unsafely changing {{ $labels.from }} -> {{ $labels.to }} ({{ $labels.expect }})."

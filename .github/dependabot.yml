@@ -12,3 +12,11 @@ updates:
     directory: "/docker/app"
     schedule:
       interval: "daily"
+  - package-ecosystem: "gomod"
+    directory: "/test/soak"
+    schedule:
+      interval: "daily"
+  - package-ecosystem: "docker"
+    directory: "/test/soak"
+    schedule:
+      interval: "daily"

@@ -1,0 +1,226 @@
+# Grants the mutator rules and the auth Secrets in each instance namespace.
+# Keep one RoleBinding for each instance namespace in config.yaml. The
+# namespaces must exist before you apply this file.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: op-basic
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: sent-basic
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: op-maxmem
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: op-noevict
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: op-full
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: sent-full
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: toggle
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: bootstrap
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: redis-chain
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: redis-chain-sent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: migrate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: migrate-sent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: edge
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: valkey-op
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: valkey-sent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak-mutator
+  namespace: mixed-sent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak-mutator
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak

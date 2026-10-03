@@ -1,0 +1,97 @@
+# Reads the image tag of the operator Deployment for redis_soak_build_info,
+# and scales the Deployment to 0 and back for password_rotate_offline. The
+# namespace and resourceNames must match `operator` in config.yaml.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: redis-soak
+  namespace: redis-operator
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["redis-operator"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    resourceNames: ["redis-operator"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-soak
+  namespace: redis-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: redis-soak
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+# The observer reads the RedisFailover, the pods and the rfrm
+# EndpointSlices of each instance, in the namespace of the instance.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: redis-soak
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["databases.spotahome.com"]
+    resources: ["redisfailovers"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: redis-soak
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-soak
+subjects:
+  - kind: ServiceAccount
+    name: soak
+    namespace: redis-soak
+---
+# The rules of the mutator, and the auth Secrets that give each client its
+# password. The RoleBindings in rbac-instances.yaml grant them only in the
+# instance namespaces. A ClusterRole keeps one copy of the rules for all
+# namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: redis-soak-mutator
+rules:
+  # The tester creates and resets the instances that have a template.
+  - apiGroups: ["databases.spotahome.com"]
+    resources: ["redisfailovers"]
+    verbs: ["patch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  # The tester judges a version change that did not converge by the pod logs.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # A reset deletes the volumes of the instance.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["list", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps"]
+    verbs: ["get"]
+  # auth_add creates the Secret that it names. A reset deletes and
+  # recreates the Secret that its template names.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

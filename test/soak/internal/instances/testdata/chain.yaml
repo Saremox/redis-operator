@@ -1,0 +1,23 @@
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: ignored
+  labels:
+    soak: "true"
+spec:
+  auth:
+    secretPath: chain-auth
+  sentinel:
+    enabled: false
+  redis:
+    replicas: 2
+    image: redis:7.2.16-alpine
+    storage:
+      persistentVolumeClaim:
+        metadata:
+          name: redis-data
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 128Mi

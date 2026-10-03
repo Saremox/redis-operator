@@ -1,0 +1,32 @@
+# The RedisFailover template of the valkey-op instance. The tester sets its
+# name, namespace and images.
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: valkey-op
+spec:
+  sentinel:
+    enabled: false
+  auth:
+    secretPath: valkey-op-auth
+  redis:
+    replicas: 2
+    exporter:
+      enabled: true
+    maxMemory:
+      policy: allkeys-lfu
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
+    storage:
+      persistentVolumeClaim:
+        metadata:
+          name: redis-data
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 256Mi

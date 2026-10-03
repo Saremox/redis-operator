@@ -1,0 +1,24 @@
+# kind-e2e replaces BOOTSTRAP_HOST with the ClusterIP of rfrm-op-basic.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bootstrap
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: bootstrap
+  namespace: bootstrap
+spec:
+  bootstrapNode:
+    host: BOOTSTRAP_HOST
+  sentinel:
+    enabled: false
+  redis:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 192Mi

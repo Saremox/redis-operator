@@ -1,0 +1,185 @@
+# The kind-e2e config for E2E_PROFILE=versions: only the server version
+# and fork instances. The tester makes them from the rf-*.yaml templates
+# next to this file, with 2 redis pods and small fills. Seed 9 takes each
+# edge within the first 14 steps of edge (7 edges, each followed by a
+# reset). Each chain completes and resets within its first 6 steps, and
+# each instance runs each enabled kind within its first 16 steps. kind-e2e
+# sets stopAfter to DURATION.
+operator:
+  namespace: redis-operator
+  deployment: redis-operator
+observer:
+  interval: 5s
+  convergenceTimeout: 6m
+  # Report only: on an operator without the readiness fix (PR #205), the
+  # replicas of edge that cannot load the RDB of the master stay Ready.
+  replicaReadyWithoutData: false
+mutation:
+  interval: 10s
+  jitter: 10s
+  minDwell: 15s
+  seed: 9
+  stopAfter: 3000s
+  # perPod, because the operator replaces each redis pod in turn, and
+  # each new pod starts and syncs.
+  timeouts:
+    image_upgrade: {base: 3m, perPod: 90s}
+    sentinel_image_upgrade: {base: 3m, perPod: 30s}
+    reset: {base: 3m, perPod: 60s}
+# Exact patch tags, from Docker Hub on 2026-10-01.
+versions:
+  - {name: redis-7.2, image: "redis:7.2.16-alpine"}
+  - {name: redis-7.4, image: "redis:7.4.11-alpine"}
+  - {name: redis-8, image: "redis:8.10.2-alpine"}
+  - {name: valkey-7.2, image: "valkey/valkey:7.2.14-alpine"}
+  - {name: valkey-8, image: "valkey/valkey:8.1.10-alpine"}
+  - {name: valkey-9, image: "valkey/valkey:9.1.2-alpine"}
+edges:
+  - {from: redis-7.2, to: redis-7.4, expect: ok}
+  - {from: redis-7.4, to: redis-8, expect: ok}
+  - {from: valkey-7.2, to: valkey-8, expect: ok}
+  - {from: valkey-8, to: valkey-9, expect: ok}
+  # Valkey forked from Redis 7.2.4 and reads its RDB format.
+  - {from: redis-7.2, to: valkey-7.2, expect: ok}
+  - {from: redis-7.2, to: valkey-8, expect: ok}
+  - {from: redis-7.2, to: valkey-9, expect: ok}
+  # Redis changed its RDB format after the fork. The tester judges a
+  # change along these edges when it converges, or one minute after a pod
+  # on the new version could not load the data.
+  - {from: redis-7.4, to: valkey-7.2, expect: unknown}
+  - {from: redis-7.4, to: valkey-8, expect: unknown}
+  - {from: redis-7.4, to: valkey-9, expect: unknown}
+  - {from: redis-8, to: valkey-7.2, expect: unknown}
+  - {from: redis-8, to: valkey-8, expect: unknown}
+  - {from: redis-8, to: valkey-9, expect: unknown}
+instances:
+  # Redis 7.2 -> 7.4 -> 8, then reset; with replica and resource changes.
+  - name: redis-chain
+    namespace: redis-chain
+    mode: operator
+    template: rf-redis-chain.yaml
+    chain: {start: [redis-7.2], versions: [redis-7.2, redis-7.4, redis-8]}
+    data:
+      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
+      ledger: {writesPerSecond: 10}
+    mutations:
+      kinds:
+        image_upgrade: 4
+        redis_replicas: 1
+        redis_resources: 1
+      redisReplicas: {min: 1, max: 2}
+      resources:
+        requests:
+          cpu: {min: 25, max: 100}
+  # The same chain with Sentinels that follow the data image.
+  - name: redis-chain-sent
+    namespace: redis-chain-sent
+    mode: sentinel
+    template: rf-redis-chain-sent.yaml
+    chain: {start: [redis-7.2], versions: [redis-7.2, redis-7.4, redis-8], sentinel: follow}
+    data:
+      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
+      ledger: {writesPerSecond: 10}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # Redis 7.2 -> Valkey 7.2 -> 8 -> 9, then reset.
+  - name: migrate
+    namespace: migrate
+    mode: operator
+    template: rf-migrate.yaml
+    chain: {start: [redis-7.2], versions: [redis-7.2, valkey-7.2, valkey-8, valkey-9]}
+    data:
+      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
+      ledger: {writesPerSecond: 10}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # The same migration with Sentinels: the data image first, then the
+  # Sentinel image.
+  - name: migrate-sent
+    namespace: migrate-sent
+    mode: sentinel
+    template: rf-migrate-sent.yaml
+    chain: {start: [redis-7.2], versions: [redis-7.2, valkey-7.2, valkey-8, valkey-9], sentinel: separate}
+    data:
+      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
+      ledger: {writesPerSecond: 10}
+    mutations:
+      kinds:
+        image_upgrade: 1
+        sentinel_image_upgrade: 1
+  # Starts on Redis 7.4 or 8, in turn for each reset, and takes only the
+  # unknown edges into Valkey.
+  - name: edge
+    namespace: edge
+    mode: operator
+    template: rf-edge.yaml
+    chain:
+      start: [redis-7.4, redis-8]
+      versions: [redis-7.4, redis-8, valkey-7.2, valkey-8, valkey-9]
+      expect: [unknown]
+    data:
+      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
+      ledger: {writesPerSecond: 10}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # Valkey 9 with maxMemory allkeys-lfu. Filler only, because allkeys-*
+  # can evict ledger keys.
+  - name: valkey-op
+    namespace: valkey-op
+    mode: operator
+    template: rf-valkey-op.yaml
+    version: valkey-9
+    maxMemoryPolicy: allkeys-lfu
+    data:
+      fill: {percent: 50, keysPerSecond: 2000, batch: 100}
+    mutations:
+      kinds:
+        redis_replicas: 1
+        redis_resources: 1
+        redis_memory: 1
+        kill_master: 1
+        kill_master_force: 1
+        kill_replica: 1
+      redisReplicas: {min: 1, max: 2}
+      resources:
+        requests:
+          cpu: {min: 25, max: 100}
+      redisMemory: {min: 160, max: 320}
+      forceDeleteProbability: 0.5
+  # Valkey 8 data and Sentinels.
+  - name: valkey-sent
+    namespace: valkey-sent
+    mode: sentinel
+    template: rf-valkey-sent.yaml
+    version: valkey-8
+    sentinelVersion: valkey-8
+    data:
+      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
+      ledger: {writesPerSecond: 10}
+    mutations:
+      kinds:
+        password_rotate: 1
+        kill_master: 1
+        kill_sentinel: 1
+        sentinel_replicas: 1
+      sentinelReplicas: {min: 3, max: 4}
+      forceDeleteProbability: 0.5
+  # Redis 7.2 data with Valkey 9 Sentinels.
+  - name: mixed-sent
+    namespace: mixed-sent
+    mode: sentinel
+    template: rf-mixed-sent.yaml
+    version: redis-7.2
+    sentinelVersion: valkey-9
+    data:
+      fill: {sizeMi: 8, keysPerSecond: 1000, batch: 100}
+      ledger: {writesPerSecond: 10}
+    mutations:
+      kinds:
+        kill_master: 1
+        kill_replica: 1
+        kill_sentinel: 1
+      forceDeleteProbability: 0.5
