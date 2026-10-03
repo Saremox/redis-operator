@@ -3,9 +3,18 @@
 
 PODS="rfr-test-no-sentinel-0 rfr-test-no-sentinel-1"
 
+# redis_cli runs redis-cli in a pod. A Redis that does not answer makes
+# redis-cli wait forever, so the timeout lets the checks fail.
+# Usage: redis_cli POD ARGS...
+redis_cli() {
+  local pod=$1
+  shift
+  timeout 10 kubectl exec "$pod" -- redis-cli "$@"
+}
+
 # role prints "master" or "slave", or nothing when the pod does not answer.
 role() {
-  kubectl exec "$1" -- redis-cli INFO replication 2>/dev/null | sed -n 's/^role:\([a-z]*\).*/\1/p'
+  redis_cli "$1" INFO replication 2>/dev/null | sed -n 's/^role:\([a-z]*\).*/\1/p'
 }
 
 # master_pod fails unless exactly one pod answers as master, because the
@@ -34,7 +43,7 @@ other_pod() {
 }
 
 dbsize() {
-  kubectl exec "$1" -- redis-cli DBSIZE 2>/dev/null | tr -dc '0-9'
+  redis_cli "$1" DBSIZE 2>/dev/null | tr -dc '0-9'
 }
 
 # has_test_data checks the 100 keys of the "Write test data" step. No other

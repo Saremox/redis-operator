@@ -17,6 +17,9 @@ permissions:
 jobs:
   e2e-sentinel-free:
     runs-on: ubuntu-latest
+    # A full run takes about 6 minutes. The limit stops a step that waits
+    # forever, for example on a command that never returns.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -137,7 +140,7 @@ jobs:
           source test/e2e/helpers.sh
           MASTER_POD=$(master_pod)
           for i in {1..100}; do
-            kubectl exec $MASTER_POD -- redis-cli SET "key:$i" "value:$i" > /dev/null
+            redis_cli $MASTER_POD SET "key:$i" "value:$i" > /dev/null
           done
           echo "✓ Wrote 100 keys to $MASTER_POD"
 
@@ -181,7 +184,7 @@ jobs:
           # master. A pod without all keys shows lost writes.
           for pod in $PODS; do
             wait_until 60 "$pod does not have the 100 keys" has_test_data $pod || { echo "$pod: $(dbsize $pod) keys"; exit 1; }
-            VALUE=$(kubectl exec $pod -- redis-cli GET "key:50" 2>/dev/null)
+            VALUE=$(redis_cli $pod GET "key:50" 2>/dev/null || true)
             if [[ "$VALUE" != "value:50" ]]; then
               echo "✗ $pod: key:50 = '$VALUE', expected 'value:50'"
               exit 1
@@ -219,7 +222,7 @@ jobs:
           writing() { local out; out=$(kubectl logs demotion-client --tail=5); [[ -n "$out" ]] && ! grep -qvE '^[0-9]+$' <<<"$out"; }
           readonly_errors() { kubectl logs demotion-client | grep -c READONLY || true; }
           labelled_slave() { [[ "$(kubectl get pod $1 -o jsonpath='{.metadata.labels.redisfailovers-role}')" == slave ]]; }
-          counter() { kubectl exec $1 -- redis-cli GET e2e:demotion 2>/dev/null | tr -dc '0-9'; }
+          counter() { redis_cli $1 GET e2e:demotion 2>/dev/null | tr -dc '0-9'; }
           writes_reach() { local before after; before=$(counter $1); sleep 2; after=$(counter $1); (( ${after:-0} > ${before:-0} )); }
           for i in {1..30}; do writing && break; sleep 2; done
           writing || { echo "✗ Client never wrote to the master"; kubectl logs demotion-client --tail=20; exit 1; }
@@ -230,8 +233,13 @@ jobs:
             NEW_MASTER=$(other_pod $OLD_MASTER)
             echo "Round $round: demoting $OLD_MASTER in favour of $NEW_MASTER"
             ERRORS_BEFORE=$(readonly_errors)
-            kubectl exec $NEW_MASTER -- redis-cli REPLICAOF NO ONE
-            kubectl exec $OLD_MASTER -- redis-cli REPLICAOF $(kubectl get pod $NEW_MASTER -o jsonpath='{.status.podIP}') 6379
+            NEW_MASTER_IP=$(kubectl get pod $NEW_MASTER -o jsonpath='{.status.podIP}')
+            # While both pods are masters, the operator can keep OLD_MASTER, which has the
+            # master label. The commands run together, so that this time is short.
+            redis_cli $NEW_MASTER REPLICAOF NO ONE &
+            PROMOTE=$!
+            redis_cli $OLD_MASTER REPLICAOF $NEW_MASTER_IP 6379
+            wait $PROMOTE
 
             wait_until 90 "The operator did not label $OLD_MASTER as slave" labelled_slave $OLD_MASTER
             MOVED=false
