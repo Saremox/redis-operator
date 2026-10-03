@@ -78,11 +78,14 @@ func TestEnsureSentinelDeploymentDoesNotTouchExistingServiceAccount(t *testing.T
 	ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 		gotDeployment = args.Get(1).(*appsv1.Deployment)
 	}).Return(nil)
+	// Only the ServiceAccount that the operator created earlier is deleted.
+	ms.On("DeleteServiceAccount", namespace, rfservice.GetSentinelServiceAccountName(rf)).Once().Return(nil)
 
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
 	assert.NoError(err)
+	ms.AssertExpectations(t)
 	ms.AssertNotCalled(t, "CreateOrUpdateServiceAccount", mock.Anything, mock.Anything)
 	ms.AssertNotCalled(t, "GetServiceAccount", mock.Anything, mock.Anything)
 

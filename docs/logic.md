@@ -16,6 +16,7 @@ The Redis-Operator creates Redis Failovers, with all the needed pieces. When an 
    - Redis configmap
    - Redis statefulset, and its PodDisruptionBudget unless `redis.disablePodDisruptionBudget` is true
    - Sentinel service, configmap and deployment. Only when Sentinel is on and, in bootstrap mode, `allowSentinels` is true. Otherwise, the operator deletes them. With them, the operator also creates a Sentinel PodDisruptionBudget unless `sentinel.disablePodDisruptionBudget` is true, and a Sentinel service account unless `sentinel.serviceAccountName` is set.
+   - When a flag disables a PodDisruptionBudget or `sentinel.serviceAccountName` is set, the operator deletes the object that it created before. An old PodDisruptionBudget would block node drains.
 6. Check & Heal: connects to every Redis and Sentinel and moves them to the desired state. First, it applies a changed password, because every later check authenticates. Then it uses one mode, described below.
 
 ## Check & Heal modes

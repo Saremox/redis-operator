@@ -889,6 +889,8 @@ func TestSentinelDeploymentServiceAccountName(t *testing.T) {
 			ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
 			if test.expectServiceAccountCreated {
 				ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
+			} else {
+				ms.On("DeleteServiceAccount", namespace, rfservice.GetSentinelServiceAccountName(rf)).Once().Return(nil)
 			}
 			ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 				d := args.Get(1).(*appsv1.Deployment)

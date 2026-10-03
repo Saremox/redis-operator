@@ -1,6 +1,7 @@
 package service
 
 import (
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -90,6 +91,8 @@ func (r *RedisFailoverKubeClient) EnsureSentinelDeployment(rf *redisfailoverv1.R
 		if err := r.ensurePodDisruptionBudget(rf, sentinelName, sentinelRoleName, rf.Spec.Sentinel.PodDisruptionBudgetMinAvailable, labels, ownerRefs, rf.Spec.Sentinel.Replicas); err != nil {
 			return err
 		}
+	} else if err := r.deletePodDisruptionBudget(rf, sentinelName); err != nil {
+		return err
 	}
 
 	// Only auto-provision a ServiceAccount when the user hasn't set one themselves:
@@ -105,6 +108,24 @@ func (r *RedisFailoverKubeClient) EnsureSentinelDeployment(rf *redisfailoverv1.R
 	err := r.K8SService.CreateOrUpdateDeployment(rf.Namespace, d)
 
 	r.setEnsureOperationMetrics(d.Namespace, d.Name, "Deployment", rf.Name, err)
+	if err != nil {
+		return err
+	}
+	return r.deleteUnusedSentinelServiceAccount(rf)
+}
+
+// deleteUnusedSentinelServiceAccount removes the ServiceAccount that the operator
+// created before the user set sentinel.serviceAccountName. It runs after the
+// Deployment update, because a pod from the old template cannot start without it.
+func (r *RedisFailoverKubeClient) deleteUnusedSentinelServiceAccount(rf *redisfailoverv1.RedisFailover) error {
+	name := GetSentinelServiceAccountName(rf)
+	if rf.Spec.Sentinel.ServiceAccountName == "" || rf.Spec.Sentinel.ServiceAccountName == name {
+		return nil
+	}
+	err := r.K8SService.DeleteServiceAccount(rf.Namespace, name)
+	if errors.IsNotFound(err) {
+		return nil
+	}
 	return err
 }
 
@@ -122,6 +143,8 @@ func (r *RedisFailoverKubeClient) EnsureRedisStatefulset(rf *redisfailoverv1.Red
 		if err := r.ensurePodDisruptionBudget(rf, redisName, redisRoleName, rf.Spec.Redis.PodDisruptionBudgetMinAvailable, labels, ownerRefs, rf.Spec.Redis.Replicas); err != nil {
 			return err
 		}
+	} else if err := r.deletePodDisruptionBudget(rf, redisName); err != nil {
+		return err
 	}
 
 	password, err := k8s.GetRedisPassword(r.K8SService, rf)
@@ -283,6 +306,16 @@ func (r *RedisFailoverKubeClient) ensurePodDisruptionBudget(rf *redisfailoverv1.
 	pdb := generatePodDisruptionBudget(name, namespace, metaLabels, ownerRefs, minAvailable, selectorLabels)
 	err := r.K8SService.CreateOrUpdatePodDisruptionBudget(namespace, pdb)
 	r.setEnsureOperationMetrics(pdb.Namespace, pdb.Name, "PodDisruptionBudget" /* pdb.TypeMeta.Kind isnt working;  pdb.Kind isnt working either */, rf.Name, err)
+	return err
+}
+
+// deletePodDisruptionBudget removes the PDB of a component whose PDB the user disabled.
+// A PDB that stays blocks the node drains that the user disabled it for.
+func (r *RedisFailoverKubeClient) deletePodDisruptionBudget(rf *redisfailoverv1.RedisFailover, name string) error {
+	err := r.K8SService.DeletePodDisruptionBudget(rf.Namespace, generateName(name, rf.Name))
+	if errors.IsNotFound(err) {
+		return nil
+	}
 	return err
 }
 
