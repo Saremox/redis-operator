@@ -64,7 +64,6 @@ type Observer struct {
 	// with its link up: they hold the data.
 	synced  map[string]bool
 	lagPods map[string]bool
-	servers map[string][2]string
 	oomSeen map[string]bool
 	// started is when the tester started. An earlier run counted the OOM
 	// kills before it.
@@ -90,7 +89,6 @@ type Observer struct {
 	failovers  prometheus.Counter
 	lag        *prometheus.GaugeVec
 	rfHealthy  prometheus.Gauge
-	serverInfo *prometheus.GaugeVec
 	windowOpen prometheus.Gauge
 }
 
@@ -108,7 +106,6 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		tracker:    newTracker(cfg.Observer.ConvergenceTimeout.Duration, config.MinDwell),
 		holds:      make(chan *Hold, 1),
 		lagPods:    map[string]bool{},
-		servers:    map[string][2]string{},
 		failoverCh: make(chan string, 1),
 		reportOnly: map[string]bool{invReplicaReadyWithoutData: !cfg.Observer.ReplicaReadyWithoutDataFinding()},
 		noted:      map[string]time.Time{},
@@ -120,7 +117,6 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		failovers:  m.Failovers.With(labels),
 		lag:        m.ReplicationLag.MustCurryWith(labels),
 		rfHealthy:  m.RFHealthy.With(labels),
-		serverInfo: m.ServerInfo.MustCurryWith(labels),
 		windowOpen: m.WindowOpen.With(labels),
 	}
 	// Alerts use the increase of findings_total, which does not show a series
@@ -556,7 +552,6 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 	o.windowOpen.Set(gauge(o.tracker.windowOpen()))
 	o.rfHealthy.Set(gauge(s.state == redisfailoverv1.HealthyState))
 	o.observeMaster(s)
-	o.observeServers(s)
 	o.observeOOMKills(s)
 	v := &view{
 		at:           now,
@@ -741,27 +736,6 @@ func synced(s snapshot, before map[string]bool) map[string]bool {
 		}
 	}
 	return out
-}
-
-// observeServers exports the server and version of each pod that answered
-// INFO, and deletes the series of the other pods.
-func (o *Observer) observeServers(s snapshot) {
-	servers := map[string][2]string{}
-	for _, p := range s.redis {
-		if p.info != nil {
-			name, version := p.info.server()
-			servers[p.Name] = [2]string{name, version}
-		}
-	}
-	for name, old := range o.servers {
-		if servers[name] != old {
-			o.serverInfo.DeleteLabelValues(name, old[0], old[1])
-		}
-	}
-	for name, sv := range servers {
-		o.serverInfo.WithLabelValues(name, sv[0], sv[1]).Set(1)
-	}
-	o.servers = servers
 }
 
 func gauge(b bool) float64 {

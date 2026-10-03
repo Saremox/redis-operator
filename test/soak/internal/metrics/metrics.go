@@ -31,7 +31,6 @@ type Metrics struct {
 	Failovers          *prometheus.CounterVec
 	ReplicationLag     *prometheus.GaugeVec
 	RFHealthy          *prometheus.GaugeVec
-	ServerInfo         *prometheus.GaugeVec
 	WindowOpen         *prometheus.GaugeVec
 
 	MutationTotal      *prometheus.CounterVec
@@ -135,11 +134,6 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 			Name:      "rf_healthy",
 			Help:      "1 if the RedisFailover's status.state is Healthy.",
 		}, labels()),
-		ServerInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "server_info",
-			Help:      "Always 1. The server and version each redis pod reports in INFO server.",
-		}, labels("pod", "server", "version")),
 		WindowOpen: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "window_open",
@@ -233,7 +227,7 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 	}
 	reg.MustRegister(
 		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration, m.BuildInfo,
-		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.ServerInfo, m.WindowOpen,
+		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.WindowOpen,
 		m.MutationTotal, m.MutationConverge, m.PodsRecreated, m.MutationInProgress,
 		m.WaitAckedReplicas, m.OOMRejections, m.LostWrites, m.UnexpectedLost, m.LedgerVerified,
 		m.VersionTransition, m.VersionMixed,

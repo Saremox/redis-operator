@@ -28,23 +28,11 @@ func newTestObserver(t *testing.T) (*Observer, *prometheus.Registry) {
 	return o, reg
 }
 
-func withServer(s snapshot, server, version string) snapshot {
-	for _, p := range s.redis {
-		if p.info != nil {
-			p.info["redis_version"] = version
-			if server == serverValkey {
-				p.info["valkey_version"] = version
-			}
-		}
-	}
-	return s
-}
-
 func TestApply(t *testing.T) {
 	o, reg := newTestObserver(t)
 	labels := `mode="sentinel",namespace="ns",rf="x"`
 
-	s := withServer(healthy(true), serverRedis, "7.2.12")
+	s := healthy(true)
 	o.apply(at(0), s, 1, false)
 	o.apply(at(5), s, 1, false)
 
@@ -59,9 +47,9 @@ func TestApply(t *testing.T) {
 	for i := range s.sentinels {
 		s.sentinels[i].master = "10.0.0.11:6379"
 	}
-	o.apply(at(10), withServer(s, serverRedis, "7.2.12"), 1, false)
+	o.apply(at(10), s, 1, false)
 
-	// rfr-x-0 is back as a replica, on Valkey.
+	// rfr-x-0 is back as a replica.
 	s = healthy(true)
 	s.redis[0].UID = "u0-new"
 	s.redis[0].info = replicationInfo("slave", "10.0.0.11", "up", "2000")
@@ -71,7 +59,7 @@ func TestApply(t *testing.T) {
 	for i := range s.sentinels {
 		s.sentinels[i].master = "10.0.0.11:6379"
 	}
-	o.apply(at(30), withServer(s, serverValkey, "8.1.10"), 1, false)
+	o.apply(at(30), s, 1, false)
 
 	want := `
 # HELP redis_soak_failovers_total Changes of the master's identity.
@@ -94,15 +82,10 @@ redis_soak_masters{` + labels + `} 1
 # TYPE redis_soak_replication_lag_bytes gauge
 redis_soak_replication_lag_bytes{mode="sentinel",namespace="ns",pod="rfr-x-0",rf="x"} 0
 redis_soak_replication_lag_bytes{mode="sentinel",namespace="ns",pod="rfr-x-2",rf="x"} 0
-# HELP redis_soak_server_info Always 1. The server and version each redis pod reports in INFO server.
-# TYPE redis_soak_server_info gauge
-redis_soak_server_info{mode="sentinel",namespace="ns",pod="rfr-x-0",rf="x",server="valkey",version="8.1.10"} 1
-redis_soak_server_info{mode="sentinel",namespace="ns",pod="rfr-x-1",rf="x",server="valkey",version="8.1.10"} 1
-redis_soak_server_info{mode="sentinel",namespace="ns",pod="rfr-x-2",rf="x",server="valkey",version="8.1.10"} 1
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(want),
 		"redis_soak_failovers_total", "redis_soak_findings_total", "redis_soak_masters",
-		"redis_soak_replication_lag_bytes", "redis_soak_server_info"); err != nil {
+		"redis_soak_replication_lag_bytes"); err != nil {
 		t.Error(err)
 	}
 	for _, inv := range []string{invPods, invOneMaster, invMasterService, invReplication, invSentinelAgreement, invHealthy} {
