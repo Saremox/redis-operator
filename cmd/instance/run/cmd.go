@@ -37,15 +37,21 @@ const (
 	defaultDBFilename   = "dump.rdb"
 	defaultRedisConf    = "/redis/redis.conf"
 	defaultRedisCommand = "redis-server"
+)
 
-	// Shutdown timeouts (following CNPG pattern)
-	// These provide escalation from graceful to forced shutdown
+// Shutdown timeouts (following CNPG pattern)
+// These provide escalation from graceful to forced shutdown.
+// They are variables so that tests can make them short.
+var (
 	gracefulShutdownTimeout = 25 * time.Second // Time for SIGTERM before SIGKILL
 	maxShutdownTimeout      = 30 * time.Second // Total shutdown budget (matches K8s terminationGracePeriodSeconds)
 )
 
 // redisCommand is a variable so that tests can run a stand-in process.
 var redisCommand = defaultRedisCommand
+
+// readDir is a variable so that tests can inject directory read faults.
+var readDir = os.ReadDir
 
 var (
 	dataDir    string
@@ -376,7 +382,7 @@ func performStartupCleanup() error {
 	}
 
 	// Find and remove stale RDB files
-	entries, err := os.ReadDir(dataDir)
+	entries, err := readDir(dataDir)
 	if err != nil {
 		return fmt.Errorf("failed to read data directory: %w", err)
 	}

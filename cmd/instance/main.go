@@ -42,9 +42,12 @@ func init() {
 	rootCmd.AddCommand(run.NewCmd())
 }
 
+// exit is a variable so that tests can see the exit code without exiting.
+var exit = os.Exit
+
 func main() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		exit(1)
 	}
 }
