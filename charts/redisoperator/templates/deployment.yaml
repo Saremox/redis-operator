@@ -50,6 +50,9 @@ spec:
         {{- range $args }}
         - {{ quote . }}
         {{- end }}
+        {{- if .Values.watchAuthSecrets }}
+        - --watch-auth-secrets
+        {{- end }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:
           - name: metrics
