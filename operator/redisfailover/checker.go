@@ -778,7 +778,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	sentinelMonitorMaster := master
 	masterRefreshed := false
 	for _, sip := range sentinels {
-		err = r.rfChecker.CheckSentinelMonitor(sip, master, port)
+		err = r.rfChecker.CheckSentinelMonitor(sip, sentinelMonitorMaster, port)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
 		if err != nil {
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Fixing sentinel not monitoring expected master: %s", err.Error())

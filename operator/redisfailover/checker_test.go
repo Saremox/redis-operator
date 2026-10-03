@@ -1331,6 +1331,62 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 	}
 }
 
+// TestCheckAndHealSentinelMonitorUsesRefreshedMaster checks that after a
+// master refresh, the other Sentinels are checked against the new master. A
+// check against the old master would reset Sentinels that are correct.
+func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
+	const (
+		oldMaster = "0.0.0.0"
+		newMaster = "0.0.0.1"
+		sentinel1 = "1.1.1.1"
+		sentinel2 = "1.1.1.2"
+		port      = "0"
+	)
+	assert := assert.New(t)
+	rf := generateRF(false, false)
+
+	mk := settledK8sServices()
+	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
+
+	mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+	mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
+	mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+	mrfc.On("GetMasterIP", rf).Once().Return(oldMaster, nil)
+	mrfc.On("CheckAllSlavesFromMaster", oldMaster, rf).Once().Return(nil)
+	mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{oldMaster}, nil)
+	mrfh.On("SetRedisCustomConfig", oldMaster, rf).Once().Return(nil)
+	mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("1", nil)
+	mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
+	mrfc.On("GetRedisesMasterPod", rf).Once().Return(oldMaster, nil)
+	mrfc.On("GetRedisRevisionHash", oldMaster, rf).Once().Return("1", nil)
+	// UpdateRedisesPods resolves the master itself.
+	mrfc.On("GetMasterIP", rf).Once().Return(oldMaster, nil)
+	mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel1, sentinel2}, nil)
+	// The master changed before the Sentinel checks.
+	mrfc.On("CheckSentinelMonitor", sentinel1, oldMaster, port).Once().Return(errors.New("monitors " + newMaster))
+	mrfc.On("GetMasterIP", rf).Once().Return(newMaster, nil)
+	mrfh.On("NewSentinelMonitor", sentinel1, newMaster, rf).Once().Return(nil)
+	mrfc.On("CheckSentinelMonitor", sentinel2, newMaster, port).Once().Return(nil)
+	mrfc.On("CheckSentinelMonitor", sentinel2, oldMaster, port).Maybe().Return(errors.New("monitors " + newMaster))
+	mrfh.On("NewSentinelMonitor", sentinel2, newMaster, rf).Maybe().Return(nil)
+	for _, s := range []string{sentinel1, sentinel2} {
+		mrfc.On("CheckSentinelNumberInMemory", s, rf).Once().Return(nil)
+		mrfc.On("CheckSentinelSlavesNumberInMemory", s, rf).Once().Return(nil)
+		mrfh.On("SetSentinelCustomConfig", s, rf).Once().Return(nil)
+	}
+
+	handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+	assert.NoError(handler.CheckAndHeal(rf))
+
+	mrfh.AssertNotCalled(t, "NewSentinelMonitor", sentinel2, mock.Anything, mock.Anything)
+	mrfc.AssertExpectations(t)
+	mrfh.AssertExpectations(t)
+}
+
 // TestCheckAndHealBootstrapModeErrorBranches exercises early-return error
 // branches of checkAndHealBootstrapMode (operator/redisfailover/checker.go)
 // not already covered by the "Bootstrapping Mode..." cases in the
