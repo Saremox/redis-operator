@@ -22,6 +22,10 @@ spec:
         - image: ghcr.io/saremox/redis-operator:4.2.0-rc2
           imagePullPolicy: IfNotPresent
           name: app
+          ports:
+            - name: metrics
+              containerPort: 9710
+              protocol: TCP
           securityContext:
             readOnlyRootFilesystem: true
             runAsNonRoot: true
@@ -127,7 +131,7 @@ kind: Service
 metadata:
   annotations:
     prometheus.io/path: /metrics
-    prometheus.io/port: http
+    prometheus.io/port: "9710"
     prometheus.io/scrape: "true"
   name: redisoperator
   labels:
