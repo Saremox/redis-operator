@@ -344,7 +344,7 @@ func (r *RedisFailoverHandler) masterPodStopping(rf *redisfailoverv1.RedisFailov
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if pod.DeletionTimestamp != nil && rfservice.IsMasterPod(pod) && util.PodIsReady(pod) {
-			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("pod", pod.Name).Info("waiting for the stopping master pod to exit before electing a master")
+			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("pod", pod.Name).Info("waiting for the stopping master pod to exit")
 			return true, nil
 		}
 	}
@@ -597,6 +597,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	//   - exactly one Redis master, with every slave replicating from it,
 	//   - the custom Redis config and maxmemory,
 	//   - the Redis pod rollout,
+	//   - a wait while the master pod stops,
 	//   - the master that each Sentinel monitors,
 	//   - the Sentinel and slave counts in each Sentinel, and the custom
 	//     Sentinel config.
