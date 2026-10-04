@@ -1471,7 +1471,11 @@ func TestSentinelModeElectsWhenSentinelKnowsNoReplica(t *testing.T) {
 	tests := []struct {
 		name string
 		// setup mocks the calls after CheckIfMasterLocalhost.
-		setup       func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover)
+		setup func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover)
+		// secondPods and secondErr are the pod list of the check for a
+		// stopping master right before the election.
+		secondPods  *corev1.PodList
+		secondErr   error
 		wantErr     bool
 		wantPromote bool
 		wantMessage string
@@ -1526,6 +1530,25 @@ func TestSentinelModeElectsWhenSentinelKnowsNoReplica(t *testing.T) {
 			wantMessage: "a master appeared before the election, checking again",
 		},
 		{
+			name: "the master pod started to stop before the election: no promotion",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("CheckSentinelsCannotFailover", rf).Once().Return(true, nil)
+				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
+			},
+			secondPods:  &corev1.PodList{Items: []corev1.Pod{masterPod(redisPod("1", true, true))}},
+			wantMessage: "no master, waiting for the stopping master pod to exit",
+		},
+		{
+			name: "the second check for a stopping master fails",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("CheckSentinelsCannotFailover", rf).Once().Return(true, nil)
+				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
+			},
+			secondErr:   errors.New("list err"),
+			wantErr:     true,
+			wantMessage: "unable to check whether the master is stopping",
+		},
+		{
 			name: "the second count of the masters fails",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
 				mrfc.On("CheckSentinelsCannotFailover", rf).Once().Return(true, nil)
@@ -1572,7 +1595,15 @@ func TestSentinelModeElectsWhenSentinelKnowsNoReplica(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			rf := generateRF(false, false)
-			mk := settledK8sServices()
+			mk := &mK8SService.Services{}
+			lists := 0
+			mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(func(string, string) (*corev1.PodList, error) {
+				lists++
+				if lists == 2 && (test.secondPods != nil || test.secondErr != nil) {
+					return test.secondPods, test.secondErr
+				}
+				return &corev1.PodList{Items: make([]corev1.Pod, 5)}, nil
+			})
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}

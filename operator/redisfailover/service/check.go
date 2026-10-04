@@ -303,9 +303,9 @@ func (r *RedisFailoverChecker) CheckIfMasterLocalhost(rFailover *redisfailoverv1
 // from the master that it monitors. When that master is not a pod and no
 // known replica is a pod, the Sentinel stays without a master. A Sentinel
 // that monitors a pod or knows a replica pod can still fail over, so the
-// operator must not elect a master next to it. At least a quorum of the
-// Sentinels must answer, because a Sentinel that does not answer can know a
-// replica.
+// operator must not elect a master next to it. Every running Sentinel must
+// answer, because a Sentinel that does not answer can know a replica and win
+// the vote of the others.
 func (r *RedisFailoverChecker) CheckSentinelsCannotFailover(rf *redisfailoverv1.RedisFailover) (bool, error) {
 	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
@@ -323,12 +323,15 @@ func (r *RedisFailoverChecker) CheckSentinelsCannotFailover(rf *redisfailoverv1.
 	if err != nil {
 		return false, err
 	}
-	answered := 0
+	if quorum := int(getQuorum(rf)); len(sentinels) < quorum {
+		r.logger.Warningf("%d Sentinels run, %d are necessary to be sure that Sentinel cannot fail over", len(sentinels), quorum)
+		return false, nil
+	}
 	for _, sip := range sentinels {
 		master, _, err := r.redisClient.GetSentinelMonitor(sip)
 		if err != nil {
-			r.logger.Warningf("Sentinel %s did not give its master: %v", sip, err)
-			continue
+			r.logger.Warningf("Sentinel %s did not give its master, so it can know a replica: %v", sip, err)
+			return false, nil
 		}
 		if pod, ok := pods[master]; ok {
 			r.logger.Infof("Sentinel %s monitors the pod %s (%s), so Sentinel can fail over", sip, pod, master)
@@ -336,8 +339,8 @@ func (r *RedisFailoverChecker) CheckSentinelsCannotFailover(rf *redisfailoverv1.
 		}
 		replicas, err := r.redisClient.GetSentinelReplicas(sip)
 		if err != nil {
-			r.logger.Warningf("Sentinel %s did not give its replicas: %v", sip, err)
-			continue
+			r.logger.Warningf("Sentinel %s did not give its replicas, so it can know one: %v", sip, err)
+			return false, nil
 		}
 		for _, replica := range replicas {
 			if pod, ok := pods[replica]; ok {
@@ -346,11 +349,6 @@ func (r *RedisFailoverChecker) CheckSentinelsCannotFailover(rf *redisfailoverv1.
 			}
 		}
 		r.logger.Warningf("Sentinel %s monitors %s, which is not a pod, and knows no replica pod of %d replicas", sip, master, len(replicas))
-		answered++
-	}
-	if quorum := int(getQuorum(rf)); answered < quorum {
-		r.logger.Warningf("%d of %d Sentinels gave their master and replicas, %d are necessary to be sure that Sentinel cannot fail over", answered, len(sentinels), quorum)
-		return false, nil
 	}
 	return true, nil
 }

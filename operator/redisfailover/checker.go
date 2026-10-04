@@ -904,9 +904,10 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 }
 
 // electMasterForSentinel promotes the best replica when no Sentinel can fail
-// over. It counts the masters again first, because a master that appeared
-// since the first count gives two masters after a promotion. It reports
-// whether it elected a master.
+// over. It counts the masters again first, and checks again for a stopping
+// master, because a master that appeared or started to stop since the first
+// checks gives two masters after a promotion. It reports whether it elected
+// a master.
 func (r *RedisFailoverHandler) electMasterForSentinel(rf *redisfailoverv1.RedisFailover) (bool, error) {
 	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
 	nMasters, err := r.rfChecker.GetNumberMasters(rf)
@@ -922,6 +923,22 @@ func (r *RedisFailoverHandler) electMasterForSentinel(rf *redisfailoverv1.RedisF
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: "a master appeared before the election, checking again",
+		}
+		return false, nil
+	}
+	// GetNumberMasters does not count a pod in deletion.
+	stopping, err := r.masterPodStopping(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to check whether the master is stopping",
+		}
+		return false, err
+	}
+	if stopping {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: masterStoppingMsg,
 		}
 		return false, nil
 	}

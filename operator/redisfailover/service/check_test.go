@@ -2692,12 +2692,13 @@ func TestCheckSentinelsCannotFailover(t *testing.T) {
 	}
 	stuck := view{master: gone}
 	tests := []struct {
-		name        string
-		redisErr    error
-		sentinelErr error
-		views       []view
-		want        bool
-		wantErr     bool
+		name         string
+		redisErr     error
+		sentinelErr  error
+		sentinelPods []corev1.Pod
+		views        []view
+		want         bool
+		wantErr      bool
 	}{
 		{
 			name:  "no Sentinel knows a replica and the master is gone",
@@ -2727,13 +2728,17 @@ func TestCheckSentinelsCannotFailover(t *testing.T) {
 			views: []view{{master: "10.0.0.3"}, stuck, stuck},
 		},
 		{
-			name:  "a quorum answers and knows no replica",
+			name:  "a Sentinel does not give its master, so it can know a replica",
 			views: []view{stuck, {masterErr: errors.New("timeout")}, stuck},
-			want:  true,
 		},
 		{
-			name:  "less than a quorum answers",
-			views: []view{stuck, {masterErr: errors.New("timeout")}, {master: gone, replicaErr: errors.New("timeout")}},
+			name:  "a Sentinel does not give its replicas",
+			views: []view{stuck, stuck, {master: gone, replicaErr: errors.New("timeout")}},
+		},
+		{
+			name:         "fewer Sentinels run than the quorum",
+			sentinelPods: []corev1.Pod{podWithIP("rfs-test-a", "10.1.0.1", corev1.PodRunning)},
+			views:        []view{stuck},
 		},
 		{
 			name:     "listing the redis pods fails",
@@ -2752,7 +2757,11 @@ func TestCheckSentinelsCannotFailover(t *testing.T) {
 			ms := &mK8SService.Services{}
 			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(redisPods, test.redisErr)
 			if test.redisErr == nil {
-				ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(sentinelPods, test.sentinelErr)
+				pods := sentinelPods
+				if test.sentinelPods != nil {
+					pods = &corev1.PodList{Items: test.sentinelPods}
+				}
+				ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(pods, test.sentinelErr)
 			}
 			mr := &mRedisService.Client{}
 			for i, v := range test.views {
