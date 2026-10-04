@@ -101,32 +101,6 @@ func (_m *Client) GetNumberSentinelsInMemory(ip string) (int32, error) {
 	return r0, r1
 }
 
-// GetReplicationInfo provides a mock function with given fields: ip, port, password
-func (_m *Client) GetReplicationInfo(ip string, port string, password string) (*redis.ReplicationInfo, error) {
-	ret := _m.Called(ip, port, password)
-
-	var r0 *redis.ReplicationInfo
-	var r1 error
-	if rf, ok := ret.Get(0).(func(string, string, string) (*redis.ReplicationInfo, error)); ok {
-		return rf(ip, port, password)
-	}
-	if rf, ok := ret.Get(0).(func(string, string, string) *redis.ReplicationInfo); ok {
-		r0 = rf(ip, port, password)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*redis.ReplicationInfo)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(string, string, string) error); ok {
-		r1 = rf(ip, port, password)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
 // GetSentinelMonitor provides a mock function with given fields: ip
 func (_m *Client) GetSentinelMonitor(ip string) (string, string, error) {
 	ret := _m.Called(ip)
@@ -156,32 +130,6 @@ func (_m *Client) GetSentinelMonitor(ip string) (string, string, error) {
 	}
 
 	return r0, r1, r2
-}
-
-// GetSentinelReplicas provides a mock function with given fields: ip
-func (_m *Client) GetSentinelReplicas(ip string) ([]string, error) {
-	ret := _m.Called(ip)
-
-	var r0 []string
-	var r1 error
-	if rf, ok := ret.Get(0).(func(string) ([]string, error)); ok {
-		return rf(ip)
-	}
-	if rf, ok := ret.Get(0).(func(string) []string); ok {
-		r0 = rf(ip)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).([]string)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(string) error); ok {
-		r1 = rf(ip)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
 }
 
 // GetSlaveOf provides a mock function with given fields: ip, port, password
@@ -403,6 +351,58 @@ func (_m *Client) SlaveIsReady(ip string, port string, password string) (bool, e
 
 	if rf, ok := ret.Get(1).(func(string, string, string) error); ok {
 		r1 = rf(ip, port, password)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// GetReplicationInfo provides a mock function with given fields: ip, port, password
+func (_m *Client) GetReplicationInfo(ip string, port string, password string) (*redis.ReplicationInfo, error) {
+	ret := _m.Called(ip, port, password)
+
+	var r0 *redis.ReplicationInfo
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, string, string) (*redis.ReplicationInfo, error)); ok {
+		return rf(ip, port, password)
+	}
+	if rf, ok := ret.Get(0).(func(string, string, string) *redis.ReplicationInfo); ok {
+		r0 = rf(ip, port, password)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*redis.ReplicationInfo)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(string, string, string) error); ok {
+		r1 = rf(ip, port, password)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// GetSentinelReplicas provides a mock function with given fields: ip
+func (_m *Client) GetSentinelReplicas(ip string) ([]string, error) {
+	ret := _m.Called(ip)
+
+	var r0 []string
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string) ([]string, error)); ok {
+		return rf(ip)
+	}
+	if rf, ok := ret.Get(0).(func(string) []string); ok {
+		r0 = rf(ip)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]string)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(string) error); ok {
+		r1 = rf(ip)
 	} else {
 		r1 = ret.Error(1)
 	}
