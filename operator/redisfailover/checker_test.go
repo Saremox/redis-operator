@@ -3281,3 +3281,97 @@ func TestOperatorManagedModeDemotesTheMastersThatAreNotLabelledMaster(t *testing
 		})
 	}
 }
+
+// A SENTINEL RESET while the master pod stops can leave Sentinel without a
+// replica to promote, so the Sentinel heal waits until the master pod exits.
+func TestSentinelModeDoesNotHealSentinelsWhileTheMasterStops(t *testing.T) {
+	const (
+		master   = "0.0.0.0"
+		sentinel = "1.1.1.1"
+		port     = "0"
+	)
+	tests := []struct {
+		name       string
+		masterPod  corev1.Pod
+		listErr    error
+		wantHeal   bool
+		wantErr    bool
+		wantStatus v1.RedisFailoverStatus
+	}{
+		{
+			name:       "the master pod is stopping and still ready",
+			masterPod:  masterPod(redisPod("1", true, true)),
+			wantStatus: v1.RedisFailoverStatus{State: v1.NotHealthyState, Message: "waiting for the stopping master pod to exit"},
+		},
+		{
+			name:       "a stopping master pod that is not ready (lost node) does not block",
+			masterPod:  masterPod(redisPod("1", false, true)),
+			wantHeal:   true,
+			wantStatus: v1.RedisFailoverStatus{State: v1.HealthyState},
+		},
+		{
+			name:       "listing the pods fails",
+			masterPod:  masterPod(redisPod("1", true, false)),
+			listErr:    errors.New("list err"),
+			wantErr:    true,
+			wantStatus: v1.RedisFailoverStatus{State: v1.NotHealthyState, Message: "unable to check whether the master is stopping"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF(false, false)
+			pods := &corev1.PodList{Items: []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false), test.masterPod}}
+			// The rollout is done; the next pod list is the check of the guard.
+			rolloutDone := false
+
+			mk := &mK8SService.Services{}
+			mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(func(string, string) (*corev1.PodList, error) {
+				if rolloutDone && test.listErr != nil {
+					return nil, test.listErr
+				}
+				return pods, nil
+			})
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+			mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
+			mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+			mrfc.On("GetMasterIP", rf).Twice().Return(master, nil)
+			mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
+			mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{master}, nil)
+			mrfh.On("SetRedisCustomConfig", master, rf).Once().Return(nil)
+			mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("1", nil)
+			mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
+			mrfc.On("GetRedisesMasterPod", rf).Once().Return(master, nil)
+			mrfc.On("GetRedisRevisionHash", master, rf).Once().Run(func(mock.Arguments) { rolloutDone = true }).Return("1", nil)
+			if test.wantHeal {
+				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel}, nil)
+				mrfc.On("CheckSentinelMonitor", sentinel, master, port).Once().Return(nil)
+				mrfc.On("CheckSentinelNumberInMemory", sentinel, rf).Once().Return(nil)
+				mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(nil)
+				mrfh.On("SetSentinelCustomConfig", sentinel, rf).Once().Return(nil)
+			}
+
+			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+			err := handler.CheckAndHeal(rf)
+
+			if test.wantErr {
+				assert.ErrorIs(err, test.listErr)
+			} else {
+				assert.NoError(err)
+			}
+			assert.Equal(test.wantStatus.State, rf.Status.State)
+			assert.Equal(test.wantStatus.Message, rf.Status.Message)
+			if !test.wantHeal {
+				mrfc.AssertNotCalled(t, "GetSentinelsIPs", mock.Anything)
+				mrfh.AssertNotCalled(t, "RestoreSentinel", mock.Anything)
+			}
+			mrfc.AssertExpectations(t)
+			mrfh.AssertExpectations(t)
+		})
+	}
+}

@@ -412,6 +412,7 @@ func (r *RedisFailoverHandler) labelledMasterPod(rf *redisfailoverv1.RedisFailov
 const (
 	masterPodLookupFailed = "unable to look up the master pod"
 	masterStoppingMsg     = "no master, waiting for the stopping master pod to exit"
+	masterPodStoppingMsg  = "waiting for the stopping master pod to exit"
 )
 
 func failoverKey(rf *redisfailoverv1.RedisFailover) string {
@@ -813,6 +814,25 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 			}
 			return err
 		}
+	}
+
+	// A SENTINEL RESET makes Sentinel forget the replicas until the master
+	// tells it again. A stopping master may not do that before it exits, and
+	// then the failover finds no replica to promote (NOGOODSLAVE).
+	stopping, err := r.masterPodStopping(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to check whether the master is stopping",
+		}
+		return err
+	}
+	if stopping {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: masterPodStoppingMsg,
+		}
+		return nil
 	}
 
 	sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
