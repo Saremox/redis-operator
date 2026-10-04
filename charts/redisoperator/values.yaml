@@ -1,20 +1,19 @@
 # Default values for redis-operator.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
 
-# Name of the image repository to pull the container image from.
+# The image of the operator.
 image:
   repository: ghcr.io/saremox/redis-operator
   pullPolicy: IfNotPresent
+  # An empty tag uses the appVersion of the chart.
   tag: ""
   # Extra arguments of the operator, one flag in each item. A string is split
   # at whitespace. The chart sets `--listen-address` from container.port.
   cli_args: []
 
 imageCredentials:
-  # true gives the operator pod and the CRD upgrade hook pod image pull secrets:
-  # the existsSecrets, or if existsSecrets is empty, a Secret that the chart
-  # creates from registry, username, password and email. The chart stops when
+  # true gives image pull Secrets to the operator pod and the CRD upgrade hook pod.
+  # These are the existsSecrets. If existsSecrets is empty, the chart creates a
+  # Secret from registry, username, password and email. The chart stops when
   # username or password has the placeholder value below.
   create: false
   registry: url.private.registry
@@ -29,14 +28,14 @@ updateStrategy:
 
 replicas: 1
 
-# A name in place of the chart name for `app:` labels.
+# A name in place of the chart name in the resource names and in the
+# `app.kubernetes.io/name` label.
 nameOverride: ""
 
 # A name to substitute for the full names of resources.
 fullnameOverride: ""
 
-# The name of the Namespace to deploy
-# If not set, `.Release.Namespace` is used
+# The namespace of the operator. Defaults to the namespace of the release.
 namespace: null
 
 serviceAccount:
@@ -45,8 +44,8 @@ serviceAccount:
   create: true
   # Annotations to be added to the service account.
   annotations: {}
-  # The name of the service account to use.
-  # If not set and create is true, a name is generated using the fullname template.
+  # The name of the ServiceAccount. If it is empty, the chart uses the full
+  # name of the release with create true, and `default` with create false.
   name: ""
 
 service:
@@ -98,15 +97,19 @@ watchAuthSecrets: false
 ### Monitoring
 ###############
 monitoring:
-  # Create a metrics Service for the operator, and with serviceMonitor, a
-  # Prometheus ServiceMonitor.
+  # The chart always creates a metrics Service. true adds the Service
+  # `<fullname>-prometheus` with the label `prometheus: <prometheus.name>`.
+  # With serviceMonitor, a Prometheus ServiceMonitor selects that Service.
   enabled: false
   serviceMonitor: false
   serviceAnnotations: {}
   prometheus:
+    # The value of the `prometheus` label. Set it to match the
+    # serviceMonitorSelector of your Prometheus.
     name: unknown
 
-# Annotations to be added to pods and deployments.
+# Annotations of the operator Deployment, its pods, the operator Service and
+# the registry Secret.
 annotations: {}
 
 nodeSelector: {}
@@ -121,19 +124,17 @@ priorityClassName: ""
 
 # CustomResourceDefinition lifecycle.
 crds:
-  # Helm only installs the contents of a chart's crds/ directory on the first
-  # `helm install` - it never touches them again on `helm upgrade`
+  # Helm installs the crds/ directory of a chart only on `helm install`, not
+  # on `helm upgrade`
   # (https://helm.sh/docs/chart_best_practices/custom_resource_definitions/).
-  # On a long-lived cluster this lets the live CRD schema silently drift
-  # behind the chart: the API server prunes spec fields it doesn't recognize
-  # (e.g. a newly added field) instead of erroring, which looks like the
-  # operator ignoring your changes rather than a stale CRD.
+  # The CRD in the cluster then gets older than the chart. The API server
+  # removes the spec fields that the old CRD does not know, and shows no error.
   #
-  # Enabling this runs `kubectl apply` on the CRD bundled with this chart
-  # version as a pre-install/pre-upgrade Helm hook. The hook Job has its own
-  # ServiceAccount and ClusterRole, not the operator's. Disabled by default
-  # because it grants a Helm hook Job permission to modify a cluster-scoped
-  # resource - review before enabling on a shared cluster.
+  # true runs `kubectl apply` on the CRD of this chart version in a
+  # pre-install and pre-upgrade Helm hook. The hook Job has its own
+  # ServiceAccount and ClusterRole. The default is false, because the Job can
+  # change a cluster-scoped resource. Examine it before you enable it on a
+  # shared cluster.
   #
   # The hook Job uses the securityContext and podSecurityContext of the operator,
   # so it can run in a namespace where the operator can run.
