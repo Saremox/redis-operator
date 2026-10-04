@@ -32,7 +32,8 @@ spec:
     name: v1
     schema:
       openAPIV3Schema:
-        description: RedisFailover represents a Redis failover
+        description: RedisFailover is a Redis master with replicas that the operator
+          deploys and repairs.
         properties:
           apiVersion:
             description: |-
@@ -52,17 +53,17 @@ spec:
           metadata:
             type: object
           spec:
-            description: RedisFailoverSpec represents a Redis failover spec
+            description: RedisFailoverSpec is the desired state of a RedisFailover.
             properties:
               auth:
-                description: AuthSettings contains settings about auth
+                description: AuthSettings configures the Redis password.
                 properties:
                   secretPath:
                     type: string
                 type: object
               bootstrapNode:
-                description: BootstrapSettings contains settings about a potential
-                  bootstrap node
+                description: BootstrapSettings names an external Redis that the Redis
+                  pods replicate from.
                 properties:
                   allowSentinels:
                     type: boolean
@@ -76,8 +77,7 @@ spec:
                   type: string
                 type: array
               redis:
-                description: RedisSettings defines the specification of the redis
-                  cluster
+                description: RedisSettings configures the Redis pods.
                 properties:
                   affinity:
                     description: Affinity is a group of affinity scheduling rules.
@@ -1204,10 +1204,11 @@ spec:
                   customCommandRenames:
                     items:
                       description: |-
-                        RedisCommandRename defines the specification of a "rename-command" configuration option.
+                        RedisCommandRename is a "rename-command" entry of redis.conf.
                         It must not rename a command that the operator, the pod scripts or the replicas send:
                         AUTH, CLIENT, CONFIG, INFO, PING, PSYNC, REPLCONF, REPLICAOF or SLAVEOF. With Sentinels,
                         it must not rename EXEC, MULTI, PUBLISH or SUBSCRIBE. With an aclfile, it must not rename ACL.
+                        The shutdown script also sends SAVE. Validation allows a rename of SAVE, but then that SAVE fails.
                       properties:
                         from:
                           type: string
@@ -1879,8 +1880,8 @@ spec:
                       type: object
                     type: array
                   exporter:
-                    description: Exporter defines the specification for the redis/sentinel
-                      exporter
+                    description: Exporter configures the metrics exporter sidecar
+                      of the Redis or Sentinel pods.
                     properties:
                       args:
                         items:
@@ -6017,10 +6018,10 @@ spec:
                     type: array
                   inPlaceResize:
                     description: |-
-                      InPlaceResize controls whether redis pods whose update only changes
-                      container resources are resized in place instead of being recreated.
-                      It needs Kubernetes 1.33 or later, and 1.35 to lower a memory limit.
-                      Otherwise the pods are recreated. Defaults to Enabled.
+                      InPlaceResize controls whether the operator resizes a redis pod in place
+                      when an update changes only the container resources. Otherwise the
+                      operator recreates the pod. A resize needs Kubernetes 1.33 or later, and
+                      1.35 to lower a memory limit. Defaults to Enabled.
                     enum:
                     - Enabled
                     - Disabled
@@ -7621,6 +7622,8 @@ spec:
                       It needs a memory limit of at least 64Mi. It uses the smallest limit of
                       all redis pods, because a failover can promote any replica. It sets
                       replica-ignore-maxmemory yes, so customConfig cannot set it to no.
+                      Only an allkeys-* policy lowers maxmemory below the memory in use. With
+                      another policy, the operator keeps the old value and holds the pod rollout.
                     properties:
                       percent:
                         description: |-
@@ -7666,8 +7669,8 @@ spec:
                     description: |-
                       PreventMasterEviction, when true, annotates the current master pod with
                       cluster-autoscaler.kubernetes.io/safe-to-evict=false so the cluster
-                      autoscaler will not drain the node running the master. Slaves are marked
-                      evictable. Defaults to false.
+                      autoscaler does not drain the node of the master. The operator marks the
+                      replicas as evictable. Defaults to false.
                     type: boolean
                   priorityClassName:
                     type: string
@@ -7977,8 +7980,8 @@ spec:
                   startupConfigMap:
                     type: string
                   storage:
-                    description: RedisStorage defines the structure used to store
-                      the Redis Data
+                    description: RedisStorage configures the data volume of the Redis
+                      pods.
                     properties:
                       emptyDir:
                         description: |-
@@ -8041,8 +8044,8 @@ spec:
                               More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
                             type: string
                           metadata:
-                            description: EmbeddedMetadata contains metadata relevant
-                              to an EmbeddedResource.
+                            description: EmbeddedObjectMetadata holds the name, the
+                              labels and the annotations of the PVC.
                             properties:
                               annotations:
                                 additionalProperties:
@@ -8516,6 +8519,10 @@ spec:
                         type: object
                     type: object
                   terminationGracePeriod:
+                    description: |-
+                      TerminationGracePeriodSeconds is the grace period of the Redis pods in
+                      seconds. Defaults to 30. The shutdown script must end in this time. It
+                      needs the time of its SAVE, plus about 19s with Sentinel.
                     format: int64
                     type: integer
                   tolerations:
@@ -8732,8 +8739,8 @@ spec:
                     type: array
                 type: object
               sentinel:
-                description: SentinelSettings defines the specification of the sentinel
-                  cluster
+                description: SentinelSettings configures the Sentinel pods and the
+                  failover.
                 properties:
                   affinity:
                     description: Affinity is a group of affinity scheduling rules.
@@ -9659,8 +9666,9 @@ spec:
                       type: string
                     type: array
                   configCopy:
-                    description: SentinelConfigCopy defines the specification for
-                      the sentinel exporter
+                    description: |-
+                      SentinelConfigCopy configures the init container that copies sentinel.conf
+                      to a writable volume. Sentinel writes its state to that file.
                     properties:
                       containerSecurityContext:
                         description: |-
@@ -10557,9 +10565,8 @@ spec:
                     type: string
                   enabled:
                     description: |-
-                      Enabled controls whether Sentinel is deployed. When false, the operator
-                      manages failover instead of Sentinel. Defaults to false (operator-managed
-                      failover) since v4.0.0.
+                      Enabled deploys Sentinel, and Sentinel does the failover. When false,
+                      the operator does the failover. Defaults to false.
                     type: boolean
                   env:
                     items:
@@ -10721,8 +10728,8 @@ spec:
                       type: object
                     type: array
                   exporter:
-                    description: Exporter defines the specification for the redis/sentinel
-                      exporter
+                    description: Exporter configures the metrics exporter sidecar
+                      of the Redis or Sentinel pods.
                     properties:
                       args:
                         items:
@@ -14833,10 +14840,10 @@ spec:
                     type: array
                   failoverTimeout:
                     description: |-
-                      FailoverTimeout is the time that operator-managed failover (sentinel.enabled=false)
-                      waits for a master that does not answer while its pod runs, so that a short
-                      stall does not cause a failover. A master that is gone or not found gets no
-                      wait. Defaults to 10s; 0s disables the wait.
+                      FailoverTimeout applies only when enabled is false. It is the time that the
+                      operator waits for a master that does not answer while its pod runs.
+                      Thus a short stall causes no failover. A master that is gone or not found
+                      gets no wait. Defaults to 10s; 0s disables the wait.
                     type: string
                   hostNetwork:
                     type: boolean
@@ -16777,9 +16784,9 @@ spec:
                     type: string
                   strategy:
                     description: |-
-                      Strategy overrides the sentinel Deployment update strategy (e.g. to set
-                      rollingUpdate maxSurge/maxUnavailable). Defaults to the Kubernetes default
-                      RollingUpdate strategy when unset.
+                      Strategy overrides the update strategy of the sentinel Deployment, for
+                      example to set rollingUpdate maxSurge and maxUnavailable. Defaults to the
+                      Kubernetes default RollingUpdate strategy.
                     properties:
                       rollingUpdate:
                         description: |-
@@ -17040,6 +17047,9 @@ spec:
                 type: object
             type: object
           status:
+            description: |-
+              RedisFailoverStatus is the result of the last reconcile. State is Healthy or
+              NotHealthy, and Message gives the reason.
             properties:
               lastChanged:
                 type: string
