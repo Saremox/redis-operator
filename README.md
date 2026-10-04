@@ -139,6 +139,14 @@ See the manifests in [manifests/kustomize](manifests/kustomize) for more informa
 
 The operator serves Prometheus metrics on `--listen-address` (default `:9710`) at `--metrics-path` (default `/metrics`). The flag `--enable-pprof` (default `false`) serves the Go profiler at `/debug/pprof/` on the same address. A heap profile can contain the Redis passwords.
 
+### Security notes
+
+The author of a RedisFailover controls the pods that the operator creates: containers, volumes, `hostPath`, `hostNetwork` and service account. Enforce the Pod Security Admission level `restricted`, or an admission policy, in each namespace where users create a RedisFailover.
+
+A RedisFailover in the operator namespace can use the service account of the operator. Install the operator in its own namespace. With Helm, use the options `--namespace` and `--create-namespace`.
+
+Redis and Sentinel do not use TLS, Sentinel has no password, and Redis has no password without `auth.secretPath`. Use a NetworkPolicy to limit access to the Redis, Sentinel and exporter ports. The exporter port serves `/scrape` to each client that reaches the port.
+
 ## Usage
 
 When the operator runs, you can create, update and delete RedisFailover resources.
