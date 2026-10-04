@@ -146,3 +146,25 @@ func TestNewCreatesFindingSeries(t *testing.T) {
 		}
 	}
 }
+
+func TestJudged(t *testing.T) {
+	edge := &transition{}
+	tests := map[string]struct {
+		edge      *transition
+		applyErr  error
+		converged bool
+		want      bool
+	}{
+		"version change did not converge": {edge: edge, want: true},
+		"version change converged":        {edge: edge, converged: true},
+		"version change rejected":         {edge: edge, applyErr: errors.New("denied")},
+		"other kind timed out":            {},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := judged(tc.edge, tc.applyErr, tc.converged); got != tc.want {
+				t.Errorf("judged = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

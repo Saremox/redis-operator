@@ -198,7 +198,8 @@ explanation:
 
 A result is `converged`, `timeout`, `rejected` (the API refused the
 change) or `skipped` (the mutation cannot apply now, for example a replica
-kill on an instance with one pod).
+kill on an instance with one pod). A version change that does not converge
+gets its judgement below, not `timeout`.
 
 ### Server versions
 
@@ -312,6 +313,8 @@ window" is `redis_soak_window_open == 0`.
   converge in time, or failed.
 - `RedisSoakFollowerAuthOutage`: the operator did not apply a password
   change within 2 minutes.
+- `RedisSoakVersionTransitionFailed`: a version change along an `ok` edge
+  did not converge.
 - `RedisSoakVersionTransitionUnsafe`: a version change failed unsafely.
 
 The series of the counters start at 0, so that `increase()` shows the

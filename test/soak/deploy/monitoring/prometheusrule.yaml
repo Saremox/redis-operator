@@ -68,6 +68,14 @@ spec:
             severity: warning
           annotations:
             summary: "{{ $labels.namespace }}/{{ $labels.rf }} has refused the current password through {{ $labels.path }} for over 2m."
+        - alert: RedisSoakVersionTransitionFailed
+          # A change along an ok edge must converge. A change along another
+          # edge may fail safely. Fires until the tester restarts, as below.
+          expr: redis_soak_version_transition_total{expect="ok", result="failed_safe"} > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.rf }} did not complete the change {{ $labels.from }} -> {{ $labels.to }}, which must succeed."
         - alert: RedisSoakVersionTransitionUnsafe
           # Fires until the tester restarts, because an unsafe transition is
           # rare and each one needs an investigation.

@@ -78,6 +78,8 @@ tests:
         values: '1x10'
       - series: 'redis_soak_version_transition_total{rf="edge",namespace="edge",mode="operator",from="redis-8",to="valkey-8",expect="unknown",result="failed_safe"}'
         values: '1x10'
+      - series: 'redis_soak_version_transition_total{rf="chain",namespace="chain",mode="operator",from="redis-7.2",to="redis-7.4",expect="ok",result="failed_safe"}'
+        values: '1x10'
     alert_rule_test:
       - eval_time: 2m
         alertname: RedisSoakFinding
@@ -103,6 +105,12 @@ tests:
           - exp_labels: {severity: critical, rf: a, namespace: a, mode: operator, event: kill_master}
             exp_annotations:
               summary: "a/a lost acknowledged writes in a kill_master, which should lose none."
+      - eval_time: 2m
+        alertname: RedisSoakVersionTransitionFailed
+        exp_alerts:
+          - exp_labels: {severity: warning, rf: chain, namespace: chain, mode: operator, from: redis-7.2, to: redis-7.4, expect: ok, result: failed_safe}
+            exp_annotations:
+              summary: "chain/chain did not complete the change redis-7.2 -> redis-7.4, which must succeed."
       - eval_time: 2m
         alertname: RedisSoakVersionTransitionUnsafe
         exp_alerts:

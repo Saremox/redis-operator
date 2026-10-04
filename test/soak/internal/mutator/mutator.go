@@ -334,7 +334,9 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 				"duration_seconds", time.Since(appliedAt).Seconds())
 		}
 	}
-	m.total.WithLabelValues(string(kind), result).Inc()
+	if !judged(p.edge, applyErr, converged) {
+		m.total.WithLabelValues(string(kind), result).Inc()
+	}
 
 	recreated := -1
 	if s, err := m.fetch(ctx, fetchOpts{}); err == nil {
@@ -364,6 +366,13 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 		return config.Reset
 	}
 	return ""
+}
+
+// judged reports whether judge counts a version change in place of its
+// mutation result. A change that can fail does not converge by design, so it
+// is not a timeout.
+func judged(edge *transition, applyErr error, converged bool) bool {
+	return edge != nil && applyErr == nil && !converged
 }
 
 // verifyBound bounds the verification after a mutation, as a mutation may
