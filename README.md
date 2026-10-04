@@ -252,7 +252,7 @@ The operator does not reconcile a RedisFailover that fails validation. The statu
 
 With `redis.maxMemory` the operator sets `maxmemory` and `maxmemory-policy` from the redis container's memory limit, see the [maxmemory example file](example/redisfailover/maxmemory.yaml). It requires a memory limit of at least 64Mi; otherwise `maxmemory` is not managed and the reason is in the status message.
 
-`maxmemory` is `percent` (default `75`) of the limit, keeping at least 32Mi free. `policy` defaults to `noeviction`.
+`maxmemory` is `percent` (default `75`) of the limit, keeping at least 32Mi free. The free part must also hold the copy-on-write memory of a fork (`BGSAVE`, full sync), so a high `percent` can get a pod OOM-killed under writes. `policy` defaults to `noeviction`.
 
 | Limit | maxmemory |
 |---|---|
@@ -280,6 +280,7 @@ The operator recreates a pod instead of a resize in place in these cases:
 - The update changes more than container cpu and memory, adds or removes a request or a limit, or changes the QoS class.
 - The kubelet does not support in-place resize, or reports the resize as infeasible.
 - The kubelet refuses a memory limit below the current usage. The usage includes the page cache, so a retry also fails and the operator does not wait.
+- The Redis process uses more memory (`used_memory_rss`) than the lowered limit minus 32Mi. Redis often does not return the memory that evictions free to the OS.
 - The kubelet defers or fails the resize for more than 5 minutes, or does not apply it in 5 minutes.
 
 The operator needs `patch` on `pods/resize` and `get` on `controllerrevisions`, which the chart, the kustomize and the example manifests grant. Without them, the operator recreates the pods.

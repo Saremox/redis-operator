@@ -39,6 +39,7 @@ func TestGetMemoryInfo(t *testing.T) {
 	assert.Equal(t, "allkeys-lru", mi.MaxMemoryPolicy)
 	assert.Equal(t, "master", mi.Role)
 	assert.Greater(t, mi.UsedMemory, int64(200*1024))
+	assert.Greater(t, mi.UsedMemoryRSS, mi.UsedMemory)
 }
 
 func TestGetMemoryInfo_ConnectionError(t *testing.T) {
