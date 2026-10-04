@@ -12,14 +12,14 @@ Write documentation, comments and pull request descriptions as [docs/writing.md]
 - **log**: wrapper of logrus, created to be able to mock it.
 - **metrics**: exposer of status of the failovers created.
 - **mocks**: contains the mocked interfaces for testing the application.
-- **operator**: the main logic. Manages the requests from k8s and creates/updates/deletes the pieces as needed.
-- **service**: services/clients to interact with k8s and redises.
+- **operator**: the main logic. It handles the events from Kubernetes and creates, updates or deletes the resources.
+- **service**: the clients for Kubernetes and Redis.
 - **test**: integration tests. They need a Kubernetes cluster.
 
 ### Non-code folder structure
 
 - **charts**: helm chart to deploy the operator.
-- **docker**: Dockerfiles to generate redis-failover docker images.
+- **docker**: the Dockerfile of the operator image in `docker/app`, and of the development container in `docker/development`.
 - **docs**: documentation of the controller logic and of development.
 - **example**: yaml files with spec of redis-failover.
 - **manifests**: the CRD manifest and the Kustomize overlays to deploy the operator.
@@ -28,17 +28,21 @@ Write documentation, comments and pull request descriptions as [docs/writing.md]
 
 ## Generated code
 
-Two files are generated from `api/redisfailover/v1`'s type definitions and must stay in sync with them: `api/redisfailover/v1/zz_generated.deepcopy.go` and the CRD manifest (`manifests/databases.spotahome.com_redisfailovers.yaml`, mirrored into `manifests/kustomize/base/` and `charts/redisoperator/crds/`). Both are produced by [`controller-gen`](https://github.com/kubernetes-sigs/controller-tools) (install the pinned version with `make install-controller-gen`), no Docker required.
+[`controller-gen`](https://github.com/kubernetes-sigs/controller-tools) generates two sets of files from the types in `api/redisfailover/v1`:
 
-- After changing a type in `api/redisfailover/v1` or bumping `k8s.io/api` in `go.mod` (the CRD embeds core types such as `PodSpec`), run `make generate-api` and commit the result.
-- `make verify-codegen` regenerates and fails if that produces any diff - this is what CI runs, so a PR that changed the types without regenerating fails there if nothing else catches it first.
-- Run `make install-hooks` once per clone to also run `verify-codegen` locally as a pre-commit hook (only when a commit touches `api/**/*.go` or `go.mod`, so it adds no overhead to unrelated commits).
+- `api/redisfailover/v1/zz_generated.deepcopy.go`.
+- The CRD manifest `manifests/databases.spotahome.com_redisfailovers.yaml`, with copies in `manifests/kustomize/base/` and `charts/redisoperator/crds/`.
 
-(The typed clientset in `client/k8s/clientset` is separate: it still comes from the Docker-based `make update-codegen`, changes far less often, and isn't covered by `verify-codegen`.)
+These files must agree with the types. Install the pinned `controller-gen` version with `make install-controller-gen`. It needs no Docker.
+
+- Run `make generate-api` and commit the result when you change a type in `api/redisfailover/v1`.
+- Do the same when you change the `k8s.io/api` version in `go.mod`, because the CRD contains core types such as `PodSpec`.
+- `make verify-codegen` generates the files again and fails if they are different. CI runs this check.
+- Run `make install-hooks` once for each clone. The pre-commit hook then runs `verify-codegen` when a commit changes `api/**/*.go` or `go.mod`.
+
+The Docker-based `make update-codegen` generates the typed clientset in `client/k8s/clientset`. `verify-codegen` does not check the clientset.
 
 ## Make development commands
-
-You can do the following commands with make:
 
 - Build the development container.
   `make docker-build`
@@ -56,13 +60,21 @@ You can do the following commands with make:
   `make unit-test`
 - Run the unit tests on the host. Tests that need `redis-server` skip when it is not on the PATH.
   `make ci-unit-test`
-- Run the unit, integration and Helm chart tests. The integration tests need a cluster in `$KUBECONFIG` with the CRD applied. The chart tests need `helm`.
+- Run the integration tests. They need a cluster in `$KUBECONFIG` with the CRD applied, and a route from the host to the pod IPs.
+  `make ci-integration-test`
+- Run the unit, integration and Helm chart tests. The chart tests need `helm`.
   `make test`
-- Build the executable file.
+- Build `./bin/redis-operator` and `./bin/redis-instance` in the development container.
   `make build`
-- Run the app.
+- Run the operator in the development container against `~/.kube/config`.
   `make run`
 - Access the docker instance with a shell.
   `make shell`
 - Build the app image.
   `make image`
+
+## Integration test cluster
+
+The integration tests run the operator in the test process. They connect to the Redis pods at their pod IPs, so the host must have a route to the pod network. CI in `.github/workflows/ci.yaml` uses minikube with the `none` driver. The pods then run on the host, and the host can reach their IPs.
+
+In a Claude Code cloud sandbox, use the `kind-cluster` skill in `.claude/skills/kind-cluster`. Its script `kind-up.sh` creates the cluster, adds the route and applies the CRD.
