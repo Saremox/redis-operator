@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,9 +26,9 @@ const (
 	rfLabelNameKey          = "redisfailovers.databases.spotahome.com/name"
 	skipReconcileAnnotation = "redisfailovers.databases.spotahome.com/skip-reconcile"
 	// redisFailoverFinalizer makes the deletion of a RedisFailover visible to
-	// Handle. Without it, the object is not in the informer cache when the
-	// delete event comes, and rfController.process drops a key without an
-	// object. The finalizer keeps the object, with DeletionTimestamp set,
+	// Handle. Without it, the object can leave the informer cache before
+	// Handle sees it, and rfController.process then calls Forget with the
+	// key only. The finalizer keeps the object, with DeletionTimestamp set,
 	// until Handle removes the finalizer. Handle then removes the state
 	// outside the object: the cluster_ok metric series and the maps of the
 	// handler.
@@ -81,6 +82,18 @@ func NewRedisFailoverHandler(config Config, rfService rfservice.RedisFailoverCli
 	}
 }
 
+// Forget drops the cluster_ok series and the in-memory state of a RedisFailover.
+// The controller also calls it for a RedisFailover that is gone before a
+// reconcile sees its deletion timestamp, for example after a manual removal of
+// the finalizer.
+func (r *RedisFailoverHandler) Forget(key string) {
+	namespace, name, _ := strings.Cut(key, "/")
+	r.mClient.DeleteCluster(namespace, name)
+	r.passwords.Delete(key)
+	r.rolloutWaits.Delete(key)
+	r.unreachableCleared.Delete(key)
+}
+
 // Handle will ensure the redis failover is in the expected state.
 func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) error {
 	rf, ok := obj.(*redisfailoverv1.RedisFailover)
@@ -97,10 +110,7 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 			// Finalizer already removed (or never added) - nothing left to do.
 			return nil
 		}
-		r.mClient.DeleteCluster(rf.Namespace, rf.Name)
-		r.passwords.Delete(passwordKey(rf))
-		r.rolloutWaits.Delete(passwordKey(rf))
-		r.unreachableCleared.Delete(failoverKey(rf))
+		r.Forget(failoverKey(rf))
 		remaining := slices.DeleteFunc(slices.Clone(rf.Finalizers), func(f string) bool {
 			return f == redisFailoverFinalizer
 		})

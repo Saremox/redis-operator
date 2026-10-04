@@ -33,6 +33,8 @@ type Controller interface {
 // Handler reconciles one object.
 type Handler interface {
 	Handle(ctx context.Context, obj runtime.Object) error
+	// Forget drops the state for an object that is gone.
+	Forget(key string)
 }
 
 // rfController reconciles RedisFailovers from one queue keyed by RedisFailover.
@@ -311,8 +313,12 @@ func (c *rfController) process(ctx context.Context, key string) (err error) {
 		}
 	}()
 	obj, exists, err := c.rfInformer.GetIndexer().GetByKey(key)
-	if err != nil || !exists {
+	if err != nil {
 		return err
+	}
+	if !exists {
+		c.handler.Forget(key)
+		return nil
 	}
 	// The handler changes the object, and the informer cache shares it.
 	return c.handler.Handle(ctx, obj.(runtime.Object).DeepCopyObject())
