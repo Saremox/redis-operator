@@ -25,9 +25,9 @@ const (
 	rfLabelNameKey          = "redisfailovers.databases.spotahome.com/name"
 	skipReconcileAnnotation = "redisfailovers.databases.spotahome.com/skip-reconcile"
 	// redisFailoverFinalizer makes the deletion of a RedisFailover visible to
-	// Handle. Without it, the object is not in the informer cache when the
-	// delete event comes, and rfController.process drops a key without an
-	// object. The finalizer keeps the object, with DeletionTimestamp set,
+	// Handle. Without it, the object can leave the informer cache before
+	// Handle sees it, and rfController.process then calls Forget with the
+	// key only. The finalizer keeps the object, with DeletionTimestamp set,
 	// until Handle removes the finalizer. Handle then removes the state
 	// outside the object: the cluster_ok metric series and the maps of the
 	// handler.
@@ -81,9 +81,10 @@ func NewRedisFailoverHandler(config Config, rfService rfservice.RedisFailoverCli
 	}
 }
 
-// Forget drops the metrics series and the in-memory state of a RedisFailover.
-// The controller also calls it for an object that is gone without a deletion
-// timestamp, because someone removed the finalizer by hand.
+// Forget drops the cluster_ok series and the in-memory state of a RedisFailover.
+// The controller also calls it for a RedisFailover that is gone before a
+// reconcile sees its deletion timestamp, for example after a manual removal of
+// the finalizer.
 func (r *RedisFailoverHandler) Forget(key string) {
 	namespace, name, _ := strings.Cut(key, "/")
 	r.mClient.DeleteCluster(namespace, name)
