@@ -603,10 +603,12 @@ To remove the operator and the CRD:
    kubectl delete crd redisfailovers.databases.spotahome.com
    ```
 
-If the operator is already deleted, remove the finalizers manually. This command removes all finalizers of a RedisFailover:
+If the operator is already deleted, remove its finalizer manually. This command keeps the finalizers of other controllers:
 
 ```
-kubectl patch redisfailover <NAME> -n <NAMESPACE> --type=merge -p '{"metadata":{"finalizers":null}}'
+kubectl get redisfailover <NAME> -n <NAMESPACE> -o json \
+  | jq '.metadata.finalizers -= ["redisfailovers.databases.spotahome.com/finalizer"]' \
+  | kubectl replace -f -
 ```
 
 PVCs with `keepAfterDeletion` stay after the deletion. Delete them manually when you do not need the data.
