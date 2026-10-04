@@ -3,3 +3,4 @@ kind: Component
 
 resources:
   - clusterrole.yaml
+  - role.yaml

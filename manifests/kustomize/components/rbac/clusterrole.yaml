@@ -7,40 +7,64 @@ rules:
       - databases.spotahome.com
     resources:
       - redisfailovers
+    verbs:
+      - list
+      - patch
+      - watch
+  - apiGroups:
+      - databases.spotahome.com
+    resources:
       - redisfailovers/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - databases.spotahome.com
+    resources:
       - redisfailovers/status
     verbs:
-      - "*"
-  - apiGroups:
-    - coordination.k8s.io
-    resources:
-    - leases
-    verbs:
-    - create
-    - get
-    - list
-    - update      
+      - get
+      - patch
   - apiGroups:
       - discovery.k8s.io
     resources:
       - endpointslices
     verbs:
-      - get
       - list
   - apiGroups:
       - ""
     resources:
       - pods
-      - services
-      - endpoints
-      - events
-      - configmaps
-      - serviceaccounts
-      - persistentvolumeclaims
-      - persistentvolumeclaims/finalizers
+    verbs:
+      - delete
+      - get
+      - list
+      - patch
+      - watch
+  - apiGroups:
+      - ""
+    resources:
       - pods/resize
     verbs:
-      - "*"
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - services
+      - configmaps
+      - serviceaccounts
+    verbs:
+      - create
+      - delete
+      - get
+      - update
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims
+    verbs:
+      - get
+      - list
+      - update
   - apiGroups:
       - ""
     resources:
@@ -51,14 +75,32 @@ rules:
   - apiGroups:
       - apps
     resources:
-      - deployments
-      - statefulsets
       - controllerrevisions
     verbs:
-      - "*"
+      - get
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - create
+      - delete
+      - get
+      - update
+  - apiGroups:
+      - apps
+    resources:
+      - statefulsets
+    verbs:
+      - create
+      - get
+      - update
   - apiGroups:
       - policy
     resources:
       - poddisruptionbudgets
     verbs:
-      - "*"
+      - create
+      - delete
+      - get
+      - update
