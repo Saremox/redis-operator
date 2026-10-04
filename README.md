@@ -380,7 +380,7 @@ Do not set `REDIS_PASSWORD` in `redis.env`. Without `auth.secretPath`, the shutd
 To use a custom Kubernetes [Priority Class](https://kubernetes.io/docs/concepts/configuration/pod-priority-preemption/#priorityclass) for the Redis or Sentinel pods, set `priorityClassName` in the `redis` or `sentinel` spec. This field has no default. **Note:** the operator does not create the `PriorityClass` resource.
 
 ### Custom Service Account
-To use a custom Kubernetes [Service Account](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/) for the Redis or Sentinel pods, set `serviceAccountName` in the `redis` or `sentinel` spec. Without it, the Redis pods use the `default` ServiceAccount, and the Sentinel pods use the `rfs-sa-<NAME>` ServiceAccount that the operator creates. **Note:** the operator does not create the `ServiceAccount` resource that you specify.
+To use a custom Kubernetes [Service Account](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/) for the Redis or Sentinel pods, set `serviceAccountName` in the `redis` or `sentinel` spec. Without it, the Redis pods use the `default` ServiceAccount, and the Sentinel pods use the `rfs-sa-<NAME>` ServiceAccount that the operator creates. Without it, the pods also do not mount the ServiceAccount token. **Note:** the operator does not create the `ServiceAccount` resource that you specify.
 
 ### Custom Pod Annotations
 By default, the Sentinel pods have no annotations. The Redis pods have the `redisfailovers.databases.spotahome.com/secret-checksum` annotation. The operator changes it when the password changes, so that the Redis pods restart.
