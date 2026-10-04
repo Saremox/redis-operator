@@ -8,15 +8,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// The *UpToDate functions below all follow the same pattern: compare a live
-// stored object against a desired one built by this codebase's generator.go,
-// so CreateOrUpdate can skip a no-op write. Each normalizes away a specific
-// set of fields that the API server fills in with its own default but that
-// the relevant generator.go builder never sets - left unnormalized, those
-// fields would make stored differ from desired on every reconcile even when
-// nothing meaningful changed. Only ever normalize a copy of stored, never
-// desired: desired already leaves these fields unset, and clearing them
-// there too would silently accept a real change to one of them.
+// The *UpToDate functions compare the stored object with the desired object
+// from generator.go, so that CreateOrUpdate does not write an unchanged
+// object. The API server sets defaults for some fields that generator.go does
+// not set. Each function clears these fields in a copy of stored. It does not
+// clear them in desired, because that hides a real change.
 //
 // Each function compares OwnerReferences. A child that lost its owner, for
 // example after `kubectl delete --cascade=orphan`, must get the owner of the
@@ -25,21 +21,13 @@ import (
 // a PVC that the StatefulSet creates later still gets the owner reference of
 // the old RedisFailover from the template.
 
-// statefulSetUpToDate reports whether desired would change anything about
-// stored if applied, so the caller can skip a no-op Update call.
+// statefulSetUpToDate reports whether desired changes nothing in stored.
 //
-// It compares stored directly against desired rather than against a record
-// of what the operator last wrote (e.g. a stamped hash): that is what lets it
-// also catch drift, since a live object edited by hand no longer matches
-// desired and is reported as needing an update, same as an intentional spec
-// change would be. Comparing the live object's fields directly is what
-// controller-runtime's CreateOrUpdate does too.
+// It compares with the live object, not with a hash of the last write, so a
+// manual change of the object also gives an update.
 //
-// Normalized here: RevisionHistoryLimit and the PodSpec/container fields
-// normalizePodSpecForComparison clears - none of them are ever set by
-// generateRedisStatefulSet. Only the stored copy is touched - desired is
-// compared as built, so a real difference desired does specify still
-// surfaces normally.
+// It clears RevisionHistoryLimit and the fields that
+// normalizePodSpecForComparison clears.
 func statefulSetUpToDate(stored, desired *appsv1.StatefulSet) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
@@ -47,10 +35,8 @@ func statefulSetUpToDate(stored, desired *appsv1.StatefulSet) bool {
 	if !equality.Semantic.DeepEqual(stored.OwnerReferences, desired.OwnerReferences) {
 		return false
 	}
-	// Annotations are compared as-is (not normalized) because
-	// CreateOrUpdateStatefulSet merges stored's annotations into desired
-	// before this check runs, so by this point desired.Annotations already
-	// equals stored.Annotations unless the merge actually changed something.
+	// CreateOrUpdateStatefulSet merges the stored annotations into desired
+	// before this check, so the annotations differ only after a real change.
 	if !equality.Semantic.DeepEqual(stored.Annotations, desired.Annotations) {
 		return false
 	}
@@ -62,17 +48,12 @@ func statefulSetUpToDate(stored, desired *appsv1.StatefulSet) bool {
 	return equality.Semantic.DeepEqual(normalized, &desired.Spec)
 }
 
-// deploymentUpToDate is statefulSetUpToDate's counterpart for Deployment. See
-// its doc comment for the comparison strategy.
+// deploymentUpToDate is statefulSetUpToDate for a Deployment.
 //
-// Deployment's own ObjectMeta.Annotations are deliberately excluded from the
-// comparison: generateSentinelDeployment never sets them, but the deployment
-// controller stamps deployment.kubernetes.io/revision on every rollout, so
-// comparing them as-is would always report a difference. Unlike StatefulSet,
-// CreateOrUpdateDeployment has no pre-existing merge step that folds stored's
-// annotations into desired first, so this reports "no meaningful change" for
-// annotation-only drift. If a caller ever starts setting Deployment-level
-// annotations from the RedisFailover spec, this needs revisiting.
+// It does not compare the annotations of the Deployment. The Deployment
+// controller sets deployment.kubernetes.io/revision, and
+// generateSentinelDeployment sets no annotations. When generator.go sets
+// Deployment annotations, this function must compare them.
 func deploymentUpToDate(stored, desired *appsv1.Deployment) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
@@ -115,19 +96,11 @@ func defaultedStrategy(s appsv1.DeploymentStrategy) appsv1.DeploymentStrategy {
 	return s
 }
 
-// serviceUpToDate is statefulSetUpToDate's counterpart for Service. See its
-// doc comment for the general comparison strategy.
+// serviceUpToDate is statefulSetUpToDate for a Service.
 //
-// It must be called after mergeImmutableServiceFields, which CreateOrUpdate
-// Service already runs before writing: that folds stored's ClusterIP(s),
-// IPFamilies, IPFamilyPolicy, HealthCheckNodePort and per-port NodePort into
-// desired whenever desired left them unset, the same way the
-// VolumeClaimTemplates copy in CreateOrUpdateStatefulSet does - so by the
-// time this runs, those fields already agree unless something meaningful
-// changed, and this function does not need to normalize them again.
-//
-// Normalized here: SessionAffinity (the API server defaults it to "None")
-// and InternalTrafficPolicy (defaulted to a non-nil "Cluster" pointer).
+// Call it after mergeImmutableServiceFields, which copies the fields that the
+// API server assigns from stored into desired. It clears SessionAffinity
+// (default "None") and InternalTrafficPolicy (default "Cluster").
 func serviceUpToDate(stored, desired *corev1.Service) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
@@ -147,10 +120,8 @@ func serviceUpToDate(stored, desired *corev1.Service) bool {
 	return equality.Semantic.DeepEqual(normalized, &desired.Spec)
 }
 
-// configMapUpToDate is statefulSetUpToDate's counterpart for ConfigMap. See
-// its doc comment for the general comparison strategy. ConfigMap has no
-// Spec and no server-side defaulting on its Data/BinaryData, so no
-// normalization is needed here at all.
+// configMapUpToDate is statefulSetUpToDate for a ConfigMap. The API server
+// sets no defaults in a ConfigMap, so it clears no fields.
 func configMapUpToDate(stored, desired *corev1.ConfigMap) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
@@ -165,11 +136,9 @@ func configMapUpToDate(stored, desired *corev1.ConfigMap) bool {
 		equality.Semantic.DeepEqual(stored.BinaryData, desired.BinaryData)
 }
 
-// podDisruptionBudgetUpToDate is statefulSetUpToDate's counterpart for
-// PodDisruptionBudget. See its doc comment for the general comparison
-// strategy. Unlike StatefulSet/Deployment/Service, no normalization is
-// needed here, because the API server defaults no policy/v1
-// PodDisruptionBudget spec field.
+// podDisruptionBudgetUpToDate is statefulSetUpToDate for a
+// PodDisruptionBudget. The API server sets no defaults in a policy/v1
+// PodDisruptionBudget spec, so it clears no fields.
 func podDisruptionBudgetUpToDate(stored, desired *policyv1.PodDisruptionBudget) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
@@ -180,21 +149,15 @@ func podDisruptionBudgetUpToDate(stored, desired *policyv1.PodDisruptionBudget) 
 	return equality.Semantic.DeepEqual(&stored.Spec, &desired.Spec)
 }
 
-// serviceAccountUpToDate is statefulSetUpToDate's counterpart for
-// ServiceAccount. See its doc comment for the general comparison strategy.
-// generateSentinelServiceAccount sets nothing beyond ObjectMeta, so this only
-// needs to compare Labels and OwnerReferences.
+// serviceAccountUpToDate is statefulSetUpToDate for a ServiceAccount.
+// generateSentinelServiceAccount sets only labels and owner references.
 func serviceAccountUpToDate(stored, desired *corev1.ServiceAccount) bool {
 	return equality.Semantic.DeepEqual(stored.Labels, desired.Labels) &&
 		equality.Semantic.DeepEqual(stored.OwnerReferences, desired.OwnerReferences)
 }
 
-// normalizePodSpecForComparison clears, in place, the PodSpec and container
-// fields that neither generateRedisStatefulSet nor generateSentinelDeployment
-// ever set and that the API server fills in with its own default:
-// PodSpec.RestartPolicy, PodSpec.SchedulerName, PodSpec.
-// DeprecatedServiceAccount (mirroring ServiceAccountName), and each
-// container's TerminationMessagePath/TerminationMessagePolicy.
+// normalizePodSpecForComparison clears the pod and container fields that the
+// API server sets and that generator.go does not set.
 func normalizePodSpecForComparison(spec *corev1.PodSpec) {
 	spec.RestartPolicy = ""
 	spec.SchedulerName = ""

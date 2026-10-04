@@ -19,7 +19,9 @@ import (
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
+	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
 	"github.com/saremox/redis-operator/service/k8s"
+	"github.com/saremox/redis-operator/service/redis"
 )
 
 const resizePod = "rfr-test-0"
@@ -82,8 +84,19 @@ type resizeCase struct {
 
 func runResize(t *testing.T, c resizeCase, setup func(ms *mK8SService.Services)) (ResizeResult, *mK8SService.Services, error) {
 	t.Helper()
-	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"}}
+	result, ms, _, err := runResizeWithRedis(t, resizeRF(), c, setup, nil)
+	return result, ms, err
+}
+
+// runResizeWithRedis is runResize with a Redis client mock, which fails a
+// call that redisSetup does not expect.
+func runResizeWithRedis(t *testing.T, rf *redisfailoverv1.RedisFailover, c resizeCase, setup func(ms *mK8SService.Services), redisSetup func(mr *mRedisService.Client)) (ResizeResult, *mK8SService.Services, *mRedisService.Client, error) {
+	t.Helper()
 	ms := &mK8SService.Services{}
+	mr := &mRedisService.Client{}
+	if redisSetup != nil {
+		redisSetup(mr)
+	}
 	ms.On("PodResizeSupport").Return(c.support, nil)
 	ms.On("GetPod", "testns", resizePod).Return(c.pod, nil)
 	ms.On("GetControllerRevision", "testns", "old").Return(revision("old", c.old), nil)
@@ -92,8 +105,8 @@ func runResize(t *testing.T, c resizeCase, setup func(ms *mK8SService.Services))
 	if setup != nil {
 		setup(ms)
 	}
-	result, err := NewRedisFailoverHealer(ms, nil, log.Dummy).ResizePodInPlace(rf, resizePod, "new")
-	return result, ms, err
+	result, err := NewRedisFailoverHealer(ms, mr, log.Dummy).ResizePodInPlace(rf, resizePod, "new")
+	return result, ms, mr, err
 }
 
 var fullSupport = k8s.PodResizeSupport{Supported: true, MemoryLimitDecrease: true}
@@ -250,7 +263,7 @@ func TestResizePodInPlaceIgnoresAStaleMemoryRefusal(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pod := stalePod(new, old, test.condition)
 			pod.Generation = test.generation
-			result, _, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), pod}, nil)
+			result, _, _, err := runResizeWithRedis(t, resizeRF(), resizeCase{fullSupport, podTemplate(old), podTemplate(new), pod}, nil, memoryInUse(512*mi))
 			assert.NoError(t, err)
 			assert.Equal(t, test.action, result.Action)
 		})
@@ -565,6 +578,106 @@ func TestResizePodInPlaceTimesOutFromTheLatestRequest(t *testing.T) {
 			result, _, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), pod}, nil)
 			assert.NoError(t, err)
 			assert.Equal(t, ResizeWaiting, result.Action)
+		})
+	}
+}
+
+func resizeRF() *redisfailoverv1.RedisFailover {
+	return &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"}}
+}
+
+func memoryInUse(rss int64) func(mr *mRedisService.Client) {
+	return func(mr *mRedisService.Client) {
+		mr.On("GetMemoryInfo", "", "0", "").Once().Return(&redis.MemoryInfo{UsedMemoryRSS: rss}, nil)
+	}
+}
+
+// Redis often keeps the memory that evictions free. A fork for BGSAVE or a
+// full sync then gets the pod OOM-killed below the lowered limit.
+func TestResizePodInPlaceChecksTheMemoryInUse(t *testing.T) {
+	old, new := resources("1", "2Gi"), resources("1", "1Gi")
+	lowering := resizeCase{fullSupport, podTemplate(old), podTemplate(new), stalePod(old, old)}
+	resize := func(ms *mK8SService.Services) {
+		ms.On("ResizePod", "testns", resizePod, mock.Anything).Once().Return(nil)
+	}
+	fail := errors.New("boom")
+
+	t.Run("too high", func(t *testing.T) {
+		result, ms, mr, err := runResizeWithRedis(t, resizeRF(), lowering, nil, memoryInUse(993*mi))
+		assert.NoError(t, err)
+		assert.Equal(t, ResizeRecreate, result.Action)
+		assert.Equal(t, "the Redis memory in use (993.0Mi) leaves less than 32Mi below the lowered limit 1024.0Mi", result.Message)
+		mr.AssertExpectations(t)
+		ms.AssertNotCalled(t, "ResizePod", mock.Anything, mock.Anything, mock.Anything)
+	})
+
+	t.Run("fits", func(t *testing.T) {
+		// 992Mi + 32Mi = 1Gi
+		result, ms, mr, err := runResizeWithRedis(t, resizeRF(), lowering, resize, memoryInUse(992*mi))
+		assert.NoError(t, err)
+		assert.Equal(t, ResizeWaiting, result.Action)
+		ms.AssertExpectations(t)
+		mr.AssertExpectations(t)
+	})
+
+	t.Run("with a password and a port", func(t *testing.T) {
+		rf := resizeRF()
+		rf.Spec.Auth.SecretPath = "auth"
+		rf.Spec.Redis.Port = 6380
+		pod := stalePod(old, old)
+		pod.Status.PodIP = "10.0.0.1"
+		result, _, mr, err := runResizeWithRedis(t, rf, resizeCase{fullSupport, podTemplate(old), podTemplate(new), pod}, func(ms *mK8SService.Services) {
+			ms.On("GetSecret", "testns", "auth").Return(&corev1.Secret{Data: map[string][]byte{"password": []byte("secret")}}, nil)
+		}, func(mr *mRedisService.Client) {
+			mr.On("GetMemoryInfo", "10.0.0.1", "6380", "secret").Once().Return(&redis.MemoryInfo{UsedMemoryRSS: 1000 * mi}, nil)
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, ResizeRecreate, result.Action)
+		mr.AssertExpectations(t)
+	})
+
+	t.Run("Redis not reachable", func(t *testing.T) {
+		_, ms, _, err := runResizeWithRedis(t, resizeRF(), lowering, nil, func(mr *mRedisService.Client) {
+			mr.On("GetMemoryInfo", "", "0", "").Once().Return(nil, fail)
+		})
+		assert.ErrorIs(t, err, fail)
+		ms.AssertNotCalled(t, "ResizePod", mock.Anything, mock.Anything, mock.Anything)
+	})
+
+	t.Run("password not readable", func(t *testing.T) {
+		rf := resizeRF()
+		rf.Spec.Auth.SecretPath = "auth"
+		_, _, mr, err := runResizeWithRedis(t, rf, lowering, func(ms *mK8SService.Services) {
+			ms.On("GetSecret", "testns", "auth").Return(nil, fail)
+		}, nil)
+		assert.ErrorIs(t, err, fail)
+		mr.AssertNotCalled(t, "GetMemoryInfo", mock.Anything, mock.Anything, mock.Anything)
+	})
+
+	withExporter := func(r corev1.ResourceRequirements, exporter string) corev1.PodTemplateSpec {
+		t := podTemplate(r)
+		t.Spec.Containers[1].Resources = corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse(exporter)}}
+		return t
+	}
+	unchecked := map[string]struct {
+		c      resizeCase
+		action ResizeAction
+	}{
+		"raised limit":             {resizeCase{fullSupport, podTemplate(new), podTemplate(old), stalePod(new, new)}, ResizeWaiting},
+		"cpu only":                 {resizeCase{fullSupport, podTemplate(new), podTemplate(resources("2", "1Gi")), stalePod(new, new)}, ResizeWaiting},
+		"lowered exporter limit":   {resizeCase{fullSupport, withExporter(new, "128Mi"), withExporter(new, "64Mi"), podFrom(withExporter(new, "128Mi"))}, ResizeWaiting},
+		"already at the new limit": {resizeCase{fullSupport, podTemplate(old), podTemplate(new), stalePod(new, new)}, ResizeDone},
+	}
+	for name, test := range unchecked {
+		t.Run(name, func(t *testing.T) {
+			result, ms, mr, err := runResizeWithRedis(t, resizeRF(), test.c, func(ms *mK8SService.Services) {
+				ms.On("ResizePod", "testns", resizePod, mock.Anything).Maybe().Return(nil)
+				ms.On("UpdatePodLabels", "testns", resizePod, mock.Anything).Maybe().Return(nil)
+			}, nil)
+			assert.NoError(t, err)
+			assert.Equal(t, test.action, result.Action)
+			ms.AssertExpectations(t)
+			mr.AssertNotCalled(t, "GetMemoryInfo", mock.Anything, mock.Anything, mock.Anything)
 		})
 	}
 }

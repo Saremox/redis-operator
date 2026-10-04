@@ -1,11 +1,7 @@
-// Package main provides the redis-instance binary, which serves as the instance
-// manager for Redis pods managed by redis-operator.
-//
-// This follows the CloudNativePG (CNPG) model where the instance manager runs as
-// PID 1 and manages the database process. This architecture has proven reliable
-// at scale in production Kubernetes environments.
-//
-// See: https://cloudnative-pg.io/documentation/current/instance_manager/
+// Package main provides the redis-instance binary, an instance manager that
+// runs as PID 1 and starts redis-server as a child process. The operator image
+// contains the binary, but the operator does not use it: the Redis pods run
+// redis-server from the Redis image.
 package main
 
 import (
@@ -23,19 +19,13 @@ var rootCmd = &cobra.Command{
 	Use:     "redis-instance",
 	Version: version.Version,
 	Short:   "Redis instance manager for redis-operator",
-	Long: `Redis instance manager handles lifecycle operations for Redis instances
-managed by redis-operator.
+	Long: `The Redis instance manager runs as PID 1 in a container and starts
+redis-server as a child process. It removes old RDB tempfiles before Redis
+starts, serves health endpoints, forwards the stop signals and reaps zombie
+processes.
 
-This tool follows the CloudNativePG (CNPG) model where the instance manager
-runs as PID 1 in the container and manages the Redis process as a child.
-This architecture provides:
-
-  - Full lifecycle control over the Redis process
-  - Clean signal handling and graceful shutdown
-  - Startup tasks (RDB cleanup) before Redis starts
-  - Foundation for health checks, metrics, and monitoring
-
-See: https://cloudnative-pg.io/documentation/current/instance_manager/`,
+The operator does not use this binary. The Redis pods that the operator
+creates run redis-server from the Redis image.`,
 	SilenceUsage: true,
 }
 

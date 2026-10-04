@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/tools/cache"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -27,9 +28,8 @@ const (
 	kubeProxySyncGrace     = 2 * time.Second
 )
 
-// New will create an operator that is responsible for managing all the required stuff
-// to create redis failovers.
-func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, lockNamespace string, redisClient redis.Client, metricsRecorder metrics.Recorder, logger log.Logger) (Controller, error) {
+// New returns the controller that reconciles the RedisFailovers.
+func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, metaClient metadata.Interface, lockNamespace string, redisClient redis.Client, metricsRecorder metrics.Recorder, logger log.Logger) (Controller, error) {
 	// Create internal services.
 	rfService := rfservice.NewRedisFailoverKubeClient(k8sService, logger, metricsRecorder)
 	var opts []rfservice.Option
@@ -50,7 +50,11 @@ func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, lo
 		return nil, err
 	}
 
-	c, err := newRFController(rfHandler, rfRetriever, newPodListWatch(k8sClient), time.Duration(cfg.SyncInterval)*time.Second, cfg.Concurrency, leRunner, metricsRecorder, logger)
+	var secretLW cache.ListerWatcher
+	if cfg.WatchAuthSecrets {
+		secretLW = newSecretListWatch(metaClient)
+	}
+	c, err := newRFController(rfHandler, rfRetriever, newPodListWatch(k8sClient), secretLW, time.Duration(cfg.SyncInterval)*time.Second, cfg.Concurrency, leRunner, metricsRecorder, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -58,12 +62,15 @@ func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, lo
 	return c, nil
 }
 
+// NewRedisFailoverRetriever lists and watches the RedisFailovers in all
+// namespaces, and drops the ones whose namespace does not match
+// SupportedNamespacesRegex. The match is not anchored.
 func NewRedisFailoverRetriever(cfg Config, cli k8s.Services) *cache.ListWatch {
 	isNamespaceSupported := func(rf redisfailoverv1.RedisFailover) bool {
+		// The flag parser rejects a regex that does not compile.
 		match, _ := regexp.Match(cfg.SupportedNamespacesRegex, []byte(rf.Namespace))
 		return match
 	}
-	// check in the startup whether the regex compiles
 
 	return &cache.ListWatch{
 		ListWithContextFunc: func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error) {

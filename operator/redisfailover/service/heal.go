@@ -14,10 +14,9 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-// ErrPartialReconciliation is returned by PromoteBestReplica when the new
-// master was promoted successfully but one or more replicas could not be
-// repointed or relabelled.  The caller should treat this as an incomplete
-// failover, not a total failure.
+// ErrPartialReconciliation is the error of PromoteBestReplica when the new
+// master is promoted, but the change of a replica or of its label failed.
+// The failover is then incomplete, but the new master works.
 var ErrPartialReconciliation = errors.New("promotion succeeded but replica reconciliation incomplete")
 
 // RedisFailoverHeal defines the interface able to fix the problems on the redis failovers
@@ -39,7 +38,7 @@ type RedisFailoverHeal interface {
 	ApplySentinelPassword(rFailover *redisfailoverv1.RedisFailover, password string) (bool, error)
 }
 
-// RedisFailoverHealer is our implementation of RedisFailoverCheck interface
+// RedisFailoverHealer implements RedisFailoverHeal.
 type RedisFailoverHealer struct {
 	k8sService  k8s.Services
 	redisClient redis.Client
@@ -47,7 +46,7 @@ type RedisFailoverHealer struct {
 	opts        options
 }
 
-// NewRedisFailoverHealer creates an object of the RedisFailoverChecker struct
+// NewRedisFailoverHealer returns a RedisFailoverHealer.
 func NewRedisFailoverHealer(k8sService k8s.Services, redisClient redis.Client, logger log.Logger, opts ...Option) *RedisFailoverHealer {
 	logger = logger.With("service", "redis.healer")
 	return &RedisFailoverHealer{
@@ -98,7 +97,9 @@ func (r *RedisFailoverHealer) MakeMaster(ip string, rf *redisfailoverv1.RedisFai
 	return nil
 }
 
-// SetOldestAsMaster makes the first pod from masterCandidates the master of all redis pods.
+// SetOldestAsMaster makes the first pod from masterCandidates the master of
+// all the Redis pods. While a Ready master pod is in deletion, it returns nil
+// and elects no master.
 func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailover) error {
 	ssp, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
@@ -177,15 +178,10 @@ func masterCandidates(items []v1.Pod) []v1.Pod {
 	return pods
 }
 
-// podIPBelongsTo reports whether ip is currently the PodIP of one of the
-// given pods. GetStatefulSetPods scopes its List() call by namespace and by
-// the owning StatefulSet's own label selector, so a freshly-fetched pods
-// list can only ever contain this RedisFailover's own pods: Kubernetes never
-// hands the same live IP to two Running pods at once. Checking membership
-// against a list fetched right before a mutating call therefore closes the
-// window where a master/replica IP resolved earlier in the reconcile could
-// since have been reassigned (e.g. after node churn) to an unrelated pod,
-// possibly belonging to a different RedisFailover in another namespace. See
+// podIPBelongsTo reports whether ip is the PodIP of one of the pods. The
+// caller reads the pods of the RedisFailover just before a change. An IP read
+// earlier in the reconcile can belong to a different pod at that time, also
+// to a pod of a different RedisFailover. See
 // https://github.com/spotahome/redis-operator/issues/698.
 func podIPBelongsTo(pods *v1.PodList, ip string) bool {
 	for _, pod := range pods.Items {
@@ -196,7 +192,7 @@ func podIPBelongsTo(pods *v1.PodList, ip string) bool {
 	return false
 }
 
-// SetMasterOnAll puts all redis nodes as a slave of a given master
+// SetMasterOnAll makes each Redis pod a replica of masterIP.
 func (r *RedisFailoverHealer) SetMasterOnAll(masterIP string, rf *redisfailoverv1.RedisFailover) error {
 	ssp, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
@@ -216,7 +212,8 @@ func (r *RedisFailoverHealer) SetMasterOnAll(masterIP string, rf *redisfailoverv
 
 	port := getRedisPort(rf.Spec.Redis.Port)
 	for _, pod := range ssp.Items {
-		//During this configuration process if there is a new master selected , bailout
+		// Stop when masterIP is not the master any more, for example after a
+		// Sentinel failover.
 		isMaster, err := r.redisClient.IsMaster(masterIP, port, password)
 		if err != nil || !isMaster {
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Errorf("check master failed maybe this node is not ready(ip changed), or sentinel made a switch: %s", masterIP)
@@ -236,9 +233,9 @@ func (r *RedisFailoverHealer) SetMasterOnAll(masterIP string, rf *redisfailoverv
 				continue
 			}
 			if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, masterIP, port, password); err != nil {
-				// The pod is unreachable - typically the old master on a downed
-				// node. Skip it and keep repointing the reachable slaves instead
-				// of aborting; it will re-sync via sentinel once its node is back.
+				// The pod does not answer, usually the old master on a lost node.
+				// Skip it, so that the other replicas still change. When the pod
+				// answers again, a later reconcile makes it a replica.
 				r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Errorf("Make slave failed, slave ip: %s, master ip: %s, error: %v", pod.Status.PodIP, masterIP, err)
 				continue
 			}
@@ -268,8 +265,8 @@ func (r *RedisFailoverHealer) isUnlabelledMaster(pod v1.Pod, port, password stri
 	return err == nil && isMaster, err
 }
 
-// SetExternalMasterOnAll puts all redis nodes as a slave of a given master outside of
-// the current RedisFailover instance
+// SetExternalMasterOnAll makes each Redis pod a replica of a master outside
+// the RedisFailover, the bootstrap node.
 func (r *RedisFailoverHealer) SetExternalMasterOnAll(masterIP, masterPort string, rf *redisfailoverv1.RedisFailover) error {
 	ssp, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
@@ -320,7 +317,9 @@ func (r *RedisFailoverHealer) NewSentinelMonitorWithPort(ip string, monitor stri
 	return r.redisClient.MonitorRedisWithPort(ip, monitor, monitorPort, quorum, password)
 }
 
-// RestoreSentinel clear the number of sentinels on memory
+// RestoreSentinel sends SENTINEL RESET *. The Sentinel then forgets the other
+// Sentinels and the replicas until it finds them again. The checks use it when
+// a Sentinel knows a wrong number of Sentinels or of replicas.
 func (r *RedisFailoverHealer) RestoreSentinel(ip string) error {
 	r.logger.Debugf("Restoring sentinel %s", ip)
 	return r.redisClient.ResetSentinel(ip)
@@ -345,14 +344,16 @@ func (r *RedisFailoverHealer) SetRedisCustomConfig(ip string, rf *redisfailoverv
 	return r.redisClient.SetCustomRedisConfig(ip, port, rf.Spec.Redis.CustomConfig, password)
 }
 
-// DeletePod delete a failing pod so kubernetes relaunch it again
+// DeletePod deletes a stale pod in the rollout. The StatefulSet creates it
+// again on the update revision.
 func (r *RedisFailoverHealer) DeletePod(podName string, rFailover *redisfailoverv1.RedisFailover) error {
 	r.logger.WithField("redisfailover", rFailover.Name).WithField("namespace", rFailover.Namespace).Infof("Deleting pods %s...", podName)
 	return r.k8sService.DeletePod(rFailover.Namespace, podName)
 }
 
-// PromoteBestReplica promotes a replica to master and reconfigures all other replicas.
-// This is used for operator-managed failover when Sentinel is disabled.
+// PromoteBestReplica makes newMasterIP the master and the other running pods
+// its replicas. The operator-managed failover uses it, and electMasterForSentinel
+// uses it when no Sentinel can fail over.
 func (r *RedisFailoverHealer) PromoteBestReplica(newMasterIP string, rf *redisfailoverv1.RedisFailover) error {
 	password, err := k8s.GetRedisPassword(r.k8sService, rf)
 	if err != nil {
@@ -361,11 +362,8 @@ func (r *RedisFailoverHealer) PromoteBestReplica(newMasterIP string, rf *redisfa
 
 	port := getRedisPort(rf.Spec.Redis.Port)
 
-	// Fetch this RedisFailover's own pods fresh, immediately before acting on
-	// newMasterIP, and verify it's still one of them. This closes the race
-	// where newMasterIP was resolved earlier in the reconcile and has since
-	// been reassigned to an unrelated pod, possibly in a different
-	// namespace/RedisFailover. See https://github.com/spotahome/redis-operator/issues/698.
+	// newMasterIP can belong to a different pod at this time, so read the
+	// pods again just before the promotion. podIPBelongsTo gives the reason.
 	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
 		return err

@@ -10,8 +10,7 @@ import (
 	"k8s.io/client-go/util/homedir"
 )
 
-// CMDFlags are the flags used by the cmd
-// TODO: improve flags.
+// CMDFlags holds the command-line flags of the operator.
 type CMDFlags struct {
 	KubeConfig                  string
 	SupportedNamespacesRegex    string
@@ -24,6 +23,7 @@ type CMDFlags struct {
 	SyncInterval                int
 	LogLevel                    string
 	DisconnectClientsOnDemotion bool
+	WatchAuthSecrets            bool
 	EnablePprof                 bool
 }
 
@@ -32,19 +32,19 @@ func (c *CMDFlags) Init() {
 	kubehome := filepath.Join(homedir.HomeDir(), ".kube", "config")
 	// register flags
 	flag.StringVar(&c.KubeConfig, "kubeconfig", kubehome, "kubernetes configuration path, only used when development mode enabled")
-	flag.StringVar(&c.SupportedNamespacesRegex, "supported-namespaces-regex", ".*", "To limit the namespaces this operator looks into")
+	flag.StringVar(&c.SupportedNamespacesRegex, "supported-namespaces-regex", ".*", "Reconcile only the RedisFailovers in a namespace that matches this regex. The match is not anchored, so use ^ and $ for an exact name. The operator still watches all namespaces")
 	flag.BoolVar(&c.Development, "development", false, "development flag will allow to run the operator outside a kubernetes cluster")
 	flag.StringVar(&c.ListenAddr, "listen-address", ":9710", "Address to listen on for metrics.")
 	flag.StringVar(&c.MetricsPath, "metrics-path", "/metrics", "Path to serve the metrics.")
 	flag.IntVar(&c.K8sQueriesPerSecond, "k8s-cli-qps-limit", 100, "Number of allowed queries per second by kubernetes client without client side throttling")
 	flag.IntVar(&c.K8sQueriesBurstable, "k8s-cli-burstable-limit", 100, "Number of allowed burst requests by kubernetes client without client side throttling")
-	// 3 is also the controller's fallback for a concurrency of 0 or less.
-	flag.IntVar(&c.Concurrency, "concurrency", 3, "Number of conccurent workers meant to process events")
-	flag.IntVar(&c.SyncInterval, "sync-interval", 30, "Number of seconds between checks")
+	// The controller also uses 3 for a concurrency of 0 or less.
+	flag.IntVar(&c.Concurrency, "concurrency", 3, "Number of concurrent workers that reconcile the RedisFailovers")
+	flag.IntVar(&c.SyncInterval, "sync-interval", 30, "Seconds between two periodic resyncs of all RedisFailovers. A change of a RedisFailover or its pods starts a reconcile at once. 0 or less means 180. Above 300, the metrics cleanup can delete series between two resyncs")
 	flag.StringVar(&c.LogLevel, "log-level", "info", "set log level")
 	flag.BoolVar(&c.DisconnectClientsOnDemotion, "disconnect-clients-on-demotion", true, "Close a redis pod's normal and pub/sub client connections when it stops being the master, so clients reconnect to the new master instead of staying on a replica")
+	flag.BoolVar(&c.WatchAuthSecrets, "watch-auth-secrets", false, "Apply an auth Secret (spec.auth.secretPath) change immediately, not at the next sync. This needs list and watch on secrets in all namespaces, which can read every Secret")
 	flag.BoolVar(&c.EnablePprof, "enable-pprof", false, "Serve the Go profiler on /debug/pprof/ at the listen address. A heap profile can contain the Redis passwords.")
-	// Parse flags
 	flag.Parse()
 
 	if _, err := regexp.Compile(c.SupportedNamespacesRegex); err != nil {
@@ -61,5 +61,6 @@ func (c *CMDFlags) ToRedisOperatorConfig() redisfailover.Config {
 		SyncInterval:             c.SyncInterval,
 		SupportedNamespacesRegex: c.SupportedNamespacesRegex,
 		KeepClientsOnDemotion:    !c.DisconnectClientsOnDemotion,
+		WatchAuthSecrets:         c.WatchAuthSecrets,
 	}
 }

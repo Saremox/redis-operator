@@ -7,7 +7,9 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// Ensure is called to ensure all of the resources associated with a RedisFailover are created
+// Ensure creates or updates the resources of a RedisFailover. It also deletes
+// the resources of a disabled part: the exporter Service and the Sentinel
+// resources.
 func (r *RedisFailoverHandler) Ensure(rf *redisfailoverv1.RedisFailover, labels map[string]string, or []metav1.OwnerReference, metricsClient metrics.Recorder) error {
 	if rf.Spec.Redis.Exporter.Enabled {
 		if err := r.rfService.EnsureRedisService(rf, labels, or); err != nil {
@@ -28,7 +30,8 @@ func (r *RedisFailoverHandler) Ensure(rf *redisfailoverv1.RedisFailover, labels 
 			return err
 		}
 	} else {
-		// Clean up Sentinel resources when Sentinel is disabled
+		// SentinelsAllowed is also false during a bootstrap without
+		// bootstrapNode.allowSentinels.
 		if err := r.rfService.EnsureNotPresentSentinelResources(rf); err != nil {
 			return err
 		}

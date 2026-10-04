@@ -27,15 +27,14 @@ var (
 func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cleanup",
-		Short: "Clean up stale RDB tempfiles",
-		Long: `Clean up stale RDB tempfiles before Redis starts.
+		Short: "Remove old RDB tempfiles",
+		Long: `Remove old RDB tempfiles before Redis starts.
 
-During BGSAVE operations, Redis creates temporary files named temp-<pid>.rdb.
-If Redis crashes during a BGSAVE, these files are left behind and can accumulate,
-eventually filling the disk and causing further failures.
+A BGSAVE writes temp-<pid>.rdb. When Redis stops during a BGSAVE, the file
+stays. The files collect until the disk is full, and then each BGSAVE fails.
 
-This command removes all .rdb files except the main database file (default: dump.rdb)
-from the data directory.`,
+This command removes all the .rdb files in the data directory, except the
+--db-filename file (default dump.rdb).`,
 		RunE: runCleanup,
 	}
 
@@ -47,11 +46,9 @@ from the data directory.`,
 }
 
 func runCleanup(cmd *cobra.Command, args []string) error {
-	// Validate data directory exists
 	info, err := os.Stat(dataDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Data directory doesn't exist yet, nothing to clean
 			fmt.Printf("Data directory %s does not exist, skipping cleanup\n", dataDir)
 			return nil
 		}
@@ -61,7 +58,6 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%s is not a directory", dataDir)
 	}
 
-	// Find and remove stale RDB files
 	entries, err := readDir(dataDir)
 	if err != nil {
 		return fmt.Errorf("failed to read data directory: %w", err)
@@ -77,19 +73,16 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 
 		name := entry.Name()
 
-		// Skip non-RDB files
 		if !strings.HasSuffix(name, ".rdb") {
 			continue
 		}
 
-		// Preserve the main database file
 		if name == dbFilename {
 			continue
 		}
 
 		filePath := filepath.Join(dataDir, name)
 
-		// Get file size for reporting
 		fileInfo, err := entry.Info()
 		if err != nil {
 			fmt.Printf("Warning: failed to get info for %s: %v\n", name, err)

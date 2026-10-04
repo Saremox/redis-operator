@@ -2658,3 +2658,139 @@ func TestGetSentinelsIPsFiltersNonRunningAndTerminating(t *testing.T) {
 	assert.NoError(err)
 	assert.Equal([]string{"1.1.1.1"}, ips)
 }
+
+// TestCheckSentinelsCannotFailover covers the state of the soak test: every
+// Sentinel monitors the IP of a pod that is gone and knows no replica.
+func TestCheckSentinelsCannotFailover(t *testing.T) {
+	const gone = "10.0.0.9"
+	podWithIP := func(name, ip string, phase corev1.PodPhase) corev1.Pod {
+		return corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Status:     corev1.PodStatus{Phase: phase, PodIP: ip},
+		}
+	}
+	redisPods := &corev1.PodList{Items: []corev1.Pod{
+		podWithIP("rfr-test-0", "10.0.0.1", corev1.PodRunning),
+		podWithIP("rfr-test-1", "10.0.0.2", corev1.PodRunning),
+		// A pod not running yet keeps its IP when it starts, so it counts.
+		podWithIP("rfr-test-2", "10.0.0.3", corev1.PodPending),
+		// A pod without an IP matches no Sentinel address.
+		podWithIP("rfr-test-3", "", corev1.PodPending),
+	}}
+	sentinelPods := &corev1.PodList{Items: []corev1.Pod{
+		podWithIP("rfs-test-a", "10.1.0.1", corev1.PodRunning),
+		podWithIP("rfs-test-b", "10.1.0.2", corev1.PodRunning),
+		podWithIP("rfs-test-c", "10.1.0.3", corev1.PodRunning),
+	}}
+	sentinels := []string{"10.1.0.1", "10.1.0.2", "10.1.0.3"}
+
+	type view struct {
+		master     string
+		masterErr  error
+		up         bool
+		downErr    error
+		replicas   []string
+		replicaErr error
+	}
+	stuck := view{master: gone}
+	tests := []struct {
+		name         string
+		redisErr     error
+		sentinelErr  error
+		sentinelPods []corev1.Pod
+		views        []view
+		want         bool
+		wantErr      bool
+	}{
+		{
+			name:  "no Sentinel knows a replica and the master is gone",
+			views: []view{stuck, stuck, stuck},
+			want:  true,
+		},
+		{
+			name:  "the Sentinels know only replicas that are gone",
+			views: []view{{master: gone, replicas: []string{"10.0.0.8"}}, stuck, stuck},
+			want:  true,
+		},
+		{
+			name:  "a Sentinel does not flag its master as down, so the master can still answer",
+			views: []view{stuck, {master: gone, up: true}, stuck},
+		},
+		{
+			name:  "a Sentinel does not give the state of its master",
+			views: []view{stuck, stuck, {master: gone, downErr: errors.New("timeout")}},
+		},
+		{
+			name:  "a Sentinel monitors the address 127.0.0.1 of its configuration",
+			// Nothing listens on 127.0.0.1 in a Sentinel pod, so its state
+			// is not asked.
+			views: []view{{master: "127.0.0.1", up: true}, stuck, stuck},
+			want:  true,
+		},
+		{
+			name:  "a Sentinel knows a replica that runs, so Sentinel can fail over",
+			views: []view{stuck, {master: gone, replicas: []string{"10.0.0.8", "10.0.0.2"}}, stuck},
+		},
+		{
+			name:  "a Sentinel monitors a pod, so the operator must not elect a second master",
+			views: []view{stuck, stuck, {master: "10.0.0.1"}},
+		},
+		{
+			name:  "a Sentinel monitors a pod that is not running",
+			views: []view{{master: "10.0.0.3"}, stuck, stuck},
+		},
+		{
+			name:  "a Sentinel does not give its master, so it can know a replica",
+			views: []view{stuck, {masterErr: errors.New("timeout")}, stuck},
+		},
+		{
+			name:  "a Sentinel does not give its replicas",
+			views: []view{stuck, stuck, {master: gone, replicaErr: errors.New("timeout")}},
+		},
+		{
+			name:         "a quorum of the Sentinels run, but not all of the spec",
+			sentinelPods: []corev1.Pod{podWithIP("rfs-test-a", "10.1.0.1", corev1.PodRunning), podWithIP("rfs-test-b", "10.1.0.2", corev1.PodRunning)},
+			views:        []view{stuck, stuck},
+		},
+		{
+			name:     "listing the redis pods fails",
+			redisErr: errors.New("list err"),
+			wantErr:  true,
+		},
+		{
+			name:        "listing the Sentinel pods fails",
+			sentinelErr: errors.New("list err"),
+			wantErr:     true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(redisPods, test.redisErr)
+			if test.redisErr == nil {
+				pods := sentinelPods
+				if test.sentinelPods != nil {
+					pods = &corev1.PodList{Items: test.sentinelPods}
+				}
+				ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(pods, test.sentinelErr)
+			}
+			mr := &mRedisService.Client{}
+			for i, v := range test.views {
+				mr.On("GetSentinelMonitor", sentinels[i]).Maybe().Return(v.master, "6379", v.masterErr)
+				mr.On("SentinelMasterDown", sentinels[i]).Maybe().Return(!v.up, v.downErr)
+				mr.On("GetSentinelReplicas", sentinels[i]).Maybe().Return(v.replicas, v.replicaErr)
+			}
+
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+			got, err := checker.CheckSentinelsCannotFailover(rf)
+			if test.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, test.want, got)
+			ms.AssertExpectations(t)
+		})
+	}
+}

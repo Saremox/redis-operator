@@ -94,17 +94,14 @@ func (s *StatefulSetService) UpdateStatefulSet(namespace string, statefulSet *ap
 func (s *StatefulSetService) CreateOrUpdateStatefulSet(namespace string, statefulSet *appsv1.StatefulSet) error {
 	storedStatefulSet, err := s.GetStatefulSet(namespace, statefulSet.Name)
 	if err != nil {
-		// If no resource we need to create.
 		if errors.IsNotFound(err) {
 			return s.CreateStatefulSet(namespace, statefulSet)
 		}
 		return err
 	}
 
-	// Already exists, need to Update.
-	// Set the correct resource version to ensure we are on the latest version. This way the only valid
-	// namespace is our spec(https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#concurrency-control-and-consistency),
-	// we will replace the current namespace state.
+	// With the stored resource version, the update fails when the object
+	// changed after the read.
 	statefulSet.ResourceVersion = storedStatefulSet.ResourceVersion
 	if len(statefulSet.Spec.VolumeClaimTemplates) != 0 {
 		if err := s.updateStatefulSetPVCs(namespace, storedStatefulSet, statefulSet); err != nil {
@@ -124,10 +121,11 @@ func (s *StatefulSetService) CreateOrUpdateStatefulSet(namespace string, statefu
 	return s.UpdateStatefulSet(namespace, statefulSet)
 }
 
-// updateStatefulSetPVCs applies the desired volume claim template to the PVCs on
-// each call, because the StatefulSet creates new PVCs from its stored template.
-// It removes the owners that the template does not reference, so that the
-// garbage collector does not delete the PVCs with those owners.
+// updateStatefulSetPVCs changes the existing PVCs, because the volume claim
+// template of a StatefulSet cannot change. It does two changes only. It
+// removes the owners that the template does not reference, so that the
+// garbage collector does not delete the PVCs. It increases a storage request
+// that is smaller than the template request.
 func (s *StatefulSetService) updateStatefulSetPVCs(namespace string, storedStatefulSet, statefulSet *appsv1.StatefulSet) error {
 	template := statefulSet.Spec.VolumeClaimTemplates[0]
 	desiredStorage := template.Spec.Resources.Requests.Storage()

@@ -74,7 +74,7 @@ func (m *Main) Run() error {
 	}()
 
 	// Kubernetes clients.
-	k8sClient, customClient, err := utils.CreateKubernetesClients(m.flags)
+	k8sClient, customClient, metadataClient, err := utils.CreateKubernetesClients(m.flags)
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func (m *Main) Run() error {
 	lockNamespace := getNamespace()
 
 	// Create operator and run.
-	redisfailoverOperator, err := redisfailover.New(m.flags.ToRedisOperatorConfig(), k8sservice, k8sClient, lockNamespace, redisClient, metricsRecorder, m.logger)
+	redisfailoverOperator, err := redisfailover.New(m.flags.ToRedisOperatorConfig(), k8sservice, k8sClient, metadataClient, lockNamespace, redisClient, metricsRecorder, m.logger)
 	if err != nil {
 		return err
 	}
@@ -141,17 +141,14 @@ func (m *Main) createSignalCapturer() <-chan os.Signal {
 	return sigC
 }
 
+// getNamespace returns the namespace of the leader-election lease: the
+// POD_NAMESPACE env var, else the namespace of the service account token,
+// else "default".
 func getNamespace() string {
-	// This way assumes you've set the POD_NAMESPACE environment
-	// variable using the downward API.  This check has to be done first
-	// for backwards compatibility with the way InClusterConfig was
-	// originally set up
 	if ns, ok := os.LookupEnv("POD_NAMESPACE"); ok {
 		return ns
 	}
 
-	// Fall back to the namespace associated with the service account
-	// token, if available
 	if data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
 		if ns := strings.TrimSpace(string(data)); len(ns) > 0 {
 			return ns

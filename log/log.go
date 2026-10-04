@@ -162,112 +162,94 @@ var baseLogger = &logger{
 	},
 }
 
-// Base returns the base logger
+// Base returns the logger of the package functions.
 func Base() Logger {
 	return baseLogger
 }
 
-// Debug logs debug message
+// Debug and the other package log functions use the base logger and add the
+// call site as the src field.
 func Debug(args ...interface{}) {
 	baseLogger.sourced().Debug(args...)
 }
 
-// Debugln logs debug message
 func Debugln(args ...interface{}) {
 	baseLogger.sourced().Debugln(args...)
 }
 
-// Debugf logs debug message
 func Debugf(format string, args ...interface{}) {
 	baseLogger.sourced().Debugf(format, args...)
 }
 
-// Info logs info message
 func Info(args ...interface{}) {
 	baseLogger.sourced().Info(args...)
 }
 
-// Infoln logs info message
 func Infoln(args ...interface{}) {
 	baseLogger.sourced().Infoln(args...)
 }
 
-// Infof logs info message
 func Infof(format string, args ...interface{}) {
 	baseLogger.sourced().Infof(format, args...)
 }
 
-// Warn logs warn message
 func Warn(args ...interface{}) {
 	baseLogger.sourced().Warn(args...)
 }
 
-// Warnln logs warn message
 func Warnln(args ...interface{}) {
 	baseLogger.sourced().Warnln(args...)
 }
 
-// Warnf logs warn message
 func Warnf(format string, args ...interface{}) {
 	baseLogger.sourced().Warnf(format, args...)
 }
 
-// Error logs error message
 func Error(args ...interface{}) {
 	baseLogger.sourced().Error(args...)
 }
 
-// Errorln logs error message
 func Errorln(args ...interface{}) {
 	baseLogger.sourced().Errorln(args...)
 }
 
-// Errorf logs error message
 func Errorf(format string, args ...interface{}) {
 	baseLogger.sourced().Errorf(format, args...)
 }
 
-// Fatal logs fatal message
 func Fatal(args ...interface{}) {
 	baseLogger.sourced().Fatal(args...)
 }
 
-// Fatalln logs fatal message
 func Fatalln(args ...interface{}) {
 	baseLogger.sourced().Fatalln(args...)
 }
 
-// Fatalf logs fatal message
 func Fatalf(format string, args ...interface{}) {
 	baseLogger.sourced().Fatalf(format, args...)
 }
 
-// With adds a key:value to the logger
 func With(key string, value interface{}) Logger {
 	return baseLogger.With(key, value)
 }
 
-// WithField adds a key:value to the logger
 func WithField(key string, value interface{}) Logger {
 	return baseLogger.WithField(key, value)
 }
 
-// Set will set the logger level
+// Set sets the level of the base logger.
 func Set(level Level) error {
 	return baseLogger.Set(level)
 }
 
-// Panic logs panic message
 func Panic(args ...interface{}) {
 	baseLogger.sourced().Panic(args...)
 }
 
-// Panicln logs panicln message
 func Panicln(args ...interface{}) {
 	baseLogger.sourced().Panicln(args...)
 }
 
-// Panicf logs panicln message
 func Panicf(format string, args ...interface{}) {
 	baseLogger.sourced().Panicf(format, args...)
 }

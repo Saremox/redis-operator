@@ -75,6 +75,15 @@ done
 helm lint ${chart}
 helm template ${chart} --kube-version ${kube_version}
 
+echo ">> Testing watchAuthSecrets=true"
+out=$(helm template ${chart} --kube-version ${kube_version} --set watchAuthSecrets=true)
+fail=0
+grep -qx -- '        - --watch-auth-secrets' <<<"${out}" \
+  || { echo "FAIL: the Deployment does not pass --watch-auth-secrets" >&2; fail=1; }
+grep -A6 -- '      - secrets$' <<<"${out}" | grep -q '"watch"' \
+  || { echo "FAIL: the ClusterRole does not grant watch on secrets" >&2; fail=1; }
+[ ${fail} -eq 0 ]
+
 # The Deployment, the ServiceAccount and the binding subject must use the same
 # name. Otherwise the pod refers to a ServiceAccount that does not exist.
 echo ">> Testing serviceAccount.name=custom with serviceAccount.create=true"
@@ -210,7 +219,7 @@ steps=$(awk '/^      - /{ if (pipe && !bash) print name; name = $0; pipe = bash 
     END { if (pipe && !bash) print name }' .github/workflows/release.yml)
 [ -z "${steps}" ] || { echo "FAIL: release.yml steps pipe into release.sh without 'shell: bash':" >&2; echo "${steps}" >&2; fail=1; }
 
-# The Service and the PodMonitor of the example scrape the metrics port.
+# The Service annotation of the example gives the metrics port.
 echo ">> Testing example/operator/all-redis-operator-resources.yaml"
 example=$(cat example/operator/all-redis-operator-resources.yaml)
 port=$(manifest "${example}" Deployment redisoperator | grep -A1 -- '- name: metrics$' | sed -n 's/^ *containerPort: //p')

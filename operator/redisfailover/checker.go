@@ -21,7 +21,9 @@ import (
 	"github.com/saremox/redis-operator/service/redis"
 )
 
-// UpdateRedisesPods if the running version of pods is equal to the statefulset one
+// UpdateRedisesPods replaces one stale Redis pod in each call: the replicas
+// first, and the master last. A pod is stale when its revision is not the
+// update revision of the StatefulSet.
 func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailover) (err error) {
 	var wait *rolloutWait
 	defer func() {
@@ -104,7 +106,6 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 		}
 	}
 
-	// Update stale pods with a slave role
 	for _, pod := range redisesPods {
 		revision, err := r.rfChecker.GetRedisRevisionHash(pod, rf)
 		if err != nil {
@@ -125,7 +126,6 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 					return err
 				}
 			}
-			//Delete pod and wait next round to check if the new one is synced
 			err = r.rfHealer.DeletePod(pod, rf)
 			if err != nil {
 				return err
@@ -136,7 +136,6 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 	}
 
 	if !rf.Bootstrapping() {
-		// Update stale pod with role master
 		master, err := r.rfChecker.GetRedisesMasterPod(rf)
 		if err != nil {
 			return err
@@ -155,23 +154,17 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 				return err
 			}
 
-			// Deleting the master makes sentinel run a failover. Only do that once
-			// every sentinel has a quorum (majority) of the freshly (re)started
-			// slaves in memory - the redis-side readiness checked above is not
-			// enough, because sentinel fails over from its own view and its slave
-			// discovery lags. Replacing the master before then leaves the failover
-			// with no promotable replica and it dies with NOGOODSLAVE until manual
-			// repair. A quorum, rather than the full expected count, is required
-			// so one permanently unavailable replica (e.g. a PVC stuck in a dead
-			// zone) cannot block master replacement forever when a safe failover
-			// is available via the reachable majority.
+			// The deletion of the master makes Sentinel fail over. Sentinel uses
+			// its own list of replicas, and that list is slower than the Redis
+			// readiness checked above. Thus each Sentinel must know a quorum
+			// (majority) of the replicas first. Without a known replica, the
+			// failover fails with NOGOODSLAVE, and the outage is longer until the
+			// operator promotes a replica. One replica that stays unavailable
+			// must not block the master replacement, so a quorum is sufficient.
 			//
-			// This gate only applies when Sentinel is actually managing
-			// failover. In operator-managed mode (sentinel.enabled: false), no
-			// Sentinel Deployment exists, so GetSentinelsIPs would fail with a
-			// 404. After this delete, the next reconcile finds no master, and
-			// the "no master" branch of checkAndHealOperatorManagedMode elects
-			// a replica.
+			// In operator-managed mode, no Sentinel exists. Case 0 of
+			// checkAndHealOperatorManagedMode waits until the master pod stops,
+			// and then elects a replica.
 			if !rf.OperatorManagedFailover() {
 				sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
 				if err != nil {
@@ -333,9 +326,9 @@ func (r *RedisFailoverHandler) reportRolloutWait(rf *redisfailoverv1.RedisFailov
 	rf.Status.Message = msg
 }
 
-// masterPodStopping reports whether the master's pod is being deleted but
-// still ready, i.e. still taking writes. A pod on a lost node is not ready,
-// so it doesn't block anything.
+// masterPodStopping reports whether the master pod is in deletion but still
+// ready, so it can still accept writes. A pod on a lost node is not ready, so
+// it does not block an election.
 func (r *RedisFailoverHandler) masterPodStopping(rf *redisfailoverv1.RedisFailover) (bool, error) {
 	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
 	if err != nil {
@@ -344,7 +337,7 @@ func (r *RedisFailoverHandler) masterPodStopping(rf *redisfailoverv1.RedisFailov
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if pod.DeletionTimestamp != nil && rfservice.IsMasterPod(pod) && util.PodIsReady(pod) {
-			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("pod", pod.Name).Info("waiting for the stopping master pod to exit before electing a master")
+			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("pod", pod.Name).Info("waiting for the stopping master pod to exit")
 			return true, nil
 		}
 	}
@@ -412,6 +405,7 @@ func (r *RedisFailoverHandler) labelledMasterPod(rf *redisfailoverv1.RedisFailov
 const (
 	masterPodLookupFailed = "unable to look up the master pod"
 	masterStoppingMsg     = "no master, waiting for the stopping master pod to exit"
+	masterPodStoppingMsg  = "waiting for the stopping master pod to exit"
 )
 
 func failoverKey(rf *redisfailoverv1.RedisFailover) string {
@@ -452,10 +446,10 @@ func (r *RedisFailoverHandler) clearUnreachableAnnotations(rf *redisfailoverv1.R
 	}
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if pod.Annotations[masterUnreachableAnnotation] == "" {
+		if _, ok := pod.Annotations[masterUnreachableAnnotation]; !ok {
 			continue
 		}
-		if err := r.k8sservice.UpdatePodAnnotations(rf.Namespace, pod.Name, map[string]string{masterUnreachableAnnotation: ""}); err != nil {
+		if err := r.k8sservice.RemovePodAnnotation(rf.Namespace, pod.Name, masterUnreachableAnnotation); err != nil {
 			return err
 		}
 	}
@@ -561,8 +555,8 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 	return nil
 }
 
-// CheckAndHeal runs verifcation checks to ensure the RedisFailover is in an expected and healthy state.
-// If the checks do not match up to expectations, an attempt will be made to "heal" the RedisFailover into a healthy state.
+// CheckAndHeal checks the state of the RedisFailover and heals each check
+// that fails. It writes the status one time, at the end.
 func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) error {
 
 	observed := rf.Status
@@ -586,26 +580,24 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		return r.checkAndHealBootstrapMode(rf)
 	}
 
-	// Route to operator-managed mode when Sentinel is disabled
 	if rf.OperatorManagedFailover() {
 		return r.checkAndHealOperatorManagedMode(rf)
 	}
 
-	// From here on, sentinel-managed mode checks and heals, in this order:
+	// Sentinel-managed mode checks and heals, in this order:
 	//   - a quorum of Redis pods and of Sentinel pods,
-	//   - exactly one Redis master, with every slave replicating from it,
+	//   - exactly one Redis master, and each replica on that master,
 	//   - the custom Redis config and maxmemory,
 	//   - the Redis pod rollout,
+	//   - a wait while the master pod stops,
 	//   - the master that each Sentinel monitors,
-	//   - the Sentinel and slave counts in each Sentinel, and the custom
+	//   - the Sentinel and replica counts in each Sentinel, and the custom
 	//     Sentinel config.
-	// A quorum is a majority, not all the pods in the RF spec. The comment
-	// below on IsRedisRunningQuorum gives the reason.
 
-	// Heal as long as a quorum (majority) of pods is running rather than requiring
-	// the full set. A single Pending pod (unschedulable affinity, AZ loss) must not
-	// block master election and sentinel reconfiguration for the survivors; the
-	// downstream heal logic already operates only on the running/reachable pods.
+	// A quorum (majority) of Running pods is sufficient to heal. One Pending
+	// pod, for example from an unschedulable affinity or a lost zone, must not
+	// block the election and the Sentinel configuration. The heal steps below
+	// use only the Running pods.
 	if !r.rfChecker.IsRedisRunningQuorum(rf) {
 		errorMsg := "redis quorum not running"
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -639,8 +631,9 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 
 	switch nMasters {
 	case 0:
-		// A stopping master is not counted but can still accept writes, and its
-		// shutdown script asks Sentinel to fail over. An election now can lose writes.
+		// A master pod in deletion is not counted, but it can still accept
+		// writes. When CLIENT PAUSE WRITE returns OK, its shutdown script also asks
+		// Sentinel to fail over. An election at this time can lose writes.
 		stopping, err := r.masterPodStopping(rf)
 		if err != nil {
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -657,8 +650,8 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 			return nil
 		}
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no masters detected"))
-		//when number of redis replicas is 1 , the redis is configured for standalone master mode
-		//Configure to master
+		// With one Redis pod, Sentinel has no replica to promote, so the
+		// operator makes that pod the master.
 		if rf.Spec.Redis.Replicas == 1 {
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("Resource spec with standalone master - operator will set the master")
 			err = r.rfHealer.SetOldestAsMaster(rf)
@@ -674,11 +667,12 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 			}
 			return nil
 		}
-		//During the First boot(New deployment or all pods of the statefulsets have restarted),
-		//Sentinesl will not be able to choose the master , so operator should select a master
-		//Also in scenarios where Sentinels is not in a position to choose a master like , No quorum reached
-		//Operator can choose a master , These scenarios can be checked by asking the all the sentinels
-		//if its in a postion to choose a master also check if the redis is configured with local host IP as master.
+		// The operator elects a master when Sentinel cannot fail over:
+		//   - the Sentinels have no quorum (CheckSentinelQuorum),
+		//   - each Redis pod has 127.0.0.1 as master, after the first start or
+		//     after all the pods restarted (CheckIfMasterLocalhost),
+		//   - no Sentinel monitors a pod or knows a replica pod
+		//     (CheckSentinelsCannotFailover).
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Number of Masters running is 0")
 		maxUptime, err := r.rfChecker.GetMaxRedisPodTime(rf)
 		if err != nil {
@@ -690,10 +684,8 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		}
 
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("No master avaiable but max pod up time is : %f", maxUptime.Round(time.Second).Seconds())
-		//Check If Sentinel has quorum to take a failover decision
 		noqrmCnt, err := r.rfChecker.CheckSentinelQuorum(rf)
 		if err != nil {
-			// Sentinels are not in a situation to choose a master we pick one
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Quorum not available for sentinel to choose master,estimated unhealthy sentinels :%d , Operator to step-in", noqrmCnt)
 			err2 := r.rfHealer.SetOldestAsMaster(rf)
 			setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err2)
@@ -707,7 +699,6 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 				return err2
 			}
 		} else {
-			//sentinels are having a quorum to make a failover , but check if redis are not having local hostip (first boot) as master
 			status, err2 := r.rfChecker.CheckIfMasterLocalhost(rf)
 			if err2 != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -717,7 +708,6 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Errorf("CheckIfMasterLocalhost failed retry later")
 				return err2
 			} else if status {
-				// all avaialable redis pods have local host ip as master
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Errorf("all available redis is having local loop back as master , operator initiates master selection")
 				err3 := r.rfHealer.SetOldestAsMaster(rf)
 				setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err3)
@@ -732,8 +722,23 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 				}
 
 			} else {
+				cannot, err3 := r.rfChecker.CheckSentinelsCannotFailover(rf)
+				if err3 != nil {
+					rf.Status = redisfailoverv1.RedisFailoverStatus{
+						State:   redisfailoverv1.NotHealthyState,
+						Message: "unable to check whether Sentinel can fail over",
+					}
+					return err3
+				}
+				if cannot {
+					elected, err3 := r.electMasterForSentinel(rf)
+					if err3 != nil || !elected {
+						return err3
+					}
+					break
+				}
 
-				// We'll wait until failover is done
+				// Sentinel can fail over, so the operator waits for it.
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("no master found, wait until failover or fix manually")
 				setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no master not fixed, wait until failover or fix manually"))
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -770,10 +775,9 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.SLAVE_WRONG_MASTER, metrics.NOT_APPLICABLE, err)
 	if err != nil {
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Slave not associated to master: %s", err.Error())
-		// Re-resolve master right before acting on it: `master` was captured
-		// above and pod churn since then could have moved it. Narrowing this
-		// window reduces how often SetMasterOnAll's own ownership check has
-		// to reject a stale IP and wait for the next reconcile.
+		// Read the master again just before the change, because the pods can
+		// change after the first read. Then SetMasterOnAll refuses a stale IP
+		// less often.
 		freshMaster, ferr := r.rfChecker.GetMasterIP(rf)
 		if ferr != nil {
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -815,6 +819,25 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		}
 	}
 
+	// A SENTINEL RESET makes Sentinel forget the replicas until the master
+	// tells it again. A stopping master may not do that before it exits, and
+	// then the failover finds no replica to promote (NOGOODSLAVE).
+	stopping, err := r.masterPodStopping(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to check whether the master is stopping",
+		}
+		return err
+	}
+	if stopping {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: masterPodStoppingMsg,
+		}
+		return nil
+	}
+
 	sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
 	if err != nil {
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -825,9 +848,8 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	}
 
 	port := getRedisPort(rf.Spec.Redis.Port)
-	// `master` may be stale by now (resolved above, before applyRedisCustomConfig
-	// and UpdateRedisesPods ran). Re-resolve it lazily, once, only if a sentinel
-	// actually needs fixing, and reuse that fresh value for the rest of the loop.
+	// master can be stale after applyRedisCustomConfig and UpdateRedisesPods.
+	// Read it again only when a Sentinel needs a fix, and only one time.
 	sentinelMonitorMaster := master
 	masterRefreshed := false
 	for _, sip := range sentinels {
@@ -867,13 +889,81 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	return r.checkAndHealSentinels(rf, sentinels)
 }
 
+// electMasterForSentinel promotes the best replica when no Sentinel can fail
+// over. It first counts the masters and checks for a stopping master again,
+// because a change since the first checks gives two masters. It reports
+// whether it elected a master.
+func (r *RedisFailoverHandler) electMasterForSentinel(rf *redisfailoverv1.RedisFailover) (bool, error) {
+	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
+	nMasters, err := r.rfChecker.GetNumberMasters(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to get number of masters",
+		}
+		return false, err
+	}
+	if nMasters != 0 {
+		logger.Infof("A master appeared before the election, the operator does not elect a master")
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "a master appeared before the election, checking again",
+		}
+		return false, nil
+	}
+	// GetNumberMasters does not count a pod in deletion.
+	stopping, err := r.masterPodStopping(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to check whether the master is stopping",
+		}
+		return false, err
+	}
+	if stopping {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: masterStoppingMsg,
+		}
+		return false, nil
+	}
+	best, err := r.rfChecker.GetBestReplicaForPromotion(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "Sentinel cannot fail over and no replica is available for promotion",
+		}
+		return false, err
+	}
+	logger.Warningf("No Sentinel knows a replica pod or monitors a pod, so Sentinel cannot fail over. The operator promotes %s (%s)", best.PodName, best.IP)
+	err = r.rfHealer.PromoteBestReplica(best.IP, rf)
+	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err)
+	if err != nil {
+		msg := "Sentinel cannot fail over and the promotion of a replica failed"
+		if errors.Is(err, rfservice.ErrPartialReconciliation) {
+			msg = "failover incomplete: replica reconfiguration failed"
+		}
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: msg,
+		}
+		return false, err
+	}
+	// The checks below make the Sentinels monitor the new master. The status
+	// stays NotHealthy until the next check finds them healthy.
+	rf.Status = redisfailoverv1.RedisFailoverStatus{
+		State:   redisfailoverv1.NotHealthyState,
+		Message: fmt.Sprintf("Sentinel knew no replica to fail over to, the operator promoted %s", best.PodName),
+	}
+	return true, nil
+}
+
 // checkAndHealOperatorManagedMode handles failover when Sentinel is disabled.
 // The operator directly manages master election and failover.
 func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailoverv1.RedisFailover) error {
-	// Heal as long as a quorum (majority) of pods is running rather than requiring
-	// the full set, matching the Sentinel-managed path (CheckAndHeal above): a
-	// single Pending pod (unschedulable affinity, AZ loss) must not permanently
-	// block the operator's own master election in this - the default - mode.
+	// A quorum (majority) of Running pods is sufficient to heal, as in
+	// CheckAndHeal. One Pending pod must not block the master election in
+	// this mode, which is the default.
 	if !r.rfChecker.IsRedisRunningQuorum(rf) {
 		errorMsg := "redis quorum not running"
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -898,9 +988,9 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 	var master string
 	switch nMasters {
 	case 0:
-		// A master whose pod is being deleted is no longer counted but may
-		// still take writes. Wait for it to stop so a promoted replica
-		// doesn't lose them.
+		// A master pod in deletion is not counted, but it can still accept
+		// writes. Wait until it stops, so that a promoted replica does not
+		// lose them.
 		stopping, err := r.masterPodStopping(rf)
 		if err != nil {
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -931,14 +1021,11 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 				return err
 			}
 		}
-		// No master available - elect one
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no masters detected"))
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("No master available, operator will elect one")
 
-		// Try to select best replica by replication offset
 		bestReplica, err := r.rfChecker.GetBestReplicaForPromotion(rf)
 		if err != nil {
-			// Fall back to oldest pod if we can't determine best replica
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
 				Warnf("Could not determine best replica: %v, falling back to oldest", err)
 			err = r.rfHealer.SetOldestAsMaster(rf)
@@ -951,7 +1038,6 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 				return err
 			}
 		} else {
-			// Promote the best replica
 			err = r.rfHealer.PromoteBestReplica(bestReplica.IP, rf)
 			setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err)
 			if err != nil {
@@ -970,7 +1056,6 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		return nil
 
 	case 1:
-		// Exactly one master - check its health
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NUMBER_OF_MASTERS, metrics.NOT_APPLICABLE, nil)
 
 		healthy, masterIP, err := r.rfChecker.CheckMasterHealth(rf)
@@ -986,8 +1071,9 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		if !healthy {
 			var pod *corev1.Pod
 			if masterIP == "" {
-				// The master counted above may have started stopping since; then
-				// it is no longer found but may still take writes, as in case 0.
+				// The master counted above can be in deletion at this time.
+				// Then it is not found, but it can still accept writes, as in
+				// case 0.
 				var stopping bool
 				stopping, err = r.masterPodStopping(rf)
 				if err != nil {
@@ -1025,7 +1111,6 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
 				Warningf("Master %s is unhealthy, initiating failover", masterIP)
 
-			// Master is unhealthy - promote a replica
 			bestReplica, err := r.rfChecker.GetBestReplicaForPromotion(rf)
 			if err != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -1054,7 +1139,6 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 
 		master = masterIP
 
-		// Master is healthy - ensure all slaves are connected to it
 		err = r.rfChecker.CheckAllSlavesFromMaster(masterIP, rf)
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.SLAVE_WRONG_MASTER, metrics.NOT_APPLICABLE, err)
 		if err != nil {
@@ -1108,7 +1192,6 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		return errors.New(errorMsg)
 	}
 
-	// Apply custom Redis configuration
 	err = r.applyRedisCustomConfig(rf)
 	var holdRollout bool
 	if err == nil {
@@ -1123,7 +1206,6 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		return err
 	}
 
-	// Update stale pods
 	if !holdRollout {
 		err = r.UpdateRedisesPods(rf)
 		if err != nil {
@@ -1238,10 +1320,9 @@ func (r *RedisFailoverHandler) applyRedisCustomConfig(rf *redisfailoverv1.RedisF
 	}
 	for _, rip := range redises {
 		if err := r.rfHealer.SetRedisCustomConfig(rip, rf); err != nil {
-			// A pod on a downed node cannot be configured; skip it rather than
-			// aborting the whole reconcile, so the reachable pods and the rest of
-			// the heal still run. A non-connection error (bad config value, auth)
-			// is a real problem and still stops here.
+			// Skip a pod on a lost node, so that the reachable pods and the
+			// other heal steps still run. Other errors, for example a bad config
+			// value or a wrong password, stop the reconcile.
 			if redis.IsUnreachableError(err) {
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Skipping custom config on unreachable redis %s: %s", rip, err.Error())
 				continue

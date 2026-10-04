@@ -13,12 +13,9 @@ const (
 	maxNameLength = 48
 )
 
-// validCommandRenamePattern restricts rename-command "from"/"to" values to
-// safe, non-empty Redis command name characters. This prevents the quotes,
-// spaces and newlines used in redisConfigTemplate's
-// `rename-command "{{.From}}" "{{.To}}"` line from being broken out of,
-// which would otherwise let a crafted CustomCommandRenames value inject
-// arbitrary directives into redis.conf.
+// validCommandRenamePattern allows only letters and underscores in a rename.
+// redisConfigTemplate writes each rename in quotes, so a quote, a space or a
+// newline could add other directives to redis.conf.
 var validCommandRenamePattern = regexp.MustCompile(`^[A-Za-z_]+$`)
 
 // operatorRedisCommands are the Redis commands that the operator, the pod
@@ -30,7 +27,7 @@ var operatorRedisCommands = []string{"AUTH", "CLIENT", "CONFIG", "INFO", "PING",
 // rename of one of them stops the Sentinel discovery or the failover.
 var sentinelRedisCommands = []string{"EXEC", "MULTI", "PUBLISH", "SUBSCRIBE"}
 
-// Validate set the values by default if not defined and checks if the values given are valid
+// Validate rejects an invalid spec and sets the defaults of the fields that are not set.
 func (r *RedisFailover) Validate() error {
 	if len(r.Name) > maxNameLength {
 		return fmt.Errorf("name length can't be higher than %d", maxNameLength)

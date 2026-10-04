@@ -2,15 +2,23 @@
 
 ## Creation pipeline
 
-The Redis-Operator creates Redis Failovers, with all the needed pieces. When an event arrives from Kubernetes (add or sync), the operator does these steps in this order:
+The operator creates each RedisFailover and the objects that it needs. These events start a reconcile of a RedisFailover:
+
+- An add, an update or a delete of the RedisFailover.
+- A resync every `--sync-interval` seconds (default 30).
+- An event of one of its pods.
+- With `--watch-auth-secrets`, an event of the Secret in `auth.secretPath`.
+- The end of the operator-managed failover wait, `sentinel.failoverTimeout`. No pod event comes at that time.
+
+Each reconcile does these steps in this order:
 
 1. Delete: if the RedisFailover has a deletion timestamp, the operator removes its metrics and in-memory state, then removes its finalizer. Nothing else runs.
 2. Finalizer: the operator adds its finalizer. Without it, the operator never sees a delete and cannot clean up.
 3. Skip: if the annotation `redisfailovers.databases.spotahome.com/skip-reconcile` is `"true"`, the operator stops here. Use it to repair a cluster by hand.
 4. Validate: `Validate()` rejects an invalid spec and sets the defaults.
-5. Ensure: checks that all the pieces needed are created. If a change is performed manually on the objects created, the operator will override them. This is done to ensure a healthy status. It will create the following:
+5. Ensure: the operator creates or updates the objects below. It overwrites a manual change of these objects:
    - Redis service (if exporter enabled)
-   - Redis master service and Redis slave service
+   - Redis master service and Redis replica service
    - Redis shutdown configmap
    - Redis readiness configmap
    - Redis configmap
@@ -23,19 +31,24 @@ The Redis-Operator creates Redis Failovers, with all the needed pieces. When an 
 
 Operator-managed mode and Sentinel mode need a quorum (a majority) of the pods to run, not the full number in the spec. A Pending pod does not block the heal of the others while the running pods are a majority. With 2 replicas, one Pending pod blocks the heal.
 
-A pod rollout updates one stale pod in each reconcile: the replicas first, the master last. It waits until all replicas are in sync.
+A pod rollout replaces one stale pod in each reconcile: the replicas first, the master last. Before each replacement, the operator waits until the last replaced pod is ready and each replica on the new revision is in sync. A stale replica that is not in sync has no data to lose, so the operator replaces it first and does not wait for its sync. When only the container resources change and the kubelet allows it, the operator resizes the pod in place. With `redis.maxMemory`, a lowered memory limit holds the rollout until the `maxmemory` and the memory in use of the master fit the new limit.
 
 ### Operator-managed mode
 
-This is the default since 4.0 (`sentinel.enabled` not set or `false`). There is no Sentinel, so the operator elects the master itself. It checks:
+This is the default mode (`sentinel.enabled` not set or `false`). There is no Sentinel, so the operator elects the master itself. It checks:
 
 - A quorum of Redis pods runs.
 - Only one Redis works as a master. An old master that did not answer during a failover can come back as a second master. If exactly one running pod has the master label, the other masters become replicas of that pod, because the label shows the master that the operator elected. Otherwise the operator reports `multiple masters detected, fix manually`.
-- No master: if the old master pod is still stopping, the operator waits, because that master can still take writes. The status is `NotHealthy` while it waits. Otherwise it promotes the replica with the highest replication offset, to lose the least data. If it cannot read the offsets, it promotes the oldest pod.
-- The master does not answer, or is not a master: the operator promotes the replica with the highest replication offset.
-- All Redis slaves replicate from the master.
+- No master: the operator promotes the best replica, or the oldest pod if it finds no replica to promote. Before the promotion, it waits in these cases. The status is `NotHealthy` while it waits.
+  - The old master pod is still stopping. That master can still take writes.
+  - No pod answers as master, and a Ready pod does not answer. That pod can be the master in a short stall.
+  - The master pod does not answer. It gets `sentinel.failoverTimeout` (default 10s) from the first missed check. The operator keeps that time in a pod annotation, so an operator restart keeps the deadline.
+- The master does not answer, or is not a master: the operator waits `sentinel.failoverTimeout` as above, then promotes the best replica. Without a replica to promote, it does not promote the oldest pod. The status message is then `no healthy replica available for failover`.
+- All Redis replicas replicate from the master.
 - Redis has the custom configuration and the managed `maxmemory`.
 - Stale Redis pods get the new statefulset revision.
+
+The best replica is a synced replica first, then the replica with the highest replication offset, then a Ready pod. This choice loses the fewest writes.
 
 ### Sentinel mode
 
@@ -43,12 +56,16 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
 
 - A quorum of Redis pods and a quorum of Sentinel pods run.
 - Only one Redis works as a master.
-- No master: the operator sets the oldest pod as master if there is one Redis, if the Sentinels have no quorum, or if all Redis replicate from localhost (first boot). Otherwise it waits for the Sentinel failover. The status is `NotHealthy` while it waits.
-- All Redis slaves replicate from the master.
+- No master: if the old master pod is still stopping, the operator waits. That master can still take writes. Its shutdown script asks Sentinel for a failover only when it can pause the writes (Redis 6.2 or later). Otherwise Sentinel fails over after `down-after-milliseconds`. Then the operator sets the oldest pod as master in these cases: one Redis, no Sentinel quorum, or all Redis replicate from localhost (first boot). When no Sentinel can fail over, the operator promotes the best replica, as in operator-managed mode. Otherwise it waits for the Sentinel failover. The status is `NotHealthy` while it waits.
+  - Sentinel promotes only a replica that it knows, and it learns the replicas from its master. After a `SENTINEL RESET` while the master stops, the Sentinels know no replica. Then they stay without a master.
+  - The operator promotes only when all Sentinels of the spec run and answer, and each Sentinel flags its master as down. A Sentinel must not monitor a Redis pod or know one as replica. The address 127.0.0.1 of a new Sentinel needs no down flag, because no Redis listens there. Otherwise a Sentinel can still fail over, or the old master can still answer, and a promotion gives two masters.
+  - Before the promotion, the operator counts the masters and checks for a stopping master again. A new master in that time gives two masters.
+- All Redis replicas replicate from the master.
 - Redis has the custom configuration and the managed `maxmemory`.
-- Stale Redis pods get the new statefulset revision. The operator deletes the master pod only when every Sentinel knows a quorum of the slaves. Otherwise, Sentinel has no replica to promote.
+- Stale Redis pods get the new statefulset revision. The operator deletes the master pod only when every Sentinel knows a quorum of the replicas. Otherwise, Sentinel has no replica to promote.
+- While the master pod stops, the operator does not check or reset the Sentinels. A reset at that time can leave Sentinel with no replica to promote. The status is `NotHealthy` while it waits.
 - All Sentinels monitor the same Redis master.
-- Each Sentinel knows the correct number of Sentinels and slaves. If not, the operator resets that Sentinel. A pod that does not run, for example a Pending pod, is no reason for a reset, because a reset does not add it.
+- Each Sentinel knows the correct number of Sentinels and replicas. If not, the operator resets that Sentinel. A pod that does not run, for example a Pending pod, is no reason for a reset, because a reset does not add it.
 - Sentinel has the custom configuration.
 
 ### Bootstrap mode

@@ -71,17 +71,14 @@ func (s *ServiceAccountService) UpdateServiceAccount(namespace string, serviceAc
 func (s *ServiceAccountService) CreateOrUpdateServiceAccount(namespace string, serviceAccount *corev1.ServiceAccount) error {
 	storedServiceAccount, err := s.GetServiceAccount(namespace, serviceAccount.Name)
 	if err != nil {
-		// If no resource we need to create.
 		if errors.IsNotFound(err) {
 			return s.CreateServiceAccount(namespace, serviceAccount)
 		}
 		return err
 	}
 
-	// Already exists, need to Update.
-	// Set the correct resource version to ensure we are on the latest version. This way the only valid
-	// namespace is our spec(https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#concurrency-control-and-consistency),
-	// we will replace the current namespace state.
+	// With the stored resource version, the update fails when the object
+	// changed after the read.
 	serviceAccount.ResourceVersion = storedServiceAccount.ResourceVersion
 
 	if serviceAccountUpToDate(storedServiceAccount, serviceAccount) {
