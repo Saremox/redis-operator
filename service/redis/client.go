@@ -87,6 +87,10 @@ const (
 	masterName              = "mymaster"
 )
 
+// errMalformedSentinelMaster does not carry the reply, because the reply is
+// not trusted.
+var errMalformedSentinelMaster = errors.New("malformed SENTINEL MASTER reply")
+
 var (
 	sentinelNumberRE = regexp.MustCompile(sentinelsNumberREString)
 	sentinelStatusRE = regexp.MustCompile(sentinelStatusREString)
@@ -397,8 +401,17 @@ func (c *client) GetSentinelMonitor(ip string) (string, string, error) {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MONITOR, metrics.FAIL, getRedisError(err))
 		return "", "", err
 	}
-	masterIP := res[3].(string)
-	masterPort := res[5].(string)
+	// The reply comes from the Sentinel image, which a tenant can choose.
+	if len(res) < 6 {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MONITOR, metrics.FAIL, metrics.MISC)
+		return "", "", errMalformedSentinelMaster
+	}
+	masterIP, okIP := res[3].(string)
+	masterPort, okPort := res[5].(string)
+	if !okIP || !okPort {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MONITOR, metrics.FAIL, metrics.MISC)
+		return "", "", errMalformedSentinelMaster
+	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MONITOR, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return masterIP, masterPort, nil
 }
@@ -539,7 +552,12 @@ func (c *client) getSentinelMasterInfo(rClient *rediscli.Client) (map[string]str
 	for i := 0; i+1 < len(res); i += 2 {
 		// SENTINEL MASTER gives each name and value as a bulk string, as in
 		// GetSentinelMonitor.
-		info[res[i].(string)] = res[i+1].(string)
+		name, okName := res[i].(string)
+		value, okValue := res[i+1].(string)
+		if !okName || !okValue {
+			return nil, errMalformedSentinelMaster
+		}
+		info[name] = value
 	}
 	return info, nil
 }

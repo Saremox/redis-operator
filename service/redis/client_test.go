@@ -910,12 +910,18 @@ func TestGetNumberSentinelsInMemory_NotMonitoringAnything(t *testing.T) {
 // sentinels or replicas.
 func startFakeSentinel(t *testing.T, ip, info string) {
 	t.Helper()
+	startRawSentinel(t, ip, "$"+strconv.Itoa(len(info))+"\r\n"+info+"\r\n")
+}
+
+// startRawSentinel listens on ip:sentinelPort and answers each command with
+// the raw bytes of reply.
+func startRawSentinel(t *testing.T, ip, reply string) {
+	t.Helper()
 	l, err := net.Listen("tcp", net.JoinHostPort(ip, sentinelPort))
 	if err != nil {
 		t.Skipf("cannot listen on %s: %v", net.JoinHostPort(ip, sentinelPort), err)
 	}
 	t.Cleanup(func() { _ = l.Close() })
-	reply := []byte("$" + strconv.Itoa(len(info)) + "\r\n" + info + "\r\n")
 	go func() {
 		for {
 			conn, err := l.Accept()
@@ -929,7 +935,7 @@ func startFakeSentinel(t *testing.T, ip, info string) {
 					if _, err := conn.Read(buf); err != nil {
 						return
 					}
-					if _, err := conn.Write(reply); err != nil {
+					if _, err := conn.Write([]byte(reply)); err != nil {
 						return
 					}
 				}

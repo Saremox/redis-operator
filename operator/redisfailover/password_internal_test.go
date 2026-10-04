@@ -13,6 +13,7 @@ import (
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
+	mmetrics "github.com/saremox/redis-operator/mocks/metrics"
 	mRFService "github.com/saremox/redis-operator/mocks/operator/redisfailover/service"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
@@ -196,4 +197,32 @@ func TestCheckAndHealReportsAnUnreadableSecret(t *testing.T) {
 
 	assert.ErrorIs(t, handler.CheckAndHeal(rf), boom)
 	assert.Equal(t, "unable to apply the configured password", rf.Status.Message)
+}
+
+func TestCheckAndHealMarksTheClusterFailedWhenAReconcilePanics(t *testing.T) {
+	rf := &redisfailoverv1.RedisFailover{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"},
+		Spec:       redisfailoverv1.RedisFailoverSpec{Auth: redisfailoverv1.AuthSettings{SecretPath: "redis-auth"}},
+	}
+	ms := &mK8SService.Services{}
+	ms.On("GetSecret", "testns", "redis-auth").Return(&corev1.Secret{Data: map[string][]byte{"password": []byte("v1")}}, nil)
+	var written []redisfailoverv1.RedisFailoverStatus
+	ms.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			written = append(written, args.Get(2).(*redisfailoverv1.RedisFailover).Status)
+		}).Return()
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(false, nil).
+		Run(func(mock.Arguments) { panic("boom") })
+	rec := &mmetrics.Recorder{}
+	rec.On("SetClusterError", "testns", "test").Once()
+	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, mrfh, ms, rec, log.Dummy)
+
+	assert.PanicsWithValue(t, "boom", func() { _ = handler.CheckAndHeal(rf) })
+	rec.AssertExpectations(t)
+
+	if assert.Len(t, written, 1) {
+		assert.Equal(t, redisfailoverv1.NotHealthyState, written[0].State)
+		assert.Equal(t, "internal error, see the operator log", written[0].Message)
+	}
 }

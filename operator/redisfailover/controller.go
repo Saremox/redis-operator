@@ -3,6 +3,7 @@ package redisfailover
 import (
 	"context"
 	"errors"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -299,7 +300,16 @@ func (c *rfController) processNext(ctx context.Context) bool {
 	return true
 }
 
-func (c *rfController) process(ctx context.Context, key string) error {
+// process turns a panic of one reconcile into an error. Replies from Redis
+// and Sentinel come from tenant images, and one bad reply must not stop the
+// operator for all tenants. The next resync reconciles the object again.
+func (c *rfController) process(ctx context.Context, key string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.WithField("object-key", key).Errorf("panic on object processing: %v\n%s", r, debug.Stack())
+			err = errors.New("panic on object processing")
+		}
+	}()
 	obj, exists, err := c.rfInformer.GetIndexer().GetByKey(key)
 	if err != nil || !exists {
 		return err

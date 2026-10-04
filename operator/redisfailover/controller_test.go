@@ -3,6 +3,9 @@ package redisfailover
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,6 +28,7 @@ import (
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
+	redisclient "github.com/saremox/redis-operator/service/redis"
 )
 
 func staticRFs(items ...redisfailoverv1.RedisFailover) *cache.ListWatch {
@@ -664,4 +668,129 @@ func TestRFControllerHandlesACopyOfTheCachedRedisFailover(t *testing.T) {
 	cached, _, err := c.rfInformer.GetIndexer().GetByKey("ns/rf")
 	require.NoError(t, err)
 	assert.Empty(t, cached.(*redisfailoverv1.RedisFailover).Status.State)
+}
+
+type recordedLogs struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (r *recordedLogs) add(line string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines = append(r.lines, line)
+}
+
+func (r *recordedLogs) text() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return strings.Join(r.lines, "\n")
+}
+
+type recordingLogger struct {
+	log.DummyLogger
+	logs   *recordedLogs
+	fields string
+}
+
+func (l recordingLogger) WithField(key string, value interface{}) log.Logger {
+	l.fields += fmt.Sprintf("%s=%v ", key, value)
+	return l
+}
+
+func (l recordingLogger) Errorf(format string, args ...interface{}) {
+	l.logs.add(l.fields + fmt.Sprintf(format, args...))
+}
+
+// panickingHandler panics for the RedisFailover "bad" and records the others.
+type panickingHandler struct {
+	recordingHandler
+	bad atomic.Int32
+}
+
+func (h *panickingHandler) Handle(ctx context.Context, obj runtime.Object) error {
+	if obj.(*redisfailoverv1.RedisFailover).Name == "bad" {
+		h.bad.Add(1)
+		panic("boom")
+	}
+	return h.recordingHandler.Handle(ctx, obj)
+}
+
+func TestRFControllerProcessTurnsAPanicIntoAnError(t *testing.T) {
+	logs := &recordedLogs{}
+	c, err := newRFController(&panickingHandler{}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, recordingLogger{logs: logs})
+	require.NoError(t, err)
+	require.NoError(t, c.rfInformer.GetIndexer().Add(&redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "bad", Namespace: "ns"}}))
+
+	assert.Error(t, c.process(context.Background(), "ns/bad"))
+	assert.Contains(t, logs.text(), "object-key=ns/bad")
+	assert.Contains(t, logs.text(), "boom")
+	assert.Contains(t, logs.text(), "panickingHandler")
+}
+
+func TestRFControllerKeepsWorkingAfterAHandlerPanic(t *testing.T) {
+	bad := redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "bad", Namespace: "ns"}}
+	good := redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "good", Namespace: "ns"}}
+	kube := fakekubernetes.NewClientset()
+	h := &panickingHandler{}
+	startController(t, h, kube, bad, good)
+	require.Eventually(t, func() bool { return h.bad.Load() == 1 && h.countFor("ns/good") == 1 }, 5*time.Second, 10*time.Millisecond)
+
+	// The queue is not stuck: the panicking item runs again on its next event.
+	_, err := kube.CoreV1().Pods("ns").Create(context.Background(), rfPod("rfr-bad-0", "bad"), metav1.CreateOptions{})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return h.bad.Load() == 2 }, 5*time.Second, 10*time.Millisecond)
+}
+
+// sentinelHandler asks a Sentinel for its master, as a reconcile does.
+type sentinelHandler struct {
+	ip    string
+	calls atomic.Int32
+}
+
+func (h *sentinelHandler) Handle(context.Context, runtime.Object) error {
+	h.calls.Add(1)
+	_, _, err := redisclient.New(metrics.Dummy).GetSentinelMonitor(h.ip)
+	return err
+}
+
+// The Redis client library panics on a negative array length. A tenant image
+// can send such a reply.
+func TestRFControllerSurvivesANegativeLengthReply(t *testing.T) {
+	const ip = "127.0.0.4"
+	l, err := net.Listen("tcp", net.JoinHostPort(ip, "26379"))
+	if err != nil {
+		t.Skipf("cannot listen on %s: %v", ip, err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				buf := make([]byte, 4096)
+				for {
+					if _, err := conn.Read(buf); err != nil {
+						return
+					}
+					if _, err := conn.Write([]byte("*-5\r\n")); err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+
+	rf := redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}
+	kube := fakekubernetes.NewClientset()
+	h := &sentinelHandler{ip: ip}
+	startController(t, h, kube, rf)
+	require.Eventually(t, func() bool { return h.calls.Load() == 1 }, 5*time.Second, 10*time.Millisecond)
+
+	_, err = kube.CoreV1().Pods("ns").Create(context.Background(), rfPod("rfr-rf-0", "rf"), metav1.CreateOptions{})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return h.calls.Load() == 2 }, 5*time.Second, 10*time.Millisecond)
 }
