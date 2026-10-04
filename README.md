@@ -182,7 +182,7 @@ Sentinels run when `spec.sentinel.enabled` is `true`. With `bootstrapNode`, they
 
 **NOTE**: `NAME` is the name of the RedisFailover.
 **IMPORTANT**: the name of a RedisFailover can have a maximum of 48 characters. The operator adds a Redis or Sentinel prefix to the name, and a StatefulSet name has a length limit.
-**IMPORTANT**: two RedisFailovers in one namespace must not generate the same object name. RedisFailover `foo` generates the shutdown script configmap `rfr-s-foo`, and RedisFailover `s-foo` generates the Redis configmap `rfr-s-foo`. The operator does not change an object that another RedisFailover controls. The RedisFailover that does not control the object does not reconcile, and `status.message` shows the error.
+**IMPORTANT**: two RedisFailovers in one namespace must not generate the same object name. RedisFailover `X` collides with RedisFailover `s-X` and with RedisFailover `readiness-X`. For example, RedisFailover `foo` generates the shutdown script configmap `rfr-s-foo`, and RedisFailover `s-foo` generates the Redis configmap `rfr-s-foo`. The operator does not change an object that another RedisFailover controls. The RedisFailover that does not control the object does not reconcile, and `status.message` shows the error.
 
 ### Protect the master from cluster-autoscaler eviction
 

@@ -175,3 +175,36 @@ func TestCreateOrUpdateChecksTheController(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateOrUpdateComparesTheKindOfTheController(t *testing.T) {
+	otherKind := []metav1.OwnerReference{*metav1.NewControllerRef(
+		&metav1.ObjectMeta{Name: "foo", UID: "9"},
+		appsv1.SchemeGroupVersion.WithKind("Deployment"),
+	)}
+
+	for _, kind := range ownershipKinds() {
+		t.Run(kind.kind, func(t *testing.T) {
+			c := kubernetes.NewClientset(kind.object("old", otherKind))
+
+			err := kind.apply(c, kind.object("new", controllerRef("foo", "1")))
+
+			var other *k8s.ControlledByOtherError
+			assert.True(t, errors.As(err, &other))
+			assert.Equal(t, "old", kind.label(c))
+		})
+	}
+}
+
+func TestCreateOrUpdateStatefulSetChecksTheControllerBeforeTheClaims(t *testing.T) {
+	owners := []metav1.OwnerReference{rfOwnerReference}
+	stored := pvcStatefulSet("0.5Gi", owners)
+	stored.OwnerReferences = controllerRef("s-test", "2")
+	mcli := kubernetes.NewClientset(stored, statefulSetPVC("data-rfr-test-0", "0.5Gi", rfOwnerReference))
+	service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
+
+	err := service.CreateOrUpdateStatefulSet(ownershipNS, pvcStatefulSet("1Gi", owners))
+
+	var other *k8s.ControlledByOtherError
+	require.True(t, errors.As(err, &other))
+	assertPVCStorage(t, mcli, "data-rfr-test-0", "0.5Gi")
+}
