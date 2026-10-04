@@ -43,7 +43,10 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
 
 - A quorum of Redis pods and a quorum of Sentinel pods run.
 - Only one Redis works as a master.
-- No master: the operator sets the oldest pod as master if there is one Redis, if the Sentinels have no quorum, or if all Redis replicate from localhost (first boot). Otherwise it waits for the Sentinel failover. The status is `NotHealthy` while it waits.
+- No master: the operator sets the oldest pod as master if there is one Redis, if the Sentinels have no quorum, or if all Redis replicate from localhost (first boot). When no Sentinel can fail over, the operator promotes the best replica, as in operator-managed mode. Otherwise it waits for the Sentinel failover. The status is `NotHealthy` while it waits.
+  - Sentinel promotes only a replica that it knows, and it learns the replicas from its master. After a `SENTINEL RESET` while the master stops, the Sentinels know no replica. Then they stay without a master.
+  - The operator promotes only when a quorum of the Sentinels answer, no Sentinel monitors a Redis pod, and no Sentinel knows a Redis pod as replica. Such a Sentinel can still fail over, and a promotion then gives two masters.
+  - The operator counts the masters again before the promotion, because a master that appears in that time gives two masters.
 - All Redis slaves replicate from the master.
 - Redis has the custom configuration and the managed `maxmemory`.
 - Stale Redis pods get the new statefulset revision. The operator deletes the master pod only when every Sentinel knows a quorum of the slaves. Otherwise, Sentinel has no replica to promote.
