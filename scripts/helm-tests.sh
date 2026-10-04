@@ -219,7 +219,7 @@ steps=$(awk '/^      - /{ if (pipe && !bash) print name; name = $0; pipe = bash 
     END { if (pipe && !bash) print name }' .github/workflows/release.yml)
 [ -z "${steps}" ] || { echo "FAIL: release.yml steps pipe into release.sh without 'shell: bash':" >&2; echo "${steps}" >&2; fail=1; }
 
-# The Service and the PodMonitor of the example scrape the metrics port.
+# The Service annotation of the example gives the metrics port.
 echo ">> Testing example/operator/all-redis-operator-resources.yaml"
 example=$(cat example/operator/all-redis-operator-resources.yaml)
 port=$(manifest "${example}" Deployment redisoperator | grep -A1 -- '- name: metrics$' | sed -n 's/^ *containerPort: //p')

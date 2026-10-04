@@ -78,6 +78,17 @@ func newFailoverTimeoutTest(timeout *metav1.Duration) *failoverTimeoutTest {
 		}
 		return nil
 	})
+	ft.k8s.On("RemovePodAnnotation", "testns", mock.Anything, mock.Anything).Maybe().Return(func(_, name, key string) error {
+		if ft.patchErr != nil {
+			return ft.patchErr
+		}
+		for i := range ft.pods {
+			if ft.pods[i].Name == name {
+				delete(ft.pods[i].Annotations, key)
+			}
+		}
+		return nil
+	})
 	ft.restart()
 	return ft
 }
@@ -175,7 +186,7 @@ func TestOperatorManagedModeFailsOverAfterTheFailoverTimeout(t *testing.T) {
 
 			assert.NoError(t, ft.unhealthyMaster(1500*time.Millisecond, true))
 			assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
-			assert.Empty(t, ft.unreachableSince(), "cleared once failed over")
+			assert.NotContains(t, ft.pods[0].Annotations, masterUnreachableAnnotation, "cleared once failed over")
 
 			ft.assertExpectations(t)
 		})
@@ -210,7 +221,7 @@ func TestOperatorManagedModeFailoverTimeoutSurvivesARestart(t *testing.T) {
 
 	ft.restart()
 	assert.NoError(t, ft.unhealthyMaster(5*time.Second, true))
-	assert.Empty(t, ft.unreachableSince())
+	assert.NotContains(t, ft.pods[0].Annotations, masterUnreachableAnnotation)
 	ft.assertExpectations(t)
 }
 
@@ -220,7 +231,7 @@ func TestOperatorManagedModeFailoverTimeoutRunOutBeforeARestartFailsOverAtOnce(t
 
 	assert.NoError(t, ft.unhealthyMaster(0, true))
 	assert.Empty(t, ft.requeues)
-	assert.Empty(t, ft.unreachableSince())
+	assert.NotContains(t, ft.pods[0].Annotations, masterUnreachableAnnotation)
 	ft.assertExpectations(t)
 }
 
@@ -229,7 +240,7 @@ func TestOperatorManagedModeFailoverTimeoutRestartsWhenTheMasterAnswers(t *testi
 	assert.NoError(t, ft.unhealthyMaster(0, false))
 
 	assert.Error(t, ft.healthyMaster(8*time.Second))
-	assert.Empty(t, ft.unreachableSince(), "cleared when the master answers")
+	assert.NotContains(t, ft.pods[0].Annotations, masterUnreachableAnnotation, "cleared when the master answers")
 
 	// A new stall gets the full timeout again.
 	assert.NoError(t, ft.unhealthyMaster(4*time.Second, false))
@@ -247,7 +258,7 @@ func TestOperatorManagedModeClearsALeftoverAnnotationAfterARestart(t *testing.T)
 	ft.pods[0].Annotations[masterUnreachableAnnotation] = "2026-10-01T12:00:00Z"
 
 	assert.Error(t, ft.healthyMaster(0))
-	assert.Empty(t, ft.unreachableSince())
+	assert.NotContains(t, ft.pods[0].Annotations, masterUnreachableAnnotation)
 
 	ft.pods[0].Annotations[masterUnreachableAnnotation] = "2026-10-01T12:00:00Z"
 	assert.Error(t, ft.healthyMaster(time.Second))
@@ -302,7 +313,7 @@ func TestOperatorManagedModeWaitsForAnUnreachableMasterPod(t *testing.T) {
 
 	ft.expectPromotion()
 	assert.NoError(t, noMaster(4*time.Second))
-	assert.Empty(t, ft.unreachableSince())
+	assert.NotContains(t, ft.pods[0].Annotations, masterUnreachableAnnotation)
 
 	ft.assertExpectations(t)
 }
@@ -398,7 +409,7 @@ func TestOperatorManagedModeFailoverTimeoutErrors(t *testing.T) {
 
 		ft.patchErr = nil
 		assert.NoError(t, ft.healthyMasterReconcile(time.Second))
-		assert.Empty(t, ft.unreachableSince(), "cleared on the next reconcile")
+		assert.NotContains(t, ft.pods[0].Annotations, masterUnreachableAnnotation, "cleared on the next reconcile")
 		ft.assertExpectations(t)
 	})
 
@@ -412,7 +423,7 @@ func TestOperatorManagedModeFailoverTimeoutErrors(t *testing.T) {
 
 		ft.listErr = nil
 		assert.NoError(t, ft.healthyMasterReconcile(time.Second))
-		assert.Empty(t, ft.unreachableSince(), "cleared on the next reconcile")
+		assert.NotContains(t, ft.pods[0].Annotations, masterUnreachableAnnotation, "cleared on the next reconcile")
 		ft.assertExpectations(t)
 	})
 
@@ -427,7 +438,7 @@ func TestOperatorManagedModeFailoverTimeoutErrors(t *testing.T) {
 
 		ft.patchErr = nil
 		assert.NoError(t, ft.healthyMasterReconcile(time.Second))
-		assert.Empty(t, ft.unreachableSince(), "cleared on the next reconcile")
+		assert.NotContains(t, ft.pods[0].Annotations, masterUnreachableAnnotation, "cleared on the next reconcile")
 		ft.assertExpectations(t)
 	})
 }

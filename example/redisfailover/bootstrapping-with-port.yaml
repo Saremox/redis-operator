@@ -6,7 +6,5 @@ spec:
   bootstrapNode:
     host: "127.0.0.1"
     port: "6388"
-  sentinel:
-    replicas: 3
   redis:
     replicas: 3

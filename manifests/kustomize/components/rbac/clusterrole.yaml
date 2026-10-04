@@ -12,12 +12,6 @@ rules:
     verbs:
       - "*"
   - apiGroups:
-      - apiextensions.k8s.io
-    resources:
-      - customresourcedefinitions
-    verbs:
-      - "*"
-  - apiGroups:
     - coordination.k8s.io
     resources:
     - leases
@@ -41,13 +35,19 @@ rules:
       - endpoints
       - events
       - configmaps
-      - secrets
       - serviceaccounts
       - persistentvolumeclaims
       - persistentvolumeclaims/finalizers
       - pods/resize
     verbs:
       - "*"
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    # --watch-auth-secrets also needs list and watch.
+    verbs:
+      - get
   - apiGroups:
       - apps
     resources:
