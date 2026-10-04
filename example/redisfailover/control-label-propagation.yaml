@@ -3,10 +3,10 @@ kind: RedisFailover
 metadata:
   name: redisfailover2
   labels:
-    # These two labels will be propagated.
+    # The operator propagates these two labels.
     app.example.com/label1: value
     app.example.com/label2: value
-    # This one wont be, as there is a non-empty whitelist and the regexp doesnt match it.
+    # The operator does not propagate this label, because no labelWhitelist regexp matches it.
     anotherlabel: value
 spec:
   sentinel:
