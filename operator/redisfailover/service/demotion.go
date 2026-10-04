@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
@@ -107,7 +109,7 @@ func (d *endpointAwareDisconnector) DisconnectDemoted(rf *redisfailoverv1.RedisF
 	d.runs[key] = false
 	go func() {
 		for {
-			failed := d.disconnect(rf, pod, port, password) != nil
+			failed := d.disconnectRecovered(rf, pod, port, password) != nil
 			d.mu.Lock()
 			again := failed && d.runs[key]
 			if again {
@@ -121,6 +123,19 @@ func (d *endpointAwareDisconnector) DisconnectDemoted(rf *redisfailoverv1.RedisF
 			}
 		}
 	}()
+}
+
+// disconnectRecovered turns a panic of the Redis client into an error. A Redis
+// pod can send a reply that the client cannot read, and a panic in this
+// goroutine would stop the operator for all tenants.
+func (d *endpointAwareDisconnector) disconnectRecovered(rf *redisfailoverv1.RedisFailover, pod corev1.Pod, port, password string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			d.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Errorf("panic on the disconnect of pod %s: %v\n%s", pod.Name, r, debug.Stack())
+			err = errors.New("panic on the disconnect")
+		}
+	}()
+	return d.disconnect(rf, pod, port, password)
 }
 
 func (d *endpointAwareDisconnector) disconnect(rf *redisfailoverv1.RedisFailover, pod corev1.Pod, port, password string) error {

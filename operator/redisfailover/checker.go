@@ -565,7 +565,18 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		State: redisfailoverv1.HealthyState,
 	}
 
-	defer updateStatus(r.k8sservice, rf, observed)
+	// A panic ends the reconcile with an error, so the status must not stay Healthy.
+	defer func() {
+		if p := recover(); p != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: "internal error, see the operator log",
+			}
+			updateStatus(r.k8sservice, rf, observed)
+			panic(p)
+		}
+		updateStatus(r.k8sservice, rf, observed)
+	}()
 
 	// Every check below authenticates, so a changed password goes first.
 	if err := r.applyPassword(rf); err != nil {

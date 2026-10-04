@@ -425,3 +425,35 @@ func TestClientDisconnectorRunsAgainAfterAFailureWhenDemotedAgain(t *testing.T) 
 	time.Sleep(200 * time.Millisecond)
 	mr.AssertNumberOfCalls(t, "DisconnectClients", 2)
 }
+
+func TestClientDisconnectorSurvivesAPanicOfTheRedisClient(t *testing.T) {
+	rf := generateRF()
+	kubeClient := fake.NewClientset(masterEndpointSlice(rf))
+	called := make(chan struct{}, 2)
+	mr := &mRedisService.Client{}
+	mr.On("DisconnectClients", "1.1.1.1", "0", "").Once().
+		Run(func(mock.Arguments) {
+			called <- struct{}{}
+			panic("makeslice: len out of range")
+		}).Return(nil)
+	mr.On("DisconnectClients", "1.1.1.1", "0", "").Once().Return(nil).
+		Run(func(mock.Arguments) { called <- struct{}{} })
+	disconnector := rfservice.NewClientDisconnector(kubeClient, mr, log.DummyLogger{}, time.Minute, 0)
+
+	demoted := podWithRole("old-master", "1.1.1.1", slaveRoleLabel)
+	disconnector.DisconnectDemoted(rf, demoted, "0", "")
+	select {
+	case <-called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first disconnect did not run")
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// The panic must not leave the pod marked as busy.
+	disconnector.DisconnectDemoted(rf, demoted, "0", "")
+	select {
+	case <-called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the disconnect after the panic did not run")
+	}
+}

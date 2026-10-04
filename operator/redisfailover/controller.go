@@ -3,7 +3,6 @@ package redisfailover
 import (
 	"context"
 	"errors"
-	"fmt"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -308,7 +307,7 @@ func (c *rfController) process(ctx context.Context, key string) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			c.logger.WithField("object-key", key).Errorf("panic on object processing: %v\n%s", r, debug.Stack())
-			err = fmt.Errorf("panic on object processing")
+			err = errors.New("panic on object processing")
 		}
 	}()
 	obj, exists, err := c.rfInformer.GetIndexer().GetByKey(key)
