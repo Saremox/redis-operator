@@ -28,11 +28,10 @@ const (
 )
 
 var (
-	// DefaultSentinelEnabled is the default value for sentinel.enabled
-	// Starting with 4.0.0, sentinel is DISABLED by default (operator-managed failover)
-	// Set sentinel.enabled: true to use Redis Sentinel for failover
+	// DefaultSentinelEnabled is the value of sentinel.enabled when it is not
+	// set. Without Sentinel, the operator does the failover.
 	DefaultSentinelEnabled = false
-	// DefaultFailoverTimeout is the default timeout for operator-managed failover
+	// DefaultFailoverTimeout is the value of sentinel.failoverTimeout when it is not set.
 	DefaultFailoverTimeout = metav1.Duration{Duration: 10 * time.Second}
 )
 

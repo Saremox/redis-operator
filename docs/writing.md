@@ -37,8 +37,9 @@ These rules apply to the README, the files in `docs/`, Go comments, CRD field de
 The CRD descriptions come from the doc comments in `api/redisfailover/v1/types.go`. After you change such a comment:
 
 1. Run `make generate-api`.
-2. Run `make verify-codegen`.
-3. Commit the changed CRD files together with the comment.
+2. Stage the changes: `git add api/ manifests/ charts/redisoperator/crds/`. `make verify-codegen` compares with the staged files.
+3. Run `make verify-codegen`.
+4. Commit the changed CRD files together with the comment.
 
 ## Pull request descriptions
 

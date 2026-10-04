@@ -12,7 +12,7 @@ const (
 	version = "v1"
 )
 
-// Team constants
+// RFKind is the kind of the RedisFailover resource.
 const (
 	RFKind = "RedisFailover"
 )
@@ -40,7 +40,7 @@ var (
 	AddToScheme   = SchemeBuilder.AddToScheme
 )
 
-// Adds the list of known types to Scheme.
+// addKnownTypes registers RedisFailover and RedisFailoverList in the scheme.
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
 		&RedisFailover{},

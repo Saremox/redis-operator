@@ -6,7 +6,7 @@ description: Create a kind Kubernetes cluster inside the Claude Code cloud sandb
 # kind cluster in the cloud sandbox
 
 A plain `kind create cluster` fails in the sandbox, and a working cluster
-still can't pull images. The scripts here handle all of this.
+still cannot pull images. The scripts here solve these problems.
 
 ## Create
 
@@ -17,7 +17,7 @@ export KUBECONFIG=/tmp/kind-e2e/kubeconfig
 
 The script:
 
-1. Starts `dockerd` if it isn't running.
+1. Starts `dockerd` if it does not run.
 2. Writes a kind config with two sandbox fixes:
    - `failCgroupV1: false`: the sandbox is cgroup v1, and kubelet >= 1.35
      refuses to start on it.
@@ -26,9 +26,9 @@ The script:
      child's PID from pipe: EOF`. This affects every node version, 1.34 too.
 3. Makes a local registry, `kind-registry`, the node's mirror for docker.io
    and quay.io (`registry.sh`).
-   - The node can't reach any registry, because its `HTTPS_PROXY` points at
-     the sandbox's 127.0.0.1 proxy.
-   - `kind load` isn't enough: the operator defaults to `imagePullPolicy:
+   - The node cannot reach a registry, because its `HTTPS_PROXY` points at
+     the 127.0.0.1 proxy of the sandbox.
+   - `kind load` is not sufficient: the operator default is `imagePullPolicy:
      Always`, so preloaded images still fail with `ImagePullBackOff`.
 4. Copies the images from `api/redisfailover/v1/defaults.go`, plus any in
    `EXTRA_IMAGES`, into the registry.
@@ -41,7 +41,7 @@ The script:
 
 ## Several clusters at once
 
-Give each cluster its own name and subnet octet, e.g. `a … 181` and
+Give each cluster its own name and subnet octet, for example `a … 181` and
 `b … 185`. A cluster uses `10.SUBNET.0.0/16` for pods and
 `10.SUBNET+1.0.0/16` for services, where SUBNET is the third argument.
 Keep the octets at least 2 apart. Overlapping pod subnets make the host
@@ -64,25 +64,27 @@ helm upgrade --install redis-operator ./charts/redisoperator \
   --set image.repository=redis-operator --set image.tag=pr --wait
 ```
 
-- `docker/app/Dockerfile` fails here, because `apk add` can't reach the
+- `docker/app/Dockerfile` fails here, because `apk add` cannot reach the
   package mirrors. `build-image.sh` builds the binaries on the host and uses
   the runtime stage of the Dockerfile.
-- Install helm with `GOBIN=/usr/local/bin go install helm.sh/helm/v3/cmd/helm@v3.19.0`
-  if it's missing.
-- `.github/workflows/e2e.yml` has a RedisFailover manifest and checks you
-  can reuse.
-- Don't run the integration tests while a Helm-installed operator is
-  running: both would reconcile the test's RedisFailovers.
+- If helm is missing, install it with
+  `GOBIN=/usr/local/bin go install helm.sh/helm/v3/cmd/helm@v3.19.0`.
+- `.github/workflows/e2e.yml` has a RedisFailover manifest and checks that
+  you can use again.
+- Do not run the integration tests while a Helm-installed operator runs:
+  both operators would reconcile the RedisFailovers of the tests.
 
 ## Debugging a failed create
 
 `kind-up.sh` does not pass `--retain` to kind, so kind deletes a failed
-node. To keep it, run the `kind create cluster` command from `kind-up.sh`
-by hand with `--retain` and `--config /tmp/kind-NAME/kind.yaml`. Then read
-`docker exec NAME-control-plane journalctl -u kubelet --no-pager` and
-`journalctl -u containerd`.
+node. To keep the node and read its logs:
 
-## Clean up
+1. Copy the `kind create cluster` command from `kind-up.sh`.
+2. Add `--retain` and `--config /tmp/kind-NAME/kind.yaml`, and run it.
+3. Read `docker exec NAME-control-plane journalctl -u kubelet --no-pager`.
+4. Read `docker exec NAME-control-plane journalctl -u containerd --no-pager`.
+
+## Delete the cluster
 
 ```sh
 kind delete cluster --name e2e
