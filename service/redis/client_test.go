@@ -28,9 +28,11 @@ import (
 
 	rediscli "github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/saremox/redis-operator/metrics"
+	mMetrics "github.com/saremox/redis-operator/mocks/metrics"
 )
 
 func newTestClient() Client {
@@ -1436,4 +1438,77 @@ func TestSetPassword(t *testing.T) {
 		assert.True(t, isMaster)
 		assert.True(t, linkUp(step.to), "replication after %q -> %q", step.from, step.to)
 	}
+}
+
+func TestAddrHost(t *testing.T) {
+	tests := map[string]string{
+		"10.0.0.5:6379":   "10.0.0.5",
+		"[fd00::1]:6379":  "fd00::1",
+		"no-port-address": "no-port-address",
+	}
+	for addr, want := range tests {
+		assert.Equal(t, want, addrHost(addr), addr)
+	}
+}
+
+// The metric label must hold the full IPv6 address, not "[".
+func TestSlaveIsReady_IPv6MetricLabel(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	rec := &mMetrics.Recorder{}
+	rec.On("RecordRedisOperation", metrics.KIND_REDIS, "::1", metrics.SLAVE_IS_READY, metrics.FAIL, mock.Anything).Once()
+	c := New(rec)
+
+	_, err = c.SlaveIsReady("::1", strconv.Itoa(port), "")
+	assert.Error(t, err)
+	rec.AssertExpectations(t)
+}
+
+func TestApplyRedisConfig_IPv6MetricLabel(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	rec := &mMetrics.Recorder{}
+	rec.On("RecordRedisOperation", metrics.KIND_REDIS, "::1", metrics.APPLY_REDIS_CONFIG, metrics.FAIL, mock.Anything).Once()
+	c := &client{metricsRecorder: rec}
+
+	rc := rediscli.NewClient(&rediscli.Options{Addr: net.JoinHostPort("::1", strconv.Itoa(port))})
+	defer func() { _ = rc.Close() }()
+
+	assert.Error(t, c.applyRedisConfig("maxmemory", "1mb", rc))
+	rec.AssertExpectations(t)
+}
+
+// replyErrorHook sets an error on the command after a successful call, so
+// Process returns nil and only the command result has the error.
+type replyErrorHook struct{}
+
+func (replyErrorHook) BeforeProcess(ctx context.Context, _ rediscli.Cmder) (context.Context, error) {
+	return ctx, nil
+}
+
+func (replyErrorHook) AfterProcess(_ context.Context, cmd rediscli.Cmder) error {
+	cmd.SetErr(errors.New("reply error"))
+	return nil
+}
+
+func (replyErrorHook) BeforeProcessPipeline(ctx context.Context, _ []rediscli.Cmder) (context.Context, error) {
+	return ctx, nil
+}
+
+func (replyErrorHook) AfterProcessPipeline(context.Context, []rediscli.Cmder) error {
+	return nil
+}
+
+func TestApplyACLLoad_ResultError(t *testing.T) {
+	requireRedisServer(t)
+	aclPath := t.TempDir() + "/users.acl"
+	require.NoError(t, os.WriteFile(aclPath, []byte("user testuser on >testpass ~* +@all\n"), 0o600))
+	r := startRedisProcess(t, "--aclfile", aclPath)
+	c := newTestClientStruct()
+
+	rc := rediscli.NewClient(&rediscli.Options{Addr: r.Addr()})
+	defer func() { _ = rc.Close() }()
+	rc.AddHook(replyErrorHook{})
+
+	assert.EqualError(t, c.applyACLLoad(rc), "reply error")
 }
