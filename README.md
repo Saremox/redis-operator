@@ -137,7 +137,15 @@ See the manifests in [manifests/kustomize](manifests/kustomize) for more informa
 
 ### Operator metrics
 
-The operator serves Prometheus metrics on `--listen-address` (default `:9710`) at `--metrics-path` (default `/metrics`). The flag `--enable-pprof` (default `false`) serves the Go profiler at `/debug/pprof/` on the same address. A heap profile can contain the Redis passwords.
+The operator serves Prometheus metrics on `--listen-address` (default `:9710`) at `--metrics-path` (default `/metrics`). The flag `--enable-pprof` (default `false`) serves the Go profiler at `/debug/pprof/` on the same address. The profiler has no authentication. Allow only trusted users to reach this address.
+
+### Security notes
+
+The author of a RedisFailover controls the pods that the operator creates: containers, volumes, `hostPath`, `hostNetwork` and service account. Enforce the Pod Security Admission level `restricted`, or an admission policy, in each namespace where users create a RedisFailover.
+
+A RedisFailover in the operator namespace can use the service account of the operator. Install the operator in its own namespace. With Helm, use the options `--namespace` and `--create-namespace`.
+
+Redis and Sentinel do not use TLS. Sentinel has no password. Redis has no password without `auth.secretPath`. Use a NetworkPolicy to limit access to the Redis and Sentinel ports. Allow only your monitoring system to reach the exporter port.
 
 ## Usage
 
@@ -381,7 +389,7 @@ Do not set `REDIS_PASSWORD` in `redis.env`. Without `auth.secretPath`, the shutd
 To use a custom Kubernetes [Priority Class](https://kubernetes.io/docs/concepts/configuration/pod-priority-preemption/#priorityclass) for the Redis or Sentinel pods, set `priorityClassName` in the `redis` or `sentinel` spec. This field has no default. **Note:** the operator does not create the `PriorityClass` resource.
 
 ### Custom Service Account
-To use a custom Kubernetes [Service Account](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/) for the Redis or Sentinel pods, set `serviceAccountName` in the `redis` or `sentinel` spec. Without it, the Redis pods use the `default` ServiceAccount, and the Sentinel pods use the `rfs-sa-<NAME>` ServiceAccount that the operator creates. **Note:** the operator does not create the `ServiceAccount` resource that you specify.
+To use a custom Kubernetes [Service Account](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/) for the Redis or Sentinel pods, set `serviceAccountName` in the `redis` or `sentinel` spec. Without it, the Redis pods use the `default` ServiceAccount, and the Sentinel pods use the `rfs-sa-<NAME>` ServiceAccount that the operator creates. Without it, the pods also do not mount the ServiceAccount token. **Note:** the operator does not create the `ServiceAccount` resource that you specify.
 
 ### Custom Pod Annotations
 By default, the Sentinel pods have no annotations. The Redis pods have the `redisfailovers.databases.spotahome.com/secret-checksum` annotation. The operator changes it when the password changes, so that the Redis pods restart.

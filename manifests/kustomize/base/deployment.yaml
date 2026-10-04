@@ -14,7 +14,13 @@ spec:
           image: ghcr.io/saremox/redis-operator:4.2.0-rc2
           imagePullPolicy: IfNotPresent
           securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
             readOnlyRootFilesystem: true
             runAsNonRoot: true
             runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
       restartPolicy: Always

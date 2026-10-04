@@ -27,9 +27,15 @@ spec:
               containerPort: 9710
               protocol: TCP
           securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
             readOnlyRootFilesystem: true
             runAsNonRoot: true
             runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
           resources:
             limits:
               cpu: 100m
@@ -61,58 +67,136 @@ rules:
       - databases.spotahome.com
     resources:
       - redisfailovers
+    verbs:
+      - list
+      - patch
+      - watch
+  - apiGroups:
+      - databases.spotahome.com
+    resources:
       - redisfailovers/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - databases.spotahome.com
+    resources:
       - redisfailovers/status
     verbs:
-      - "*"
-  - apiGroups:
-      - ""
-    resources:
-      - pods
-      - services
-      - endpoints
-      - events
-      - configmaps
-      - serviceaccounts
-      - persistentvolumeclaims
-      - persistentvolumeclaims/finalizers
-      - pods/resize
-    verbs:
-      - "*"
-  - apiGroups:
-      - ""
-    resources:
-      - secrets
-    verbs:
-      - "get"
-  - apiGroups:
-      - apps
-    resources:
-      - deployments
-      - statefulsets
-      - controllerrevisions
-    verbs:
-      - "*"
-  - apiGroups:
-      - policy
-    resources:
-      - poddisruptionbudgets
-    verbs:
-      - "*"
-  - apiGroups:
-      - coordination.k8s.io
-    resources:
-      - leases
-    verbs:
-      - "*"
+      - get
+      - patch
   - apiGroups:
       - discovery.k8s.io
     resources:
       - endpointslices
     verbs:
+      - list
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - delete
       - get
       - list
-      
+      - patch
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods/resize
+    verbs:
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - services
+      - configmaps
+      - serviceaccounts
+    verbs:
+      - create
+      - delete
+      - get
+      - update
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims
+    # The admission plugin OwnerReferencesPermissionEnforcement needs delete to change owner references.
+    verbs:
+      - delete
+      - get
+      - list
+      - update
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    # --watch-auth-secrets also needs list and watch.
+    verbs:
+      - get
+  - apiGroups:
+      - apps
+    resources:
+      - controllerrevisions
+    verbs:
+      - get
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - create
+      - delete
+      - get
+      - update
+  - apiGroups:
+      - apps
+    resources:
+      - statefulsets
+    # The admission plugin OwnerReferencesPermissionEnforcement needs delete to change owner references.
+    verbs:
+      - create
+      - delete
+      - get
+      - update
+  - apiGroups:
+      - policy
+    resources:
+      - poddisruptionbudgets
+    verbs:
+      - create
+      - delete
+      - get
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: redisoperator
+  namespace: default
+rules:
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - create
+      - get
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redisoperator
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: redisoperator
+subjects:
+  - kind: ServiceAccount
+    name: redisoperator
+    namespace: default
 ---
 apiVersion: v1
 kind: ServiceAccount

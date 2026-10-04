@@ -35,7 +35,8 @@ func NewSecretService(kubeClient kubernetes.Interface, logger log.Logger, metric
 func (s *SecretService) GetSecret(namespace, name string) (*corev1.Secret, error) {
 
 	secret, err := s.kubeClient.CoreV1().Secrets(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-	recordMetrics(namespace, "Secret", name, "GET", err, s.metricsRecorder)
+	// The Secret name comes from the RedisFailover spec, so it is not a metric label.
+	recordMetrics(namespace, "Secret", metrics.NOT_APPLICABLE, "GET", err, s.metricsRecorder)
 	if err != nil {
 		return nil, err
 	}

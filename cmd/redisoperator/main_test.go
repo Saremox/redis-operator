@@ -50,6 +50,20 @@ func TestNewHTTPHandler(t *testing.T) {
 	}
 }
 
+func TestNewHTTPServer(t *testing.T) {
+	h := http.NewServeMux()
+
+	s := newHTTPServer(":9710", h)
+
+	assert.Equal(t, ":9710", s.Addr)
+	assert.Equal(t, h, s.Handler)
+	assert.Equal(t, 5*time.Second, s.ReadHeaderTimeout)
+	assert.Equal(t, 10*time.Second, s.ReadTimeout)
+	assert.Equal(t, 60*time.Second, s.IdleTimeout)
+	assert.Equal(t, 64*1024, s.MaxHeaderBytes)
+	assert.Zero(t, s.WriteTimeout)
+}
+
 func TestRunServesTheHTTPHandler(t *testing.T) {
 	prevRegisterer := prometheus.DefaultRegisterer
 	t.Cleanup(func() { prometheus.DefaultRegisterer = prevRegisterer })
