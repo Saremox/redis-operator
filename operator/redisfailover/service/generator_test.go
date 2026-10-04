@@ -3379,9 +3379,18 @@ func TestRedisShutdownScriptEndsInsideGracePeriod(t *testing.T) {
 	require.NoError(t, client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{}))
 
 	// The fake Sentinel reports this pod (10.0.0.1) as the master on the
-	// first query and 10.0.0.2 after it. The fake local Redis answers OK.
+	// first query and 10.0.0.2 after it. The fake local Redis answers OK, or
+	// refuses a password other than FAKE_REQUIREPASS as redis-cli does.
 	fakeCLI := `#!/bin/sh
 echo "auth=$REDISCLI_AUTH $*" >>"$FAKE_LOG"
+case "$*" in
+*"-h "*) ;;
+*) if [ -n "$FAKE_REQUIREPASS" ] && [ "$REDISCLI_AUTH" != "$FAKE_REQUIREPASS" ]; then
+	echo "AUTH failed: WRONGPASS invalid username-password pair or user is disabled." >&2
+	echo "NOAUTH Authentication required."
+	exit 0
+fi ;;
+esac
 case "$*" in
 *"-h "*) ;;
 *"CLIENT PAUSE"*) echo "${FAKE_PAUSE:-OK}"; exit 0 ;;
@@ -3426,17 +3435,27 @@ esac
 			maxTime: 5 * time.Second,
 		},
 		{
-			// Redis before 6.2 has no CLIENT PAUSE WRITE.
+			// Redis before 6.2 has no CLIENT PAUSE WRITE. A failover without
+			// the pause loses the writes that the promoted replica did not
+			// get, so the script leaves the failover to Sentinel.
 			name: "pause fails",
 			env:  []string{"FAKE_PAUSE=ERR syntax error"},
 			wantCalls: []string{
 				lookup,
 				"auth= -p 6379 CLIENT PAUSE <ms> WRITE",
-				failover,
-				lookup,
-				"auth= -p 6379 REPLICAOF 10.0.0.2 6379",
-				"auth= -p 6379 CLIENT UNPAUSE",
 				"auth= -p 6379 save",
+			},
+			maxTime: 5 * time.Second,
+		},
+		{
+			// The operator changed the password in place, and the env of the
+			// pod still has the old one: no pause, so no failover.
+			name: "stale password",
+			env:  []string{"REDIS_PASSWORD=old", "FAKE_REQUIREPASS=new"},
+			wantCalls: []string{
+				lookup,
+				"auth=old -p 6379 CLIENT PAUSE <ms> WRITE",
+				"auth=old -p 6379 save",
 			},
 			maxTime: 5 * time.Second,
 		},
