@@ -92,7 +92,7 @@
       "type": "table",
       "title": "Chaos actions in range",
       "description": "Chaos actions by kind and result. The actions also show as annotations.",
-      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 6},
+      "gridPos": {"x": 0, "y": 8, "w": 8, "h": 6},
       "targets": [
         {
           "expr": "sum by (kind, result) (increase(redis_soak_chaos_total[$__range])) > 0",
@@ -112,12 +112,23 @@
       "type": "table",
       "title": "Build",
       "description": "The operator version is the image tag of its Deployment, so an upgrade shows here.",
-      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 6},
+      "gridPos": {"x": 8, "y": 8, "w": 8, "h": 6},
       "targets": [{"expr": "redis_soak_build_info", "refId": "A", "instant": true, "format": "table"}],
       "options": {"showHeader": true, "cellHeight": "sm"},
       "transformations": [
         {"id": "merge", "options": {}},
         {"id": "organize", "options": {"excludeByName": {"Time": true}}}
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Tester goroutines and open files",
+      "description": "These grow with leaked connections. The tester restarts when it reaches its memory limit, and a restart sets all counters to 0.",
+      "gridPos": {"x": 16, "y": 8, "w": 8, "h": 6},
+      "targets": [
+        {"expr": "sum(go_goroutines and on (instance) redis_soak_build_info)", "refId": "A", "legendFormat": "goroutines", "range": true},
+        {"expr": "sum(process_open_fds and on (instance) redis_soak_build_info)", "refId": "B", "legendFormat": "open files", "range": true}
       ]
     },
     {

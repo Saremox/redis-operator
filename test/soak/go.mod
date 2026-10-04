@@ -8,7 +8,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
-	github.com/redis/go-redis/v9 v9.22.0
+	github.com/redis/go-redis/v9 v9.23.0-beta.1
 	github.com/saremox/redis-operator v0.0.0-00010101000000-000000000000
 	golang.org/x/time v0.15.0
 	k8s.io/api v0.37.1
