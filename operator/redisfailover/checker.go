@@ -565,7 +565,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		State: redisfailoverv1.HealthyState,
 	}
 
-	// A panic ends the reconcile with an error, so the status must not stay Healthy.
+	// A panic ends the reconcile with an error, so the status and cluster_ok must not stay healthy.
 	defer func() {
 		if p := recover(); p != nil {
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -573,6 +573,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 				Message: "internal error, see the operator log",
 			}
 			updateStatus(r.k8sservice, rf, observed)
+			r.mClient.SetClusterError(rf.Namespace, rf.Name)
 			panic(p)
 		}
 		updateStatus(r.k8sservice, rf, observed)
