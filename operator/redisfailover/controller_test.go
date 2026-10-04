@@ -56,6 +56,7 @@ func staticSecrets() *cache.ListWatch {
 type recordingHandler struct {
 	mu      sync.Mutex
 	calls   []string
+	forgot  []string
 	running atomic.Int32
 	overlap atomic.Bool
 	delay   time.Duration
@@ -72,6 +73,18 @@ func (h *recordingHandler) Handle(_ context.Context, obj runtime.Object) error {
 	h.calls = append(h.calls, rf.Namespace+"/"+rf.Name)
 	h.mu.Unlock()
 	return nil
+}
+
+func (h *recordingHandler) Forget(key string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.forgot = append(h.forgot, key)
+}
+
+func (h *recordingHandler) forgotten() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.forgot...)
 }
 
 func (h *recordingHandler) count() int {
@@ -391,6 +404,8 @@ type blockingHandler struct {
 	release chan struct{}
 }
 
+func (h *blockingHandler) Forget(string) {}
+
 func (h *blockingHandler) Handle(context.Context, runtime.Object) error {
 	h.calls.Add(1)
 	h.once.Do(func() { close(h.started) })
@@ -440,6 +455,8 @@ func TestRFControllerStopsTakingQueuedReconcilesOnceCancelled(t *testing.T) {
 }
 
 type failingHandler struct{ calls atomic.Int32 }
+
+func (h *failingHandler) Forget(string) {}
 
 func (h *failingHandler) Handle(context.Context, runtime.Object) error {
 	h.calls.Add(1)
@@ -523,13 +540,81 @@ func TestRFControllerPodOwnerIgnoresUnhandledRedisFailovers(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestRFControllerSkipsDeletedRedisFailovers(t *testing.T) {
+func TestRFControllerForgetsDeletedRedisFailovers(t *testing.T) {
 	h := &recordingHandler{}
 	c, err := newRFController(h, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
 	require.NoError(t, err)
 
 	assert.NoError(t, c.process(context.Background(), "ns/gone"))
 	assert.Zero(t, h.count())
+	assert.Equal(t, []string{"ns/gone"}, h.forgotten())
+}
+
+func TestRFControllerKeepsLiveRedisFailovers(t *testing.T) {
+	h := &recordingHandler{}
+	c, err := newRFController(h, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	require.NoError(t, err)
+	require.NoError(t, c.rfInformer.GetIndexer().Add(&redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}))
+
+	assert.NoError(t, c.process(context.Background(), "ns/rf"))
+	assert.Equal(t, 1, h.count())
+	assert.Empty(t, h.forgotten())
+}
+
+// stateHandler keeps the password state of the real handler for each
+// RedisFailover that it reconciles.
+type stateHandler struct{ *RedisFailoverHandler }
+
+func (h stateHandler) Handle(_ context.Context, obj runtime.Object) error {
+	return h.applyPassword(obj.(*redisfailoverv1.RedisFailover))
+}
+
+// Someone can remove the finalizer by hand. The object is then gone without a
+// reconcile that sees the deletion timestamp.
+func TestRFControllerForgetsTheStateOfARedisFailoverRemovedWithoutTheFinalizer(t *testing.T) {
+	password := "v1"
+	handler, rf, mrfh := newPasswordTestHandler(&password)
+	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(true, nil)
+	mrfh.On("ApplySentinelPassword", rf, "v1").Return(true, nil)
+	c, err := newRFController(stateHandler{handler}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	require.NoError(t, err)
+	require.NoError(t, c.rfInformer.GetIndexer().Add(rf))
+
+	require.NoError(t, c.process(context.Background(), "testns/test"))
+	_, tracked := handler.passwords.Load("testns/test")
+	require.True(t, tracked)
+
+	require.NoError(t, c.rfInformer.GetIndexer().Delete(rf))
+	require.NoError(t, c.process(context.Background(), "testns/test"))
+	_, tracked = handler.passwords.Load("testns/test")
+	assert.False(t, tracked)
+}
+
+func TestRFControllerQueuesTheKeyOfADeletedRedisFailover(t *testing.T) {
+	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)
+	rf := redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}
+	events := watch.NewFake()
+	rfs := &cache.ListWatch{
+		ListWithContextFunc: func(context.Context, metav1.ListOptions) (runtime.Object, error) {
+			return &redisfailoverv1.RedisFailoverList{Items: []redisfailoverv1.RedisFailover{rf}}, nil
+		},
+		WatchFuncWithContext: func(context.Context, metav1.ListOptions) (watch.Interface, error) {
+			return events, nil
+		},
+	}
+	h := &recordingHandler{}
+	c, err := newRFController(h, rfs, newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- c.Run(ctx) }()
+	require.Eventually(t, func() bool { return h.count() == 1 }, 5*time.Second, 10*time.Millisecond)
+
+	events.Delete(&rf)
+	require.Eventually(t, func() bool { return len(h.forgotten()) == 1 }, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, []string{"ns/rf"}, h.forgotten())
+	cancel()
+	require.NoError(t, <-done)
 }
 
 func TestRFControllerResyncsRedisFailovers(t *testing.T) {
@@ -652,6 +737,8 @@ func TestRFControllerEnqueueAfter(t *testing.T) {
 
 type mutatingHandler struct{}
 
+func (mutatingHandler) Forget(string) {}
+
 func (mutatingHandler) Handle(_ context.Context, obj runtime.Object) error {
 	obj.(*redisfailoverv1.RedisFailover).Status.State = redisfailoverv1.HealthyState
 	return nil
@@ -747,6 +834,8 @@ type sentinelHandler struct {
 	ip    string
 	calls atomic.Int32
 }
+
+func (h *sentinelHandler) Forget(string) {}
 
 func (h *sentinelHandler) Handle(context.Context, runtime.Object) error {
 	h.calls.Add(1)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -80,6 +81,17 @@ func NewRedisFailoverHandler(config Config, rfService rfservice.RedisFailoverCli
 	}
 }
 
+// Forget drops the metrics series and the in-memory state of a RedisFailover.
+// The controller also calls it for an object that is gone without a deletion
+// timestamp, because someone removed the finalizer by hand.
+func (r *RedisFailoverHandler) Forget(key string) {
+	namespace, name, _ := strings.Cut(key, "/")
+	r.mClient.DeleteCluster(namespace, name)
+	r.passwords.Delete(key)
+	r.rolloutWaits.Delete(key)
+	r.unreachableCleared.Delete(key)
+}
+
 // Handle will ensure the redis failover is in the expected state.
 func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) error {
 	rf, ok := obj.(*redisfailoverv1.RedisFailover)
@@ -96,10 +108,7 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 			// Finalizer already removed (or never added) - nothing left to do.
 			return nil
 		}
-		r.mClient.DeleteCluster(rf.Namespace, rf.Name)
-		r.passwords.Delete(passwordKey(rf))
-		r.rolloutWaits.Delete(passwordKey(rf))
-		r.unreachableCleared.Delete(failoverKey(rf))
+		r.Forget(failoverKey(rf))
 		remaining := slices.DeleteFunc(slices.Clone(rf.Finalizers), func(f string) bool {
 			return f == redisFailoverFinalizer
 		})
