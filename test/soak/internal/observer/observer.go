@@ -49,9 +49,12 @@ type Observer struct {
 	source *Observer
 	log    *slog.Logger
 
-	tracker    *tracker
-	holds      chan *Hold
-	hold       *Hold
+	tracker *tracker
+	holds   chan *Hold
+	hold    *Hold
+	// mutating is set from the call of Hold until the window of the
+	// mutation ends, before the round that takes the hold.
+	mutating   atomic.Bool
 	holdErr    error
 	view       atomic.Pointer[view]
 	generation int64
@@ -190,6 +193,7 @@ type PodAddr struct {
 // previous hold, whose Done then never receives.
 func (o *Observer) Hold(timeout time.Duration, converged func(context.Context) error) *Hold {
 	h := &Hold{since: time.Now(), timeout: timeout, converged: converged, done: make(chan bool, 1)}
+	o.mutating.Store(true)
 	o.holds <- h
 	return h
 }
@@ -576,7 +580,7 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 
 // externalWindow keeps a window open while a disturbance outside the instance
 // continues: a mutation stopped the operator, a chaos action runs, or the
-// source of a bootstrapping instance converges or has no master. A change of
+// source of a bootstrapping instance is mutated, converges or has no master. A change of
 // the source master also opens a window for a bootstrapping instance. Its pods
 // connect to the new master only after their link to the old master breaks,
 // which can be after the source converged. The window closes when all pods
@@ -589,7 +593,7 @@ func (o *Observer) externalWindow(now time.Time) {
 	case o.source != nil:
 		v := o.source.view.Load()
 		switch {
-		case v == nil || v.windowOpen || v.masterIP == "":
+		case v == nil || v.windowOpen || v.masterIP == "" || o.source.mutating.Load():
 			reason = "source converging"
 		case v.masterIP != o.sourceMaster:
 			if o.sourceMaster != "" {
@@ -676,6 +680,7 @@ func (o *Observer) release(converged bool) {
 	if o.hold != nil {
 		o.hold.done <- converged
 		o.hold = nil
+		o.mutating.Store(false)
 	}
 }
 

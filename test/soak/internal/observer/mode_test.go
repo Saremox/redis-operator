@@ -1,10 +1,12 @@
 package observer
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -206,6 +208,24 @@ func TestSourceWindow(t *testing.T) {
 	o.apply(at(95), newStream(down), 1, false)
 	if v := testutil.ToFloat64(o.findings.WithLabelValues(invOneMaster)); v != 1 {
 		t.Errorf("findings = %v, want 1", v)
+	}
+}
+
+// A mutation of the source, for example a master kill, can break the link of
+// the pods before the next round of the source opens its window.
+func TestSourceMutation(t *testing.T) {
+	src, _ := newTestObserver(t)
+	src.apply(at(0), healthy(false), 1, false)
+	o, _ := newTestObserver(t)
+	o.SetSource(src)
+	o.apply(at(0), bootstrapped(), 1, false)
+	o.apply(at(5), bootstrapped(), 1, false)
+	src.Hold(time.Minute, func(context.Context) error { return nil })
+	down := bootstrapped()
+	down.redis[1].info["master_link_status"] = "down"
+	o.apply(at(10), down, 1, false)
+	if v := testutil.ToFloat64(o.findings.WithLabelValues(invOneMaster)); v != 0 {
+		t.Errorf("findings = %v while the source is mutated", v)
 	}
 }
 

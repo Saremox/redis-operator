@@ -163,7 +163,7 @@ can look converged. The window times out after
 A change of `metadata.generation` outside a mutation also opens a window,
 for example a manual change. A disturbance outside the instance keeps a
 window open: a stopped operator, a chaos action, or a source of a
-bootstrapping instance that converges. The tester also opens a window when
+bootstrapping instance that is mutated or converges. The tester also opens a window when
 it first sees an instance.
 
 ### Mutations
