@@ -108,7 +108,7 @@ func generateRedisService(rf *redisfailoverv1.RedisFailover, labels map[string]s
 	labels = util.MergeLabels(labels, selectorLabels)
 	defaultAnnotations := map[string]string{
 		"prometheus.io/scrape": "true",
-		"prometheus.io/port":   "http",
+		"prometheus.io/port":   strconv.Itoa(int(redisExporterListenPort(rf))),
 		"prometheus.io/path":   "/metrics",
 	}
 	annotations := util.MergeLabels(defaultAnnotations, rf.Spec.Redis.ServiceAnnotations)

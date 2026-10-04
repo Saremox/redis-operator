@@ -16,10 +16,36 @@ kind: ConfigMap
 metadata:
   name: shutdown-configmap
 data:
+  # The preStop hook runs this script with /bin/sh. Change 6379 if you set
+  # redis.port, and add your commands at the end.
   shutdown.sh: |
-    echo "shutdown in progress..."
-    master=$(redis-cli -h rfs-redisfailover -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
-    redis-cli SAVE
-    if [ "$master" = "$(hostname -i)" ]; then
-      redis-cli -h rfs-redisfailover -p 26379 SENTINEL failover mymaster
+    sentinel="redis-cli -h rfs-redisfailover -p 26379"
+    # Sentinel has no password, so only the local calls send REDIS_PASSWORD.
+    local_cli() {
+      if [ -n "${REDIS_PASSWORD}" ]; then
+        REDISCLI_AUTH="${REDIS_PASSWORD}" redis-cli -p 6379 "$@"
+      else
+        redis-cli -p 6379 "$@"
+      fi
+    }
+    master_ip() {
+      $sentinel --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '"' | cut -d' ' -f1
+    }
+    self=$(hostname -i)
+    # A failover without a write pause loses the writes that the replica did not get.
+    if [ "$(master_ip)" = "$self" ] && [ "$(local_cli CLIENT PAUSE 15000 WRITE)" = "OK" ]; then
+      if [ "$($sentinel SENTINEL failover mymaster)" = "OK" ]; then
+        i=0
+        while [ "$(master_ip)" = "$self" ] && [ "$i" -lt 10 ]; do
+          sleep 1
+          i=$((i + 1))
+        done
+        master=$(master_ip)
+        # As a replica, this pod gives READONLY to the clients when the pause ends.
+        if [ -n "$master" ] && [ "$master" != "$self" ]; then
+          local_cli REPLICAOF "$master" 6379
+        fi
+      fi
+      local_cli CLIENT UNPAUSE
     fi
+    local_cli SAVE
