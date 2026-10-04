@@ -6,7 +6,7 @@ This repository is a Kubernetes operator that creates, configures, and manages R
 
 - **Language**: Go (module: `github.com/saremox/redis-operator`)
 - **Go version**: See `go.mod` for the current version
-- **Kubernetes API**: Uses `k8s.io/client-go` and the custom CRD `RedisFailover` (group: `databases.spotahome.com/v1`)
+- **Kubernetes API**: Uses `k8s.io/client-go` and the custom CRD `RedisFailover` (group: `databases.spotahome.com`, version: `v1`)
 
 ## Repository Structure
 
@@ -34,7 +34,8 @@ make ci-unit-test
 # or directly:
 go test $(go list ./... | grep -v /vendor/) -v
 
-# Run integration tests (requires a running Kubernetes cluster)
+# Run integration tests. They need a Kubernetes cluster with the RedisFailover CRD,
+# and a host route to the pod IPs.
 make ci-integration-test
 
 # Lint
@@ -57,8 +58,8 @@ make helm-test
 ## CRD and API Changes
 
 - The `RedisFailover` CRD spec is defined in `api/redisfailover/v1/types.go`
-- Default values are set in `api/redisfailover/v1/defaults.go`
-- After changing the API types, regenerate the DeepCopy code and the CRD manifests: `make generate-api`. Then run `make verify-codegen`, the same check that CI runs
+- `Validate()` in `api/redisfailover/v1/validate.go` sets the defaults. `api/redisfailover/v1/defaults.go` holds the default values
+- After a change of the API types, regenerate the DeepCopy code and the CRD manifests: `make generate-api`. Stage the changes: `git add api/ manifests/ charts/redisoperator/crds/`. Then run `make verify-codegen`, the same check that CI runs. It compares with the staged files
 - After changing the API types, regenerate the client: `make update-codegen`
 - Keep backwards compatibility when changing the CRD spec; use optional fields with defaults
 
@@ -66,7 +67,7 @@ make helm-test
 
 - The controller is built directly on client-go informers and a workqueue (`operator/redisfailover/controller.go`)
 - The reconciliation loop is in `operator/redisfailover/`
-- All Kubernetes resources created by the operator carry owner references pointing to the `RedisFailover` CR
+- Each Kubernetes object that the operator creates has an owner reference to the `RedisFailover`. The exception is a PVC with `storage.keepAfterDeletion: true`
 - Redis Statefulsets use the prefix `rfr-<name>`; Sentinel Deployments use `rfs-<name>`
 - The maximum name length for a `RedisFailover` is 48 characters
 
