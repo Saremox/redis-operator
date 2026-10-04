@@ -27,9 +27,15 @@ spec:
               containerPort: 9710
               protocol: TCP
           securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
             readOnlyRootFilesystem: true
             runAsNonRoot: true
             runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
           resources:
             limits:
               cpu: 100m
