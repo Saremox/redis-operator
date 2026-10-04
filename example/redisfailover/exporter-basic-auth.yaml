@@ -2,8 +2,9 @@
 #   kubectl create secret generic exporter-auth \
 #     --from-literal=username=prometheus \
 #     --from-literal=password="$(openssl rand -hex 16)"
-# The exporter checks these credentials on every path.
-# The ServiceMonitor sends them. Prometheus Operator and Alloy read it.
+# Apply the Secret, the RedisFailover and the ServiceMonitor in the same namespace.
+# The exporters check the credentials on all paths.
+# Prometheus Operator and Alloy read the ServiceMonitor and send the credentials.
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover
 metadata:
@@ -45,13 +46,14 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: redisfailover
+  # Add the labels that your Prometheus selects.
 spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: redisfailover
       app.kubernetes.io/part-of: redis-failover
   endpoints:
-    # The redis exporter port of the rfr-<NAME> service.
+    # The Redis exporter port of the rfr-<NAME> service.
     - port: http-metrics
       path: /metrics
       basicAuth:
@@ -61,7 +63,7 @@ spec:
         password:
           name: exporter-auth
           key: password
-    # The sentinel exporter port of the rfs-<NAME> service.
+    # The Sentinel exporter port of the rfs-<NAME> service.
     - port: metrics
       path: /metrics
       basicAuth:
