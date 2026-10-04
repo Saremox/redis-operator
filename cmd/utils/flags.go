@@ -40,7 +40,7 @@ func (c *CMDFlags) Init() {
 	flag.IntVar(&c.K8sQueriesBurstable, "k8s-cli-burstable-limit", 100, "Number of allowed burst requests by kubernetes client without client side throttling")
 	// The controller also uses 3 for a concurrency of 0 or less.
 	flag.IntVar(&c.Concurrency, "concurrency", 3, "Number of concurrent workers that reconcile the RedisFailovers")
-	flag.IntVar(&c.SyncInterval, "sync-interval", 30, "Seconds between two periodic resyncs of all RedisFailovers. A change of a RedisFailover, its pods or its auth Secret starts a reconcile at once. 0 or less means 180. Above 300, the metrics cleanup can delete series between two resyncs")
+	flag.IntVar(&c.SyncInterval, "sync-interval", 30, "Seconds between two periodic resyncs of all RedisFailovers. A change of a RedisFailover or its pods starts a reconcile at once. 0 or less means 180. Above 300, the metrics cleanup can delete series between two resyncs")
 	flag.StringVar(&c.LogLevel, "log-level", "info", "set log level")
 	flag.BoolVar(&c.DisconnectClientsOnDemotion, "disconnect-clients-on-demotion", true, "Close a redis pod's normal and pub/sub client connections when it stops being the master, so clients reconnect to the new master instead of staying on a replica")
 	flag.BoolVar(&c.WatchAuthSecrets, "watch-auth-secrets", false, "Apply an auth Secret (spec.auth.secretPath) change immediately, not at the next sync. This needs list and watch on secrets in all namespaces, which can read every Secret")
