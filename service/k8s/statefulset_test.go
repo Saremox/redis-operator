@@ -92,7 +92,7 @@ func TestStatefulSetServiceGetStatefulSetPods(t *testing.T) {
 	// Same labels, owned by another StatefulSet.
 	otherOwner := ownedPod(otherStatefulSet, stsName+"-2", selectorLabels)
 	// Same owner, name outside the form <name>-<ordinal>.
-	for _, name := range []string{"custom", stsName + "-", stsName + "-x", stsName + "-1x", stsName + "-3-4", "x" + stsName + "-3"} {
+	for _, name := range []string{"custom", stsName + "-", stsName + "-x", stsName + "-1x", stsName + "-3-4", "x" + stsName + "-3", stsName + "-01", stsName + "-00", stsName + "--1", stsName + "-4294967296", stsName + "-99999999999"} {
 		t.Run("drops the owned pod with the name "+name, func(t *testing.T) {
 			mcli := kubernetes.NewClientset(testStatefulSet, podMaster, ownedPod(testStatefulSet, name, selectorLabels))
 			service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
@@ -107,7 +107,7 @@ func TestStatefulSetServiceGetStatefulSetPods(t *testing.T) {
 	// Right owner and labels in another namespace.
 	otherNamespace := ownedPod(testStatefulSet, stsName+"-5", selectorLabels)
 	otherNamespace.Namespace = otherns
-	// Same name and kind, other UID: a StatefulSet that the operator replaced.
+	// Same name and kind, other UID: an older StatefulSet with the same name.
 	staleOwner := ownedPod(testStatefulSet, stsName+"-6", selectorLabels)
 	staleOwner.OwnerReferences[0].UID = "old-uid"
 	// An owner reference without the controller flag.

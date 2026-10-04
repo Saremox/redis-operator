@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/labels"
@@ -83,18 +84,16 @@ func (s *StatefulSetService) GetStatefulSetPods(namespace, name string) (*corev1
 }
 
 // hasOrdinalName reports whether name is <prefix>-<ordinal>, the form that the
-// StatefulSet controller uses for pods and for PVCs.
+// StatefulSet controller uses for pods and for PVCs. The ordinal must be the
+// canonical number of an int32: the controller ignores a name that has another
+// form, such as a leading zero or a number that is too large.
 func hasOrdinalName(name, prefix string) bool {
 	ordinal, ok := strings.CutPrefix(name, prefix+"-")
-	if !ok || ordinal == "" {
+	if !ok {
 		return false
 	}
-	for _, c := range ordinal {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
+	n, err := strconv.ParseInt(ordinal, 10, 32)
+	return err == nil && n >= 0 && strconv.FormatInt(n, 10) == ordinal
 }
 
 // CreateStatefulSet will create the given statefulset

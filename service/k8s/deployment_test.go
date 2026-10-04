@@ -495,9 +495,11 @@ func TestDeploymentServiceGetDeploymentPods(t *testing.T) {
 		noHashLabelRS := replicaSetPod("nohashrs", testns, "", "testdeployment1-abc123", selectorLabels)
 		wrongKind := replicaSetPod("wrongkind", testns, "abc123", "testdeployment1-abc123", selectorLabels)
 		wrongKind.OwnerReferences[0].Kind = "StatefulSet"
+		wrongAPIVersion := replicaSetPod("wrongapiversion", testns, "abc123", "testdeployment1-abc123", selectorLabels)
+		wrongAPIVersion.OwnerReferences[0].APIVersion = "example.com/v1"
 		notController := replicaSetPod("notcontroller", testns, "abc123", "testdeployment1-abc123", selectorLabels)
 		notController.OwnerReferences[0].Controller = ptr.To(false)
-		mcli := kubernetes.NewClientset(deployment, matchingPod, newerPod, otherSelector, otherNamespace, labelsOnly, otherReplicaSet, hashMismatch, noHash, noHashLabelRS, wrongKind, notController)
+		mcli := kubernetes.NewClientset(deployment, matchingPod, newerPod, otherSelector, otherNamespace, labelsOnly, otherReplicaSet, hashMismatch, noHash, noHashLabelRS, wrongKind, wrongAPIVersion, notController)
 		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
 
 		pods, err := service.GetDeploymentPods(testns, "testdeployment1")

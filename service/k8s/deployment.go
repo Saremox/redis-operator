@@ -55,7 +55,8 @@ func (d *DeploymentService) GetDeployment(namespace, name string) (*appsv1.Deplo
 // GetDeploymentPods will retrieve the pods managed by a given deployment.
 // Other pods can carry the selector labels, so a pod needs the ReplicaSet of
 // the deployment as controller. The operator cannot read ReplicaSets, so the
-// check uses the name of the ReplicaSet: <name>-<pod-template-hash>.
+// check compares the name of the ReplicaSet (<name>-<pod-template-hash>) and
+// not its UID.
 func (d *DeploymentService) GetDeploymentPods(namespace, name string) (*corev1.PodList, error) {
 	deployment, err := d.kubeClient.AppsV1().Deployments(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "Deployment", name, "GET", err, d.metricsRecorder)
@@ -71,7 +72,7 @@ func (d *DeploymentService) GetDeploymentPods(namespace, name string) (*corev1.P
 	for _, pod := range pods.Items {
 		hash := pod.Labels[appsv1.DefaultDeploymentUniqueLabelKey]
 		controller := metav1.GetControllerOf(&pod)
-		if hash != "" && controller != nil && controller.Kind == "ReplicaSet" && controller.Name == deployment.Name+"-"+hash {
+		if hash != "" && controller != nil && controller.APIVersion == appsv1.SchemeGroupVersion.String() && controller.Kind == "ReplicaSet" && controller.Name == deployment.Name+"-"+hash {
 			owned = append(owned, pod)
 		}
 	}
