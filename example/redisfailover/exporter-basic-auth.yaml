@@ -28,6 +28,9 @@ spec:
               key: password
   redis:
     replicas: 3
+    # The annotation scrape cannot send credentials.
+    serviceAnnotations:
+      prometheus.io/scrape: "false"
     exporter:
       enabled: true
       env:
