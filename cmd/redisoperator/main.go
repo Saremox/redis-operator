@@ -120,9 +120,9 @@ func (m *Main) Run() error {
 	}
 }
 
-// newHTTPServer limits the time and the size of a request, so that idle
-// connections cannot exhaust the memory of the operator. It sets no write
-// timeout, because a CPU profile and a large scrape can take a long time.
+// newHTTPServer limits the time and the size of a request, so that the server
+// closes idle and slow connections. It sets no write timeout, because a CPU
+// profile and a large scrape can take a long time.
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,
