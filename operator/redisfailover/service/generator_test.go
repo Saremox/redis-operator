@@ -3389,6 +3389,9 @@ case "$*" in
 	echo "AUTH failed: WRONGPASS invalid username-password pair or user is disabled." >&2
 	echo "NOAUTH Authentication required."
 	exit 0
+fi
+if [ "$FAKE_NOPASS" = 1 ] && [ -n "$REDISCLI_AUTH" ]; then
+	echo "AUTH failed: ERR AUTH <password> called without any password configured for the default user." >&2
 fi ;;
 esac
 case "$*" in
@@ -3455,6 +3458,22 @@ esac
 			wantCalls: []string{
 				lookup,
 				"auth=old -p 6379 CLIENT PAUSE <ms> WRITE",
+				"auth=old -p 6379 save",
+			},
+			maxTime: 5 * time.Second,
+		},
+		{
+			// The operator removed the password in place. redis-cli warns on
+			// stderr, but the commands work: the failover stays fast.
+			name: "password removed",
+			env:  []string{"REDIS_PASSWORD=old", "FAKE_NOPASS=1"},
+			wantCalls: []string{
+				lookup,
+				"auth=old -p 6379 CLIENT PAUSE <ms> WRITE",
+				failover,
+				lookup,
+				"auth=old -p 6379 REPLICAOF 10.0.0.2 6379",
+				"auth=old -p 6379 CLIENT UNPAUSE",
 				"auth=old -p 6379 save",
 			},
 			maxTime: 5 * time.Second,
