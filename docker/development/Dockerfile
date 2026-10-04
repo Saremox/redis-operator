@@ -6,9 +6,8 @@ RUN apk --no-cache add \
     g++ \
     openssl
 
-# Mock creator for `make mocks` and `make go-generate`. Most committed mocks
-# come from v2.20.0, but v2.20.0 panics on the Go 1.26 standard library.
-# v2.53.7 works and generated mocks/metrics/Recorder.go.
+# Mock creator for `make mocks` and `make go-generate`. The committed mocks
+# come from this version. v2.20.0 panics on the Go 1.26 standard library.
 ARG MOCKERY_VERSION="2.53.7"
 RUN wget -c https://github.com/vektra/mockery/releases/download/v${MOCKERY_VERSION}/mockery_${MOCKERY_VERSION}_$(uname -o)_$(uname -m).tar.gz -O - | tar -xz -C /go/bin/
 
