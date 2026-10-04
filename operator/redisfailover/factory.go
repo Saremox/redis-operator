@@ -28,8 +28,7 @@ const (
 	kubeProxySyncGrace     = 2 * time.Second
 )
 
-// New will create an operator that is responsible for managing all the required stuff
-// to create redis failovers.
+// New returns the controller that reconciles the RedisFailovers.
 func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, metaClient metadata.Interface, lockNamespace string, redisClient redis.Client, metricsRecorder metrics.Recorder, logger log.Logger) (Controller, error) {
 	// Create internal services.
 	rfService := rfservice.NewRedisFailoverKubeClient(k8sService, logger, metricsRecorder)
@@ -63,12 +62,15 @@ func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, me
 	return c, nil
 }
 
+// NewRedisFailoverRetriever lists and watches the RedisFailovers in all
+// namespaces, and drops the ones whose namespace does not match
+// SupportedNamespacesRegex. The match is not anchored.
 func NewRedisFailoverRetriever(cfg Config, cli k8s.Services) *cache.ListWatch {
 	isNamespaceSupported := func(rf redisfailoverv1.RedisFailover) bool {
+		// The flag parser rejects a regex that does not compile.
 		match, _ := regexp.Match(cfg.SupportedNamespacesRegex, []byte(rf.Namespace))
 		return match
 	}
-	// check in the startup whether the regex compiles
 
 	return &cache.ListWatch{
 		ListWithContextFunc: func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error) {

@@ -135,11 +135,8 @@ func (c *clients) cleanup(cancel context.CancelFunc) {
 }
 
 func TestRedisFailover(t *testing.T) {
-	// Runs alongside TestRedisFailoverOperatorManagedModeRollout: separate
-	// namespaces, separate in-process operator instances (each with its own
-	// leader-election lease scoped to its own namespace), separate Secrets -
-	// nothing here is shared state, so there's no reason to pay for the two
-	// tests' pod-startup waits back to back instead of concurrently.
+	// The operators of the tests use different namespaces, leases and
+	// Secrets, so the tests can run in parallel.
 	t.Parallel()
 
 	require := require.New(t)
@@ -179,17 +176,12 @@ func TestRedisFailover(t *testing.T) {
 	// Wait for the namespace to be ready, rather than guessing how long that takes.
 	require.NoError(waitForNamespaceActive(k8sClient, namespace, 15*time.Second))
 
-	// Create operator and run. A short resync: waiting for the sentinels to
-	// see the new slaves before replacing the master isn't driven by any
-	// Kubernetes event.
+	// A short resync, because no Kubernetes event comes when the Sentinels
+	// find the new replicas before the master replacement.
 	redisfailoverOperator, err := redisfailover.New(redisfailover.Config{SyncInterval: 2, SupportedNamespacesRegex: "^" + namespace + "$"}, k8sservice, k8sClient, metadataClient, namespace, redisClient, metrics.Dummy, log.Dummy)
 	require.NoError(err)
 
-	// Its own cancelable context, not context.Background(): without this,
-	// nothing ever stopped the operator goroutine below - closing the old
-	// stopC channel here was a no-op since Run() was never wired to observe
-	// it, so the controller (and its informers/leader-election) kept running
-	// for the rest of the test binary's life after this test finished.
+	// The cleanup cancels runCtx, so the operator stops with the test.
 	runCtx, cancelRun := context.WithCancel(context.Background())
 
 	go func() {
@@ -199,9 +191,6 @@ func TestRedisFailover(t *testing.T) {
 	// Prepare cleanup for when the test ends
 	defer clients.cleanup(cancelRun)
 
-	// There's no external readiness signal for "the operator started"; this
-	// just fails fast if it crashed immediately instead of silently waiting
-	// out the full window.
 	require.NoError(waitForOperatorStartup(errC, 15*time.Second))
 
 	// Create secret
@@ -220,10 +209,6 @@ func TestRedisFailover(t *testing.T) {
 	// Check that if we create a RedisFailover, it is certainly created and we can get it
 	ok := t.Run("Check Custom Resource Creation", clients.testCRCreation)
 	require.True(ok, "the custom resource has to be created to continue")
-
-	// No blind wait for the operator to create resources: waitForPodsReady
-	// below already polls with its own generous timeout, so it absorbs
-	// however long that actually takes instead of always paying the worst case.
 
 	// Wait for Redis pods to be Ready before running connectivity tests
 	redisLabelSelector := fmt.Sprintf("app.kubernetes.io/component=redis,redisfailovers.databases.spotahome.com/name=%s", name)
@@ -275,7 +260,7 @@ func (c *clients) testCRCreation(t *testing.T) {
 		Spec: redisfailoverv1.RedisFailoverSpec{
 			Redis: redisfailoverv1.RedisSettings{
 				Replicas:        redisSize,
-				ImagePullPolicy: corev1.PullIfNotPresent, // Use locally built image
+				ImagePullPolicy: corev1.PullIfNotPresent, // CI pulls the default image first
 				Exporter: redisfailoverv1.Exporter{
 					Enabled: true,
 				},
@@ -283,8 +268,8 @@ func (c *clients) testCRCreation(t *testing.T) {
 			},
 			Sentinel: redisfailoverv1.SentinelSettings{
 				Replicas:        sentinelSize,
-				ImagePullPolicy: corev1.PullIfNotPresent, // Use locally built image
-				// Sentinel must be explicitly enabled in v4.0.0+ (default is false)
+				ImagePullPolicy: corev1.PullIfNotPresent,
+				// The default is operator-managed mode, without Sentinel.
 				Enabled: ptr.To(true),
 			},
 			Auth: redisfailoverv1.AuthSettings{

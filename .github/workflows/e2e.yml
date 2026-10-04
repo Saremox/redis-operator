@@ -1,9 +1,9 @@
 name: E2E Tests
 
-# End-to-end coverage for operator-managed (Sentinel-less) mode, the default
-# since v4.0.0. Brings up minikube, installs the chart from this checkout and
-# exercises a real RedisFailover: master election, replication, an
-# operator-driven failover, and the master Service endpoints afterwards.
+# End-to-end test of operator-managed mode (no Sentinel), the default mode.
+# The job starts minikube, installs the chart from this checkout and tests a
+# RedisFailover: master election, replication, a failover by the operator,
+# and the endpoints of the master Service after it.
 #
 # Runs on every pull request. A workflow that only triggered for one base
 # branch could not be tested on the pull request that changed it.
@@ -82,12 +82,9 @@ jobs:
             sleep 5
           done
 
-          # The StatefulSet uses OnDelete (the operator drives pod replacement
-          # itself), which `kubectl rollout status` refuses to wait on - it
-          # only supports RollingUpdate and errors out immediately, so the
-          # loop above used to burn all 60 retries every run without ever
-          # actually waiting on pod readiness. readyReplicas is populated by
-          # the StatefulSet controller regardless of update strategy.
+          # The StatefulSet uses OnDelete, because the operator replaces the
+          # pods. `kubectl rollout status` supports only RollingUpdate. The
+          # StatefulSet controller sets readyReplicas for each update strategy.
           echo "Waiting for Redis pods to become Ready..."
           kubectl wait --for=jsonpath='{.status.readyReplicas}'=2 statefulset/rfr-test-no-sentinel --timeout=180s
 

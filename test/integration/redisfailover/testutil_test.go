@@ -26,15 +26,11 @@ func waitForNamespaceActive(k8sClient kubernetes.Interface, name string, timeout
 	return fmt.Errorf("timed out waiting for namespace %q to become Active", name)
 }
 
-// waitForOperatorStartup replaces a blind "give the operator a moment to
-// start" sleep: there's no external readiness signal to poll for (no health
-// endpoint, no leader-election lease in this harness), but errC - fed by the
-// goroutine running redisfailoverOperator.Run - lets us fail fast if the
-// operator exits during that window (bad kubeconfig, missing CRD, ...)
-// instead of waiting out the full timeout and failing confusingly later at
-// pod-readiness polling. A nil return after the timeout elapses without an
-// error means only that the operator didn't visibly crash; the pod-readiness
-// polling that follows is what actually confirms it's reconciling.
+// waitForOperatorStartup returns an error when the operator exits before the
+// timeout, for example with a bad kubeconfig or without the CRD. The operator
+// in the test has no health endpoint to poll. A nil return means only that
+// the operator did not exit. The pod readiness checks after it show that the
+// operator reconciles.
 func waitForOperatorStartup(errC <-chan error, timeout time.Duration) error {
 	select {
 	case err := <-errC:

@@ -36,8 +36,10 @@ func applyOptions(opts []Option) options {
 	return o
 }
 
-// WithClientDisconnector sets what closes a pod's client connections when
-// its role label moves from master to slave. Without it they are left open.
+// WithClientDisconnector sets what closes the client connections of a pod
+// that stops being the master: when its role label changes from master to
+// slave, or when SetMasterOnAll demotes a master without the master label.
+// Without it, the connections stay open.
 func WithClientDisconnector(d ClientDisconnector) Option {
 	return func(o *options) {
 		o.disconnector = d
@@ -50,9 +52,9 @@ type ClientDisconnector interface {
 	DisconnectDemoted(rf *redisfailoverv1.RedisFailover, pod corev1.Pod, port, password string)
 }
 
-// setSlaveLabel gives pod the slave role label if it doesn't already have it,
-// and disconnects its clients if the label it replaces was master. Only then
-// does it mark the pod evictable.
+// setSlaveLabel gives the pod the slave role label, and disconnects its
+// clients when the old label was master. It marks the pod evictable only
+// after that.
 func setSlaveLabel(k8sService k8s.Services, o options, rf *redisfailoverv1.RedisFailover, pod corev1.Pod, port, password string) error {
 	previousRole := pod.Labels[redisRoleLabelKey]
 	if previousRole != redisRoleLabelSlave {
