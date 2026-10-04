@@ -19,26 +19,27 @@ data:
   # The preStop hook runs this script with /bin/sh. Change 6379 if you set
   # redis.port, and add your commands at the end.
   shutdown.sh: |
-    sentinel="redis-cli -h rfs-redisfailover -p 26379"
+    # A call that hangs must not use up the grace period before the SAVE.
+    t=; command -v timeout >/dev/null 2>&1 && t="timeout 2"
+    sentinel="$t redis-cli -h rfs-redisfailover -p 26379"
     # Sentinel has no password, so only the local calls send REDIS_PASSWORD.
     local_cli() {
       if [ -n "${REDIS_PASSWORD}" ]; then
-        REDISCLI_AUTH="${REDIS_PASSWORD}" redis-cli -p 6379 "$@"
+        REDISCLI_AUTH="${REDIS_PASSWORD}" $t redis-cli -p 6379 "$@"
       else
-        redis-cli -p 6379 "$@"
+        $t redis-cli -p 6379 "$@"
       fi
     }
     master_ip() {
       $sentinel --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '"' | cut -d' ' -f1
     }
+    deadline=$(($(date +%s) + 12))
     self=$(hostname -i)
     # A failover without a write pause loses the writes that the replica did not get.
     if [ "$(master_ip)" = "$self" ] && [ "$(local_cli CLIENT PAUSE 15000 WRITE)" = "OK" ]; then
       if [ "$($sentinel SENTINEL failover mymaster)" = "OK" ]; then
-        i=0
-        while [ "$(master_ip)" = "$self" ] && [ "$i" -lt 10 ]; do
+        while [ "$(master_ip)" = "$self" ] && [ "$(date +%s)" -lt "$deadline" ]; do
           sleep 1
-          i=$((i + 1))
         done
         master=$(master_ip)
         # As a replica, this pod gives READONLY to the clients when the pause ends.
@@ -48,4 +49,6 @@ data:
       fi
       local_cli CLIENT UNPAUSE
     fi
+    # The SAVE has no time limit, so that it can write all the data.
+    t=
     local_cli SAVE
