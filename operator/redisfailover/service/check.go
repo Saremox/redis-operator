@@ -298,14 +298,9 @@ func (r *RedisFailoverChecker) CheckIfMasterLocalhost(rFailover *redisfailoverv1
 	return false, nil
 }
 
-// CheckSentinelsCannotFailover reports whether no Sentinel can fail over. A
-// Sentinel promotes only a replica that it knows, and it learns the replicas
-// from the master that it monitors. When that master is not a pod and no
-// known replica is a pod, the Sentinel stays without a master. A Sentinel
-// that monitors a pod or knows a replica pod can still fail over, so the
-// operator must not elect a master next to it. Every running Sentinel must
-// answer, because a Sentinel that does not answer can know a replica and win
-// the vote of the others.
+// CheckSentinelsCannotFailover reports whether no Sentinel can fail over, so
+// that a promotion by the operator cannot give two masters. docs/logic.md
+// gives the conditions.
 func (r *RedisFailoverChecker) CheckSentinelsCannotFailover(rf *redisfailoverv1.RedisFailover) (bool, error) {
 	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
@@ -323,8 +318,8 @@ func (r *RedisFailoverChecker) CheckSentinelsCannotFailover(rf *redisfailoverv1.
 	if err != nil {
 		return false, err
 	}
-	if quorum := int(getQuorum(rf)); len(sentinels) < quorum {
-		r.logger.Warningf("%d Sentinels run, %d are necessary to be sure that Sentinel cannot fail over", len(sentinels), quorum)
+	if len(sentinels) < int(rf.Spec.Sentinel.Replicas) {
+		r.logger.Warningf("%d of %d Sentinels run, all are necessary to be sure that Sentinel cannot fail over", len(sentinels), rf.Spec.Sentinel.Replicas)
 		return false, nil
 	}
 	for _, sip := range sentinels {
@@ -336,6 +331,18 @@ func (r *RedisFailoverChecker) CheckSentinelsCannotFailover(rf *redisfailoverv1.
 		if pod, ok := pods[master]; ok {
 			r.logger.Infof("Sentinel %s monitors the pod %s (%s), so Sentinel can fail over", sip, pod, master)
 			return false, nil
+		}
+		// 127.0.0.1 is the address in the configuration of a new Sentinel.
+		if master != "127.0.0.1" {
+			down, err := r.redisClient.SentinelMasterDown(sip)
+			if err != nil {
+				r.logger.Warningf("Sentinel %s did not give the state of its master: %v", sip, err)
+				return false, nil
+			}
+			if !down {
+				r.logger.Infof("Sentinel %s does not flag its master %s as down, so the master can still answer", sip, master)
+				return false, nil
+			}
 		}
 		replicas, err := r.redisClient.GetSentinelReplicas(sip)
 		if err != nil {

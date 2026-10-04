@@ -823,6 +823,27 @@ func TestGetSentinelReplicas(t *testing.T) {
 	assert.Equal(t, []string{env.replica.IP}, replicas)
 }
 
+// TestSentinelMasterDown checks that a Sentinel does not flag a master that
+// answers as down.
+func TestSentinelMasterDown(t *testing.T) {
+	env := getSharedEnv(t)
+	down, err := newTestClient().SentinelMasterDown(env.sentinel.IP)
+	require.NoError(t, err)
+	assert.False(t, down)
+}
+
+func TestFlagsDown(t *testing.T) {
+	for flags, want := range map[string]bool{
+		"master":                      false,
+		"s_down,master":               true,
+		"s_down,o_down,master":        true,
+		"master,failover_in_progress": false,
+		"":                            false,
+	} {
+		assert.Equal(t, want, flagsDown(flags), flags)
+	}
+}
+
 func TestSentinelReplicaIPs(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1274,6 +1295,9 @@ func TestSentinelFunctions_SentinelUnreachable(t *testing.T) {
 
 	_, err = c.GetSentinelReplicas(env.sentinel.IP)
 	assert.Error(t, err, "GetSentinelReplicas should fail once nothing is listening on the sentinel port")
+
+	_, err = c.SentinelMasterDown(env.sentinel.IP)
+	assert.Error(t, err, "SentinelMasterDown should fail once nothing is listening on the sentinel port")
 
 	err = c.SetCustomSentinelConfig(env.sentinel.IP, []string{"down-after-milliseconds 1000"})
 	assert.Error(t, err, "SetCustomSentinelConfig should fail once nothing is listening on the sentinel port")

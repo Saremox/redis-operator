@@ -2687,6 +2687,8 @@ func TestCheckSentinelsCannotFailover(t *testing.T) {
 	type view struct {
 		master     string
 		masterErr  error
+		up         bool
+		downErr    error
 		replicas   []string
 		replicaErr error
 	}
@@ -2709,6 +2711,14 @@ func TestCheckSentinelsCannotFailover(t *testing.T) {
 			name:  "the Sentinels know only replicas that are gone",
 			views: []view{{master: gone, replicas: []string{"10.0.0.8"}}, stuck, stuck},
 			want:  true,
+		},
+		{
+			name:  "a Sentinel does not flag its master as down, so the master can still answer",
+			views: []view{stuck, {master: gone, up: true}, stuck},
+		},
+		{
+			name:  "a Sentinel does not give the state of its master",
+			views: []view{stuck, stuck, {master: gone, downErr: errors.New("timeout")}},
 		},
 		{
 			name:  "a Sentinel monitors the address 127.0.0.1 of its configuration",
@@ -2736,9 +2746,9 @@ func TestCheckSentinelsCannotFailover(t *testing.T) {
 			views: []view{stuck, stuck, {master: gone, replicaErr: errors.New("timeout")}},
 		},
 		{
-			name:         "fewer Sentinels run than the quorum",
-			sentinelPods: []corev1.Pod{podWithIP("rfs-test-a", "10.1.0.1", corev1.PodRunning)},
-			views:        []view{stuck},
+			name:         "a quorum of the Sentinels run, but not all of the spec",
+			sentinelPods: []corev1.Pod{podWithIP("rfs-test-a", "10.1.0.1", corev1.PodRunning), podWithIP("rfs-test-b", "10.1.0.2", corev1.PodRunning)},
+			views:        []view{stuck, stuck},
 		},
 		{
 			name:     "listing the redis pods fails",
@@ -2766,6 +2776,7 @@ func TestCheckSentinelsCannotFailover(t *testing.T) {
 			mr := &mRedisService.Client{}
 			for i, v := range test.views {
 				mr.On("GetSentinelMonitor", sentinels[i]).Maybe().Return(v.master, "6379", v.masterErr)
+				mr.On("SentinelMasterDown", sentinels[i]).Maybe().Return(!v.up, v.downErr)
 				mr.On("GetSentinelReplicas", sentinels[i]).Maybe().Return(v.replicas, v.replicaErr)
 			}
 

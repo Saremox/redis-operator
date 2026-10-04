@@ -51,6 +51,7 @@ type Client interface {
 	DisconnectClients(ip, port, password string) error
 	GetSentinelMonitor(ip string) (string, string, error)
 	GetSentinelReplicas(ip string) ([]string, error)
+	SentinelMasterDown(ip string) (bool, error)
 	SetCustomSentinelConfig(ip string, configs []string) error
 	SetCustomRedisConfig(ip string, port string, configs []string, password string) error
 	SlaveIsReady(ip, port, password string) (bool, error)
@@ -419,6 +420,30 @@ func (c *client) GetSentinelReplicas(ip string) ([]string, error) {
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_REPLICAS, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return replicas, nil
+}
+
+// SentinelMasterDown reports whether the Sentinel flags its master as down
+// (s_down or o_down). A Sentinel that still reaches its master does not.
+func (c *client) SentinelMasterDown(ip string) (bool, error) {
+	rClient := rediscli.NewClient(redisOptions(net.JoinHostPort(ip, sentinelPort), ""))
+	defer closeClient(rClient)
+	info, err := c.getSentinelMasterInfo(rClient)
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MASTER_DOWN, metrics.FAIL, getRedisError(err))
+		return false, err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MASTER_DOWN, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return flagsDown(info["flags"]), nil
+}
+
+// flagsDown reports whether the flags of SENTINEL MASTER mark the master down.
+func flagsDown(flags string) bool {
+	for _, f := range strings.Split(flags, ",") {
+		if f == "s_down" || f == "o_down" {
+			return true
+		}
+	}
+	return false
 }
 
 // sentinelReplicaIPs reads the "ip" field of each replica in a SENTINEL

@@ -904,10 +904,9 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 }
 
 // electMasterForSentinel promotes the best replica when no Sentinel can fail
-// over. It counts the masters again first, and checks again for a stopping
-// master, because a master that appeared or started to stop since the first
-// checks gives two masters after a promotion. It reports whether it elected
-// a master.
+// over. It first counts the masters and checks for a stopping master again,
+// because a change since the first checks gives two masters. It reports
+// whether it elected a master.
 func (r *RedisFailoverHandler) electMasterForSentinel(rf *redisfailoverv1.RedisFailover) (bool, error) {
 	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
 	nMasters, err := r.rfChecker.GetNumberMasters(rf)
