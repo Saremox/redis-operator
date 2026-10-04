@@ -137,7 +137,7 @@
       "gridPos": {"x": 0, "y": 15, "w": 12, "h": 7},
       "targets": [
         {
-          "expr": "redis_soak_writable{rf=\"$rf\"}",
+          "expr": "min by (path, client) (redis_soak_writable{rf=\"$rf\"})",
           "refId": "A",
           "legendFormat": "{{path}} {{client}}",
           "range": true
@@ -174,7 +174,7 @@
       "gridPos": {"x": 12, "y": 15, "w": 12, "h": 7},
       "targets": [
         {
-          "expr": "redis_soak_readable{rf=\"$rf\"}",
+          "expr": "min by (path, client) (redis_soak_readable{rf=\"$rf\"})",
           "refId": "A",
           "legendFormat": "{{path}} {{client}}",
           "range": true
@@ -211,7 +211,7 @@
       "gridPos": {"x": 0, "y": 22, "w": 12, "h": 7},
       "targets": [
         {
-          "expr": "redis_soak_invariant_ok{rf=\"$rf\"}",
+          "expr": "min by (invariant) (redis_soak_invariant_ok{rf=\"$rf\"})",
           "refId": "A",
           "legendFormat": "{{invariant}}",
           "range": true
@@ -248,19 +248,19 @@
       "gridPos": {"x": 12, "y": 22, "w": 12, "h": 7},
       "targets": [
         {
-          "expr": "redis_soak_window_open{rf=\"$rf\"}",
+          "expr": "max(redis_soak_window_open{rf=\"$rf\"})",
           "refId": "A",
           "legendFormat": "window open",
           "range": true
         },
-        {"expr": "redis_soak_masters{rf=\"$rf\"}", "refId": "B", "legendFormat": "masters", "range": true},
+        {"expr": "max(redis_soak_masters{rf=\"$rf\"})", "refId": "B", "legendFormat": "masters", "range": true},
         {
-          "expr": "increase(redis_soak_failovers_total{rf=\"$rf\"}[$__rate_interval])",
+          "expr": "sum(increase(redis_soak_failovers_total{rf=\"$rf\"}[$__rate_interval]))",
           "refId": "C",
           "legendFormat": "failovers",
           "range": true
         },
-        {"expr": "redis_soak_rf_healthy{rf=\"$rf\"}", "refId": "D", "legendFormat": "Healthy", "range": true}
+        {"expr": "min(redis_soak_rf_healthy{rf=\"$rf\"})", "refId": "D", "legendFormat": "Healthy", "range": true}
       ],
       "fieldConfig": {
         "defaults": {"custom": {"lineWidth": 1, "fillOpacity": 10, "showPoints": "never"}},
