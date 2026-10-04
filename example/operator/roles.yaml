@@ -61,7 +61,9 @@ rules:
       - ""
     resources:
       - persistentvolumeclaims
+    # The admission plugin OwnerReferencesPermissionEnforcement needs delete to change owner references.
     verbs:
+      - delete
       - get
       - list
       - update
@@ -91,8 +93,10 @@ rules:
       - apps
     resources:
       - statefulsets
+    # The admission plugin OwnerReferencesPermissionEnforcement needs delete to change owner references.
     verbs:
       - create
+      - delete
       - get
       - update
   - apiGroups:

@@ -145,7 +145,7 @@ The author of a RedisFailover controls the pods that the operator creates: conta
 
 A RedisFailover in the operator namespace can use the service account of the operator. Install the operator in its own namespace. With Helm, use the options `--namespace` and `--create-namespace`.
 
-Redis and Sentinel do not use TLS, Sentinel has no password, and Redis has no password without `auth.secretPath`. Use a NetworkPolicy to limit access to the Redis, Sentinel and exporter ports. The exporter port serves `/scrape` to each client that reaches the port.
+Redis and Sentinel do not use TLS. Sentinel has no password. Redis has no password without `auth.secretPath`. Use a NetworkPolicy to limit access to the Redis and Sentinel ports. Allow only your monitoring system to reach the exporter port.
 
 ## Usage
 
