@@ -8,7 +8,6 @@ then
     echo "Building ${TARGETOS}/${TARGETARCH} release..."
     export GOOS=${TARGETOS}
     export GOARCH=${TARGETARCH}
-    binary_ext=-${TARGETOS}-${TARGETARCH}
 else
     echo "Building native release..."
 fi

@@ -1241,8 +1241,50 @@ func TestRedisService(t *testing.T) {
 		rfNamespace     string
 		rfLabels        map[string]string
 		rfAnnotations   map[string]string
+		rfExporterPort  int32
 		expectedService corev1.Service
 	}{
+		{
+			name:           "with a custom exporter port",
+			rfExporterPort: 9200,
+			expectedService: corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      redisName,
+					Namespace: namespace,
+					Labels: map[string]string{
+						"app.kubernetes.io/component": "redis",
+						"app.kubernetes.io/name":      name,
+						"app.kubernetes.io/part-of":   "redis-failover",
+					},
+					Annotations: map[string]string{
+						"prometheus.io/scrape": "true",
+						"prometheus.io/path":   "/metrics",
+						"prometheus.io/port":   "9200",
+					},
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Name: "testing",
+						},
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Type:      corev1.ServiceTypeClusterIP,
+					ClusterIP: corev1.ClusterIPNone,
+					Selector: map[string]string{
+						"app.kubernetes.io/component": "redis",
+						"app.kubernetes.io/name":      name,
+						"app.kubernetes.io/part-of":   "redis-failover",
+					},
+					Ports: []corev1.ServicePort{
+						{
+							Name:     "http-metrics",
+							Port:     9200,
+							Protocol: corev1.ProtocolTCP,
+						},
+					},
+				},
+			},
+		},
 		{
 			name: "with defaults",
 			expectedService: corev1.Service{
@@ -1257,7 +1299,7 @@ func TestRedisService(t *testing.T) {
 					Annotations: map[string]string{
 						"prometheus.io/scrape": "true",
 						"prometheus.io/path":   "/metrics",
-						"prometheus.io/port":   "http",
+						"prometheus.io/port":   "9121",
 					},
 					OwnerReferences: []metav1.OwnerReference{
 						{
@@ -1298,7 +1340,7 @@ func TestRedisService(t *testing.T) {
 					Annotations: map[string]string{
 						"prometheus.io/scrape": "true",
 						"prometheus.io/path":   "/metrics",
-						"prometheus.io/port":   "http",
+						"prometheus.io/port":   "9121",
 					},
 					OwnerReferences: []metav1.OwnerReference{
 						{
@@ -1339,7 +1381,7 @@ func TestRedisService(t *testing.T) {
 					Annotations: map[string]string{
 						"prometheus.io/scrape": "true",
 						"prometheus.io/path":   "/metrics",
-						"prometheus.io/port":   "http",
+						"prometheus.io/port":   "9121",
 					},
 					OwnerReferences: []metav1.OwnerReference{
 						{
@@ -1381,7 +1423,7 @@ func TestRedisService(t *testing.T) {
 					Annotations: map[string]string{
 						"prometheus.io/scrape": "true",
 						"prometheus.io/path":   "/metrics",
-						"prometheus.io/port":   "http",
+						"prometheus.io/port":   "9121",
 					},
 					OwnerReferences: []metav1.OwnerReference{
 						{
@@ -1422,7 +1464,7 @@ func TestRedisService(t *testing.T) {
 					Annotations: map[string]string{
 						"prometheus.io/scrape": "true",
 						"prometheus.io/path":   "/metrics",
-						"prometheus.io/port":   "http",
+						"prometheus.io/port":   "9121",
 						"some":                 "annotation",
 					},
 					OwnerReferences: []metav1.OwnerReference{
@@ -1464,6 +1506,7 @@ func TestRedisService(t *testing.T) {
 				rf.Namespace = test.rfNamespace
 			}
 			rf.Spec.Redis.ServiceAnnotations = test.rfAnnotations
+			rf.Spec.Redis.Exporter.Port = test.rfExporterPort
 
 			generatedService := corev1.Service{}
 

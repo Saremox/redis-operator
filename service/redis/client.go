@@ -625,24 +625,24 @@ func (c *client) applyACLLoad(rClient *rediscli.Client) error {
 	cmd := rediscli.NewStatusCmd(context.TODO(), "ACL", "LOAD")
 	err := rClient.Process(context.TODO(), cmd)
 	if err != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, strings.Split(rClient.Options().Addr, ":")[0], metrics.APPLY_REDIS_CONFIG, metrics.FAIL, getRedisError(err))
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.APPLY_REDIS_CONFIG, metrics.FAIL, getRedisError(err))
 		return err
 	}
 	if _, err := cmd.Result(); err != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, strings.Split(rClient.Options().Addr, ":")[0], metrics.APPLY_REDIS_CONFIG, metrics.FAIL, getRedisError(err))
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.APPLY_REDIS_CONFIG, metrics.FAIL, getRedisError(err))
 		return err
 	}
-	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, strings.Split(rClient.Options().Addr, ":")[0], metrics.APPLY_REDIS_CONFIG, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.APPLY_REDIS_CONFIG, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
 }
 
 func (c *client) applyRedisConfig(parameter string, value string, rClient *rediscli.Client) error {
 	result := rClient.ConfigSet(context.TODO(), parameter, value)
 	if nil != result.Err() {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, strings.Split(rClient.Options().Addr, ":")[0], metrics.APPLY_REDIS_CONFIG, metrics.FAIL, getRedisError(result.Err()))
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.APPLY_REDIS_CONFIG, metrics.FAIL, getRedisError(result.Err()))
 		return result.Err()
 	}
-	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, strings.Split(rClient.Options().Addr, ":")[0], metrics.APPLY_REDIS_CONFIG, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.APPLY_REDIS_CONFIG, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return result.Err()
 }
 
@@ -650,11 +650,21 @@ func (c *client) applySentinelConfig(parameter string, value string, rClient *re
 	cmd := rediscli.NewStatusCmd(context.TODO(), "SENTINEL", "set", masterName, parameter, value)
 	err := rClient.Process(context.TODO(), cmd)
 	if err != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, strings.Split(rClient.Options().Addr, ":")[0], metrics.APPLY_SENTINEL_CONFIG, metrics.FAIL, getRedisError(err))
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, addrHost(rClient.Options().Addr), metrics.APPLY_SENTINEL_CONFIG, metrics.FAIL, getRedisError(err))
 		return err
 	}
-	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, strings.Split(rClient.Options().Addr, ":")[0], metrics.APPLY_SENTINEL_CONFIG, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, addrHost(rClient.Options().Addr), metrics.APPLY_SENTINEL_CONFIG, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return cmd.Err()
+}
+
+// addrHost returns the host part of addr for a metric label. A split on ":"
+// breaks an IPv6 address.
+func addrHost(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return host
 }
 
 func (c *client) getConfigParameters(config string) (parameter string, value string, err error) {
@@ -679,14 +689,14 @@ func (c *client) SlaveIsReady(ip, port, password string) (bool, error) {
 	}(rClient)
 	info, err := rClient.Info(context.TODO(), "replication").Result()
 	if err != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, strings.Split(rClient.Options().Addr, ":")[0], metrics.SLAVE_IS_READY, metrics.FAIL, getRedisError(err))
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.SLAVE_IS_READY, metrics.FAIL, getRedisError(err))
 		return false, err
 	}
 
 	ok := !strings.Contains(info, redisSyncing) &&
 		!strings.Contains(info, redisMasterSillPending) &&
 		strings.Contains(info, redisLinkUp)
-	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, strings.Split(rClient.Options().Addr, ":")[0], metrics.SLAVE_IS_READY, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.SLAVE_IS_READY, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return ok, nil
 }
 

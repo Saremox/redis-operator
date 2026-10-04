@@ -1,5 +1,3 @@
-VERSION := 4.0.0
-
 # Name of this service/application
 SERVICE_NAME := redis-operator
 
@@ -19,29 +17,14 @@ SHELL := $(shell which bash)
 # Get docker path or an empty string
 DOCKER := $(shell command -v docker)
 
-# Get the main unix group for the user running make (to be used by docker-compose later)
-GID := $(shell id -g)
-
-# Get the unix user id for the user running make (to be used by docker-compose later)
+# The development container runs as this user, so the files that it writes belong to you.
 UID := $(shell id -u)
 
 # Commit hash from git
 COMMIT=$(shell git rev-parse HEAD)
-GITTAG_COMMIT := $(shell git rev-list --tags --max-count=1)
-GITTAG := $(shell git describe --abbrev=0 --tags ${GITTAG_COMMIT} 2>/dev/null || true)
 
 # Branch from git
 BRANCH=$(shell git rev-parse --abbrev-ref HEAD)
-
-TAG := $(GITTAG)
-ifneq ($(COMMIT), $(GITTAG_COMMIT))
-    TAG := $(COMMIT)
-endif
-
-ifneq ($(shell git status --porcelain),)
-    TAG := $(TAG)-dirty
-endif
-
 
 PROJECT_PACKAGE := github.com/saremox/redis-operator
 CODEGEN_IMAGE := ghcr.io/slok/kube-code-generator:v1.27.0
@@ -53,20 +36,16 @@ PORT := 9710
 
 # CMDs
 UNIT_TEST_CMD := go test `go list ./... | grep -v /vendor/` -v
-# Packages that actually contain test files (in-package or external "_test"
-# packages), respecting build tags (e.g. excludes test/integration, which is
-# gated behind the "integration" build tag). Coverage is scoped to these so
-# generated/no-test packages (client/k8s clientset, mocks, cmd/*, ...) aren't
-# fed through the coverage instrumentation, which otherwise trips
-# `go: no such tool "covdata"` on toolchains that don't ship it.
+# Coverage uses only the packages with test files. A package without tests,
+# for example the generated clientset or the mocks, makes `go test -cover`
+# fail with `go: no such tool "covdata"` on toolchains without that tool.
+# The list obeys build tags, so it does not include test/integration.
 UNIT_TEST_COVERAGE_PKGS_CMD := go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v /vendor/
 UNIT_TEST_COVERAGE_CMD := go test `$(UNIT_TEST_COVERAGE_PKGS_CMD)` -v -coverprofile=coverage.out -covermode=atomic
 GO_GENERATE_CMD := go generate `go list ./... | grep -v /vendor/`
-# -timeout raised from go test's 10m default: this package now runs two
-# real-cluster tests back to back (sentinel-managed creation, and an
-# operator-managed creation-plus-rollout scenario), and together they can
-# comfortably exceed 10m against a minikube runner without either being slow
-# on its own.
+# The waits in the rollout test add up to more than 10 minutes, the default
+# timeout of go test. With a higher timeout, a slow wait fails with its own
+# error, not with a panic of go test.
 GO_INTEGRATION_TEST_CMD := go test `go list ./... | grep test/integration` -v -tags='integration' -timeout=30m
 MOCKS_CMD := go generate ./mocks
 
@@ -77,11 +56,11 @@ APP_DIR := docker/app
 # workdir
 WORKDIR := /go/src/github.com/saremox/redis-operator
 
-# The default action of this Makefile is to build the development docker image
+# The default target builds the binaries in the development container.
 .PHONY: default
 default: build
 
-# Run the development environment in non-daemonized mode (foreground)
+# Build the development container image.
 .PHONY: docker-build
 docker-build: deps-development
 	docker build \
@@ -96,12 +75,12 @@ docker-build: deps-development
 shell: docker-build
 	docker run -ti --rm -v ~/.kube:/.kube:ro -v $(PWD):$(WORKDIR) -u $(UID):$(UID) --name $(SERVICE_NAME) -p $(PORT):$(PORT) $(REPOSITORY)-dev /bin/bash
 
-# Build redis-failover executable file
+# Build ./bin/redis-operator and ./bin/redis-instance in the development container.
 .PHONY: build
 build: docker-build
 	docker run -ti --rm -v $(PWD):$(WORKDIR) -u $(UID):$(UID) --name $(SERVICE_NAME) $(REPOSITORY)-dev ./scripts/build.sh
 
-# Run the development environment in the background
+# Build the operator and run it in the foreground against ~/.kube/config.
 .PHONY: run
 run: docker-build
 	docker run -ti --rm -v ~/.kube:/.kube:ro -v $(PWD):$(WORKDIR) -u $(UID):$(UID) --name $(SERVICE_NAME) -p $(PORT):$(PORT) $(REPOSITORY)-dev ./scripts/run.sh
@@ -117,38 +96,12 @@ image: deps-development
 	-f $(APP_DIR)/Dockerfile \
 	.
 
-.PHONY: image-release
-image-release:
-	docker buildx build \
-	--platform linux/amd64,linux/arm64,linux/arm/v7 \
-	--label "org.opencontainers.image.source=https://github.com/saremox/redis-operator" \
- 	--label "org.opencontainers.image.description=Redis Failover Operator" \
- 	--label "org.opencontainers.image.licenses=Apache-2.0" \
-	--push \
-	--build-arg VERSION=$(TAG) \
-	-t $(REPOSITORY):latest \
-	-t $(REPOSITORY):$(COMMIT) \
-	-t $(REPOSITORY):$(TAG) \
-	-f $(APP_DIR)/Dockerfile \
-	.
-
 .PHONY: testing
 testing: image
 	docker push $(REPOSITORY):$(BRANCH)
 
-.PHONY: tag
-tag:
-	git tag $(VERSION)
-
-.PHONY: publish
-publish:
-	@COMMIT_VERSION="$$(git rev-list -n 1 $(VERSION))"; \
-	docker tag $(REPOSITORY):"$$COMMIT_VERSION" $(REPOSITORY):$(VERSION)
-	docker push $(REPOSITORY):$(VERSION)
-	docker push $(REPOSITORY):latest
-
-.PHONY: release
-release: tag image-release
+# A release is not a make target. Use scripts/release.sh and push a tag. The
+# workflow .github/workflows/release.yml then builds and publishes the release.
 
 # Test stuff in dev
 # The development image has no redis-server, so the service/redis tests skip.
@@ -162,8 +115,8 @@ unit-test: docker-build
 ci-unit-test:
 	$(UNIT_TEST_CMD)
 
-# Same unit tests as ci-unit-test, but also produces coverage.out for
-# uploading to Codecov. Used by the CI unit-test job.
+# Runs the tests of ci-unit-test and writes coverage.out. The CI unit-test job
+# sends this file to Codecov.
 .PHONY: ci-unit-test-coverage
 ci-unit-test-coverage:
 	$(UNIT_TEST_COVERAGE_CMD)
@@ -171,10 +124,6 @@ ci-unit-test-coverage:
 .PHONY: ci-integration-test
 ci-integration-test:
 	$(GO_INTEGRATION_TEST_CMD)
-
-.PHONY: integration-test
-integration-test:
-	./scripts/integration-tests.sh
 
 .PHONY: helm-test
 helm-test:
@@ -203,11 +152,9 @@ ifndef DOCKER
 	@exit 1
 endif
 
-# Generate the typed clientset (client/k8s/clientset). DeepCopy used to come
-# out of this same Docker-based generator too, but that moved to
-# generate-deepcopy (controller-gen, no Docker needed) since it's the part
-# that actually goes stale in practice - client-gen output only changes when
-# the RedisFailover API's shape itself changes, which is rare.
+# Generate the typed clientset in client/k8s/clientset. The clientset changes
+# only when the shape of the RedisFailover API changes. DeepCopy comes from
+# generate-deepcopy.
 .PHONY: update-codegen
 update-codegen:
 	@echo ">> Generating client code for Kubernetes CRD types..."
@@ -234,25 +181,22 @@ generate-crd:
 	cp -f manifests/databases.spotahome.com_redisfailovers.yaml manifests/kustomize/base/
 	cp -f manifests/databases.spotahome.com_redisfailovers.yaml charts/redisoperator/crds/
 
-# Generate DeepCopy methods for the API types (zz_generated.deepcopy.go).
-# Same controller-gen binary as generate-crd - no Docker required, which is
-# what makes this (unlike update-codegen) safe to run from verify-codegen and
-# the pre-commit hook in every contributor's environment.
+# Generate the DeepCopy methods (zz_generated.deepcopy.go) with controller-gen.
+# This target needs no Docker, so verify-codegen and the pre-commit hook can
+# run it in each environment.
 .PHONY: generate-deepcopy
 generate-deepcopy:
 	controller-gen object paths=./api/...
 
-# Everything controller-gen can produce without Docker. update-codegen
-# (client-gen) and mocks are separate: still Docker-based, change far less
-# often, and aren't covered by verify-codegen or the pre-commit hook.
+# All the code that controller-gen generates. update-codegen and mocks use
+# Docker and change less frequently. verify-codegen and the pre-commit hook do
+# not check them.
 .PHONY: generate-api
 generate-api: generate-deepcopy generate-crd
 
-# Fails if the API types changed without regenerating DeepCopy or the CRD
-# manifests - i.e. `make generate-api`'s output doesn't match what's
-# committed. Run by CI (see .github/workflows/ci.yaml) and the pre-commit
-# hook (see .githooks/pre-commit); both call this instead of duplicating the
-# check.
+# Fails if the output of `make generate-api` is different from the committed
+# files. CI (.github/workflows/ci.yaml) and the pre-commit hook
+# (.githooks/pre-commit) call this target, so the check is in one place.
 #
 # The CRD embeds the schema of every corev1 type RedisFailover references
 # (PodSpec, Volume, ...), so a k8s.io/api bump in go.mod changes it too.
@@ -271,8 +215,8 @@ verify-codegen: generate-deepcopy generate-crd
 		echo "Run 'make generate-crd' with controller-gen $(CONTROLLER_GEN_VERSION) and commit the result."; \
 		exit 1)
 
-# One-time setup per clone: git hooks under .git/hooks aren't version
-# controlled, so this points git at the versioned ones in .githooks instead.
+# Run once for each clone. Git does not version .git/hooks, so this target
+# tells git to use the versioned hooks in .githooks.
 .PHONY: install-hooks
 install-hooks:
 	git config core.hooksPath .githooks
