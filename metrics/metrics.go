@@ -141,7 +141,7 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		Namespace: namespace,
 		Subsystem: promControllerSubsystem,
 		Name:      "ensure_resource_total",
-		Help:      "Number of create or update calls for a resource of a RedisFailover, by status.",
+		Help:      "Number of ensure attempts for a resource of a RedisFailover, by status. An attempt also counts when the resource needs no change.",
 	}, []string{"namespace", "name", "kind", "resource_name", "status"})
 
 	redisCheck := prometheus.NewCounterVec(prometheus.CounterOpts{
