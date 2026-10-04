@@ -137,7 +137,7 @@ See the manifests in [manifests/kustomize](manifests/kustomize) for more informa
 
 ### Operator metrics
 
-The operator serves Prometheus metrics on `--listen-address` (default `:9710`) at `--metrics-path` (default `/metrics`). The flag `--enable-pprof` (default `false`) serves the Go profiler at `/debug/pprof/` on the same address. A heap profile can contain the Redis passwords.
+The operator serves Prometheus metrics on `--listen-address` (default `:9710`) at `--metrics-path` (default `/metrics`). The flag `--enable-pprof` (default `false`) serves the Go profiler at `/debug/pprof/` on the same address. The profiler has no authentication. Allow only trusted users to reach this address.
 
 ## Usage
 

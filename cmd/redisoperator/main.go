@@ -67,7 +67,7 @@ func (m *Main) Run() error {
 	// Serve metrics.
 	go func() {
 		log.Infof("Listening on %s for metrics exposure on URL %s", m.flags.ListenAddr, m.flags.MetricsPath)
-		err := http.ListenAndServe(m.flags.ListenAddr, newHTTPHandler(m.flags.MetricsPath, m.flags.EnablePprof))
+		err := newHTTPServer(m.flags.ListenAddr, newHTTPHandler(m.flags.MetricsPath, m.flags.EnablePprof)).ListenAndServe()
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -120,8 +120,22 @@ func (m *Main) Run() error {
 	}
 }
 
+// newHTTPServer limits the time and the size of a request, so that idle
+// connections cannot exhaust the memory of the operator. It sets no write
+// timeout, because a CPU profile and a large scrape can take a long time.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
+}
+
 // newHTTPHandler serves the metrics, and the profiler only when enabled,
-// because a heap profile can contain the Redis passwords.
+// because the profiler has no authentication.
 func newHTTPHandler(metricsPath string, enablePprof bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(metricsPath, promhttp.Handler())
