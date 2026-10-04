@@ -12,6 +12,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	apitypes "k8s.io/apimachinery/pkg/types"
 	kubernetes "k8s.io/client-go/kubernetes/fake"
 
@@ -207,4 +208,38 @@ func TestCreateOrUpdateStatefulSetChecksTheControllerBeforeTheClaims(t *testing.
 	var other *k8s.ControlledByOtherError
 	require.True(t, errors.As(err, &other))
 	assertPVCStorage(t, mcli, "data-rfr-test-0", "0.5Gi")
+}
+
+func TestCreateOrUpdateComparesTheGroupOfTheController(t *testing.T) {
+	ref := func(group, version string) []metav1.OwnerReference {
+		return []metav1.OwnerReference{*metav1.NewControllerRef(
+			&metav1.ObjectMeta{Name: "foo", UID: "1"},
+			schema.GroupVersionKind{Group: group, Version: version, Kind: "RedisFailover"},
+		)}
+	}
+	desired := ref("databases.spotahome.com", "v1")
+
+	tests := []struct {
+		name      string
+		stored    []metav1.OwnerReference
+		wantLabel string
+		wantErr   bool
+	}{
+		{name: "same Kind and Name in another group: no write", stored: ref("other.example", "v1"), wantLabel: "old", wantErr: true},
+		{name: "same group in another version: update", stored: ref("databases.spotahome.com", "v1alpha1"), wantLabel: "new"},
+	}
+
+	for _, kind := range ownershipKinds() {
+		for _, test := range tests {
+			t.Run(kind.kind+"/"+test.name, func(t *testing.T) {
+				c := kubernetes.NewClientset(kind.object("old", test.stored))
+
+				err := kind.apply(c, kind.object("new", desired))
+
+				var other *k8s.ControlledByOtherError
+				assert.Equal(t, test.wantErr, errors.As(err, &other))
+				assert.Equal(t, test.wantLabel, kind.label(c))
+			})
+		}
+	}
 }

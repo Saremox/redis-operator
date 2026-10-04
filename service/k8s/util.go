@@ -7,6 +7,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // ControlledByOtherError reports that a stored object has another controller
@@ -24,16 +25,24 @@ func (e *ControlledByOtherError) Error() string {
 }
 
 // checkNotControlledByOther returns an error when the stored and the desired
-// object have different controllers. It compares Kind and Name, not UID, so a
-// RedisFailover that is created again keeps its objects. An object without a
-// controller is not checked.
+// object have different controllers. It compares the API group, Kind and Name,
+// not the version and not the UID, so a RedisFailover that is created again
+// keeps its objects. An object without a controller is not checked.
 func checkNotControlledByOther(kind string, stored, desired metav1.Object) error {
 	want := metav1.GetControllerOf(desired)
 	have := metav1.GetControllerOf(stored)
-	if want == nil || have == nil || (want.Kind == have.Kind && want.Name == have.Name) {
+	if want == nil || have == nil || (want.Kind == have.Kind && want.Name == have.Name && controllerGroup(want) == controllerGroup(have)) {
 		return nil
 	}
 	return &ControlledByOtherError{Kind: kind, Name: stored.GetName(), OwnerKind: have.Kind, OwnerName: have.Name}
+}
+
+func controllerGroup(ref *metav1.OwnerReference) string {
+	gv, err := schema.ParseGroupVersion(ref.APIVersion)
+	if err != nil {
+		return ref.APIVersion
+	}
+	return gv.Group
 }
 
 // GetRedisPassword returns the password key of the auth.secretPath Secret, or
