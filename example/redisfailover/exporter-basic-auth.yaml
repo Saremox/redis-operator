@@ -1,0 +1,78 @@
+# Create the Secret first. Use a random password:
+#   kubectl create secret generic exporter-auth \
+#     --from-literal=username=prometheus \
+#     --from-literal=password="$(openssl rand -hex 16)"
+# Apply the Secret, the RedisFailover and the ServiceMonitor in the same namespace.
+# The exporters check the credentials on all paths.
+# Prometheus Operator and Alloy read the ServiceMonitor and send the credentials.
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: redisfailover
+spec:
+  sentinel:
+    enabled: true
+    replicas: 3
+    exporter:
+      enabled: true
+      env:
+        - name: REDIS_EXPORTER_BASIC_AUTH_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: exporter-auth
+              key: username
+        - name: REDIS_EXPORTER_BASIC_AUTH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: exporter-auth
+              key: password
+  redis:
+    replicas: 3
+    # The annotation scrape cannot send credentials.
+    serviceAnnotations:
+      prometheus.io/scrape: "false"
+    exporter:
+      enabled: true
+      env:
+        - name: REDIS_EXPORTER_BASIC_AUTH_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: exporter-auth
+              key: username
+        - name: REDIS_EXPORTER_BASIC_AUTH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: exporter-auth
+              key: password
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redisfailover
+  # Add the labels that your Prometheus selects.
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redisfailover
+      app.kubernetes.io/part-of: redis-failover
+  endpoints:
+    # The Redis exporter port of the rfr-<NAME> service.
+    - port: http-metrics
+      path: /metrics
+      basicAuth:
+        username:
+          name: exporter-auth
+          key: username
+        password:
+          name: exporter-auth
+          key: password
+    # The Sentinel exporter port of the rfs-<NAME> service.
+    - port: metrics
+      path: /metrics
+      basicAuth:
+        username:
+          name: exporter-auth
+          key: username
+        password:
+          name: exporter-auth
+          key: password

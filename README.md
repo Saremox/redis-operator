@@ -401,6 +401,13 @@ By default, the `rfr-<NAME>` service has the `prometheus.io/scrape`, `prometheus
 
 To add service annotations, set `serviceAnnotations` in the `redis` or `sentinel` spec. See the [custom annotations example file](example/redisfailover/custom-annotations.yaml).
 
+### Exporter authentication
+By default, the exporter ports have no authentication. To allow only clients that know a username and a password, set `REDIS_EXPORTER_BASIC_AUTH_USERNAME` and `REDIS_EXPORTER_BASIC_AUTH_PASSWORD` in `redis.exporter.env` and in `sentinel.exporter.env`. Read both values from a Secret with `secretKeyRef`. The exporter then checks the credentials on all paths. If one value is empty, the exporter does not check credentials.
+
+The `basicAuth` field of a ServiceMonitor sends the credentials. Prometheus Operator and Alloy read the Secret from the namespace of the ServiceMonitor. The `prometheus.io` annotations have no field for credentials. To stop that scrape, set `prometheus.io/scrape: "false"` in `redis.serviceAnnotations`. See the [exporter authentication example file](example/redisfailover/exporter-basic-auth.yaml).
+
+The variables change the pod templates, so the operator replaces the Redis pods, the master last, and rolls the Sentinel pods. A container reads the Secret only when it starts. After you change the Secret, restart the pods that run an exporter. Until then, the exporters use the old password.
+
 ### Control of label propagation
 By default, the operator copies all labels of the RedisFailover to the resources that it creates.
 These labels are not always under your control, for example when a GitOps tool manages them.
