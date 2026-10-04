@@ -76,6 +76,10 @@ func (p *PodDisruptionBudgetService) CreateOrUpdatePodDisruptionBudget(namespace
 		return err
 	}
 
+	if err := checkNotControlledByOther("PodDisruptionBudget", storedPodDisruptionBudget, podDisruptionBudget); err != nil {
+		return err
+	}
+
 	// With the stored resource version, the update fails when the object
 	// changed after the read.
 	podDisruptionBudget.ResourceVersion = storedPodDisruptionBudget.ResourceVersion

@@ -77,6 +77,10 @@ func (s *ServiceAccountService) CreateOrUpdateServiceAccount(namespace string, s
 		return err
 	}
 
+	if err := checkNotControlledByOther("ServiceAccount", storedServiceAccount, serviceAccount); err != nil {
+		return err
+	}
+
 	// With the stored resource version, the update fails when the object
 	// changed after the read.
 	serviceAccount.ResourceVersion = storedServiceAccount.ResourceVersion

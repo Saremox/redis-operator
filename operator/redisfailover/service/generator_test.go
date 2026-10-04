@@ -3936,11 +3936,11 @@ func TestRedisReadinessLinkDownWindow(t *testing.T) {
 
 func TestEnsureNotPresentRedisServiceDeletesExisting(t *testing.T) {
 	assert := assert.New(t)
-	rf := generateRF()
+	rf := generateOwnedRF()
 	svcName := rfservice.GetRedisName(rf)
 
 	ms := &mK8SService.Services{}
-	ms.On("GetService", namespace, svcName).Once().Return(&corev1.Service{}, nil)
+	ms.On("GetService", namespace, svcName).Once().Return(&corev1.Service{ObjectMeta: ownedMeta()}, nil)
 	ms.On("DeleteService", namespace, svcName).Once().Return(nil)
 
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
@@ -3952,7 +3952,7 @@ func TestEnsureNotPresentRedisServiceDeletesExisting(t *testing.T) {
 
 func TestEnsureNotPresentRedisServiceNoopWhenAbsent(t *testing.T) {
 	assert := assert.New(t)
-	rf := generateRF()
+	rf := generateOwnedRF()
 	svcName := rfservice.GetRedisName(rf)
 
 	ms := &mK8SService.Services{}
@@ -3974,7 +3974,7 @@ func TestEnsureNotPresentRedisServiceNoopWhenAbsent(t *testing.T) {
 // without ever attempting the delete or surfacing the failure to the caller.
 func TestEnsureNotPresentRedisServiceSwallowsNonNotFoundGetErrors(t *testing.T) {
 	assert := assert.New(t)
-	rf := generateRF()
+	rf := generateOwnedRF()
 	svcName := rfservice.GetRedisName(rf)
 
 	ms := &mK8SService.Services{}
@@ -3989,11 +3989,11 @@ func TestEnsureNotPresentRedisServiceSwallowsNonNotFoundGetErrors(t *testing.T) 
 
 func TestEnsureNotPresentRedisServiceDeleteErrorPropagates(t *testing.T) {
 	assert := assert.New(t)
-	rf := generateRF()
+	rf := generateOwnedRF()
 	svcName := rfservice.GetRedisName(rf)
 
 	ms := &mK8SService.Services{}
-	ms.On("GetService", namespace, svcName).Once().Return(&corev1.Service{}, nil)
+	ms.On("GetService", namespace, svcName).Once().Return(&corev1.Service{ObjectMeta: ownedMeta()}, nil)
 	ms.On("DeleteService", namespace, svcName).Once().Return(errors.New("delete failed"))
 
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
@@ -4008,20 +4008,20 @@ func TestEnsureNotPresentRedisServiceDeleteErrorPropagates(t *testing.T) {
 
 func TestEnsureNotPresentSentinelResourcesDeletesAllExisting(t *testing.T) {
 	assert := assert.New(t)
-	rf := generateRF()
+	rf := generateOwnedRF()
 	resName := rfservice.GetSentinelName(rf)
 	saName := rfservice.GetSentinelServiceAccountName(rf)
 
 	ms := &mK8SService.Services{}
-	ms.On("GetDeployment", namespace, resName).Once().Return(&appsv1.Deployment{}, nil)
+	ms.On("GetDeployment", namespace, resName).Once().Return(&appsv1.Deployment{ObjectMeta: ownedMeta()}, nil)
 	ms.On("DeleteDeployment", namespace, resName).Once().Return(nil)
-	ms.On("GetService", namespace, resName).Once().Return(&corev1.Service{}, nil)
+	ms.On("GetService", namespace, resName).Once().Return(&corev1.Service{ObjectMeta: ownedMeta()}, nil)
 	ms.On("DeleteService", namespace, resName).Once().Return(nil)
-	ms.On("GetConfigMap", namespace, resName).Once().Return(&corev1.ConfigMap{}, nil)
+	ms.On("GetConfigMap", namespace, resName).Once().Return(&corev1.ConfigMap{ObjectMeta: ownedMeta()}, nil)
 	ms.On("DeleteConfigMap", namespace, resName).Once().Return(nil)
-	ms.On("GetPodDisruptionBudget", namespace, resName).Once().Return(&policyv1.PodDisruptionBudget{}, nil)
+	ms.On("GetPodDisruptionBudget", namespace, resName).Once().Return(&policyv1.PodDisruptionBudget{ObjectMeta: ownedMeta()}, nil)
 	ms.On("DeletePodDisruptionBudget", namespace, resName).Once().Return(nil)
-	ms.On("GetServiceAccount", namespace, saName).Once().Return(&corev1.ServiceAccount{}, nil)
+	ms.On("GetServiceAccount", namespace, saName).Once().Return(&corev1.ServiceAccount{ObjectMeta: ownedMeta()}, nil)
 	ms.On("DeleteServiceAccount", namespace, saName).Once().Return(nil)
 
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
@@ -4033,7 +4033,7 @@ func TestEnsureNotPresentSentinelResourcesDeletesAllExisting(t *testing.T) {
 
 func TestEnsureNotPresentSentinelResourcesNoopWhenAbsent(t *testing.T) {
 	assert := assert.New(t)
-	rf := generateRF()
+	rf := generateOwnedRF()
 	resName := rfservice.GetSentinelName(rf)
 	saName := rfservice.GetSentinelServiceAccountName(rf)
 
@@ -4061,7 +4061,7 @@ func TestEnsureNotPresentSentinelResourcesNoopWhenAbsent(t *testing.T) {
 // theirs to manage, so cleanup must not even look it up, let alone delete it.
 func TestEnsureNotPresentSentinelResourcesSkipsUserProvidedServiceAccount(t *testing.T) {
 	assert := assert.New(t)
-	rf := generateRF()
+	rf := generateOwnedRF()
 	rf.Spec.Sentinel.ServiceAccountName = "user-managed-sa"
 	resName := rfservice.GetSentinelName(rf)
 
@@ -4088,7 +4088,7 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 		{
 			name: "Deployment delete error stops before other deletes",
 			setup: func(ms *mK8SService.Services, resName string, saName string) {
-				ms.On("GetDeployment", namespace, resName).Once().Return(&appsv1.Deployment{}, nil)
+				ms.On("GetDeployment", namespace, resName).Once().Return(&appsv1.Deployment{ObjectMeta: ownedMeta()}, nil)
 				ms.On("DeleteDeployment", namespace, resName).Once().Return(errors.New("delete deployment failed"))
 			},
 		},
@@ -4096,7 +4096,7 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 			name: "Service delete error",
 			setup: func(ms *mK8SService.Services, resName string, saName string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
-				ms.On("GetService", namespace, resName).Once().Return(&corev1.Service{}, nil)
+				ms.On("GetService", namespace, resName).Once().Return(&corev1.Service{ObjectMeta: ownedMeta()}, nil)
 				ms.On("DeleteService", namespace, resName).Once().Return(errors.New("delete service failed"))
 			},
 		},
@@ -4105,7 +4105,7 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 			setup: func(ms *mK8SService.Services, resName string, saName string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
-				ms.On("GetConfigMap", namespace, resName).Once().Return(&corev1.ConfigMap{}, nil)
+				ms.On("GetConfigMap", namespace, resName).Once().Return(&corev1.ConfigMap{ObjectMeta: ownedMeta()}, nil)
 				ms.On("DeleteConfigMap", namespace, resName).Once().Return(errors.New("delete configmap failed"))
 			},
 		},
@@ -4115,7 +4115,7 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetConfigMap", namespace, resName).Once().Return(nil, errors.New("not found"))
-				ms.On("GetPodDisruptionBudget", namespace, resName).Once().Return(&policyv1.PodDisruptionBudget{}, nil)
+				ms.On("GetPodDisruptionBudget", namespace, resName).Once().Return(&policyv1.PodDisruptionBudget{ObjectMeta: ownedMeta()}, nil)
 				ms.On("DeletePodDisruptionBudget", namespace, resName).Once().Return(errors.New("delete pdb failed"))
 			},
 		},
@@ -4126,7 +4126,7 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 				ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetConfigMap", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetPodDisruptionBudget", namespace, resName).Once().Return(nil, errors.New("not found"))
-				ms.On("GetServiceAccount", namespace, saName).Once().Return(&corev1.ServiceAccount{}, nil)
+				ms.On("GetServiceAccount", namespace, saName).Once().Return(&corev1.ServiceAccount{ObjectMeta: ownedMeta()}, nil)
 				ms.On("DeleteServiceAccount", namespace, saName).Once().Return(errors.New("delete serviceaccount failed"))
 			},
 		},
@@ -4135,7 +4135,7 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			assert := assert.New(t)
-			rf := generateRF()
+			rf := generateOwnedRF()
 			resName := rfservice.GetSentinelName(rf)
 			saName := rfservice.GetSentinelServiceAccountName(rf)
 

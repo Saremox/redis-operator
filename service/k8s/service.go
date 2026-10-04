@@ -77,6 +77,10 @@ func (s *ServiceService) CreateOrUpdateService(namespace string, service *corev1
 		return err
 	}
 
+	if err := checkNotControlledByOther("Service", storedService, service); err != nil {
+		return err
+	}
+
 	// With the stored resource version, the update fails when the object
 	// changed after the read.
 	service.ResourceVersion = storedService.ResourceVersion

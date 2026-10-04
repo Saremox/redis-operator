@@ -95,6 +95,10 @@ func (d *DeploymentService) CreateOrUpdateDeployment(namespace string, deploymen
 		return err
 	}
 
+	if err := checkNotControlledByOther("Deployment", storedDeployment, deployment); err != nil {
+		return err
+	}
+
 	// With the stored resource version, the update fails when the object
 	// changed after the read.
 	deployment.ResourceVersion = storedDeployment.ResourceVersion

@@ -75,6 +75,10 @@ func (p *ConfigMapService) CreateOrUpdateConfigMap(namespace string, configMap *
 		return err
 	}
 
+	if err := checkNotControlledByOther("ConfigMap", storedConfigMap, configMap); err != nil {
+		return err
+	}
+
 	// With the stored resource version, the update fails when the object
 	// changed after the read.
 	configMap.ResourceVersion = storedConfigMap.ResourceVersion
