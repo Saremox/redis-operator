@@ -42,147 +42,126 @@ func newStatefulSetCreateAction(ns string, statefulSet *appsv1.StatefulSet) kube
 	return kubetesting.NewCreateAction(statefulSetsGroup, ns, statefulSet)
 }
 
-// TestStatefulSetServiceGetStatefulSetPods exercises the real selector-building
-// logic in GetStatefulSetPods: it must list only the pods that belong to the
-// named StatefulSet, scoped by both the StatefulSet's own MatchLabels selector
-// and namespace. This is the exact property a recent fix relies on to prevent
-// replicas from attaching to the wrong RedisFailover's master after pod-IP
-// reuse across namespaces, so it uses a real fake clientset (not hand-rolled
-// reactors) to get genuine label-selector and namespace filtering semantics.
+// ownedPod returns a pod that the StatefulSet controller owns.
+func ownedPod(statefulSet *appsv1.StatefulSet, name string, labels map[string]string) *v1.Pod {
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: statefulSet.Namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(statefulSet, appsv1.SchemeGroupVersion.WithKind("StatefulSet")),
+			},
+		},
+	}
+}
+
+func podNames(podList *v1.PodList) []string {
+	names := []string{}
+	for _, pod := range podList.Items {
+		names = append(names, pod.Name)
+	}
+	return names
+}
+
+// TestStatefulSetServiceGetStatefulSetPods uses a fake clientset to get real
+// label selector and namespace semantics. The pods must come from the
+// StatefulSet: the labels are not enough.
 func TestStatefulSetServiceGetStatefulSetPods(t *testing.T) {
 	testns := "testns"
 	otherns := "otherns"
 	stsName := "teststatefulset"
+	selectorLabels := map[string]string{"app": "redis", "component": "master"}
 
 	testStatefulSet := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      stsName,
-			Namespace: testns,
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: testns, UID: "sts-uid"},
 		Spec: appsv1.StatefulSetSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app":       "redis",
-					"component": "master",
-				},
-			},
+			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels},
 		},
+	}
+	otherStatefulSet := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: testns, UID: "other-uid"},
 	}
 
-	matchingPod1 := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "matching-pod-1",
-			Namespace: testns,
-			Labels: map[string]string{
-				"app":       "redis",
-				"component": "master",
-			},
-		},
+	// A scale-down keeps the pods with a high ordinal until the controller deletes them.
+	podMaster := ownedPod(testStatefulSet, stsName+"-0", selectorLabels)
+	podHighOrdinal := ownedPod(testStatefulSet, stsName+"-12", map[string]string{"app": "redis", "component": "master", "extra": "label"})
+
+	// Same labels, no owner.
+	labelsOnly := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: stsName + "-1", Namespace: testns, Labels: selectorLabels}}
+	// Same labels, owned by another StatefulSet.
+	otherOwner := ownedPod(otherStatefulSet, stsName+"-2", selectorLabels)
+	// Same owner, name outside the form <name>-<ordinal>.
+	for _, name := range []string{"custom", stsName + "-", stsName + "-x", stsName + "-1x", stsName + "-3-4", "x" + stsName + "-3"} {
+		t.Run("drops the owned pod with the name "+name, func(t *testing.T) {
+			mcli := kubernetes.NewClientset(testStatefulSet, podMaster, ownedPod(testStatefulSet, name, selectorLabels))
+			service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
+
+			podList, err := service.GetStatefulSetPods(testns, stsName)
+			assert.NoError(t, err)
+			assert.Equal(t, []string{podMaster.Name}, podNames(podList))
+		})
 	}
-	matchingPod2 := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "matching-pod-2",
-			Namespace: testns,
-			Labels: map[string]string{
-				"app":       "redis",
-				"component": "master",
-				"extra":     "label-should-not-matter",
-			},
-		},
-	}
-	// Same namespace, but does not carry all of the StatefulSet's selector labels.
-	nonMatchingLabelsPod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "non-matching-labels-pod",
-			Namespace: testns,
-			Labels: map[string]string{
-				"app":       "redis",
-				"component": "slave",
-			},
-		},
-	}
-	// Different namespace, but carries the exact same labels as the matching pods.
-	// This proves the selector is correctly namespace-scoped: same labels alone
-	// must not be enough to match across namespaces (the #698-class fix property).
-	crossNamespacePod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "cross-namespace-pod",
-			Namespace: otherns,
-			Labels: map[string]string{
-				"app":       "redis",
-				"component": "master",
-			},
-		},
-	}
+	// Same owner reference, but the pod does not carry the selector labels.
+	otherLabels := ownedPod(testStatefulSet, stsName+"-4", map[string]string{"app": "redis", "component": "slave"})
+	// Right owner and labels in another namespace.
+	otherNamespace := ownedPod(testStatefulSet, stsName+"-5", selectorLabels)
+	otherNamespace.Namespace = otherns
+	// Same name and kind, other UID: a StatefulSet that the operator replaced.
+	staleOwner := ownedPod(testStatefulSet, stsName+"-6", selectorLabels)
+	staleOwner.OwnerReferences[0].UID = "old-uid"
+	// An owner reference without the controller flag.
+	notController := ownedPod(testStatefulSet, stsName+"-7", selectorLabels)
+	notController.OwnerReferences[0].Controller = ptr.To(false)
 
 	mcli := kubernetes.NewClientset(
 		testStatefulSet,
-		matchingPod1,
-		matchingPod2,
-		nonMatchingLabelsPod,
-		crossNamespacePod,
+		otherStatefulSet,
+		podMaster,
+		podHighOrdinal,
+		labelsOnly,
+		otherOwner,
+		otherLabels,
+		otherNamespace,
+		staleOwner,
+		notController,
 	)
-
 	service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
 
-	t.Run("returns exactly the pods matching selector and namespace", func(t *testing.T) {
-		assertTest := assert.New(t)
-
+	t.Run("returns only the pods that the StatefulSet owns", func(t *testing.T) {
 		podList, err := service.GetStatefulSetPods(testns, stsName)
-		assertTest.NoError(err)
-		assertTest.NotNil(podList)
-
-		gotNames := map[string]bool{}
-		for _, p := range podList.Items {
-			gotNames[p.Name] = true
-		}
-
-		assertTest.Len(podList.Items, 2)
-		assertTest.True(gotNames["matching-pod-1"])
-		assertTest.True(gotNames["matching-pod-2"])
-		assertTest.False(gotNames["non-matching-labels-pod"], "pod with a different label value must be excluded")
-		assertTest.False(gotNames["cross-namespace-pod"], "pod in a different namespace with identical labels must be excluded")
+		assert.NoError(t, err)
+		assert.ElementsMatch(t, []string{podMaster.Name, podHighOrdinal.Name}, podNames(podList))
 	})
 
 	t.Run("propagates the error when the StatefulSet itself does not exist", func(t *testing.T) {
-		assertTest := assert.New(t)
-
 		podList, err := service.GetStatefulSetPods(testns, "does-not-exist")
-		assertTest.Error(err)
-		assertTest.Nil(podList)
+		assert.Error(t, err)
+		assert.Nil(t, podList)
 	})
 
-	t.Run("an empty MatchLabels selector matches every pod in the namespace", func(t *testing.T) {
-		// This documents the actual behavior of GetStatefulSetPods when
-		// Spec.Selector.MatchLabels is empty: the joined selector string is
-		// empty, which k8s treats as "select everything" (no restriction),
-		// so every pod in the namespace is returned -- not zero pods.
-		assertTest := assert.New(t)
+	t.Run("propagates the error of the pod list", func(t *testing.T) {
+		failing := kubernetes.NewClientset(testStatefulSet)
+		failing.PrependReactor("list", "pods", func(kubetesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("list failed")
+		})
 
+		podList, err := k8s.NewStatefulSetService(failing, log.Dummy, metrics.Dummy).GetStatefulSetPods(testns, stsName)
+		assert.Error(t, err)
+		assert.Nil(t, podList)
+	})
+
+	t.Run("an empty selector lists every pod, and the owner check keeps only the owned pods", func(t *testing.T) {
 		emptySelectorSts := &appsv1.StatefulSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "empty-selector-sts",
-				Namespace: testns,
-			},
-			Spec: appsv1.StatefulSetSpec{
-				Selector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{},
-				},
-			},
+			ObjectMeta: metav1.ObjectMeta{Name: "empty", Namespace: testns, UID: "empty-uid"},
+			Spec:       appsv1.StatefulSetSpec{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{}}},
 		}
+		owned := ownedPod(emptySelectorSts, "empty-0", nil)
+		mcli := kubernetes.NewClientset(emptySelectorSts, owned, podMaster, labelsOnly)
 
-		mcli2 := kubernetes.NewClientset(
-			emptySelectorSts,
-			matchingPod1,
-			matchingPod2,
-			nonMatchingLabelsPod,
-		)
-		service2 := k8s.NewStatefulSetService(mcli2, log.Dummy, metrics.Dummy)
-
-		podList, err := service2.GetStatefulSetPods(testns, "empty-selector-sts")
-		assertTest.NoError(err)
-		assertTest.NotNil(podList)
-		assertTest.Len(podList.Items, 3, "an empty selector matches every pod in the namespace")
+		podList, err := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy).GetStatefulSetPods(testns, "empty")
+		assert.NoError(t, err)
+		assert.Equal(t, []string{"empty-0"}, podNames(podList))
 	})
 }
 
@@ -291,12 +270,17 @@ func TestStatefulSetServiceGetCreateOrUpdate(t *testing.T) {
 			owners := []metav1.OwnerReference{rfOwnerReference}
 			otherPVC := statefulSetPVC("data-rfr-other-0", "0.5Gi")
 			otherPVC.Labels["app.kubernetes.io/name"] = "other"
+			// Same labels, but not a PVC of the volume claim template.
+			foreignPVC := statefulSetPVC("data-rfr-test-extra", "0.5Gi")
+			wrongTemplatePVC := statefulSetPVC("cache-rfr-test-0", "0.5Gi")
 			mcli := kubernetes.NewClientset(
 				pvcStatefulSet("0.5Gi", owners),
 				statefulSetPVC("data-rfr-test-0", "0.5Gi", rfOwnerReference),
 				// resized already
 				statefulSetPVC("data-rfr-test-1", "1Gi", rfOwnerReference),
 				otherPVC,
+				foreignPVC,
+				wrongTemplatePVC,
 			)
 			service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
 			err := service.CreateOrUpdateStatefulSet(testns, pvcStatefulSet("1Gi", owners))
@@ -304,6 +288,8 @@ func TestStatefulSetServiceGetCreateOrUpdate(t *testing.T) {
 			assertPVCStorage(t, mcli, "data-rfr-test-0", "1Gi")
 			assertPVCStorage(t, mcli, "data-rfr-test-1", "1Gi")
 			assertPVCStorage(t, mcli, "data-rfr-other-0", "0.5Gi")
+			assertPVCStorage(t, mcli, "data-rfr-test-extra", "0.5Gi")
+			assertPVCStorage(t, mcli, "cache-rfr-test-0", "0.5Gi")
 			// should not call update
 			mcli.PrependReactor("update", "persistentvolumeclaims", func(action kubetesting.Action) (handled bool, ret runtime.Object, err error) {
 				t.Error("shouldn't call update")

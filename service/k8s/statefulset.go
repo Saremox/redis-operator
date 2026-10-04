@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/labels"
 
@@ -58,14 +59,42 @@ func (s *StatefulSetService) GetStatefulSet(namespace, name string) (*appsv1.Sta
 	return statefulSet, err
 }
 
-// GetStatefulSetPods will give a list of pods that are managed by the statefulset
+// GetStatefulSetPods will give a list of pods that are managed by the statefulset.
+// Other pods can carry the selector labels, so a pod needs the StatefulSet as
+// controller and a name of the form <name>-<ordinal>.
 func (s *StatefulSetService) GetStatefulSetPods(namespace, name string) (*corev1.PodList, error) {
 	statefulSet, err := s.GetStatefulSet(namespace, name)
 	if err != nil {
 		return nil, err
 	}
 	selector := labels.Set(statefulSet.Spec.Selector.MatchLabels).String()
-	return s.kubeClient.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: selector})
+	pods, err := s.kubeClient.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, err
+	}
+	owned := pods.Items[:0]
+	for _, pod := range pods.Items {
+		if metav1.IsControlledBy(&pod, statefulSet) && hasOrdinalName(pod.Name, statefulSet.Name) {
+			owned = append(owned, pod)
+		}
+	}
+	pods.Items = owned
+	return pods, nil
+}
+
+// hasOrdinalName reports whether name is <prefix>-<ordinal>, the form that the
+// StatefulSet controller uses for pods and for PVCs.
+func hasOrdinalName(name, prefix string) bool {
+	ordinal, ok := strings.CutPrefix(name, prefix+"-")
+	if !ok || ordinal == "" {
+		return false
+	}
+	for _, c := range ordinal {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // CreateStatefulSet will create the given statefulset
@@ -144,6 +173,9 @@ func (s *StatefulSetService) updateStatefulSetPVCs(namespace string, storedState
 	}
 	for i := range pvcs.Items {
 		pvc := &pvcs.Items[i]
+		if !isStatefulSetPVC(pvc.Name, storedStatefulSet) {
+			continue
+		}
 		// The owner change is its own update and its error stops the
 		// reconcile: a rejected resize must not keep an owner reference that
 		// lets the garbage collector delete the PVC.
@@ -179,6 +211,16 @@ func (s *StatefulSetService) updateStatefulSetPVCs(namespace string, storedState
 		}
 	}
 	return nil
+}
+
+// isStatefulSetPVC checks the name, because other PVCs can carry the selector labels.
+func isStatefulSetPVC(name string, statefulSet *appsv1.StatefulSet) bool {
+	for _, template := range statefulSet.Spec.VolumeClaimTemplates {
+		if hasOrdinalName(name, template.Name+"-"+statefulSet.Name) {
+			return true
+		}
+	}
+	return false
 }
 
 func withoutOwners(ownerReferences []metav1.OwnerReference, removed map[types.UID]bool) []metav1.OwnerReference {

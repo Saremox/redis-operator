@@ -448,41 +448,83 @@ func TestDeploymentServiceList(t *testing.T) {
 	})
 }
 
+// replicaSetPod returns a pod with the pod-template-hash label and a
+// controller reference to the named ReplicaSet.
+func replicaSetPod(name, namespace, hash, replicaSet string, labels map[string]string) *corev1.Pod {
+	podLabels := map[string]string{}
+	for key, value := range labels {
+		podLabels[key] = value
+	}
+	if hash != "" {
+		podLabels[appsv1.DefaultDeploymentUniqueLabelKey] = hash
+	}
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    podLabels,
+			OwnerReferences: []metav1.OwnerReference{
+				{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: replicaSet, UID: "rs-uid", Controller: ptr.To(true)},
+			},
+		},
+	}
+}
+
 func TestDeploymentServiceGetDeploymentPods(t *testing.T) {
 	testns := "testns"
 
-	t.Run("returns pods matching the deployment's selector", func(t *testing.T) {
+	t.Run("returns only the pods that a ReplicaSet of the deployment owns", func(t *testing.T) {
 		assertTest := assert.New(t)
 
+		selectorLabels := map[string]string{"app": "redis"}
 		deployment := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: "testdeployment1", Namespace: testns},
 			Spec: appsv1.DeploymentSpec{
-				Selector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{"app": "redis"},
-				},
+				Selector: &metav1.LabelSelector{MatchLabels: selectorLabels},
 			},
 		}
-		matchingPod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "matchingpod",
-				Namespace: testns,
-				Labels:    map[string]string{"app": "redis"},
-			},
-		}
-		otherPod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "otherpod",
-				Namespace: testns,
-				Labels:    map[string]string{"app": "other"},
-			},
-		}
-		mcli := kubernetes.NewClientset(deployment, matchingPod, otherPod)
+		// A rollout has pods of two ReplicaSets.
+		matchingPod := replicaSetPod("matchingpod", testns, "abc123", "testdeployment1-abc123", selectorLabels)
+		newerPod := replicaSetPod("newerpod", testns, "def456", "testdeployment1-def456", selectorLabels)
+		otherSelector := replicaSetPod("otherpod", testns, "abc123", "testdeployment1-abc123", map[string]string{"app": "other"})
+		otherNamespace := replicaSetPod("otherns", "otherns", "abc123", "testdeployment1-abc123", selectorLabels)
+		labelsOnly := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "labelsonly", Namespace: testns, Labels: selectorLabels}}
+		otherReplicaSet := replicaSetPod("otherrs", testns, "abc123", "otherdeployment-abc123", selectorLabels)
+		hashMismatch := replicaSetPod("hashmismatch", testns, "zzz999", "testdeployment1-abc123", selectorLabels)
+		noHash := replicaSetPod("nohash", testns, "", "testdeployment1-", selectorLabels)
+		noHashLabelRS := replicaSetPod("nohashrs", testns, "", "testdeployment1-abc123", selectorLabels)
+		wrongKind := replicaSetPod("wrongkind", testns, "abc123", "testdeployment1-abc123", selectorLabels)
+		wrongKind.OwnerReferences[0].Kind = "StatefulSet"
+		notController := replicaSetPod("notcontroller", testns, "abc123", "testdeployment1-abc123", selectorLabels)
+		notController.OwnerReferences[0].Controller = ptr.To(false)
+		mcli := kubernetes.NewClientset(deployment, matchingPod, newerPod, otherSelector, otherNamespace, labelsOnly, otherReplicaSet, hashMismatch, noHash, noHashLabelRS, wrongKind, notController)
 		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
 
 		pods, err := service.GetDeploymentPods(testns, "testdeployment1")
 		assertTest.NoError(err)
-		assertTest.Len(pods.Items, 1)
-		assertTest.Equal("matchingpod", pods.Items[0].Name)
+		names := []string{}
+		for _, pod := range pods.Items {
+			names = append(names, pod.Name)
+		}
+		assertTest.ElementsMatch([]string{"matchingpod", "newerpod"}, names)
+	})
+
+	t.Run("returns an error when the pod list fails", func(t *testing.T) {
+		assertTest := assert.New(t)
+
+		deployment := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "testdeployment1", Namespace: testns},
+			Spec:       appsv1.DeploymentSpec{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "redis"}}},
+		}
+		mcli := kubernetes.NewClientset(deployment)
+		mcli.PrependReactor("list", "pods", func(kubetesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("list failed")
+		})
+		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
+
+		pods, err := service.GetDeploymentPods(testns, "testdeployment1")
+		assertTest.Error(err)
+		assertTest.Nil(pods)
 	})
 
 	t.Run("returns an error when the deployment does not exist", func(t *testing.T) {

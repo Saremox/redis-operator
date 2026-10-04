@@ -284,11 +284,28 @@ func TestEnsureSentinelDeploymentDeletesUnusedServiceAccount(t *testing.T) {
 	assert.True(t, saExists())
 
 	// A pod of the old ReplicaSet still uses the ServiceAccount.
+	podLabels := map[string]string{"pod-template-hash": "oldhash"}
+	for key, value := range d.Spec.Selector.MatchLabels {
+		podLabels[key] = value
+	}
 	oldPod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "rfs-lifecycle-old", Namespace: rf.Namespace, Labels: d.Spec.Selector.MatchLabels},
-		Spec:       corev1.PodSpec{ServiceAccountName: autoName},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rfs-lifecycle-old",
+			Namespace: rf.Namespace,
+			Labels:    podLabels,
+			OwnerReferences: []metav1.OwnerReference{
+				{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: d.Name + "-oldhash", UID: "old-rs-uid", Controller: ptr.To(true)},
+			},
+		},
+		Spec: corev1.PodSpec{ServiceAccountName: autoName},
 	}
 	_, err = kubecli.CoreV1().Pods(rf.Namespace).Create(t.Context(), oldPod, metav1.CreateOptions{})
+	assert.NoError(t, err)
+	// A pod with the labels but without the owner does not keep the ServiceAccount.
+	foreignPod := oldPod.DeepCopy()
+	foreignPod.Name = "rfs-lifecycle-foreign"
+	foreignPod.OwnerReferences = nil
+	_, err = kubecli.CoreV1().Pods(rf.Namespace).Create(t.Context(), foreignPod, metav1.CreateOptions{})
 	assert.NoError(t, err)
 	rf.Spec.Sentinel.ServiceAccountName = "user-managed-sa"
 	assert.NoError(t, ensure())
