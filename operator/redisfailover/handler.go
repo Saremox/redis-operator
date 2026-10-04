@@ -2,6 +2,7 @@ package redisfailover
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -133,6 +134,10 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 
 	if err := r.Ensure(rf, labels, oRefs, r.mClient); err != nil {
 		r.mClient.SetClusterError(rf.Namespace, rf.Name)
+		var other *k8s.ControlledByOtherError
+		if errors.As(err, &other) {
+			r.reportInvalid(rf, err)
+		}
 		return err
 	}
 
@@ -173,8 +178,9 @@ func (r *RedisFailoverHandler) getLabels(rf *redisfailoverv1.RedisFailover) map[
 	return util.MergeLabels(defaultLabels, dynLabels, filteredCustomLabels)
 }
 
-// reportInvalid shows the validation error in the status. The operator does
-// not reconcile an invalid RedisFailover, so the last status can be wrong.
+// reportInvalid shows a validation error or an object name conflict in the
+// status. The operator does not reconcile such a RedisFailover, so the last
+// status can be wrong.
 func (r *RedisFailoverHandler) reportInvalid(rf *redisfailoverv1.RedisFailover, err error) {
 	status := redisfailoverv1.RedisFailoverStatus{
 		State:       redisfailoverv1.NotHealthyState,

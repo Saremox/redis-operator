@@ -3,6 +3,7 @@ package redisfailover_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	mRFService "github.com/saremox/redis-operator/mocks/operator/redisfailover/service"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	rfOperator "github.com/saremox/redis-operator/operator/redisfailover"
+	"github.com/saremox/redis-operator/service/k8s"
 )
 
 // redisFailoverFinalizerMirror mirrors the unexported constant of the same
@@ -231,6 +233,36 @@ func TestHandleEnsureError(t *testing.T) {
 	assert.Equal(ensureErr, err)
 	mrfc.AssertNotCalled(t, "IsRedisRunning", mock.Anything)
 	mrfs.AssertExpectations(t)
+	mk.AssertExpectations(t)
+}
+
+// TestHandleEnsureNameConflict verifies that the status of a RedisFailover
+// shows an error when another RedisFailover controls an object that Ensure
+// must write, and that Handle does not call CheckAndHeal.
+func TestHandleEnsureNameConflict(t *testing.T) {
+	assert := assert.New(t)
+
+	rf := generateRF(false, true)
+	conflict := fmt.Errorf("ensure: %w", &k8s.ControlledByOtherError{Kind: "ConfigMap", Name: "rfr-s-foo", OwnerKind: "RedisFailover", OwnerName: "foo"})
+
+	mk := &mK8SService.Services{}
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfs := &mRFService.RedisFailoverClient{}
+	mrfs.On("EnsureNotPresentRedisService", rf).Once().Return(conflict)
+	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Once().Return(nil)
+	var written redisfailoverv1.RedisFailoverStatus
+	mk.On("UpdateRedisFailoverStatus", mock.Anything, rf.Namespace, rf, mock.Anything).Once().Run(func(args mock.Arguments) {
+		written = args.Get(2).(*redisfailoverv1.RedisFailover).Status
+	})
+
+	handler := rfOperator.NewRedisFailoverHandler(generateConfig(), mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+	err := handler.Handle(context.Background(), rf)
+
+	assert.Equal(conflict, err)
+	assert.Equal(redisfailoverv1.NotHealthyState, written.State)
+	assert.Equal(conflict.Error(), written.Message)
+	mrfc.AssertNotCalled(t, "IsRedisRunning", mock.Anything)
 	mk.AssertExpectations(t)
 }
 

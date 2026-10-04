@@ -128,6 +128,10 @@ func (s *StatefulSetService) CreateOrUpdateStatefulSet(namespace string, statefu
 		return err
 	}
 
+	if err := checkNotControlledByOther("StatefulSet", storedStatefulSet, statefulSet); err != nil {
+		return err
+	}
+
 	// With the stored resource version, the update fails when the object
 	// changed after the read.
 	statefulSet.ResourceVersion = storedStatefulSet.ResourceVersion

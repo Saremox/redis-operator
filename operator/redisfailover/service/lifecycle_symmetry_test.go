@@ -86,7 +86,9 @@ func sentinelResourceInventory(t *testing.T, kubecli *kubefake.Clientset, rf *re
 func TestSentinelResourceLifecycleSymmetry(t *testing.T) {
 	rf := sentinelLifecycleRF()
 	labels := map[string]string{}
-	ownerRefs := []metav1.OwnerReference{}
+	// The cleanup deletes only objects that the RedisFailover controls.
+	rf.UID = "uid-lifecycle"
+	ownerRefs := ownerRefsOf(rf)
 
 	kubecli := kubefake.NewClientset()
 	crdcli := redisfailoverfake.NewSimpleClientset()
@@ -122,7 +124,9 @@ func TestSentinelResourceLifecycleSymmetryPreservesUserServiceAccount(t *testing
 	rf := sentinelLifecycleRF()
 	rf.Spec.Sentinel.ServiceAccountName = "user-managed-sa"
 	labels := map[string]string{}
-	ownerRefs := []metav1.OwnerReference{}
+	// The cleanup deletes only objects that the RedisFailover controls.
+	rf.UID = "uid-lifecycle"
+	ownerRefs := ownerRefsOf(rf)
 
 	kubecli := kubefake.NewClientset()
 	crdcli := redisfailoverfake.NewSimpleClientset()
