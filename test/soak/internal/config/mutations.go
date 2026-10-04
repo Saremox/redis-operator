@@ -218,11 +218,31 @@ func (m Mutations) validate(in Instance) error {
 		if err := m.MaxMemoryPercent.validate(10); err != nil || m.MaxMemoryPercent.Max > 95 {
 			return errors.New("maxMemoryPercent: min and max must be between 10 and 95, max greater than min")
 		}
+		if err := m.validateFork(in); err != nil {
+			return fmt.Errorf("maxMemoryPercent: %w", err)
+		}
 	}
 	if _, ok := m.Kinds[FillBurst]; ok {
 		if in.Data == nil || !slices.Contains(in.Policies(), "noeviction") {
 			return errors.New("fill_burst needs data and the noeviction policy")
 		}
+	}
+	return nil
+}
+
+// validateFork keeps room in the smallest memory limit for a fork, which
+// can double the data, plus the operator's 32Mi reserve. Without it, an
+// OOM kill on a BGSAVE or a full sync is not an operator bug.
+func (m Mutations) validateFork(in Instance) error {
+	if _, ok := m.Kinds[RedisMemory]; !ok || in.Data == nil {
+		return nil
+	}
+	share := in.Data.Fill.Percent
+	if _, ok := m.Kinds[FillBurst]; ok {
+		share = 100
+	}
+	if least := 2*m.RedisMemory.Min*m.MaxMemoryPercent.Max*share/10000 + 32; least > m.RedisMemory.Min {
+		return fmt.Errorf("max %d leaves no room for a fork of the data at redisMemory.min %dMi", m.MaxMemoryPercent.Max, m.RedisMemory.Min)
 	}
 	return nil
 }

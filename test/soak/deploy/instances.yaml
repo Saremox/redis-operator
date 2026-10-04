@@ -40,7 +40,7 @@ spec:
     resources:
       requests: {cpu: 50m, memory: 128Mi}
       limits: {memory: 256Mi}
-    maxMemory: {percent: 75, policy: allkeys-lru}
+    maxMemory: {percent: 40, policy: allkeys-lru}
 ---
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover
@@ -54,7 +54,7 @@ spec:
     resources:
       requests: {cpu: 50m, memory: 96Mi}
       limits: {memory: 192Mi}
-    maxMemory: {percent: 75, policy: noeviction}
+    maxMemory: {percent: 35, policy: noeviction}
 ---
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover

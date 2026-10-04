@@ -20,8 +20,8 @@ window. It counts these events in `redis_soak_findings_total`, and
 - a violation of an invariant outside a window;
 - a violation that is still open when its window times out;
 - an OOM kill of a redis or Sentinel container, also inside a window,
-  because the operator keeps a reserve of 32Mi so that no data size that
-  it allows causes an OOM kill;
+  because the configuration keeps room for a fork of the data (see
+  [Mutations](#mutations));
 - a version change that fails unsafely (see [Server versions](#server-versions));
 - a reset that does not complete within two times its timeout;
 - a Ready replica that never completed a sync.
@@ -184,6 +184,10 @@ explanation:
 - `redis_resources` changes memory only within limits that hold two times
   the data plus 32Mi, because a full sync forks the master. On a
   `maxMemory` instance, only `redis_memory` changes memory.
+- With `redis_memory` and `maxmemory_percent`, the smallest limit must
+  hold two times the data plus 32Mi. The data is `fill.percent` of
+  `maxmemory`, or all of it with `fill_burst`. The operator reserve of
+  32Mi bounds the data, not the fork.
 - `redis_memory` can go below the memory that the data needs. Under
   `noeviction` and `volatile-*`, the operator then keeps `maxmemory` and
   reports this in `status.message`. Under `allkeys-*`, it applies the

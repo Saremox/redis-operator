@@ -165,7 +165,7 @@ instances:
       kinds: {redis_memory: 1, maxmemory_policy: 1, maxmemory_percent: 1, fill_burst: 1}
       redisMemory: {min: 128, max: 256}
       maxMemoryPolicies: [noeviction, volatile-lru]
-      maxMemoryPercent: {min: 10, max: 95}
+      maxMemoryPercent: {min: 10, max: 35}
   - name: b
     namespace: ns
     maxMemoryPolicy: allkeys-lru
@@ -204,6 +204,9 @@ func TestInvalidData(t *testing.T) {
 		"same policy twice":        instance("noeviction", "{fill: {}}", "{kinds: {maxmemory_policy: 1}, maxMemoryPolicies: [noeviction, noeviction]}"),
 		"bad policy":               instance("noeviction", "{fill: {}}", "{kinds: {maxmemory_policy: 1}, maxMemoryPolicies: [noeviction, lru]}"),
 		"percent above 95":         instance("noeviction", "{fill: {}}", "{kinds: {maxmemory_percent: 1}, maxMemoryPercent: {min: 10, max: 99}}"),
+		// A fork of the burst data (128Mi * 40%) twice plus 32Mi is above 128Mi.
+		"no room for a fork": instance("noeviction", "{fill: {}}",
+			"{kinds: {redis_memory: 1, maxmemory_percent: 1, fill_burst: 1}, redisMemory: {min: 128, max: 256}, maxMemoryPercent: {min: 10, max: 40}}"),
 		"burst without noeviction": instance("allkeys-lru", "{fill: {}}", "{kinds: {fill_burst: 1}}"),
 		"burst without data":       "instances: [{name: a, namespace: ns, maxMemoryPolicy: noeviction, mutations: {kinds: {fill_burst: 1}}}]",
 		"memory resources with maxMemory": instance("noeviction", "{fill: {}}",

@@ -108,7 +108,7 @@ instances:
         kill_replica: 1
       redisMemory: {min: 160, max: 320}
       maxMemoryPolicies: [allkeys-lru, allkeys-lfu, allkeys-random]
-      maxMemoryPercent: {min: 10, max: 95}
+      maxMemoryPercent: {min: 10, max: 40}
       forceDeleteProbability: 0.5
   - name: op-noevict
     template: instances.yaml
@@ -124,7 +124,7 @@ instances:
         fill_burst: 2
       redisMemory: {min: 128, max: 256}
       maxMemoryPolicies: [noeviction, volatile-lru, volatile-ttl]
-      maxMemoryPercent: {min: 10, max: 95}
+      maxMemoryPercent: {min: 10, max: 35}
   # PVCs and auth (secret op-full-auth). The mutator rotates, removes and
   # adds the password, and changes it while the operator is stopped.
   - name: op-full
