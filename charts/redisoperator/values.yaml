@@ -99,7 +99,8 @@ watchAuthSecrets: false
 monitoring:
   # The chart always creates a metrics Service. true adds the Service
   # `<fullname>-prometheus` with the label `prometheus: <prometheus.name>`.
-  # With serviceMonitor, a Prometheus ServiceMonitor selects that Service.
+  # serviceMonitor adds a Prometheus ServiceMonitor that selects that Service.
+  # It needs enabled: true.
   enabled: false
   serviceMonitor: false
   serviceAnnotations: {}

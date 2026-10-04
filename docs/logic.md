@@ -16,7 +16,7 @@ Each reconcile does these steps in this order:
 2. Finalizer: the operator adds its finalizer. Without it, the operator never sees a delete and cannot clean up.
 3. Skip: if the annotation `redisfailovers.databases.spotahome.com/skip-reconcile` is `"true"`, the operator stops here. Use it to repair a cluster by hand.
 4. Validate: `Validate()` rejects an invalid spec and sets the defaults.
-5. Ensure: the operator creates or updates the objects below. It overwrites a manual change of these objects, because the checks expect the generated objects:
+5. Ensure: the operator creates or updates the objects below. It overwrites a manual change of these objects:
    - Redis service (if exporter enabled)
    - Redis master service and Redis replica service
    - Redis shutdown configmap
@@ -31,7 +31,7 @@ Each reconcile does these steps in this order:
 
 Operator-managed mode and Sentinel mode need a quorum (a majority) of the pods to run, not the full number in the spec. A Pending pod does not block the heal of the others while the running pods are a majority. With 2 replicas, one Pending pod blocks the heal.
 
-A pod rollout replaces one stale pod in each reconcile: the replicas first, the master last. Before each replacement, the operator waits until the last replaced pod is ready and each replica on the new revision is in sync. A stale replica that is not in sync has no data to lose, so the operator replaces it first, without a wait. When only the container resources change and the kubelet allows it, the operator resizes the pod in place. With `redis.maxMemory`, a lowered memory limit holds the rollout until the `maxmemory` and the memory in use of the master fit the new limit.
+A pod rollout replaces one stale pod in each reconcile: the replicas first, the master last. Before each replacement, the operator waits until the last replaced pod is ready and each replica on the new revision is in sync. A stale replica that is not in sync has no data to lose, so the operator replaces it first and does not wait for its sync. When only the container resources change and the kubelet allows it, the operator resizes the pod in place. With `redis.maxMemory`, a lowered memory limit holds the rollout until the `maxmemory` and the memory in use of the master fit the new limit.
 
 ### Operator-managed mode
 
@@ -39,7 +39,7 @@ This is the default mode (`sentinel.enabled` not set or `false`). There is no Se
 
 - A quorum of Redis pods runs.
 - Only one Redis works as a master. An old master that did not answer during a failover can come back as a second master. If exactly one running pod has the master label, the other masters become replicas of that pod, because the label shows the master that the operator elected. Otherwise the operator reports `multiple masters detected, fix manually`.
-- No master: the operator promotes the best replica, or the oldest pod if it cannot read the replication offsets. Before the promotion, it waits in these cases. The status is `NotHealthy` while it waits.
+- No master: the operator promotes the best replica, or the oldest pod if it finds no replica to promote. Before the promotion, it waits in these cases. The status is `NotHealthy` while it waits.
   - The old master pod is still stopping. That master can still take writes.
   - No pod answers as master, and a Ready pod does not answer. That pod can be the master in a short stall.
   - The master pod does not answer. It gets `sentinel.failoverTimeout` (default 10s) from the first missed check. The operator keeps that time in a pod annotation, so an operator restart keeps the deadline.
