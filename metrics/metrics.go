@@ -76,7 +76,7 @@ const (
 	SET_PASSWORD                = "SET_PASSWORD"
 )
 
-var ( // used for grabage collection of metrics
+var ( // used for garbage collection of metrics
 	mutex                     sync.Mutex
 	recorders                 = []recorder{}
 	instanceMetricLastUpdated = map[string]time.Time{}
@@ -84,10 +84,9 @@ var ( // used for grabage collection of metrics
 	checkMetricLastUpdated    = map[string]checkMetricInfo{}
 )
 
-// checkMetricInfo identifies a single per-instance series of the redisCheck/sentinelCheck
-// vectors (namespace/resource/indicator/instance), so it can be garbage collected on its own
-// once that instance (e.g. a Pod IP that no longer exists) stops being reported - independent
-// of whether the owning RedisFailover resource is still being actively reconciled.
+// checkMetricInfo identifies one instance series of redisCheck or
+// sentinelCheck. The garbage collection deletes the series of an old pod IP
+// also while the operator reconciles its RedisFailover.
 type checkMetricInfo struct {
 	kind      string // "redis" or "sentinel"
 	namespace string
@@ -107,7 +106,6 @@ type Recorder interface {
 	SetClusterError(namespace string, name string)
 	DeleteCluster(namespace string, name string)
 
-	// Indicate redis instances being monitored
 	RecordEnsureOperation(objectNamespace string, objectName string, objectKind string, resourceName string, status string)
 
 	RecordRedisCheck(namespace string, resource string, indicator /* aspect of redis that is unhealthy */ string, instance string, status string)
@@ -120,12 +118,12 @@ type Recorder interface {
 // recorder implements Recorder so the metrics can be managed by Prometheus.
 type recorder struct {
 	// Metrics fields.
-	clusterOK            *prometheus.GaugeVec   // clusterOk is the status of a cluster
-	ensureResource       *prometheus.CounterVec // number of successful "ensure" operators performed by the controller.
-	redisCheck           *prometheus.CounterVec // indicates any error encountered in managed redis instance(s)
-	sentinelCheck        *prometheus.CounterVec // indicates any error encountered in managed sentinel instance(s)
-	k8sServiceOperations *prometheus.CounterVec // number of operations performed on k8s
-	redisOperations      *prometheus.CounterVec // number of operations performed on redis/sentinel instances
+	clusterOK            *prometheus.GaugeVec
+	ensureResource       *prometheus.CounterVec
+	redisCheck           *prometheus.CounterVec
+	sentinelCheck        *prometheus.CounterVec
+	k8sServiceOperations *prometheus.CounterVec
+	redisOperations      *prometheus.CounterVec
 	ControllerRecorder
 }
 
@@ -136,28 +134,28 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		Namespace: namespace,
 		Subsystem: promControllerSubsystem,
 		Name:      "cluster_ok",
-		Help:      "Number of failover clusters managed by the operator.",
+		Help:      "1 when the last reconcile of the RedisFailover had no error, 0 when it failed.",
 	}, []string{"namespace", "name"})
 
 	ensureResource := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Subsystem: promControllerSubsystem,
 		Name:      "ensure_resource_total",
-		Help:      "number of 'ensure' operations on a resource performed by the controller.",
+		Help:      "Number of ensure attempts for a resource of a RedisFailover, by status. An attempt also counts when the resource needs no change.",
 	}, []string{"namespace", "name", "kind", "resource_name", "status"})
 
 	redisCheck := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Subsystem: promControllerSubsystem,
 		Name:      "redis_checks_total",
-		Help:      "indicates any error encountered in managed redis instance(s)",
+		Help:      "Number of checks of the Redis pods, by indicator and status (HEALTHY or UNHEALTHY).",
 	}, []string{"namespace", "resource", "indicator", "instance", "status"})
 
 	sentinelCheck := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Subsystem: promControllerSubsystem,
 		Name:      "sentinel_checks_total",
-		Help:      "indicates any error encountered in managed sentinel instance(s)",
+		Help:      "Number of checks of the Sentinel pods, by indicator and status (HEALTHY or UNHEALTHY).",
 	}, []string{"namespace", "resource", "indicator", "instance", "status"})
 
 	redisOperations := prometheus.NewCounterVec(
@@ -165,15 +163,15 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 			Namespace: namespace,
 			Subsystem: promControllerSubsystem,
 			Name:      "redis_operations_total",
-			Help:      "number of operations performed on redis",
-		}, []string{"kind" /* redis/sentinel? */, "IP", "operation", "status", "err"})
+			Help:      "Number of commands that the operator sent to Redis and Sentinel, by status.",
+		}, []string{"kind" /* redis or sentinel */, "IP", "operation", "status", "err"})
 
 	k8sServiceOperations := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
 			Subsystem: promControllerSubsystem,
 			Name:      "k8s_operations_total",
-			Help:      "number of operations performed on k8s",
+			Help:      "Number of Kubernetes API calls of the operator, by status.",
 		}, []string{"namespace", "kind", "name", "operation", "status", "err"})
 
 	// Create the instance.
@@ -202,12 +200,12 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 	return r
 }
 
-// SetClusterOK set the cluster status to OK
+// SetClusterOK sets cluster_ok to 1.
 func (r recorder) SetClusterOK(namespace string, name string) {
 	r.clusterOK.WithLabelValues(namespace, name).Set(1)
 }
 
-// SetClusterError set the cluster status to Error
+// SetClusterError sets cluster_ok to 0.
 func (r recorder) SetClusterError(namespace string, name string) {
 	r.clusterOK.WithLabelValues(namespace, name).Set(0)
 }
@@ -240,7 +238,7 @@ func (r recorder) RecordK8sOperation(namespace string, kind string, name string,
 	updateResourceMetricLastUpdatedTracker(namespace, kind, name)
 }
 
-func (r recorder) RecordRedisOperation(kind /*redis/sentinel? */ string, IP string, operation string, status string, err string) {
+func (r recorder) RecordRedisOperation(kind /* redis or sentinel */ string, IP string, operation string, status string, err string) {
 	r.redisOperations.WithLabelValues(kind, IP, operation, status, err).Add(1)
 	updateInstanceMetricLastUpdatedTracker(IP)
 }
@@ -271,10 +269,9 @@ func updateCheckMetricLastUpdatedTracker(kind string, namespace string, resource
 	mutex.Unlock()
 }
 
-// Garbage collection
+// removeStaleMetrics runs every metricsGCIntervalMinutes. It deletes each
+// series that got no update in that time.
 func removeStaleMetrics() {
-	// Runs every `metricsGCIntervalMinutes`. It keeps track of recently updated metrics
-	// And every metric that was not updated after `metricsGCIntervalMinutes` gets deleted
 	for {
 		metricsDeletedCount := 0
 		kubernetesResourceBasedLabels, customResourceBasedLabels, ipBasedLabels := getLabelsOfStaleMetrics()
@@ -298,12 +295,9 @@ func removeStaleMetrics() {
 			for _, label := range ipBasedLabels {
 				metricsDeletedCount += recorder.redisOperations.DeletePartialMatch(label)
 			}
-			// The per-instance (Pod IP) series of redisCheck/sentinelCheck are not covered by
-			// customResourceBasedLabels above: that only fires once the *whole* RedisFailover
-			// resource stops being reconciled, which effectively never happens for an active
-			// cluster. Pod IPs churn continuously (restarts, rollouts, rescheduling), so without
-			// this dedicated per-instance sweep every old IP's series would remain registered for
-			// the lifetime of the process, growing metric cardinality (and memory) without bound.
+			// customResourceBasedLabels matches only a RedisFailover without
+			// reconciles. Pod IPs change at each restart, so without this loop
+			// the series of each old IP stay, and the memory use grows.
 			for _, entry := range staleCheckMetrics {
 				check := recorder.redisCheck
 				if entry.kind == "sentinel" {
@@ -350,8 +344,7 @@ func getLabelsOfStaleMetrics() (kubernetesResourceBasedLabels []prometheus.Label
 					"resource":  resource,
 				},
 			)
-			// once we have created labels out of the contents of the key,
-			// its not longer required - since it is known to be stale. remove it from the tracker.
+			// The labels hold the key, so the tracker can forget it.
 			delete(resourceMetricLastUpdated, key)
 		}
 	}
@@ -365,8 +358,7 @@ func getLabelsOfStaleMetrics() (kubernetesResourceBasedLabels []prometheus.Label
 					"IP": IP,
 				},
 			)
-			// once we have created labels out of the contents of the key,
-			// its not longer required - since it is known to be stale. remove it from the tracker.
+			// The labels hold the key, so the tracker can forget it.
 			delete(instanceMetricLastUpdated, IP)
 		}
 
@@ -375,10 +367,9 @@ func getLabelsOfStaleMetrics() (kubernetesResourceBasedLabels []prometheus.Label
 	return kubernetesResourceBasedLabels, customResourceBasedLabels, ipBasedLabels
 }
 
-// getStaleCheckMetrics returns the redisCheck/sentinelCheck per-instance series that have not
-// been reported for at least metricsGCIntervalMinutes, and removes them from the tracker. This
-// is what allows a stale Pod IP's series to be deleted even while the owning RedisFailover
-// resource keeps being reconciled (see removeStaleMetrics).
+// getStaleCheckMetrics returns the instance series of redisCheck and
+// sentinelCheck without an update for metricsGCIntervalMinutes, and removes
+// them from the tracker.
 func getStaleCheckMetrics() []checkMetricInfo {
 	stale := []checkMetricInfo{}
 	cutoff := time.Now().Add(-metricsGCIntervalMinutes * time.Minute)

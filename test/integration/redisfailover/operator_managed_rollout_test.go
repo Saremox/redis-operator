@@ -32,11 +32,8 @@ import (
 	"github.com/saremox/redis-operator/service/redis"
 )
 
-// This file's own namespace/name/secret constants, distinct from
-// creation_test.go's, so the two integration tests never share a namespace:
-// namespace deletion in a real cluster is asynchronous, and starting this
-// test's own namespace create/delete cycle would risk racing the previous
-// test's still-terminating one.
+// The tests in this package run in parallel, so this test has its own
+// namespace, name and Secret.
 const (
 	ommNamespace      = "rf-integration-tests-operator-managed"
 	ommName           = "testing-omm"
@@ -45,11 +42,8 @@ const (
 	ommTestPass       = "test-pass-omm"
 )
 
-// ommClients mirrors the `clients` helper in creation_test.go, but keeps its
-// own namespace baked in rather than sharing the package-level `namespace`
-// constant, since this test's RedisFailover is operator-managed
-// (sentinel.enabled: false) and must not collide with the sentinel-managed
-// one created elsewhere in this package.
+// ommClients is the `clients` helper of creation_test.go for the namespace
+// of this test.
 type ommClients struct {
 	k8sClient   kubernetes.Interface
 	rfClient    redisfailoverclientset.Interface
@@ -98,12 +92,9 @@ func (c *ommClients) waitForPodsReady(labelSelector string, expectedCount int, t
 	return fmt.Errorf("timed out waiting for %d pods to be Ready", expectedCount)
 }
 
-// podUIDs returns the current UID of every pod matching labelSelector, keyed
-// by pod name. StatefulSet pods keep the same name across a delete+recreate
-// cycle (ordinal-based naming), so name alone can't detect a replacement -
-// the UID changes on every recreation and is what actually proves the
-// operator tore down and rebuilt a given pod, rather than the pod simply
-// still being the original one.
+// podUIDs returns the UID of each pod that matches labelSelector, by pod
+// name. A new StatefulSet pod has the same name but a new UID, so only the
+// UID shows a replacement.
 func (c *ommClients) podUIDs(labelSelector string) (map[string]types.UID, error) {
 	pods, err := c.k8sClient.CoreV1().Pods(ommNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
@@ -117,8 +108,7 @@ func (c *ommClients) podUIDs(labelSelector string) (map[string]types.UID, error)
 }
 
 // waitForAllPodsRecreated polls until every pod name present in before has a
-// different UID in the live cluster (i.e. every original pod was deleted and
-// replaced), or the timeout elapses.
+// different UID in the cluster, or until the timeout.
 func (c *ommClients) waitForAllPodsRecreated(labelSelector string, before map[string]types.UID, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -163,26 +153,17 @@ func (c *ommClients) onlyMaster(labelSelector string) (string, error) {
 	return masters[0], nil
 }
 
-// TestRedisFailoverOperatorManagedModeRollout reproduces, end-to-end against
-// a real cluster, the exact scenario behind the production outage fixed in
-// #161: UpdateRedisesPods (operator/redisfailover/checker.go) used to gate
-// replacing a stale-revision master pod on a Sentinel quorum check that
-// unconditionally called GetSentinelsIPs - which 404'd in operator-managed
-// mode (sentinel.enabled: false, the default since v4.0.0) because no
-// Sentinel Deployment exists there. That left any operator-managed
-// RedisFailover permanently NotHealthy the moment its master pod needed
-// replacing, which happens on any routine rollout.
+// TestRedisFailoverOperatorManagedModeRollout tests a rollout in
+// operator-managed mode (#161). In this mode no Sentinel exists, so the
+// Sentinel check before the master replacement must not run. Otherwise the
+// rollout never replaces the master, and the RedisFailover stays NotHealthy.
 //
-// Every other integration test in this package runs with Sentinel explicitly
-// enabled, so this is also the only end-to-end coverage of the default mode
-// at all, and the only one that exercises a rollout (a StatefulSet template
-// change) rather than just initial creation.
+// The other test in this package enables Sentinel. The e2e-sentinel-free job
+// in e2e.yml also tests the default mode, but this is the only test of a
+// rollout in that mode.
 func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
-	// Runs alongside TestRedisFailover (creation_test.go): separate
-	// namespaces, separate in-process operator instances (each with its own
-	// leader-election lease scoped to its own namespace), separate Secrets -
-	// nothing here is shared state, so there's no reason to pay for the two
-	// tests' pod-startup waits back to back instead of concurrently.
+	// The operators of the tests use different namespaces, leases and
+	// Secrets, so the tests can run in parallel.
 	t.Parallel()
 
 	require := require.New(t)
@@ -227,9 +208,6 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 	}()
 	defer c.cleanup(cancelRun)
 
-	// There's no external readiness signal for "the operator started"; this
-	// just fails fast if it crashed immediately instead of silently waiting
-	// out the full window.
 	require.NoError(waitForOperatorStartup(errC, 15*time.Second))
 
 	secret := &corev1.Secret{
@@ -256,8 +234,8 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 				CustomConfig:    []string{`save ""`},
 			},
 			Sentinel: redisfailoverv1.SentinelSettings{
-				// The point of this test: explicitly operator-managed, the
-				// default since v4.0.0 and the mode #161 broke.
+				// Operator-managed mode, set explicitly. It is also the
+				// default.
 				Enabled: ptr.To(false),
 			},
 			Auth: redisfailoverv1.AuthSettings{
@@ -294,24 +272,17 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 		require.NoError(err)
 		require.Len(before, int(ommRedisSize))
 
-		// Trigger a StatefulSet template change: PodAnnotations is copied
-		// straight into the pod template (generateRedisStatefulSet), so this
-		// bumps the StatefulSet's UpdateRevision without changing anything
-		// about redis itself. The StatefulSet uses OnDelete update strategy,
-		// so Kubernetes will NOT roll the pods itself - only the operator's
-		// UpdateRedisesPods does, which is exactly the code path #161 broke
-		// for operator-managed mode.
+		// generateRedisStatefulSet copies PodAnnotations into the pod
+		// template, so this change gives a new update revision. The
+		// StatefulSet uses OnDelete, so only UpdateRedisesPods replaces the
+		// pods.
 		live, err := c.rfClient.DatabasesV1().RedisFailovers(ommNamespace).Get(context.Background(), ommName, metav1.GetOptions{})
 		require.NoError(err)
 		live.Spec.Redis.PodAnnotations = map[string]string{"rollout-test": "1"}
 		_, err = c.rfClient.DatabasesV1().RedisFailovers(ommNamespace).Update(context.Background(), live, metav1.UpdateOptions{})
 		require.NoError(err)
 
-		// Before #161, this would hang forever in operator-managed mode: the
-		// slave pods would get replaced, but replacing the master would never
-		// happen because the (inapplicable) Sentinel-quorum gate returned nil
-		// indefinitely instead of ever proceeding, and GetSentinelsIPs would
-		// have errored against a Sentinel Deployment that doesn't exist here.
+		// The rollout must also replace the master without a Sentinel check.
 		if err := c.waitForAllPodsRecreated(redisLabelSelector, before, 5*time.Minute); err != nil {
 			t.Fatalf("rollout never completed: %v", err)
 		}

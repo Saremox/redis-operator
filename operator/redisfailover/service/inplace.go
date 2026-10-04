@@ -30,7 +30,8 @@ const (
 // ResizeResult is the outcome of ResizePodInPlace.
 type ResizeResult struct {
 	Action ResizeAction
-	// Message explains a resize that is stuck or fell back to recreating the pod.
+	// Message is the progress of a resize, the reason for a recreate, or
+	// empty.
 	Message string
 }
 

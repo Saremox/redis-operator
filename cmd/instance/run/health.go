@@ -1,4 +1,3 @@
-// Package run implements the instance manager run command.
 package run
 
 import (

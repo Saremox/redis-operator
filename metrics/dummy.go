@@ -1,11 +1,11 @@
 package metrics
 
-// Dummy is a handy instnce of a dummy instrumenter, most of the times it will be used on tests.
+// Dummy is a Recorder that discards all the metrics. The tests use it.
 var Dummy = &dummy{
 	ControllerRecorder: dummyControllerRecorder{},
 }
 
-// dummy is a dummy implementation of Instrumenter.
+// dummy implements Recorder and does nothing.
 type dummy struct {
 	ControllerRecorder
 }

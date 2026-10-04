@@ -36,7 +36,7 @@ type MemoryInfo struct {
 	Loading         bool // used_memory does not show the whole dataset yet
 }
 
-// Client defines the functions neccesary to connect to redis and sentinel to get or set what we nned
+// Client sends the commands of the operator to Redis and Sentinel.
 type Client interface {
 	GetNumberSentinelsInMemory(ip string) (int32, error)
 	GetNumberSentinelSlavesInMemory(ip string) (int32, error)
@@ -478,14 +478,10 @@ func (c *client) SetCustomSentinelConfig(ip string, configs []string) error {
 		}
 	}(rClient)
 
-	// SENTINEL SET rewrites sentinel's config file to disk even when the
-	// value given is identical to what's already set, so calling it
-	// unconditionally on every reconcile (this runs on every sync-interval)
-	// means a disk write and a config-changed log line every single pass,
-	// forever, for every RedisFailover. Reading the current values first and
-	// only setting what actually differs avoids that. A failure to read
-	// current state errs toward applying: current stays nil, and
-	// sentinelConfigsToApply returns every param as it always did.
+	// SENTINEL SET writes the config file of Sentinel also for an unchanged
+	// value. Each reconcile then gives a disk write and a log line. Thus the
+	// client reads the current values and sets only the changed ones. When
+	// the read fails, current is nil and all the values are set.
 	current, err := c.getSentinelMasterInfo(rClient)
 	if err != nil {
 		current = nil
@@ -509,11 +505,9 @@ type sentinelConfigParam struct {
 	value string
 }
 
-// sentinelConfigsToApply parses configs (each a "param value" string, as
-// SetCustomSentinelConfig's callers supply them) and returns only the ones
-// whose desired value differs from current. A nil current - meaning the
-// live state couldn't be read - returns every config as-is, erring toward
-// applying a change rather than silently skipping a real one.
+// sentinelConfigsToApply returns the "param value" configs whose value
+// differs from current. A nil current returns all the configs, so that no
+// change is lost when the read failed.
 func (c *client) sentinelConfigsToApply(current map[string]string, configs []string) ([]sentinelConfigParam, error) {
 	var toApply []sentinelConfigParam
 	for _, config := range configs {
@@ -531,23 +525,19 @@ func (c *client) sentinelConfigsToApply(current map[string]string, configs []str
 	return toApply, nil
 }
 
-// getSentinelMasterInfo returns SENTINEL MASTER <name>'s response - a flat
-// array alternating field name and value (the same shape GetSentinelMonitor
-// reads master IP/port from) - as a map, so callers can check sentinel's
-// current view of a parameter before deciding whether to change it.
+// getSentinelMasterInfo returns the reply of SENTINEL MASTER as a map of
+// field name to value.
 func (c *client) getSentinelMasterInfo(rClient *rediscli.Client) (map[string]string, error) {
 	cmd := rediscli.NewSliceCmd(context.TODO(), "SENTINEL", "master", masterName)
 	if err := rClient.Process(context.TODO(), cmd); err != nil {
 		return nil, err
 	}
-	// Process already returned cmd's own error above, so a further error from
-	// Result() here is unreachable - res is exactly what Process populated.
+	// Process returns the error of cmd, so Val needs no error check.
 	res := cmd.Val()
 	info := make(map[string]string, len(res)/2)
 	for i := 0; i+1 < len(res); i += 2 {
-		// SENTINEL MASTER always returns bulk strings for both the field name
-		// and its value, same as GetSentinelMonitor's res[3]/res[5] above -
-		// asserted directly rather than defensively, to match.
+		// SENTINEL MASTER gives each name and value as a bulk string, as in
+		// GetSentinelMonitor.
 		info[res[i].(string)] = res[i+1].(string)
 	}
 	return info, nil
@@ -567,12 +557,8 @@ func (c *client) SentinelCheckQuorum(ip string) error {
 	res, err := cmd.Result()
 
 	if err != nil {
-		// SENTINEL CKQUORUM's NOQUORUM outcome comes back over the wire as a
-		// genuine RESP error whose text starts with "NOQUORUM", not as a
-		// successful string reply - so it has to be classified here, before
-		// the success-path string parsing below (which can only ever see
-		// the "OK ..." success message, since res is empty whenever err is
-		// non-nil).
+		// SENTINEL CKQUORUM gives NOQUORUM as an error reply, not as a
+		// string reply, so only this branch can see it.
 		if strings.Contains(err.Error(), "NOQUORUM") {
 			log.Debugf("SentinelCheckQuorum: quorum not available: %s", err.Error())
 			c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.CHECK_SENTINEL_QUORUM, metrics.SUCCESS, "NOQUORUM")
@@ -612,17 +598,13 @@ func (c *client) SetCustomRedisConfig(ip string, port string, configs []string, 
 		if err != nil {
 			return err
 		}
-		// If the configuration is an empty line, it will result in an incorrect configSet, which will not run properly down the line.
-		// `config set save ""` should support
+		// Skip an empty line. An empty value, as in `save ""`, is valid.
 		if strings.TrimSpace(param) == "" {
 			continue
 		}
-		// `aclfile` is an immutable config in real Redis - `CONFIG SET aclfile <path>`
-		// is always rejected at runtime, even when the value matches the path Redis
-		// was already started with; changing it requires a restart. The only way to
-		// pick up ACL users at runtime is `ACL LOAD`, which re-reads whatever aclfile
-		// Redis already has configured, so the CONFIG SET for this parameter is
-		// skipped entirely rather than sent (and failed) against the server.
+		// Redis refuses CONFIG SET for aclfile, also with the same path. A new
+		// path needs a restart. ACL LOAD reads the configured aclfile again,
+		// so the client sends ACL LOAD in place of CONFIG SET.
 		if strings.EqualFold(param, "aclfile") {
 			needsACLLoad = true
 			continue
@@ -881,8 +863,8 @@ func getRedisError(err error) string {
 	}
 }
 
-// IsAuthError reports whether Redis refused the password it was given, or
-// was given one while it has none configured.
+// IsAuthError reports whether Redis refused the password (WRONGPASS), needs
+// a password (NOAUTH), or got a password while it has none.
 func IsAuthError(err error) bool {
 	if err == nil {
 		return false
@@ -899,11 +881,10 @@ func IsNoPasswordError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "without any password configured")
 }
 
-// IsUnreachableError reports whether err means the redis node could not be
-// reached (dial/timeout/reset), as opposed to the node being reached and
-// rejecting the command. Callers use it to skip a down node instead of aborting
-// the whole reconcile, while still surfacing genuine command errors (bad config,
-// auth failures).
+// IsUnreachableError reports whether the client could not reach the Redis
+// node, for example after a dial error, a timeout or a reset. The callers skip
+// such a node, but return the errors of a command, for example a bad config
+// value or a wrong password.
 func IsUnreachableError(err error) bool {
 	if err == nil {
 		return false

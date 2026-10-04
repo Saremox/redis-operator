@@ -1,6 +1,6 @@
 package service
 
-// variables refering to the redis exporter port
+// Settings of the Redis exporter and the Sentinel exporter containers.
 const (
 	exporterPort                  = 9121
 	sentinelExporterPort          = 9355

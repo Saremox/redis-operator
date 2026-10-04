@@ -247,9 +247,9 @@ func generateRedisConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string
 		panic(err)
 	}
 
-	// The password is intentionally NOT written here. requirepass/masterauth are
-	// passed to redis-server as command-line args from the REDIS_PASSWORD env
-	// (see getRedisCommand) so the secret never lands in this ConfigMap.
+	// The password is not in this ConfigMap. Without a custom redis.command,
+	// redis-server gets requirepass and masterauth as arguments from the
+	// REDIS_PASSWORD env var (see getRedisCommand).
 	redisConfigFileContent := tplOutput.String()
 
 	return &corev1.ConfigMap{
@@ -271,27 +271,32 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	namespace := rf.Namespace
 
 	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
-	// Runs as the preStop hook under /bin/sh, which is BusyBox ash on the
-	// alpine redis images, so this has to stay POSIX: no "let", no "[[ ]]".
-	// A single failed sentinel query used to be enough to skip the failover
-	// and shut the master down anyway, so both sentinel calls are retried.
-	// The redis pods have no service links, so the script finds Sentinel
-	// through the DNS name of the Sentinel Service.
-	// The kubelet stops the hook at the end of the grace period (30s by
-	// default), and then the script cannot SAVE. Thus each call has a 2s
-	// limit, and the Sentinel part ends before 19s: the last failover request
-	// or poll starts before the 12s deadline and ends before 15s, and
-	// REPLICAOF and CLIENT UNPAUSE add a maximum of 4s.
+	// The preStop hook runs this script with /bin/sh, which is BusyBox ash on
+	// the Alpine Redis images. Thus the script uses only POSIX syntax, without
+	// "let" and "[[ ]]". The script retries both Sentinel calls, because one
+	// failed call must not stop the failover. The Redis pods have no service
+	// links, so the script finds Sentinel through the DNS name of the Sentinel
+	// Service.
+	//
+	// The kubelet stops the hook at the end of the grace period, and then the
+	// script cannot SAVE. The timing assumes the default grace period of 30s
+	// (redis.terminationGracePeriod). Each call has a 2s limit, and the
+	// Sentinel part ends before 19s. The last failover request or poll starts
+	// before the 12s deadline and ends before 15s. REPLICAOF and CLIENT
+	// UNPAUSE add a maximum of 4s.
+	//
 	// Until Sentinel promotes a replica, the master still accepts writes, and
 	// the promotion loses those that did not reach the replica. Thus the script
 	// pauses the writes, and makes the old master a replica of the new master
 	// before it ends the pause: the clients then get READONLY and not a lost
 	// OK. The pause stops 6s after the deadline, also if the script stops.
+	//
 	// Without the pause, a failover loses writes, so the script asks for none.
-	// Then Redis 7 and later pause the writes on SIGTERM and wait for the replicas, and
-	// Sentinel fails over after down-after-milliseconds. The pause also fails
-	// after a password change in place: the env keeps the old password.
-	// Sentinel has no password, so only the local calls send REDIS_PASSWORD.
+	// Then Redis 7 and later pause the writes on SIGTERM and wait for the
+	// replicas, and Sentinel fails over after down-after-milliseconds. The
+	// pause also fails after a password change in place: the env keeps the old
+	// password. Sentinel has no password, so only the local calls send
+	// REDIS_PASSWORD.
 	shutdownContent := ""
 	if rf.SentinelsAllowed() {
 		shutdownContent = fmt.Sprintf(`t=; command -v timeout >/dev/null 2>&1 && t="timeout 2"
@@ -593,7 +598,8 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 			Status: rf.Spec.Redis.Storage.PersistentVolumeClaim.Status,
 		}
 		if !rf.Spec.Redis.Storage.KeepAfterDeletion {
-			// Set an owner reference so the persistent volumes are deleted when the RF is
+			// The owner reference makes Kubernetes delete the PVCs with the
+			// RedisFailover.
 			pvc.OwnerReferences = ownerRefs
 		}
 		ss.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{
@@ -678,9 +684,9 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 		ss.Spec.Template.Spec.Containers = append(ss.Spec.Template.Spec.Containers, extraContainers...)
 	}
 
-	// User-supplied env is placed before the operator-injected vars so that, on
-	// duplicate names (Kubernetes last-wins), the operator's REDIS_ADDR/PORT/USER/
-	// PASSWORD keep precedence and can't be silently overridden.
+	// The env of the user comes before the env of the operator. On a duplicate
+	// name the last one wins, so the user cannot replace REDIS_ADDR, REDIS_PORT,
+	// REDIS_USER, and REDIS_PASSWORD (only set with auth.secretPath).
 	redisEnv := getRedisEnv(rf)
 	mainEnv := append(ss.Spec.Template.Spec.Containers[0].Env, rf.Spec.Redis.Env...)
 	ss.Spec.Template.Spec.Containers[0].Env = append(mainEnv, redisEnv...)
@@ -819,15 +825,13 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 			TimeoutSeconds:      5,
 			ProbeHandler: corev1.ProbeHandler{
 				Exec: &corev1.ExecAction{
-					// The first check (unchanged) gates readiness until this
-					// sentinel has been configured with a real master. The
-					// second check (SENTINEL CKQUORUM) additionally fails
-					// readiness if this sentinel can't currently reach enough
-					// peer sentinels to authorize a failover - e.g. during a
-					// network partition, where the original check alone would
-					// keep reporting Ready from a stale cached master address
-					// even though this sentinel is effectively isolated (see
-					// https://github.com/spotahome/redis-operator/issues/663).
+					// The first check keeps the Sentinel not ready until it
+					// monitors a real master. SENTINEL CKQUORUM keeps it not
+					// ready while it cannot reach enough Sentinels for a
+					// failover, for example in a network partition. Without
+					// CKQUORUM, an isolated Sentinel stays ready with an old
+					// master address. See
+					// https://github.com/spotahome/redis-operator/issues/663.
 					Command: []string{
 						"sh",
 						"-c",
@@ -869,10 +873,8 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 	return sd
 }
 
-// generateSentinelServiceAccount builds the ServiceAccount that is auto-provisioned
-// for the Sentinel Deployment when the user hasn't set rf.Spec.Sentinel.ServiceAccountName
-// themselves. Like every other generate* function it is a pure read of rf that produces
-// a k8s object -- it never mutates rf.
+// generateSentinelServiceAccount returns the ServiceAccount that the operator
+// creates for Sentinel when sentinel.serviceAccountName is empty.
 func generateSentinelServiceAccount(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.ServiceAccount {
 	name := GetSentinelServiceAccountName(rf)
 	selectorLabels := generateSelectorLabels(sentinelRoleName, rf.Name)
@@ -1080,20 +1082,18 @@ func getSecurityContext(secctx *corev1.PodSecurityContext) *corev1.PodSecurityCo
 	return merged
 }
 
-// createRDBTempfileCleanupContainer removes stale RDB tempfiles before Redis
+// createRDBTempfileCleanupContainer removes old RDB tempfiles before Redis
 // starts.
 //
-// Redis writes temp-<pid>.rdb while a BGSAVE is in flight and renames it over
-// the real dump on success. If the process dies mid-save -- OOM kill, node
-// eviction, SIGKILL after a failed shutdown -- the tempfile is left behind.
-// Nothing removes it: Redis only cleans up the child it forked itself, so the
-// files accumulate across restarts until they fill the volume, at which point
-// every subsequent BGSAVE fails too.
+// During a BGSAVE, Redis writes temp-<pid>.rdb and then renames it to the
+// dump file. When the process stops during the save, for example after an
+// OOM kill, the tempfile stays. Redis removes only the tempfile of its own
+// child process. The files collect over restarts until the volume is full,
+// and then each BGSAVE fails.
 //
-// The temp-<pid>.rdb name is fixed in rdb.c and does not depend on dbfilename,
-// so matching that pattern cannot touch the live dump whatever it is called.
-// This runs as an init container, so Redis is not running and no BGSAVE can be
-// in progress while it deletes.
+// rdb.c sets the temp-<pid>.rdb name, and dbfilename does not change it, so
+// the pattern cannot match the dump file. An init container runs before
+// Redis, so no BGSAVE runs during the delete.
 func createRDBTempfileCleanupContainer(rf *redisfailoverv1.RedisFailover) corev1.Container {
 	return corev1.Container{
 		Name:            "rdb-tempfile-cleanup",
@@ -1358,8 +1358,8 @@ func getSentinelVolumes(rf *redisfailoverv1.RedisFailover, configMapName string)
 }
 
 func getRedisDataVolume(rf *redisfailoverv1.RedisFailover) *corev1.Volume {
-	// This will find the volumed desired by the user. If no volume defined
-	// an EmptyDir will be used by default
+	// A PVC comes from the volumeClaimTemplates, so it needs no volume here.
+	// Without a storage setting, the data volume is an EmptyDir.
 	switch {
 	case rf.Spec.Redis.Storage.PersistentVolumeClaim != nil:
 		return nil
@@ -1395,12 +1395,11 @@ func getRedisCommand(rf *redisfailoverv1.RedisFailover) []string {
 	if len(rf.Spec.Redis.Command) > 0 {
 		return rf.Spec.Redis.Command
 	}
-	// When auth is configured, pass requirepass/masterauth to redis-server as
-	// command-line args sourced from the REDIS_PASSWORD env (a SecretKeyRef),
-	// instead of baking the password into the redis ConfigMap in plaintext. A
-	// shell wrapper is needed to expand the env var; exec keeps redis as PID 1 so
-	// SIGTERM still reaches it for a graceful shutdown. The literal $REDIS_PASSWORD
-	// stays in the pod spec, so the password is not exposed in any cluster object.
+	// A custom redis.command gets no password arguments. With auth, the
+	// command gives requirepass and masterauth to redis-server from the
+	// REDIS_PASSWORD env var, a SecretKeyRef. Thus the password is not in a
+	// ConfigMap or in the pod spec. The shell expands the env var, and exec
+	// keeps redis-server as PID 1, so it gets SIGTERM.
 	if rf.Spec.Auth.SecretPath != "" {
 		return []string{
 			"sh", "-c",
