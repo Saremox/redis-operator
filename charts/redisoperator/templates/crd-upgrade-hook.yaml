@@ -19,13 +19,11 @@ data:
   {{ base $path | trimSuffix ".yaml" }}.json: {{ $.Files.Get $path | fromYaml | toJson | quote }}
   {{- end }}
 ---
-# This hook Job gets its own minimal ServiceAccount/ClusterRole rather than
-# reusing the operator's own: the operator's ServiceAccount needs broad
-# namespaced permissions (pods, services, secrets, ...) to run at all, and
-# handing that same identity to a Job whose only job is `kubectl apply` on
-# one CRD - running a third-party image - would give that image the same
-# blast radius as the operator itself for no reason. This identity can only
-# read/write the one named CRD this chart ships.
+# The hook Job has its own ServiceAccount and ClusterRole. The operator
+# ServiceAccount can change pods and services, and read secrets. The Job runs
+# a third-party image and only applies one CRD, so it must not get these
+# permissions. It can create a CRD, but it can read and change only the CRD
+# of this chart.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -49,13 +47,10 @@ metadata:
     helm.sh/hook-weight: "-6"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 rules:
-  # get/update/patch are restricted to this one CRD by resourceNames. create
-  # is a separate rule because Kubernetes RBAC cannot scope create by
-  # resourceNames (the object doesn't exist yet at authorization time, so
-  # there's nothing to match against) - this identity can therefore create
-  # any CustomResourceDefinition, but can only ever read or modify the one
-  # named here afterwards. `kubectl apply` needs create for the very first
-  # install, before the CRD exists.
+  # resourceNames limits get, update and patch to the CRD of this chart.
+  # RBAC cannot limit create by resourceNames, because the object does not
+  # exist at the authorization. Thus this identity can create any CRD.
+  # `kubectl apply` needs create for the first install.
   - apiGroups:
       - apiextensions.k8s.io
     resources:

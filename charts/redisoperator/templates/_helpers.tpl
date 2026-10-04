@@ -8,9 +8,9 @@ Expand the name of the chart.
 {{- end -}}
 
 {{/*
-Create a default fully qualified app name.
-We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
-If release name contains chart name it will be used as a full name.
+Create a default fully qualified app name. Some Kubernetes name fields are
+limited to 63 characters (DNS naming spec), so the name is cut at 63.
+A release name that contains the chart name is the full name.
 */}}
 {{- define "chart.fullname" -}}
 {{- if .Values.fullnameOverride -}}
@@ -35,7 +35,6 @@ Create chart name and version as used by the chart label.
 
 {{/*
 Common labels
-timestamp: {{ now | date "2006-01-02_15-04-05" | quote }}
 */}}
 {{- define "chart.labels" -}}
 helm.sh/chart: {{ include "chart.chart" . }}

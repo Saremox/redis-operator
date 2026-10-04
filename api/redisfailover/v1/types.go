@@ -10,7 +10,7 @@ import (
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// RedisFailover represents a Redis failover
+// RedisFailover is a Redis master with replicas that the operator deploys and repairs.
 // +kubebuilder:printcolumn:name="NAME",type="string",JSONPath=".metadata.name"
 // +kubebuilder:printcolumn:name="REDIS",type="integer",JSONPath=".spec.redis.replicas"
 // +kubebuilder:printcolumn:name="SENTINELS",type="integer",JSONPath=".spec.sentinel.replicas"
@@ -24,7 +24,7 @@ type RedisFailover struct {
 	Status            RedisFailoverStatus `json:"status,omitempty"`
 }
 
-// RedisFailoverSpec represents a Redis failover spec
+// RedisFailoverSpec is the desired state of a RedisFailover.
 type RedisFailoverSpec struct {
 	Redis          RedisSettings      `json:"redis,omitempty"`
 	Sentinel       SentinelSettings   `json:"sentinel,omitempty"`
@@ -33,16 +33,17 @@ type RedisFailoverSpec struct {
 	BootstrapNode  *BootstrapSettings `json:"bootstrapNode,omitempty"`
 }
 
-// RedisCommandRename defines the specification of a "rename-command" configuration option.
+// RedisCommandRename is a "rename-command" entry of redis.conf.
 // It must not rename a command that the operator, the pod scripts or the replicas send:
 // AUTH, CLIENT, CONFIG, INFO, PING, PSYNC, REPLCONF, REPLICAOF or SLAVEOF. With Sentinels,
 // it must not rename EXEC, MULTI, PUBLISH or SUBSCRIBE. With an aclfile, it must not rename ACL.
+// The shutdown script also sends SAVE. Validation allows a rename of SAVE, but then that SAVE fails.
 type RedisCommandRename struct {
 	From string `json:"from,omitempty"`
 	To   string `json:"to,omitempty"`
 }
 
-// RedisSettings defines the specification of the redis cluster
+// RedisSettings configures the Redis pods.
 type RedisSettings struct {
 	Image                string                      `json:"image,omitempty"`
 	ImagePullPolicy      corev1.PullPolicy           `json:"imagePullPolicy,omitempty"`
@@ -56,37 +57,40 @@ type RedisSettings struct {
 	// default passes the password to redis-server, so a custom command must
 	// pass --requirepass and --masterauth from $REDIS_PASSWORD itself.
 	// Otherwise Redis runs with no password.
-	Command                       []string                          `json:"command,omitempty"`
-	ShutdownConfigMap             string                            `json:"shutdownConfigMap,omitempty"`
-	StartupConfigMap              string                            `json:"startupConfigMap,omitempty"`
-	Storage                       RedisStorage                      `json:"storage,omitempty"`
-	InitContainers                []corev1.Container                `json:"initContainers,omitempty"`
-	Exporter                      Exporter                          `json:"exporter,omitempty"`
-	ExtraContainers               []corev1.Container                `json:"extraContainers,omitempty"`
-	Affinity                      *corev1.Affinity                  `json:"affinity,omitempty"`
-	SecurityContext               *corev1.PodSecurityContext        `json:"securityContext,omitempty"`
-	ContainerSecurityContext      *corev1.SecurityContext           `json:"containerSecurityContext,omitempty"`
-	ImagePullSecrets              []corev1.LocalObjectReference     `json:"imagePullSecrets,omitempty"`
-	Tolerations                   []corev1.Toleration               `json:"tolerations,omitempty"`
-	TopologySpreadConstraints     []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
-	NodeSelector                  map[string]string                 `json:"nodeSelector,omitempty"`
-	PodAnnotations                map[string]string                 `json:"podAnnotations,omitempty"`
-	ServiceAnnotations            map[string]string                 `json:"serviceAnnotations,omitempty"`
-	HostNetwork                   bool                              `json:"hostNetwork,omitempty"`
-	DNSPolicy                     corev1.DNSPolicy                  `json:"dnsPolicy,omitempty"`
-	PriorityClassName             string                            `json:"priorityClassName,omitempty"`
-	ServiceAccountName            string                            `json:"serviceAccountName,omitempty"`
-	TerminationGracePeriodSeconds int64                             `json:"terminationGracePeriod,omitempty"`
-	ExtraVolumes                  []corev1.Volume                   `json:"extraVolumes,omitempty"`
-	ExtraVolumeMounts             []corev1.VolumeMount              `json:"extraVolumeMounts,omitempty"`
-	CustomLivenessProbe           *corev1.Probe                     `json:"customLivenessProbe,omitempty"`
-	CustomReadinessProbe          *corev1.Probe                     `json:"customReadinessProbe,omitempty"`
-	CustomStartupProbe            *corev1.Probe                     `json:"customStartupProbe,omitempty"`
-	DisablePodDisruptionBudget    bool                              `json:"disablePodDisruptionBudget,omitempty"`
+	Command                   []string                          `json:"command,omitempty"`
+	ShutdownConfigMap         string                            `json:"shutdownConfigMap,omitempty"`
+	StartupConfigMap          string                            `json:"startupConfigMap,omitempty"`
+	Storage                   RedisStorage                      `json:"storage,omitempty"`
+	InitContainers            []corev1.Container                `json:"initContainers,omitempty"`
+	Exporter                  Exporter                          `json:"exporter,omitempty"`
+	ExtraContainers           []corev1.Container                `json:"extraContainers,omitempty"`
+	Affinity                  *corev1.Affinity                  `json:"affinity,omitempty"`
+	SecurityContext           *corev1.PodSecurityContext        `json:"securityContext,omitempty"`
+	ContainerSecurityContext  *corev1.SecurityContext           `json:"containerSecurityContext,omitempty"`
+	ImagePullSecrets          []corev1.LocalObjectReference     `json:"imagePullSecrets,omitempty"`
+	Tolerations               []corev1.Toleration               `json:"tolerations,omitempty"`
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+	NodeSelector              map[string]string                 `json:"nodeSelector,omitempty"`
+	PodAnnotations            map[string]string                 `json:"podAnnotations,omitempty"`
+	ServiceAnnotations        map[string]string                 `json:"serviceAnnotations,omitempty"`
+	HostNetwork               bool                              `json:"hostNetwork,omitempty"`
+	DNSPolicy                 corev1.DNSPolicy                  `json:"dnsPolicy,omitempty"`
+	PriorityClassName         string                            `json:"priorityClassName,omitempty"`
+	ServiceAccountName        string                            `json:"serviceAccountName,omitempty"`
+	// TerminationGracePeriodSeconds is the grace period of the Redis pods in
+	// seconds. Defaults to 30. The shutdown script must end in this time. It
+	// needs the time of its SAVE, plus about 19s with Sentinel.
+	TerminationGracePeriodSeconds int64                `json:"terminationGracePeriod,omitempty"`
+	ExtraVolumes                  []corev1.Volume      `json:"extraVolumes,omitempty"`
+	ExtraVolumeMounts             []corev1.VolumeMount `json:"extraVolumeMounts,omitempty"`
+	CustomLivenessProbe           *corev1.Probe        `json:"customLivenessProbe,omitempty"`
+	CustomReadinessProbe          *corev1.Probe        `json:"customReadinessProbe,omitempty"`
+	CustomStartupProbe            *corev1.Probe        `json:"customStartupProbe,omitempty"`
+	DisablePodDisruptionBudget    bool                 `json:"disablePodDisruptionBudget,omitempty"`
 	// PreventMasterEviction, when true, annotates the current master pod with
 	// cluster-autoscaler.kubernetes.io/safe-to-evict=false so the cluster
-	// autoscaler will not drain the node running the master. Slaves are marked
-	// evictable. Defaults to false.
+	// autoscaler does not drain the node of the master. The operator marks the
+	// replicas as evictable. Defaults to false.
 	PreventMasterEviction bool `json:"preventMasterEviction,omitempty"`
 	// PodDisruptionBudgetMinAvailable overrides the PodDisruptionBudget
 	// minAvailable for the redis pods. Defaults to 2 (or 1 when replicas <= 2).
@@ -96,11 +100,13 @@ type RedisSettings struct {
 	// It needs a memory limit of at least 64Mi. It uses the smallest limit of
 	// all redis pods, because a failover can promote any replica. It sets
 	// replica-ignore-maxmemory yes, so customConfig cannot set it to no.
+	// Only an allkeys-* policy lowers maxmemory below the memory in use. With
+	// another policy, the operator keeps the old value and holds the pod rollout.
 	MaxMemory *MaxMemorySettings `json:"maxMemory,omitempty"`
-	// InPlaceResize controls whether redis pods whose update only changes
-	// container resources are resized in place instead of being recreated.
-	// It needs Kubernetes 1.33 or later, and 1.35 to lower a memory limit.
-	// Otherwise the pods are recreated. Defaults to Enabled.
+	// InPlaceResize controls whether the operator resizes a redis pod in place
+	// when an update changes only the container resources. Otherwise the
+	// operator recreates the pod. A resize needs Kubernetes 1.33 or later, and
+	// 1.35 to lower a memory limit. Defaults to Enabled.
 	// +kubebuilder:validation:Enum=Enabled;Disabled
 	InPlaceResize string `json:"inPlaceResize,omitempty"`
 }
@@ -117,16 +123,15 @@ type MaxMemorySettings struct {
 	Policy string `json:"policy,omitempty"`
 }
 
-// SentinelSettings defines the specification of the sentinel cluster
+// SentinelSettings configures the Sentinel pods and the failover.
 type SentinelSettings struct {
-	// Enabled controls whether Sentinel is deployed. When false, the operator
-	// manages failover instead of Sentinel. Defaults to false (operator-managed
-	// failover) since v4.0.0.
+	// Enabled deploys Sentinel, and Sentinel does the failover. When false,
+	// the operator does the failover. Defaults to false.
 	Enabled *bool `json:"enabled,omitempty"`
-	// FailoverTimeout is the time that operator-managed failover (sentinel.enabled=false)
-	// waits for a master that does not answer while its pod runs, so that a short
-	// stall does not cause a failover. A master that is gone or not found gets no
-	// wait. Defaults to 10s; 0s disables the wait.
+	// FailoverTimeout applies only when enabled is false. It is the time that the
+	// operator waits for a master that does not answer while its pod runs.
+	// Thus a short stall causes no failover. A master that is gone or not found
+	// gets no wait. Defaults to 10s; 0s disables the wait.
 	FailoverTimeout            *metav1.Duration                  `json:"failoverTimeout,omitempty"`
 	Image                      string                            `json:"image,omitempty"`
 	ImagePullPolicy            corev1.PullPolicy                 `json:"imagePullPolicy,omitempty"`
@@ -159,9 +164,9 @@ type SentinelSettings struct {
 	CustomReadinessProbe       *corev1.Probe                     `json:"customReadinessProbe,omitempty"`
 	CustomStartupProbe         *corev1.Probe                     `json:"customStartupProbe,omitempty"`
 	DisablePodDisruptionBudget bool                              `json:"disablePodDisruptionBudget,omitempty"`
-	// Strategy overrides the sentinel Deployment update strategy (e.g. to set
-	// rollingUpdate maxSurge/maxUnavailable). Defaults to the Kubernetes default
-	// RollingUpdate strategy when unset.
+	// Strategy overrides the update strategy of the sentinel Deployment, for
+	// example to set rollingUpdate maxSurge and maxUnavailable. Defaults to the
+	// Kubernetes default RollingUpdate strategy.
 	Strategy appsv1.DeploymentStrategy `json:"strategy,omitempty"`
 	// PodDisruptionBudgetMinAvailable overrides the PodDisruptionBudget
 	// minAvailable for the sentinel pods. Defaults to 2 (or 1 when sentinel
@@ -169,19 +174,19 @@ type SentinelSettings struct {
 	PodDisruptionBudgetMinAvailable *intstr.IntOrString `json:"podDisruptionBudgetMinAvailable,omitempty"`
 }
 
-// AuthSettings contains settings about auth
+// AuthSettings configures the Redis password.
 type AuthSettings struct {
 	SecretPath string `json:"secretPath,omitempty"`
 }
 
-// BootstrapSettings contains settings about a potential bootstrap node
+// BootstrapSettings names an external Redis that the Redis pods replicate from.
 type BootstrapSettings struct {
 	Host           string `json:"host,omitempty"`
 	Port           string `json:"port,omitempty"`
 	AllowSentinels bool   `json:"allowSentinels,omitempty"`
 }
 
-// Exporter defines the specification for the redis/sentinel exporter
+// Exporter configures the metrics exporter sidecar of the Redis or Sentinel pods.
 type Exporter struct {
 	Enabled                  bool                         `json:"enabled,omitempty"`
 	Image                    string                       `json:"image,omitempty"`
@@ -198,12 +203,13 @@ type Exporter struct {
 	Port int32 `json:"port,omitempty"`
 }
 
-// SentinelConfigCopy defines the specification for the sentinel exporter
+// SentinelConfigCopy configures the init container that copies sentinel.conf
+// to a writable volume. Sentinel writes its state to that file.
 type SentinelConfigCopy struct {
 	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
 }
 
-// RedisStorage defines the structure used to store the Redis Data
+// RedisStorage configures the data volume of the Redis pods.
 type RedisStorage struct {
 	KeepAfterDeletion     bool                           `json:"keepAfterDeletion,omitempty"`
 	EmptyDir              *corev1.EmptyDirVolumeSource   `json:"emptyDir,omitempty"`
@@ -215,7 +221,7 @@ type RedisStorage struct {
 type EmbeddedPersistentVolumeClaim struct {
 	metav1.TypeMeta `json:",inline"`
 
-	// EmbeddedMetadata contains metadata relevant to an EmbeddedResource.
+	// EmbeddedObjectMetadata holds the name, the labels and the annotations of the PVC.
 	EmbeddedObjectMetadata `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 
 	// Spec defines the desired characteristics of a volume requested by a pod author.
@@ -259,7 +265,7 @@ type EmbeddedObjectMetadata struct {
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// RedisFailoverList represents a Redis failover list
+// RedisFailoverList is the result of a list request for RedisFailovers.
 type RedisFailoverList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata"`
@@ -267,6 +273,8 @@ type RedisFailoverList struct {
 	Items []RedisFailover `json:"items"`
 }
 
+// RedisFailoverStatus is the result of the last reconcile. State is Healthy or
+// NotHealthy, and Message gives the reason.
 type RedisFailoverStatus struct {
 	State       string `json:"state,omitempty"`
 	LastChanged string `json:"lastChanged,omitempty"`

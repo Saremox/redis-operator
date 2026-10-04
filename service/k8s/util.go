@@ -8,12 +8,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 )
 
-// GetRedisPassword retreives password from kubernetes secret or, if
-// unspecified, returns a blank string
+// GetRedisPassword returns the password key of the auth.secretPath Secret, or
+// an empty string without auth.secretPath.
 func GetRedisPassword(s Services, rf *redisfailoverv1.RedisFailover) (string, error) {
 
 	if rf.Spec.Auth.SecretPath == "" {
-		// no auth settings specified, return blank password
 		return "", nil
 	}
 

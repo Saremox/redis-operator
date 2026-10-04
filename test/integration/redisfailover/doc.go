@@ -1,5 +1,5 @@
 package redisfailover
 
-// This tests are intended to check if the Redis Operator is working as spected.
-// To be able to run this tests, it is mandatory to have access to a Kubernetes
-// cluster
+// These tests check the operator against a Kubernetes cluster. They need
+// access to a cluster with the RedisFailover CRD, and the build tag
+// integration: go test -tags integration ./test/integration/...

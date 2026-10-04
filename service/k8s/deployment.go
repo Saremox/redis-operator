@@ -89,17 +89,14 @@ func (d *DeploymentService) UpdateDeployment(namespace string, deployment *appsv
 func (d *DeploymentService) CreateOrUpdateDeployment(namespace string, deployment *appsv1.Deployment) error {
 	storedDeployment, err := d.GetDeployment(namespace, deployment.Name)
 	if err != nil {
-		// If no resource we need to create.
 		if errors.IsNotFound(err) {
 			return d.CreateDeployment(namespace, deployment)
 		}
 		return err
 	}
 
-	// Already exists, need to Update.
-	// Set the correct resource version to ensure we are on the latest version. This way the only valid
-	// namespace is our spec(https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#concurrency-control-and-consistency),
-	// we will replace the current namespace state.
+	// With the stored resource version, the update fails when the object
+	// changed after the read.
 	deployment.ResourceVersion = storedDeployment.ResourceVersion
 
 	if deploymentUpToDate(storedDeployment, deployment) {

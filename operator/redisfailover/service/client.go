@@ -12,8 +12,8 @@ import (
 	"github.com/saremox/redis-operator/service/k8s"
 )
 
-// RedisFailoverClient has the minimumm methods that a Redis failover controller needs to satisfy
-// in order to talk with K8s
+// RedisFailoverClient creates, updates and deletes the Kubernetes resources
+// of a RedisFailover.
 type RedisFailoverClient interface {
 	EnsureSentinelService(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
 	EnsureSentinelConfigMap(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
@@ -95,9 +95,8 @@ func (r *RedisFailoverKubeClient) EnsureSentinelDeployment(rf *redisfailoverv1.R
 		return err
 	}
 
-	// Only auto-provision a ServiceAccount when the user hasn't set one themselves:
-	// if they did, it's their responsibility to have already created it, and we must
-	// not touch it.
+	// The operator creates a ServiceAccount only when the user did not set
+	// one. The user creates and manages a ServiceAccount that the user sets.
 	if rf.Spec.Sentinel.ServiceAccountName == "" {
 		if err := r.ensureSentinelServiceAccount(rf, labels, ownerRefs); err != nil {
 			return err
@@ -170,8 +169,8 @@ func (r *RedisFailoverKubeClient) EnsureRedisStatefulset(rf *redisfailoverv1.Red
 
 // EnsureRedisConfigMap makes sure the Redis ConfigMap exists
 func (r *RedisFailoverKubeClient) EnsureRedisConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error {
-	// The password is passed to redis-server via env-backed command args, not
-	// written into this ConfigMap, so it is not fetched here.
+	// The password is not in this ConfigMap. Without a custom redis.command,
+	// redis-server gets it as arguments from the REDIS_PASSWORD env var.
 	cm := generateRedisConfigMap(rf, labels, ownerRefs)
 	err := r.K8SService.CreateOrUpdateConfigMap(rf.Namespace, cm)
 
@@ -222,7 +221,9 @@ func (r *RedisFailoverKubeClient) EnsureNotPresentRedisService(rf *redisfailover
 	return nil
 }
 
-// EnsureNotPresentSentinelResources cleans up Sentinel resources when sentinel.enabled is false
+// EnsureNotPresentSentinelResources deletes the Sentinel resources when
+// SentinelsAllowed is false: with sentinel.enabled false, or during a
+// bootstrap without bootstrapNode.allowSentinels.
 func (r *RedisFailoverKubeClient) EnsureNotPresentSentinelResources(rf *redisfailoverv1.RedisFailover) error {
 	name := GetSentinelName(rf)
 	namespace := rf.Namespace
@@ -314,7 +315,7 @@ func (r *RedisFailoverKubeClient) ensurePodDisruptionBudget(rf *redisfailoverv1.
 
 	pdb := generatePodDisruptionBudget(name, namespace, metaLabels, ownerRefs, minAvailable, selectorLabels)
 	err := r.K8SService.CreateOrUpdatePodDisruptionBudget(namespace, pdb)
-	r.setEnsureOperationMetrics(pdb.Namespace, pdb.Name, "PodDisruptionBudget" /* pdb.TypeMeta.Kind isnt working;  pdb.Kind isnt working either */, rf.Name, err)
+	r.setEnsureOperationMetrics(pdb.Namespace, pdb.Name, "PodDisruptionBudget" /* the generated object has no TypeMeta.Kind */, rf.Name, err)
 	return err
 }
 

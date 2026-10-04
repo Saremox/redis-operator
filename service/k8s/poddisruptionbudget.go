@@ -70,17 +70,14 @@ func (p *PodDisruptionBudgetService) UpdatePodDisruptionBudget(namespace string,
 func (p *PodDisruptionBudgetService) CreateOrUpdatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
 	storedPodDisruptionBudget, err := p.GetPodDisruptionBudget(namespace, podDisruptionBudget.Name)
 	if err != nil {
-		// If no resource we need to create.
 		if errors.IsNotFound(err) {
 			return p.CreatePodDisruptionBudget(namespace, podDisruptionBudget)
 		}
 		return err
 	}
 
-	// Already exists, need to Update.
-	// Set the correct resource version to ensure we are on the latest version. This way the only valid
-	// namespace is our spec(https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#concurrency-control-and-consistency),
-	// we will replace the current namespace state.
+	// With the stored resource version, the update fails when the object
+	// changed after the read.
 	podDisruptionBudget.ResourceVersion = storedPodDisruptionBudget.ResourceVersion
 
 	if podDisruptionBudgetUpToDate(storedPodDisruptionBudget, podDisruptionBudget) {

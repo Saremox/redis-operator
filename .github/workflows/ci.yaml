@@ -71,10 +71,8 @@ jobs:
   integration-test:
     name: Integration test
     runs-on: ubuntu-24.04
-    # No `needs` gate: this matrix doesn't depend on check/unit-test's
-    # output, so gating it behind them only serializes two independent
-    # wall-clock costs. Letting it start immediately in parallel is strictly
-    # faster; a failure here fails the run exactly the same either way.
+    # No `needs`: this matrix does not use the output of check or unit-test,
+    # so it runs in parallel with them.
     strategy:
       matrix:
         kubernetes: [1.35.8, 1.36.4, 1.37.0]
@@ -84,37 +82,33 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Pre-pull redis image in the background
-        # driver=none means minikube schedules pods straight onto this
-        # runner's own docker daemon, so this image is already the exact one
-        # the in-process operator will ask the cluster to run. Kicking the
-        # pull off now and only waiting on it right before the Go tests start
-        # hides its wall time behind conntrack/minikube/CRD setup below,
-        # instead of paying for it inline while waitForPodsReady polls.
+        # With driver=none, the pods run on the docker daemon of this runner.
+        # The tests use this default Redis image. The pull runs in parallel
+        # with the minikube and CRD steps below.
         run: |
           docker pull redis:7.2.12-alpine &
           echo "REDIS_PULL_PID=$!" >> "$GITHUB_ENV"
       - name: Install conntrack
         run: sudo apt-get install -y conntrack
       - name: Prepare CNI config directory
-        # medyagh/setup-minikube's driver=none setup chmods /etc/cni/net.d
-        # without creating it first, which fails on ubuntu-24.04 runners
-        # where the directory doesn't pre-exist.
+        # With driver=none, medyagh/setup-minikube runs chmod on
+        # /etc/cni/net.d, but it does not create it. The ubuntu-24.04
+        # runners do not have this directory.
         run: sudo mkdir -p /etc/cni/net.d
       - uses: medyagh/setup-minikube@v0.0.21
         with:
           kubernetes-version: ${{ matrix.kubernetes }}
           minikube-version: 1.39.0
           driver: none
-          # minikube 1.39.0 defaults to containerd, which it flags as
-          # untested with driver=none and which fails here (crictl can't
-          # reach containerd's CRI socket). Pin back to docker/cri-dockerd,
-          # which this job already installs and which worked before.
+          # The default runtime of minikube 1.39.0 is containerd. With
+          # driver=none, crictl cannot reach the containerd CRI socket.
+          # This job installs docker and cri-dockerd.
           container-runtime: docker
       - name: Add redisfailover CRD
         run: kubectl create -f manifests/databases.spotahome.com_redisfailovers.yaml
       - name: Wait for redis image pre-pull to finish
-        # $REDIS_PULL_PID isn't a child of this step's shell (each step is
-        # its own process), so `wait` can't be used on it - poll instead.
+        # $REDIS_PULL_PID is not a child of the shell of this step, so
+        # `wait` cannot wait for it.
         run: |
           while kill -0 "$REDIS_PULL_PID" 2>/dev/null; do
             sleep 1
@@ -145,8 +139,9 @@ jobs:
         uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
-        # This is kinda hacky, but it's the simplest way to get the lowercase repo name https://github.com/orgs/community/discussions/25768
       - name: downcase REPO
+        # Image names must be lower case, and GitHub has no lower-case
+        # expression: https://github.com/orgs/community/discussions/25768
         run: |
           echo "REPO=${GITHUB_REPOSITORY,,}" >>${GITHUB_ENV}
       - name: Build Docker image

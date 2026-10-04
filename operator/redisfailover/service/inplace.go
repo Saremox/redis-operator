@@ -30,7 +30,8 @@ const (
 // ResizeResult is the outcome of ResizePodInPlace.
 type ResizeResult struct {
 	Action ResizeAction
-	// Message explains a resize that is stuck or fell back to recreating the pod.
+	// Message is the progress of a resize, the reason for a recreate, or
+	// empty.
 	Message string
 }
 
@@ -251,6 +252,7 @@ func (r *RedisFailoverHealer) inPlaceResources(rf *redisfailoverv1.RedisFailover
 	}
 	desired := map[string]corev1.ResourceRequirements{}
 	lowersMemoryLimit := false
+	var loweredRedisLimit int64
 	for _, c := range update.Spec.Containers {
 		d, o := withDefaultRequests(c.Resources), old[c.Name]
 		for _, list := range [][2]corev1.ResourceList{{o.Requests, d.Requests}, {o.Limits, d.Limits}} {
@@ -275,12 +277,41 @@ func (r *RedisFailoverHealer) inPlaceResources(rf *redisfailoverv1.RedisFailover
 		desired[c.Name] = target
 		if q, ok := running[c.Name].Limits[corev1.ResourceMemory]; ok && target.Limits.Memory().Cmp(q) < 0 {
 			lowersMemoryLimit = true
+			if c.Name == redisContainerName {
+				loweredRedisLimit = target.Limits.Memory().Value()
+			}
 		}
 	}
 	if lowersMemoryLimit && !support.MemoryLimitDecrease {
 		return nil, "lowering a memory limit in place needs Kubernetes 1.35", nil
 	}
+	if loweredRedisLimit != 0 {
+		reason, err := r.memoryInUseExceeds(rf, pod, loweredRedisLimit)
+		if reason != "" || err != nil {
+			return nil, reason, err
+		}
+	}
 	return desired, "", nil
+}
+
+// memoryInUseExceeds returns the reason to recreate the pod when the memory
+// that Redis holds does not fit the lowered limit. Redis often keeps the memory
+// that evictions free, and a fork for BGSAVE or a full sync needs more. A
+// recreated pod loads compacted data.
+func (r *RedisFailoverHealer) memoryInUseExceeds(rf *redisfailoverv1.RedisFailover, pod *corev1.Pod, limit int64) (string, error) {
+	password, err := k8s.GetRedisPassword(r.k8sService, rf)
+	if err != nil {
+		return "", err
+	}
+	info, err := r.redisClient.GetMemoryInfo(pod.Status.PodIP, getRedisPort(rf.Spec.Redis.Port), password)
+	if err != nil {
+		return "", err
+	}
+	if info.UsedMemoryRSS+redisfailoverv1.MaxMemoryReserve > limit {
+		return fmt.Sprintf("the Redis memory in use (%s) leaves less than %dMi below the lowered limit %s",
+			formatBytes(info.UsedMemoryRSS), redisfailoverv1.MaxMemoryReserve>>20, formatBytes(limit)), nil
+	}
+	return "", nil
 }
 
 // overlay sets the cpu and memory values of new on list.

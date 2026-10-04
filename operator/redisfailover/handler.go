@@ -23,19 +23,13 @@ const (
 	rfLabelManagedByKey     = "app.kubernetes.io/managed-by"
 	rfLabelNameKey          = "redisfailovers.databases.spotahome.com/name"
 	skipReconcileAnnotation = "redisfailovers.databases.spotahome.com/skip-reconcile"
-	// redisFailoverFinalizer is what makes RedisFailover deletion visible to
-	// Handle at all. Without a finalizer, the controller never calls Handle
-	// for a delete: by the time its DeleteFunc fires, the object is already
-	// gone from the informer's local indexer, and resolving a queued key
-	// back to an object just no-ops when the key no longer resolves (see
-	// rfController.process) - Handle is never invoked with a
-	// nil/absent object standing in for "this was deleted". A finalizer
-	// makes the API server hold the object (with DeletionTimestamp set)
-	// until we remove it, which turns "delete" into an ordinary object we
-	// still see via Handle, and gives us a hook to clean up state that
-	// only exists outside the object itself: the cluster_ok metrics series
-	// and the per-RedisFailover maps of the handler, such as the password
-	// and rollout-wait state (see the DeletionTimestamp branch in Handle).
+	// redisFailoverFinalizer makes the deletion of a RedisFailover visible to
+	// Handle. Without it, the object is not in the informer cache when the
+	// delete event comes, and rfController.process drops a key without an
+	// object. The finalizer keeps the object, with DeletionTimestamp set,
+	// until Handle removes the finalizer. Handle then removes the state
+	// outside the object: the cluster_ok metric series and the maps of the
+	// handler.
 	redisFailoverFinalizer = "redisfailovers.databases.spotahome.com/finalizer"
 	// masterUnreachableAnnotation holds, on the master pod, the RFC3339 time
 	// of the first check that the master missed. failoverTimeout counts from it.
@@ -131,11 +125,10 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 		return err
 	}
 
-	// Create owner refs so the objects manager by this handler have ownership to the
-	// received RF.
+	// The owner references make the RedisFailover the owner of the objects
+	// managed by this handler.
 	oRefs := r.createOwnerReferences(rf)
 
-	// Create the labels every object derived from this need to have.
 	labels := r.getLabels(rf)
 
 	if err := r.Ensure(rf, labels, oRefs, r.mClient); err != nil {
@@ -152,13 +145,14 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 	return nil
 }
 
-// getLabels merges the labels (dynamic and operator static ones).
+// getLabels merges the static operator labels, the name label and the labels
+// of the RedisFailover that labelWhitelist allows. A later map wins on a
+// duplicate key, so the RedisFailover labels can replace the other labels.
 func (r *RedisFailoverHandler) getLabels(rf *redisfailoverv1.RedisFailover) map[string]string {
 	dynLabels := map[string]string{
 		rfLabelNameKey: rf.Name,
 	}
 
-	// Filter the labels based on the whitelist
 	filteredCustomLabels := make(map[string]string)
 	if len(rf.Spec.LabelWhitelist) != 0 {
 		for _, regex := range rf.Spec.LabelWhitelist {
@@ -174,7 +168,6 @@ func (r *RedisFailoverHandler) getLabels(rf *redisfailoverv1.RedisFailover) map[
 			}
 		}
 	} else {
-		// If no whitelist is specified then don't filter the labels.
 		filteredCustomLabels = rf.Labels
 	}
 	return util.MergeLabels(defaultLabels, dynLabels, filteredCustomLabels)
