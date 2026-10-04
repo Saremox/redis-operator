@@ -807,6 +807,75 @@ func TestGetNumberSentinelSlavesInMemory(t *testing.T) {
 	assert.EqualValues(t, 1, n)
 }
 
+// TestGetSentinelReplicas checks that the Sentinel gives the replica that it
+// learned from the master.
+func TestGetSentinelReplicas(t *testing.T) {
+	env := getSharedEnv(t)
+	c := newTestClient()
+
+	var replicas []string
+	ok := waitForCondition(t, 20*time.Second, func() bool {
+		var err error
+		replicas, err = c.GetSentinelReplicas(env.sentinel.IP)
+		return err == nil && len(replicas) >= 1
+	})
+	require.True(t, ok, "sentinel should eventually discover the replica")
+	assert.Equal(t, []string{env.replica.IP}, replicas)
+}
+
+// TestSentinelMasterDown checks that a Sentinel does not flag a master that
+// answers as down.
+func TestSentinelMasterDown(t *testing.T) {
+	env := getSharedEnv(t)
+	down, err := newTestClient().SentinelMasterDown(env.sentinel.IP)
+	require.NoError(t, err)
+	assert.False(t, down)
+}
+
+func TestFlagsDown(t *testing.T) {
+	for flags, want := range map[string]bool{
+		"master":                      false,
+		"s_down,master":               true,
+		"s_down,o_down,master":        true,
+		"master,failover_in_progress": false,
+		"":                            false,
+	} {
+		assert.Equal(t, want, flagsDown(flags), flags)
+	}
+}
+
+func TestSentinelReplicaIPs(t *testing.T) {
+	tests := []struct {
+		name    string
+		res     []interface{}
+		want    []string
+		wantErr bool
+	}{
+		{name: "no replica", res: []interface{}{}, want: []string{}},
+		{
+			name: "two replicas",
+			res: []interface{}{
+				[]interface{}{"name", "10.0.0.2:6379", "ip", "10.0.0.2", "port", "6379"},
+				[]interface{}{"name", "10.0.0.3:6379", "ip", "10.0.0.3", "port", "6379"},
+			},
+			want: []string{"10.0.0.2", "10.0.0.3"},
+		},
+		{name: "an entry is not an array", res: []interface{}{"10.0.0.2"}, wantErr: true},
+		{name: "the ip is not a string", res: []interface{}{[]interface{}{"ip", int64(1)}}, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := sentinelReplicaIPs(test.res)
+			if test.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, test.want, got)
+		})
+	}
+}
+
 // TestGetNumberSentinelsInMemory_NotMonitoringAnything temporarily strips
 // the shared sentinel's only monitored master (SENTINEL REMOVE) rather than
 // starting a second sentinel process - see newSentinelProcessOnPort's doc
@@ -1223,6 +1292,12 @@ func TestSentinelFunctions_SentinelUnreachable(t *testing.T) {
 
 	_, _, err = c.GetSentinelMonitor(env.sentinel.IP)
 	assert.Error(t, err, "GetSentinelMonitor should fail once nothing is listening on the sentinel port")
+
+	_, err = c.GetSentinelReplicas(env.sentinel.IP)
+	assert.Error(t, err, "GetSentinelReplicas should fail once nothing is listening on the sentinel port")
+
+	_, err = c.SentinelMasterDown(env.sentinel.IP)
+	assert.Error(t, err, "SentinelMasterDown should fail once nothing is listening on the sentinel port")
 
 	err = c.SetCustomSentinelConfig(env.sentinel.IP, []string{"down-after-milliseconds 1000"})
 	assert.Error(t, err, "SetCustomSentinelConfig should fail once nothing is listening on the sentinel port")

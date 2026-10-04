@@ -734,6 +734,21 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 				}
 
 			} else {
+				cannot, err3 := r.rfChecker.CheckSentinelsCannotFailover(rf)
+				if err3 != nil {
+					rf.Status = redisfailoverv1.RedisFailoverStatus{
+						State:   redisfailoverv1.NotHealthyState,
+						Message: "unable to check whether Sentinel can fail over",
+					}
+					return err3
+				}
+				if cannot {
+					elected, err3 := r.electMasterForSentinel(rf)
+					if err3 != nil || !elected {
+						return err3
+					}
+					break
+				}
 
 				// We'll wait until failover is done
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("no master found, wait until failover or fix manually")
@@ -886,6 +901,75 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		}
 	}
 	return r.checkAndHealSentinels(rf, sentinels)
+}
+
+// electMasterForSentinel promotes the best replica when no Sentinel can fail
+// over. It first counts the masters and checks for a stopping master again,
+// because a change since the first checks gives two masters. It reports
+// whether it elected a master.
+func (r *RedisFailoverHandler) electMasterForSentinel(rf *redisfailoverv1.RedisFailover) (bool, error) {
+	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
+	nMasters, err := r.rfChecker.GetNumberMasters(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to get number of masters",
+		}
+		return false, err
+	}
+	if nMasters != 0 {
+		logger.Infof("A master appeared before the election, the operator does not elect a master")
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "a master appeared before the election, checking again",
+		}
+		return false, nil
+	}
+	// GetNumberMasters does not count a pod in deletion.
+	stopping, err := r.masterPodStopping(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to check whether the master is stopping",
+		}
+		return false, err
+	}
+	if stopping {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: masterStoppingMsg,
+		}
+		return false, nil
+	}
+	best, err := r.rfChecker.GetBestReplicaForPromotion(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "Sentinel cannot fail over and no replica is available for promotion",
+		}
+		return false, err
+	}
+	logger.Warningf("No Sentinel knows a replica pod or monitors a pod, so Sentinel cannot fail over. The operator promotes %s (%s)", best.PodName, best.IP)
+	err = r.rfHealer.PromoteBestReplica(best.IP, rf)
+	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err)
+	if err != nil {
+		msg := "Sentinel cannot fail over and the promotion of a replica failed"
+		if errors.Is(err, rfservice.ErrPartialReconciliation) {
+			msg = "failover incomplete: replica reconfiguration failed"
+		}
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: msg,
+		}
+		return false, err
+	}
+	// The checks below make the Sentinels monitor the new master. The status
+	// stays NotHealthy until the next check finds them healthy.
+	rf.Status = redisfailoverv1.RedisFailoverStatus{
+		State:   redisfailoverv1.NotHealthyState,
+		Message: fmt.Sprintf("Sentinel knew no replica to fail over to, the operator promoted %s", best.PodName),
+	}
+	return true, nil
 }
 
 // checkAndHealOperatorManagedMode handles failover when Sentinel is disabled.

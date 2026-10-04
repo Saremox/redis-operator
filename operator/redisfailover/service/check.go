@@ -50,6 +50,7 @@ type RedisFailoverCheck interface {
 	CheckSentinelSlavesNumberQuorumInMemory(sentinel string, rFailover *redisfailoverv1.RedisFailover) error
 	CheckSentinelQuorum(rFailover *redisfailoverv1.RedisFailover) (int, error)
 	CheckIfMasterLocalhost(rFailover *redisfailoverv1.RedisFailover) (bool, error)
+	CheckSentinelsCannotFailover(rFailover *redisfailoverv1.RedisFailover) (bool, error)
 	CheckSentinelMonitor(sentinel string, monitor ...string) error
 	GetMasterIP(rFailover *redisfailoverv1.RedisFailover) (string, error)
 	GetNumberMasters(rFailover *redisfailoverv1.RedisFailover) (int, error)
@@ -295,6 +296,68 @@ func (r *RedisFailoverChecker) CheckIfMasterLocalhost(rFailover *redisfailoverv1
 	}
 	r.logger.Infof("atleast one pod does not have localhost as master , operator should not heal")
 	return false, nil
+}
+
+// CheckSentinelsCannotFailover reports whether no Sentinel can fail over, so
+// that a promotion by the operator cannot give two masters. docs/logic.md
+// gives the conditions.
+func (r *RedisFailoverChecker) CheckSentinelsCannotFailover(rf *redisfailoverv1.RedisFailover) (bool, error) {
+	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
+	if err != nil {
+		return false, err
+	}
+	// A pod in deletion or not running still counts. Its Redis can still
+	// answer the Sentinel.
+	pods := make(map[string]string, len(rps.Items))
+	for _, rp := range rps.Items {
+		if rp.Status.PodIP != "" {
+			pods[rp.Status.PodIP] = rp.Name
+		}
+	}
+	sentinels, err := r.GetSentinelsIPs(rf)
+	if err != nil {
+		return false, err
+	}
+	if len(sentinels) < int(rf.Spec.Sentinel.Replicas) {
+		r.logger.Warningf("%d of %d Sentinels run, all are necessary to be sure that Sentinel cannot fail over", len(sentinels), rf.Spec.Sentinel.Replicas)
+		return false, nil
+	}
+	for _, sip := range sentinels {
+		master, _, err := r.redisClient.GetSentinelMonitor(sip)
+		if err != nil {
+			r.logger.Warningf("Sentinel %s did not give its master, so it can know a replica: %v", sip, err)
+			return false, nil
+		}
+		if pod, ok := pods[master]; ok {
+			r.logger.Infof("Sentinel %s monitors the pod %s (%s), so Sentinel can fail over", sip, pod, master)
+			return false, nil
+		}
+		// 127.0.0.1 is the address in the configuration of a new Sentinel.
+		if master != "127.0.0.1" {
+			down, err := r.redisClient.SentinelMasterDown(sip)
+			if err != nil {
+				r.logger.Warningf("Sentinel %s did not give the state of its master: %v", sip, err)
+				return false, nil
+			}
+			if !down {
+				r.logger.Infof("Sentinel %s does not flag its master %s as down, so the master can still answer", sip, master)
+				return false, nil
+			}
+		}
+		replicas, err := r.redisClient.GetSentinelReplicas(sip)
+		if err != nil {
+			r.logger.Warningf("Sentinel %s did not give its replicas, so it can know one: %v", sip, err)
+			return false, nil
+		}
+		for _, replica := range replicas {
+			if pod, ok := pods[replica]; ok {
+				r.logger.Infof("Sentinel %s knows the replica pod %s (%s), so Sentinel can fail over", sip, pod, replica)
+				return false, nil
+			}
+		}
+		r.logger.Warningf("Sentinel %s monitors %s, which is not a pod, and knows no replica pod of %d replicas", sip, master, len(replicas))
+	}
+	return true, nil
 }
 
 // CheckSentinelQuorum This function will call the sentinel client apis to check with sentinel if the sentinel is in a state
