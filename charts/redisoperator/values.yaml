@@ -39,8 +39,8 @@ fullnameOverride: ""
 namespace: null
 
 serviceAccount:
-  # true creates the ServiceAccount, the ClusterRole and the ClusterRoleBinding.
-  # false skips all three. You must then give the operator its RBAC permissions.
+  # true creates the ServiceAccount and its RBAC objects (ClusterRole, Role and
+  # bindings). false skips them. You must then give the operator its RBAC permissions.
   create: true
   # Annotations to be added to the service account.
   annotations: {}

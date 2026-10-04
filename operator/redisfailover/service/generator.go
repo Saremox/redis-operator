@@ -549,6 +549,7 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 					ImagePullSecrets:              rf.Spec.Redis.ImagePullSecrets,
 					PriorityClassName:             rf.Spec.Redis.PriorityClassName,
 					ServiceAccountName:            rf.Spec.Redis.ServiceAccountName,
+					AutomountServiceAccountToken:  automountServiceAccountToken(rf.Spec.Redis.ServiceAccountName),
 					EnableServiceLinks:            ptr.To(false),
 					TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
 					Containers: []corev1.Container{
@@ -730,17 +731,18 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 					Annotations: rf.Spec.Sentinel.PodAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					Affinity:                  getAffinity(rf.Spec.Sentinel.Affinity, labels),
-					Tolerations:               rf.Spec.Sentinel.Tolerations,
-					TopologySpreadConstraints: rf.Spec.Sentinel.TopologySpreadConstraints,
-					NodeSelector:              rf.Spec.Sentinel.NodeSelector,
-					SecurityContext:           getSecurityContext(rf.Spec.Sentinel.SecurityContext),
-					HostNetwork:               rf.Spec.Sentinel.HostNetwork,
-					DNSPolicy:                 getDnsPolicy(rf.Spec.Sentinel.DNSPolicy),
-					ImagePullSecrets:          rf.Spec.Sentinel.ImagePullSecrets,
-					PriorityClassName:         rf.Spec.Sentinel.PriorityClassName,
-					ServiceAccountName:        serviceAccountName,
-					EnableServiceLinks:        ptr.To(false),
+					Affinity:                     getAffinity(rf.Spec.Sentinel.Affinity, labels),
+					Tolerations:                  rf.Spec.Sentinel.Tolerations,
+					TopologySpreadConstraints:    rf.Spec.Sentinel.TopologySpreadConstraints,
+					NodeSelector:                 rf.Spec.Sentinel.NodeSelector,
+					SecurityContext:              getSecurityContext(rf.Spec.Sentinel.SecurityContext),
+					HostNetwork:                  rf.Spec.Sentinel.HostNetwork,
+					DNSPolicy:                    getDnsPolicy(rf.Spec.Sentinel.DNSPolicy),
+					ImagePullSecrets:             rf.Spec.Sentinel.ImagePullSecrets,
+					PriorityClassName:            rf.Spec.Sentinel.PriorityClassName,
+					ServiceAccountName:           serviceAccountName,
+					AutomountServiceAccountToken: automountServiceAccountToken(rf.Spec.Sentinel.ServiceAccountName),
+					EnableServiceLinks:           ptr.To(false),
 					InitContainers: []corev1.Container{
 						{
 							Name:            "sentinel-config-copy",
@@ -1172,6 +1174,16 @@ func getContainerSecurityContext(secctx *corev1.SecurityContext) *corev1.Securit
 		merged.AllowPrivilegeEscalation = result.AllowPrivilegeEscalation
 	}
 	return merged
+}
+
+// automountServiceAccountToken disables the token mount when the RedisFailover
+// sets no service account. The generated containers do not use the Kubernetes
+// API. A user who sets a service account may need its token in a sidecar.
+func automountServiceAccountToken(serviceAccountName string) *bool {
+	if serviceAccountName == "" {
+		return ptr.To(false)
+	}
+	return nil
 }
 
 func getDnsPolicy(dnspolicy corev1.DNSPolicy) corev1.DNSPolicy {
