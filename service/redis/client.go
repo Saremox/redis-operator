@@ -32,6 +32,7 @@ type MemoryInfo struct {
 	MaxMemory       int64
 	MaxMemoryPolicy string
 	UsedMemory      int64 // used_memory minus mem_not_counted_for_evict, as compared against maxmemory
+	UsedMemoryRSS   int64 // memory that the process holds, which often keeps the memory that evictions free
 	Role            string
 	Loading         bool // used_memory does not show the whole dataset yet
 }
@@ -834,6 +835,8 @@ func (c *client) GetMemoryInfo(ip, port, password string) (*MemoryInfo, error) {
 				mi.Role = value
 			case "used_memory":
 				mi.UsedMemory = n
+			case "used_memory_rss":
+				mi.UsedMemoryRSS = n
 			case "mem_not_counted_for_evict":
 				notCounted = n
 			case "loading":
