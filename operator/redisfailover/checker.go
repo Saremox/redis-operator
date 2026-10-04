@@ -453,10 +453,10 @@ func (r *RedisFailoverHandler) clearUnreachableAnnotations(rf *redisfailoverv1.R
 	}
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if pod.Annotations[masterUnreachableAnnotation] == "" {
+		if _, ok := pod.Annotations[masterUnreachableAnnotation]; !ok {
 			continue
 		}
-		if err := r.k8sservice.UpdatePodAnnotations(rf.Namespace, pod.Name, map[string]string{masterUnreachableAnnotation: ""}); err != nil {
+		if err := r.k8sservice.RemovePodAnnotation(rf.Namespace, pod.Name, masterUnreachableAnnotation); err != nil {
 			return err
 		}
 	}
