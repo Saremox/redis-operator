@@ -63,7 +63,11 @@ type RedisFailoverHandler struct {
 	// unreachableCleared records, per namespace/name, that no pod has the
 	// unreachable-since annotation, so a healthy reconcile does not list pods.
 	unreachableCleared sync.Map
-	now                func() time.Time
+	// maxMemoryLogged holds, per namespace/name, the last maxmemory outcome
+	// that was logged at Warning, so that an unchanged outcome does not repeat
+	// at each reconcile.
+	maxMemoryLogged sync.Map
+	now             func() time.Time
 	// requeue is nil until New connects the controller.
 	requeue func(key string, after time.Duration)
 }
@@ -92,6 +96,7 @@ func (r *RedisFailoverHandler) Forget(key string) {
 	r.passwords.Delete(key)
 	r.rolloutWaits.Delete(key)
 	r.unreachableCleared.Delete(key)
+	r.maxMemoryLogged.Delete(key)
 }
 
 // Handle will ensure the redis failover is in the expected state.

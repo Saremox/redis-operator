@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 	"github.com/saremox/redis-operator/operator/redisfailover/util"
@@ -1349,6 +1350,7 @@ func (r *RedisFailoverHandler) applyRedisCustomConfig(rf *redisfailoverv1.RedisF
 // bootstrapping. It reports whether the pod rollout must be held.
 func (r *RedisFailoverHandler) ensureRedisMaxMemory(rf *redisfailoverv1.RedisFailover, master string) (bool, error) {
 	if rf.Spec.Redis.MaxMemory == nil {
+		r.maxMemoryLogged.Delete(failoverKey(rf))
 		return false, nil
 	}
 	redises, err := r.rfChecker.GetRedisesIPs(rf)
@@ -1369,13 +1371,38 @@ func (r *RedisFailoverHandler) ensureRedisMaxMemory(rf *redisfailoverv1.RedisFai
 		return false, err
 	}
 	if result.Message != "" {
-		logger.Warningf("%s", result.Message)
 		rf.Status.Message = result.Message
 	}
-	if result.HoldRollout {
-		logger.Warningf("Holding the pod rollout until maxmemory fits the lowered memory limit")
-	}
+	r.logMaxMemoryOutcome(logger, failoverKey(rf), result)
 	return result.HoldRollout, nil
+}
+
+// maxMemoryOutcome is the part of a MaxMemoryResult that the handler logs.
+type maxMemoryOutcome struct {
+	message string
+	hold    bool
+}
+
+// logMaxMemoryOutcome logs an outcome at Warning when it differs from the last
+// one that was logged for the RedisFailover, and at Debug otherwise. The status
+// message shows an unchanged outcome to the user.
+func (r *RedisFailoverHandler) logMaxMemoryOutcome(logger log.Logger, key string, result rfservice.MaxMemoryResult) {
+	if result.Message == "" && !result.HoldRollout {
+		r.maxMemoryLogged.Delete(key)
+		return
+	}
+	outcome := maxMemoryOutcome{message: result.Message, hold: result.HoldRollout}
+	last, loaded := r.maxMemoryLogged.Swap(key, outcome)
+	logf := logger.Warningf
+	if loaded && last == outcome {
+		logf = logger.Debugf
+	}
+	if result.Message != "" {
+		logf("%s", result.Message)
+	}
+	if result.HoldRollout {
+		logf("Holding the pod rollout until maxmemory fits the lowered memory limit")
+	}
 }
 
 func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFailover, sentinels []string) error {
