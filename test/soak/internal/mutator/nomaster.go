@@ -15,21 +15,22 @@ import (
 )
 
 // planNoMaster resets every Sentinel and then deletes the master pod
-// gracefully, so that no Sentinel knows a replica when the master is gone.
-// Only the operator can then elect a master. Both steps are one action: a
-// master kill after a failed reset would test another case.
+// gracefully. Each Sentinel learns its replicas again at its next INFO of the
+// master, so the recovery is a Sentinel failover or an election by the
+// operator. Both steps are one action: a master kill after a failed reset
+// would test another case.
 //
-// The shutdown script of the master cannot get a failover. It releases its
-// write pause, so the master acknowledges writes until Redis stops and waits
-// for its replicas. A write can be lost, as in a failover, and the mutation
-// does not require a lossless result.
+// The master accepts writes until Redis gets SIGTERM. Redis 7 and later then
+// pauses writes and waits for the replicas, up to shutdown-timeout. A write
+// is lost only if a replica lags, so the mutation does not require a lossless
+// result.
 func (m *Mutator) planNoMaster(s state, master string, port int) plan {
 	const kind = config.SentinelResetKillMaster
 	switch {
 	case !s.rf.SentinelEnabled():
 		return skipped(kind, "Sentinel is off")
 	case s.rf.Spec.Redis.Replicas < 2:
-		return skipped(kind, "one redis pod has no replica to elect")
+		return skipped(kind, "one redis pod has no replica to promote")
 	case len(s.sentinels) == 0:
 		return skipped(kind, "no sentinel pod")
 	}
@@ -69,8 +70,8 @@ func (m *Mutator) resetSentinels(ctx context.Context, pods []corev1.Pod, port in
 
 // noMasterConverged holds once the killed master pod is back as a new, ready
 // pod, one pod is labelled master, and each Sentinel knows the master and all
-// its replicas again. The Sentinel check shows that the operator healed the
-// Sentinels, which the next failover needs. The RedisFailover must be Healthy.
+// its replicas again, which the next failover needs. The RedisFailover must be
+// Healthy.
 func noMasterConverged(name string, uid types.UID, redis, sentinels int32) func(state) error {
 	replaced := redisPodReplaced(name, uid)
 	return func(s state) error {

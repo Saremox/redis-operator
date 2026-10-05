@@ -101,19 +101,16 @@ instances:
 	}
 }
 
-// The recovery of sentinel_reset_kill_master has its own bound, from the
-// defaults of the operator. A timeout of the config wins.
+// sentinel_reset_kill_master has the convergence timeout of the observer,
+// as kill_master has. A timeout of the config wins.
 func TestNoMasterTimeout(t *testing.T) {
 	const instance = "instances: [{name: a, namespace: ns, mode: sentinel, mutations: {kinds: {sentinel_reset_kill_master: 1}}}]"
 	c, err := Parse([]byte(instance))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := c.Mutation.Timeout(SentinelResetKillMaster, c.Observer, 3); got != 185*time.Second {
-		t.Errorf("timeout %s, want 3m5s", got)
-	}
-	if got := c.Mutation.Timeout(KillMaster, c.Observer, 3); got != c.Observer.ConvergenceTimeout.Duration {
-		t.Errorf("kill_master timeout %s", got)
+	if got := c.Mutation.Timeout(SentinelResetKillMaster, c.Observer, 3); got != c.Observer.ConvergenceTimeout.Duration {
+		t.Errorf("timeout %s, want the convergence timeout", got)
 	}
 	c, err = Parse([]byte("mutation: {timeouts: {sentinel_reset_kill_master: {base: 7m}}}\n" + instance))
 	if err != nil {

@@ -201,12 +201,6 @@ func (c *Config) setDefaults() {
 			c.Mutation.Timeouts[k] = Timeout{PerPod: metav1.Duration{Duration: perPod}}
 		}
 	}
-	if _, ok := c.Mutation.Timeouts[SentinelResetKillMaster]; !ok {
-		if c.Mutation.Timeouts == nil {
-			c.Mutation.Timeouts = map[Kind]Timeout{}
-		}
-		c.Mutation.Timeouts[SentinelResetKillMaster] = Timeout{Base: metav1.Duration{Duration: NoMasterTimeout}}
-	}
 	for k, t := range c.Mutation.Timeouts {
 		if t.Base.Duration == 0 {
 			t.Base = c.Observer.ConvergenceTimeout

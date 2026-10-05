@@ -232,7 +232,7 @@ func TestNoMasterSkips(t *testing.T) {
 		want   string
 	}{
 		{"Sentinel is off", func(s *state) { s.rf.Spec.Sentinel.Enabled = nil }, "rfr-x-0", "Sentinel is off"},
-		{"one redis pod", func(s *state) { s.rf.Spec.Redis.Replicas = 1 }, "rfr-x-0", "no replica to elect"},
+		{"one redis pod", func(s *state) { s.rf.Spec.Redis.Replicas = 1 }, "rfr-x-0", "no replica to promote"},
 		{"no Sentinel pod", func(s *state) { s.sentinels = nil }, "rfr-x-0", "no sentinel pod"},
 		{"the observer disagrees", func(*state) {}, "rfr-x-1", "the observer saw"},
 		{"two labelled masters", func(s *state) { s.redis[1].Labels[roleLabel] = roleMaster }, "rfr-x-0", "2 pods are labelled master"},
@@ -296,5 +296,34 @@ func TestNoMasterFetchesTheSentinels(t *testing.T) {
 	p := m.planNoMaster(authState(), "rfr-x-0", sentinelPort)
 	if !p.fetch.sentinelMaster || p.converged == nil {
 		t.Errorf("plan %+v", p)
+	}
+}
+
+// A forced delete has a grace period of 0, a graceful one has none, and both
+// hold the UID of the pod. A pod plan, as in kill_master_force, passes both
+// on.
+func TestDeletePod(t *testing.T) {
+	ctx := context.Background()
+	for _, force := range []bool{false, true} {
+		want := "delete rfr-x-1 uid=u1"
+		if force {
+			want += " grace=0"
+		}
+		for name, del := range map[string]func(*Mutator) error{
+			"deletePod": func(m *Mutator) error { return m.deletePod(ctx, "rfr-x-1", "u1", force) },
+			"pod plan": func(m *Mutator) error {
+				p := plan{kind: config.KillMasterForce, pod: "rfr-x-1", uid: "u1", force: force}
+				return m.apply(ctx, p, slog.New(slog.DiscardHandler))
+			},
+		} {
+			rec := &calls{}
+			m, _, _ := noMasterEnv(t, rec, nil)
+			if err := del(m); err != nil {
+				t.Fatal(err)
+			}
+			if got := rec.get(); !slices.Equal(got, []string{want}) {
+				t.Errorf("%s, force %v: calls %v, want %s", name, force, got, want)
+			}
+		}
 	}
 }

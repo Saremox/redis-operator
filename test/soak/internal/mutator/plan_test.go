@@ -329,8 +329,8 @@ func TestLossless(t *testing.T) {
 		{plan{kind: config.SentinelToggle}, true, true},
 		{plan{kind: config.KillMaster}, false, true},
 		{plan{kind: config.KillMasterForce}, false, false},
-		// The shutdown script releases the write pause when no failover is
-		// possible, also on a volume.
+		// A lagging replica can lack writes at the SIGTERM wait, also on a
+		// volume.
 		{plan{kind: config.SentinelResetKillMaster}, false, false},
 		{plan{kind: config.RedisReplicas}, false, true},
 		{plan{kind: config.KillReplica}, false, false},

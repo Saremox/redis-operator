@@ -6,7 +6,6 @@ import (
 	"maps"
 	"slices"
 	"strings"
-	"time"
 )
 
 // Kind is a kind of mutation, the value of the kind label.
@@ -45,11 +44,13 @@ const (
 	// in sentinelImages, for example between a Redis and a Valkey version.
 	SentinelImageFlip Kind = "sentinel_image_flip"
 	// SentinelResetKillMaster sends SENTINEL RESET * to every Sentinel and
-	// then deletes the master pod gracefully. The Sentinels then know no
-	// replica, so none can fail over, and the operator must elect the master
-	// itself. The shutdown script cannot get a failover, and releases the
-	// write pause that it set. The master can acknowledge writes until it
-	// stops, so a write can be lost, as in a failover.
+	// then deletes the master pod gracefully. Each Sentinel learns its
+	// replicas again at its next INFO of the master, so the recovery path
+	// differs: a Sentinel failover or an election by the operator. Any path
+	// that ends with one master and the status Healthy passes. The master
+	// accepts writes until Redis gets SIGTERM. Redis 7 and later then pauses
+	// writes and waits for the replicas, up to shutdown-timeout, so a write
+	// is lost only if a replica lags.
 	SentinelResetKillMaster Kind = "sentinel_reset_kill_master"
 )
 
@@ -77,35 +78,6 @@ func maxMemoryOnly(k Kind) bool {
 func sentinelOnly(k Kind) bool {
 	return k == SentinelReplicas || k == KillSentinel || k == SentinelImageFlip || k == SentinelResetKillMaster
 }
-
-// The parts of NoMasterTimeout, from the defaults of the operator and the
-// pods that it creates.
-const (
-	// noMasterStop is redis.terminationGracePeriod. The operator waits until the
-	// master pod exits, and only then elects a master.
-	noMasterStop = 30 * time.Second
-	// noMasterDown is the Sentinel down-after-milliseconds. The operator
-	// elects only after every Sentinel flags its master as down.
-	noMasterDown = 5 * time.Second
-	// noMasterFailover is the Sentinel failover-timeout. An attempt of a
-	// Sentinel to fail over without a replica ends after it.
-	noMasterFailover = 10 * time.Second
-	// noMasterSyncs are three resyncs of 30s (--sync-interval), if no pod event
-	// starts a reconcile: it sees the missing master, it elects and
-	// reconfigures, and it checks the status.
-	noMasterSyncs = 3 * 30 * time.Second
-	// noMasterReady is the readiness initialDelaySeconds (30s) and one probe
-	// period (10s) of the new master pod.
-	noMasterReady = 40 * time.Second
-	// noMasterDiscover is the interval of the INFO that a Sentinel sends to
-	// learn the replicas of the elected master.
-	noMasterDiscover = 10 * time.Second
-)
-
-// NoMasterTimeout is the default convergence timeout of
-// sentinel_reset_kill_master: the time that the operator needs to elect a
-// master and heal the Sentinels, each step at its default.
-const NoMasterTimeout = noMasterStop + noMasterDown + noMasterFailover + noMasterSyncs + noMasterReady + noMasterDiscover
 
 // Mutations is an instance's mutation catalogue.
 type Mutations struct {
