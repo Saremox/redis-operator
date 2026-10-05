@@ -45,12 +45,13 @@ const (
 	SentinelImageFlip Kind = "sentinel_image_flip"
 	// SentinelResetKillMaster sends SENTINEL RESET * to every Sentinel and
 	// then deletes the master pod gracefully. Each Sentinel learns its
-	// replicas again at its next INFO of the master, so the recovery path
+	// replicas again at its next INFO of the master. The recovery path
 	// differs: a Sentinel failover or an election by the operator. Any path
-	// that ends with one master and the status Healthy passes. The master
-	// accepts writes until Redis gets SIGTERM. Redis 7 and later then pauses
-	// writes and waits for the replicas, up to shutdown-timeout, so a write
-	// is lost only if a replica lags.
+	// that ends with one master and the status Healthy passes. If the
+	// shutdown script gets no failover, it releases its write pause, and the
+	// master accepts writes until Redis gets SIGTERM. Redis 7 and later then
+	// pause writes and wait for the replicas, up to shutdown-timeout. A
+	// write is lost only if a replica lags.
 	SentinelResetKillMaster Kind = "sentinel_reset_kill_master"
 )
 

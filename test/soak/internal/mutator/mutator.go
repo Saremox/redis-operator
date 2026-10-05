@@ -392,9 +392,9 @@ func (m *Mutator) verify(ctx context.Context, event string, step int, lossless b
 // for its replicas on SIGTERM. A graceful master kill, a scale-down or a
 // rollover along an ok edge also keep the data on a volume. A forced kill and
 // a failover can lose writes to asynchronous replication. So can
-// sentinel_reset_kill_master: the master accepts writes until Redis gets
-// SIGTERM, and then Redis 7 and later wait for the replicas only up to
-// shutdown-timeout.
+// sentinel_reset_kill_master. If its shutdown script gets no failover, the
+// master accepts writes until Redis gets SIGTERM. Redis 7 and later then wait
+// for the replicas only up to shutdown-timeout.
 func lossless(p plan, s state) bool {
 	volumes := s.rf.Spec.Redis.Storage.PersistentVolumeClaim != nil
 	switch p.kind {

@@ -194,17 +194,19 @@ explanation:
   limit and the server evicts keys.
 - `sentinel_reset_kill_master` sends `SENTINEL RESET *` to every Sentinel,
   and then deletes the master pod gracefully. Each Sentinel learns its
-  replicas again at its next `INFO` of the master, so the recovery path
+  replicas again at its next `INFO` of the master. The recovery path
   differs: a Sentinel failover, or an election by the operator. Any path
   that ends with one master and the status `Healthy` passes. A master that
   stays absent is a timeout.
 
   The kind runs only on Sentinel instances, and the mutator skips it while
   the instance has one redis pod. Its convergence timeout is
-  `observer.convergenceTimeout`, as for `kill_master`. The master accepts
-  writes until Redis gets `SIGTERM`. Redis 7 and later then pause writes
-  and wait for the replicas, up to `shutdown-timeout`. A write is lost only
-  if a replica lags, so the tester does not require a lossless result.
+  `observer.convergenceTimeout`, as for `kill_master`. If the shutdown
+  script gets no failover, it releases its write pause, and the master
+  accepts writes until Redis gets `SIGTERM`. Redis 7 and later then pause
+  writes and wait for the replicas, up to `shutdown-timeout`. A write is
+  lost only if a replica lags, so the tester does not require a lossless
+  result.
 - `password_rotate_offline` is scenario C. It stops the operator, changes
   the password, starts the operator with its replicas, expects
   `unable to apply the configured password`, sets the previous password,

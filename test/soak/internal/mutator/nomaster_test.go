@@ -259,8 +259,8 @@ func TestNoMasterIsPlanned(t *testing.T) {
 	}
 }
 
-// noMasterRecovered is the state after the operator elected a master: the
-// killed pod rfr-x-0 is a new pod, and the Sentinels know the replicas again.
+// noMasterRecovered is the state after the recovery: the killed pod rfr-x-0
+// is a new pod, and the Sentinels know the replicas again.
 func noMasterRecovered() state {
 	s := authState()
 	s.sentinelMasters = map[string]sentinelMaster{}
@@ -289,7 +289,7 @@ func TestNoMasterConverged(t *testing.T) {
 	})
 }
 
-// The window of the mutation holds until the operator recovered, and it
+// The window of the mutation holds until the instance recovered, and it
 // reads the Sentinels for that.
 func TestNoMasterFetchesTheSentinels(t *testing.T) {
 	m := &Mutator{}

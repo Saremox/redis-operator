@@ -16,13 +16,14 @@ import (
 
 // planNoMaster resets every Sentinel and then deletes the master pod
 // gracefully. Each Sentinel learns its replicas again at its next INFO of the
-// master, so the recovery is a Sentinel failover or an election by the
-// operator. Both steps are one action: a master kill after a failed reset
-// would test another case.
+// master. The recovery is a Sentinel failover or an election by the operator.
+// Both steps are one action: a master kill after a failed reset would test
+// another case.
 //
-// The master accepts writes until Redis gets SIGTERM. Redis 7 and later then
-// pauses writes and waits for the replicas, up to shutdown-timeout. A write
-// is lost only if a replica lags, so the mutation does not require a lossless
+// If the shutdown script gets no failover, it releases its write pause, and
+// the master accepts writes until Redis gets SIGTERM. Redis 7 and later then
+// pause writes and wait for the replicas, up to shutdown-timeout. A write is
+// lost only if a replica lags, so the mutation does not require a lossless
 // result.
 func (m *Mutator) planNoMaster(s state, master string, port int) plan {
 	const kind = config.SentinelResetKillMaster

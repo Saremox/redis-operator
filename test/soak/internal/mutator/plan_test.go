@@ -329,7 +329,7 @@ func TestLossless(t *testing.T) {
 		{plan{kind: config.SentinelToggle}, true, true},
 		{plan{kind: config.KillMaster}, false, true},
 		{plan{kind: config.KillMasterForce}, false, false},
-		// A lagging replica can lack writes at the SIGTERM wait, also on a
+		// A replica that lags can lack writes at the SIGTERM wait, also on a
 		// volume.
 		{plan{kind: config.SentinelResetKillMaster}, false, false},
 		{plan{kind: config.RedisReplicas}, false, true},

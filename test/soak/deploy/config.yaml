@@ -92,7 +92,7 @@ instances:
         kill_master_force: 1
         kill_replica: 1
         kill_sentinel: 1
-        # Weight 1 equals kill_master: about 1 step in 8 on this instance.
+        # Weight 1, as kill_master: about 1 step in 8 on this instance.
         sentinel_reset_kill_master: 1
       redisReplicas: {min: 1, max: 5}
       sentinelReplicas: {min: 3, max: 5}
