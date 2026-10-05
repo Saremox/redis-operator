@@ -15,6 +15,7 @@ func trackState(t *testing.T, h *RedisFailoverHandler, rf *redisfailoverv1.Redis
 	require.NoError(t, h.applyPassword(rf))
 	h.reportRolloutWait(rf, &rolloutWait{uid: "u", pod: "rfr-test-0", reason: "not synced with the master"})
 	h.unreachableCleared.Store(failoverKey(rf), true)
+	h.maxMemoryLogged.Store(failoverKey(rf), maxMemoryOutcome{message: "kept", hold: true})
 }
 
 func assertTracked(t *testing.T, h *RedisFailoverHandler, key string, want bool) {
@@ -22,7 +23,8 @@ func assertTracked(t *testing.T, h *RedisFailoverHandler, key string, want bool)
 	_, passwords := h.passwords.Load(key)
 	_, waits := h.rolloutWaits.Load(key)
 	_, cleared := h.unreachableCleared.Load(key)
-	assert.Equal(t, []bool{want, want, want}, []bool{passwords, waits, cleared}, key)
+	_, logged := h.maxMemoryLogged.Load(key)
+	assert.Equal(t, []bool{want, want, want, want}, []bool{passwords, waits, cleared, logged}, key)
 }
 
 func TestForgetDropsTheStateOfOneRedisFailover(t *testing.T) {

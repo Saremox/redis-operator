@@ -179,7 +179,7 @@ func TestCheckAllSlavesFromMasterGetSlaveOfErrorIsSkipped(t *testing.T) {
 		Items: []corev1.Pod{
 			{
 				Status: corev1.PodStatus{
-					PodIP: "",
+					PodIP: "10.0.0.2",
 					Phase: corev1.PodRunning,
 				},
 			},
@@ -190,12 +190,13 @@ func TestCheckAllSlavesFromMasterGetSlaveOfErrorIsSkipped(t *testing.T) {
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
 	ms.On("UpdatePodLabels", namespace, mock.AnythingOfType("string"), mock.Anything).Once().Return(nil)
 	mr := &mRedisService.Client{}
-	mr.On("GetSlaveOf", "", "0", "").Once().Return("", errors.New(""))
+	mr.On("GetSlaveOf", "10.0.0.2", "0", "").Once().Return("", errors.New(""))
 
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
 
 	err := checker.CheckAllSlavesFromMaster("", rf)
 	assert.NoError(err)
+	mr.AssertExpectations(t)
 }
 
 // The #674 scenario: master is reachable, the old master pod on the downed node

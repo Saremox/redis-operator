@@ -213,6 +213,10 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 			// for the whole connection timeout.
 			continue
 		}
+		if rp.Status.PodIP == "" {
+			r.logger.Debugf("Pod %s has no IP yet", rp.Name)
+			continue
+		}
 		slave, err := r.redisClient.GetSlaveOf(rp.Status.PodIP, rport, password)
 		if err != nil {
 			// The pod does not answer, usually the old master on a lost node.

@@ -127,6 +127,10 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 	newMasterIP := ""
 	for _, pod := range pods {
 		if newMasterIP == "" {
+			if pod.Status.PodIP == "" {
+				r.logger.Debugf("Pod %s has no IP yet, so it cannot be the master", pod.Name)
+				continue
+			}
 			newMasterIP = pod.Status.PodIP
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("New master is %s with ip %s", pod.Name, newMasterIP)
 			if err := r.redisClient.MakeMaster(newMasterIP, port, password); err != nil {
@@ -142,9 +146,13 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 
 			newMasterIP = pod.Status.PodIP
 		} else {
-			r.logger.Infof("Making pod %s slave of %s", pod.Name, newMasterIP)
-			if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, newMasterIP, port, password); err != nil {
-				r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Errorf("Make slave failed, slave pod ip: %s, master ip: %s, error: %v", pod.Status.PodIP, newMasterIP, err)
+			if pod.Status.PodIP == "" {
+				r.logger.Debugf("Pod %s has no IP yet, so it is not made a replica", pod.Name)
+			} else {
+				r.logger.Infof("Making pod %s slave of %s", pod.Name, newMasterIP)
+				if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, newMasterIP, port, password); err != nil {
+					r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Errorf("Make slave failed, slave pod ip: %s, master ip: %s, error: %v", pod.Status.PodIP, newMasterIP, err)
+				}
 			}
 
 			err = r.setSlaveLabelIfNecessary(rf, pod, port, password)
@@ -223,6 +231,10 @@ func (r *RedisFailoverHealer) SetMasterOnAll(masterIP string, rf *redisfailoverv
 			return fmt.Errorf("refusing to continue: %s is no longer the master, bailing out this round", masterIP)
 		} else {
 			if pod.Status.PodIP == masterIP {
+				continue
+			}
+			if pod.Status.PodIP == "" {
+				r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Debugf("Pod %s has no IP yet, skipped", pod.Name)
 				continue
 			}
 			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("Making pod %s slave of %s", pod.Name, masterIP)
