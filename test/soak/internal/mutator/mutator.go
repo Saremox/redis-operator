@@ -391,7 +391,10 @@ func (m *Mutator) verify(ctx context.Context, event string, step int, lossless b
 // and Sentinel changes stop each redis pod gracefully at most, and Redis waits
 // for its replicas on SIGTERM. A graceful master kill, a scale-down or a
 // rollover along an ok edge also keep the data on a volume. A forced kill and
-// a failover can lose writes to asynchronous replication.
+// a failover can lose writes to asynchronous replication. So can
+// sentinel_reset_kill_master: its shutdown script releases the write pause
+// when no failover is possible, and the elected replica can lack the last
+// writes.
 func lossless(p plan, s state) bool {
 	volumes := s.rf.Spec.Redis.Storage.PersistentVolumeClaim != nil
 	switch p.kind {
@@ -414,6 +417,8 @@ func (m *Mutator) plan(r *rand.Rand, kind config.Kind, s state) plan {
 		return m.planSentinelImage(r, s)
 	case config.SentinelImageFlip:
 		return m.planSentinelFlip(r, s)
+	case config.SentinelResetKillMaster:
+		return m.planNoMaster(s, m.observer.Master(), sentinelPort)
 	case config.Reset:
 		why := "picked"
 		if m.resetWhy != "" {
@@ -530,13 +535,18 @@ func (m *Mutator) apply(ctx context.Context, p plan, log *slog.Logger) error {
 		}
 		return err
 	case p.pod != "":
-		opts := metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &p.uid}}
-		if p.force {
-			opts.GracePeriodSeconds = new(int64)
-		}
-		return m.kube.CoreV1().Pods(m.in.Namespace).Delete(ctx, p.pod, opts)
+		return m.deletePod(ctx, p.pod, p.uid, p.force)
 	}
 	return nil
+}
+
+// deletePod deletes the pod if it is still the pod with this UID.
+func (m *Mutator) deletePod(ctx context.Context, name string, uid types.UID, force bool) error {
+	opts := metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}}
+	if force {
+		opts.GracePeriodSeconds = new(int64)
+	}
+	return m.kube.CoreV1().Pods(m.in.Namespace).Delete(ctx, name, opts)
 }
 
 // setPassword sets the password in the Secret name of the instance. It creates

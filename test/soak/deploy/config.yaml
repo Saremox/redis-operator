@@ -92,6 +92,9 @@ instances:
         kill_master_force: 1
         kill_replica: 1
         kill_sentinel: 1
+        # A hard mutation: no Sentinel knows a replica when the master dies,
+        # so the operator must elect the master. It is rare on purpose.
+        sentinel_reset_kill_master: 1
       redisReplicas: {min: 1, max: 5}
       sentinelReplicas: {min: 3, max: 5}
       forceDeleteProbability: 0.5
@@ -156,6 +159,7 @@ instances:
         kill_master: 1
         kill_sentinel: 1
         sentinel_replicas: 1
+        sentinel_reset_kill_master: 1
       sentinelReplicas: {min: 3, max: 5}
       forceDeleteProbability: 0.5
   # Starts without Sentinel. sentinel_toggle switches Sentinel on and off.

@@ -78,7 +78,7 @@ instances:
     namespace: ns
     mode: sentinel
     mutations:
-      kinds: {redis_replicas: 2, sentinel_replicas: 1, redis_resources: 1, kill_master: 1, kill_replica: 1, kill_sentinel: 1}
+      kinds: {redis_replicas: 2, sentinel_replicas: 1, redis_resources: 1, kill_master: 1, kill_replica: 1, kill_sentinel: 1, sentinel_reset_kill_master: 1}
       redisReplicas: {min: 1, max: 5}
       sentinelReplicas: {min: 3, max: 5}
       resources:
@@ -92,9 +92,35 @@ instances:
 	if c.Mutation.Seed != 7 {
 		t.Errorf("mutation: %+v", c.Mutation)
 	}
-	want := []Kind{KillMaster, KillReplica, KillSentinel, RedisReplicas, RedisResources, SentinelReplicas}
+	want := []Kind{KillMaster, KillReplica, KillSentinel, RedisReplicas, RedisResources, SentinelReplicas, SentinelResetKillMaster}
 	if got := c.Instances[0].Mutations.Sorted(); !slices.Equal(got, want) {
 		t.Errorf("kinds %v, want %v", got, want)
+	}
+	if got := c.Events(c.Instances[0]); !slices.Contains(got, "sentinel_reset_kill_master") {
+		t.Errorf("events %v lack the kind", got)
+	}
+}
+
+// The recovery of sentinel_reset_kill_master has its own bound, from the
+// defaults of the operator. A timeout of the config wins.
+func TestNoMasterTimeout(t *testing.T) {
+	const instance = "instances: [{name: a, namespace: ns, mode: sentinel, mutations: {kinds: {sentinel_reset_kill_master: 1}}}]"
+	c, err := Parse([]byte(instance))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Mutation.Timeout(SentinelResetKillMaster, c.Observer, 3); got != 185*time.Second {
+		t.Errorf("timeout %s, want 3m5s", got)
+	}
+	if got := c.Mutation.Timeout(KillMaster, c.Observer, 3); got != c.Observer.ConvergenceTimeout.Duration {
+		t.Errorf("kill_master timeout %s", got)
+	}
+	c, err = Parse([]byte("mutation: {timeouts: {sentinel_reset_kill_master: {base: 7m}}}\n" + instance))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Mutation.Timeout(SentinelResetKillMaster, c.Observer, 3); got != 7*time.Minute {
+		t.Errorf("timeout %s, want 7m", got)
 	}
 }
 
@@ -107,6 +133,7 @@ func TestInvalidMutations(t *testing.T) {
 		"zero weight":           instance("operator", "{kinds: {kill_master: 0}}"),
 		"sentinel kind":         instance("operator", "{kinds: {kill_sentinel: 1}}"),
 		"sentinel replicas":     instance("operator", "{kinds: {sentinel_replicas: 1}, sentinelReplicas: {min: 3, max: 5}}"),
+		"sentinel reset":        instance("operator", "{kinds: {sentinel_reset_kill_master: 1}}"),
 		"no replica range":      instance("operator", "{kinds: {redis_replicas: 1}}"),
 		"zero replicas":         instance("operator", "{kinds: {redis_replicas: 1}, redisReplicas: {min: 0, max: 3}}"),
 		"one replica value":     instance("operator", "{kinds: {redis_replicas: 1}, redisReplicas: {min: 3, max: 3}}"),
@@ -261,6 +288,7 @@ instances:
 		"from itself":      "  - {name: boot, namespace: boot, bootstrap: {source: boot}}\n",
 		"master kill":      "  - {name: boot, namespace: boot, bootstrap: {source: src}, mutations: {kinds: {kill_master: 1}}}\n",
 		"toggle":           "  - {name: boot, namespace: boot, bootstrap: {source: src}, mutations: {kinds: {sentinel_toggle: 1}}}\n",
+		"sentinel reset":   "  - {name: boot, namespace: boot, bootstrap: {source: src}, mutations: {kinds: {sentinel_reset_kill_master: 1}}}\n",
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -192,6 +192,28 @@ explanation:
   `noeviction` and `volatile-*`, the operator then keeps `maxmemory` and
   reports this in `status.message`. Under `allkeys-*`, it applies the
   limit and the server evicts keys.
+- `sentinel_reset_kill_master` sends `SENTINEL RESET *` to every Sentinel,
+  and then deletes the master pod gracefully. After the reset, no Sentinel
+  knows a replica, so no Sentinel can fail over. The operator must elect
+  the master. The kind runs only on Sentinel instances, and the mutator
+  skips it while the instance has one redis pod. The instance must have
+  one master, the status `Healthy` and all replicas known to each Sentinel
+  within 185 seconds. This bound is the sum of these defaults, as
+  `NoMasterTimeout` in `internal/config` shows. Set `mutation.timeouts` to
+  change it:
+  - 30 seconds: the termination grace period of the master pod.
+  - 5 seconds: `down-after-milliseconds`, until every Sentinel flags the
+    master as down.
+  - 10 seconds: `failover-timeout`.
+  - 90 seconds: three resyncs of the operator, if no pod event wakes it.
+  - 40 seconds: the readiness delay and one probe period of the new pod.
+  - 10 seconds: the `INFO` interval of a Sentinel, which learns the
+    replicas of the new master.
+
+  The shutdown script of the master cannot get a failover, so it releases
+  its write pause. The master then accepts writes until Redis stops. A
+  write can be lost, as in a failover, so the tester does not require a
+  lossless result.
 - `password_rotate_offline` is scenario C. It stops the operator, changes
   the password, starts the operator with its replicas, expects
   `unable to apply the configured password`, sets the previous password,

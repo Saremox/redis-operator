@@ -122,14 +122,11 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 	case config.RedisResources:
 		return planResources(r, m.Resources, s)
 	case config.KillMaster, config.KillMasterForce:
-		masters := withRole(s.redis, roleMaster)
-		if len(masters) != 1 {
-			return skipped(kind, "%d pods are labelled master", len(masters))
+		pod, why := labelledMaster(s, master)
+		if why != "" {
+			return skipped(kind, "%s", why)
 		}
-		if masters[0].Name != master {
-			return skipped(kind, "%s is labelled master, the observer saw %q", masters[0].Name, master)
-		}
-		p := planKill(kind, masters[0], kind == config.KillMasterForce, redisPodReplaced)
+		p := planKill(kind, pod, kind == config.KillMasterForce, redisPodReplaced)
 		p.reset = s.rf.Spec.Redis.Replicas == 1 && s.rf.Spec.Redis.Storage.PersistentVolumeClaim == nil
 		return p
 	case config.KillReplica:
@@ -257,6 +254,19 @@ func planMemory(r *rand.Rand, rg config.Range, s state) plan {
 		patch:     mergePatch(map[string]any{"redis": map[string]any{"resources": patch}}),
 		converged: memoryConverged(next, s.rf.Spec.Redis.Replicas, before, target, evicts),
 	}
+}
+
+// labelledMaster returns the one pod that is labelled master. The observer
+// must agree, or the label is stale. why says what is wrong if it is not.
+func labelledMaster(s state, master string) (pod corev1.Pod, why string) {
+	masters := withRole(s.redis, roleMaster)
+	switch {
+	case len(masters) != 1:
+		return pod, fmt.Sprintf("%d pods are labelled master", len(masters))
+	case masters[0].Name != master:
+		return pod, fmt.Sprintf("%s is labelled master, the observer saw %q", masters[0].Name, master)
+	}
+	return masters[0], ""
 }
 
 func planKill(kind config.Kind, p corev1.Pod, force bool, converged func(string, types.UID) func(state) error) plan {
