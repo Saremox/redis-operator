@@ -1350,6 +1350,7 @@ func (r *RedisFailoverHandler) applyRedisCustomConfig(rf *redisfailoverv1.RedisF
 // bootstrapping. It reports whether the pod rollout must be held.
 func (r *RedisFailoverHandler) ensureRedisMaxMemory(rf *redisfailoverv1.RedisFailover, master string) (bool, error) {
 	if rf.Spec.Redis.MaxMemory == nil {
+		r.maxMemoryLogged.Delete(failoverKey(rf))
 		return false, nil
 	}
 	redises, err := r.rfChecker.GetRedisesIPs(rf)

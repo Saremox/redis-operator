@@ -136,3 +136,40 @@ func TestEnsureRedisMaxMemoryLogsAnUnchangedMessageOnce(t *testing.T) {
 	assert.Empty(t, logger.warnings)
 	assert.Equal(t, []string{"maxmemory not managed: x"}, logger.debugs)
 }
+
+func TestEnsureRedisMaxMemoryForgetsTheLoggedOutcomeWhenMaxMemoryIsRemoved(t *testing.T) {
+	rf := newCustomConfigTestRF()
+	rf.Spec.Redis.MaxMemory = &redisfailoverv1.MaxMemorySettings{Percent: 75, Policy: "noeviction"}
+	ips := []string{"10.0.0.1"}
+	result := rfservice.MaxMemoryResult{Message: "maxmemory kept at 1: lowering it to 2 would not fit", HoldRollout: true}
+
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfc.On("GetRedisesIPs", rf).Return(ips, nil)
+	mrfc.On("GetMasterIP", rf).Return("10.0.0.1", nil)
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("EnsureRedisMaxMemory", rf, "10.0.0.1", ips).Return(result, nil)
+	logger := &warnLogger{}
+	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, &mK8SService.Services{}, metrics.Dummy, logger)
+
+	_, err := handler.ensureRedisMaxMemory(rf, "10.0.0.1")
+	require.NoError(t, err)
+	_, tracked := handler.maxMemoryLogged.Load(failoverKey(rf))
+	require.True(t, tracked)
+
+	// Removing maxMemory drops the entry, so that the same outcome after a
+	// later re-enable is a Warning again.
+	maxMemory := rf.Spec.Redis.MaxMemory
+	rf.Spec.Redis.MaxMemory = nil
+	held, err := handler.ensureRedisMaxMemory(rf, "10.0.0.1")
+	require.NoError(t, err)
+	assert.False(t, held)
+	_, tracked = handler.maxMemoryLogged.Load(failoverKey(rf))
+	assert.False(t, tracked)
+
+	rf.Spec.Redis.MaxMemory = maxMemory
+	logger.reset()
+	_, err = handler.ensureRedisMaxMemory(rf, "10.0.0.1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{result.Message, "Holding the pod rollout until maxmemory fits the lowered memory limit"}, logger.warnings)
+	assert.Empty(t, logger.debugs)
+}
