@@ -245,6 +245,10 @@ func TestMaxMemoryConverged(t *testing.T) {
 	}
 	runPredicateOn(t, noeviction, maxMemoryConverged(3, policyIs), []predicateCase{
 		{"applied", switched, true},
+		{"one pod updated of three", func(s *state) {
+			switched(s)
+			s.sts.Status.UpdatedReplicas = 1
+		}, false},
 		{"spec not changed", func(*state) {}, false},
 		{"not applied on a pod", func(s *state) {
 			switched(s)
@@ -269,5 +273,17 @@ func TestMaxMemoryConverged(t *testing.T) {
 			s.rf.Status.Message = "maxmemory kept at 144.0Mi: lowering it to 96.0Mi would not fit the memory in use under policy noeviction"
 		}, true},
 		{"not lowered", func(s *state) { s.rf.Spec.Redis.MaxMemory.Percent = 50 }, false},
+		{"kept, revision pending", func(s *state) {
+			s.rf.Spec.Redis.MaxMemory.Percent = 50
+			s.rf.Status.Message = "maxmemory kept at 144.0Mi: lowering it to 96.0Mi would not fit the memory in use under policy noeviction"
+			s.sts.Status.UpdatedReplicas = 0
+		}, true},
+		{"lowered, one pod updated of three", func(s *state) {
+			s.rf.Spec.Redis.MaxMemory.Percent = 50
+			for i := range s.config {
+				s.config[i].MaxMemory = 96 * mi
+			}
+			s.sts.Status.UpdatedReplicas = 1
+		}, false},
 	})
 }

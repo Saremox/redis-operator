@@ -159,11 +159,19 @@ func memoryConverged(want corev1.ResourceRequirements, replicas int32, before ma
 }
 
 // maxMemoryConverged holds once the spec has the change and every redis pod
-// runs with the maxmemory settings the operator sets for it.
+// runs with the maxmemory settings the operator sets for it. The StatefulSet
+// must converge too, because the operator rolls the pods one by one when it
+// releases a held rollout. While the status keeps maxmemory, a pending
+// revision is expected.
 func maxMemoryConverged(replicas int32, changed func(*redisfailoverv1.MaxMemorySettings) bool) func(state) error {
 	return func(s state) error {
 		if mm := s.rf.Spec.Redis.MaxMemory; mm == nil || !changed(mm) {
 			return errors.New("the RedisFailover doesn't have the change")
+		}
+		if _, _, kept := maxmem.Kept(s.rf.Status.Message); !kept {
+			if err := statefulSetConverged(s.sts, replicas); err != nil {
+				return err
+			}
 		}
 		if err := podsReady("redis", s.redis, replicas); err != nil {
 			return err
