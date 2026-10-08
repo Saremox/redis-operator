@@ -38,6 +38,7 @@ type Metrics struct {
 	PodsRecreated      *prometheus.CounterVec
 	MutationInProgress *prometheus.GaugeVec
 	NoMasterRecovery   *prometheus.CounterVec
+	MutationStalled    *prometheus.GaugeVec
 
 	WaitAckedReplicas *prometheus.GaugeVec
 	OOMRejections     *prometheus.CounterVec
@@ -166,6 +167,11 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 			Name:      "no_master_recovery_total",
 			Help:      "Converged sentinel_reset_kill_master mutations by recovery path: sentinel, operator or unknown.",
 		}, labels("path")),
+		MutationStalled: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "mutation_stalled_seconds",
+			Help:      "How long the mutator has waited for a quiet instance, 0 while the instance is quiet or the mutator mutates.",
+		}, labels()),
 		WaitAckedReplicas: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "wait_acked_replicas",
@@ -234,7 +240,7 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 	reg.MustRegister(
 		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration, m.BuildInfo,
 		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.WindowOpen,
-		m.MutationTotal, m.MutationConverge, m.PodsRecreated, m.MutationInProgress, m.NoMasterRecovery,
+		m.MutationTotal, m.MutationConverge, m.PodsRecreated, m.MutationInProgress, m.NoMasterRecovery, m.MutationStalled,
 		m.WaitAckedReplicas, m.OOMRejections, m.LostWrites, m.UnexpectedLost, m.LedgerVerified,
 		m.VersionTransition, m.VersionMixed,
 		m.ChaosTotal, m.ChaosConverge, m.ChaosInProgress, m.ChaosOperatorDown, m.ChaosEvictionBlocked,

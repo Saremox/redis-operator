@@ -48,6 +48,14 @@ type holdHandle interface {
 	Done() <-chan bool
 }
 
+// watcher is what the mutator needs of the observer of its instance.
+type watcher interface {
+	Quiet() bool
+	Master() string
+	MasterAddr() string
+	Report() observer.Report
+}
+
 // Data is what the mutator needs of an instance's data.
 type Data interface {
 	Filled() bool
@@ -75,7 +83,11 @@ type Mutator struct {
 	versions *config.Config
 	kube     kubernetes.Interface
 	rfs      versioned.Interface
-	observer *observer.Observer
+	observer watcher
+	// logs reads the log of a pod.
+	logs func(ctx context.Context, pod string, opts *corev1.PodLogOptions) ([]byte, error)
+	// grace is how long a stuck change that the mutator adopts must hold.
+	grace time.Duration
 	// hold opens the convergence window of a mutation in the observer.
 	hold func(time.Duration, func(context.Context) error) holdHandle
 	data Data
@@ -102,6 +114,7 @@ type Mutator struct {
 	mixedSeconds prometheus.ObserverVec
 	findings     *prometheus.CounterVec
 	recoveries   *prometheus.CounterVec
+	stalled      prometheus.Gauge
 }
 
 // New returns the mutator of an instance; data is nil for an instance
@@ -133,6 +146,11 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		mixedSeconds:    m.VersionMixed.MustCurryWith(labels),
 		findings:        m.Findings.MustCurryWith(labels),
 		recoveries:      m.NoMasterRecovery.MustCurryWith(labels),
+		stalled:         m.MutationStalled.With(labels),
+		grace:           stuckGrace,
+	}
+	mu.logs = func(ctx context.Context, pod string, opts *corev1.PodLogOptions) ([]byte, error) {
+		return kube.CoreV1().Pods(in.Namespace).GetLogs(pod, opts).DoRaw(ctx)
 	}
 	// Alerts use the increase of mutation_total, which does not show a series
 	// that starts at 1.
@@ -169,6 +187,7 @@ func (m *Mutator) Run(ctx context.Context) {
 	if !m.waitFilled(ctx) {
 		return
 	}
+	m.adopt(ctx)
 	for step := 1; ; step++ {
 		if !m.waitQuiet(ctx) {
 			return
@@ -219,9 +238,17 @@ func (m *Mutator) waitFilled(ctx context.Context) bool {
 }
 
 // waitQuiet waits until no convergence window is open and every invariant
-// holds.
+// holds. Its gauge shows how long it waits.
 func (m *Mutator) waitQuiet(ctx context.Context) bool {
-	return waitFor(ctx, m.observer.Quiet)
+	start := time.Now()
+	defer m.stalled.Set(0)
+	return waitFor(ctx, func() bool {
+		if m.observer.Quiet() {
+			return true
+		}
+		m.stalled.Set(time.Since(start).Seconds())
+		return false
+	})
 }
 
 // waitFor checks ok every second, and reports whether it held before ctx

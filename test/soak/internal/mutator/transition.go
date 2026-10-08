@@ -20,12 +20,18 @@ func (m *Mutator) judge(ctx context.Context, t *transition, converged bool, lost
 	if !converged {
 		o = m.observe(ctx, t)
 	}
+	return m.record(t, o, lost, verifyErr, log)
+}
+
+// record classifies the observation o of a version change, counts the change,
+// and counts a finding if it failed unsafely.
+func (m *Mutator) record(t *transition, o observation, lost int, verifyErr error, log *slog.Logger) string {
 	o.lost, o.verified = lost, verifyErr == nil
 	result, reasons := classify(t, o)
 	m.transitions.WithLabelValues(t.edge.From, t.edge.To, t.edge.Expect, result).Inc()
 	log = log.With("from", t.edge.From, "to", t.edge.To, "expect", t.edge.Expect, "sentinel", t.sentinel,
 		"result", result, "lost", lost, "verified", verifyErr == nil)
-	if !converged {
+	if !o.converged {
 		writable := "ok"
 		if o.writable != nil {
 			writable = prober.Classify(o.writable)
@@ -104,9 +110,9 @@ func (m *Mutator) loadError(ctx context.Context, p *corev1.Pod, container string
 			break
 		}
 		tail := int64(500)
-		b, err := m.kube.CoreV1().Pods(m.in.Namespace).GetLogs(p.Name, &corev1.PodLogOptions{
+		b, err := m.logs(ctx, p.Name, &corev1.PodLogOptions{
 			Container: container, Previous: previous, TailLines: &tail,
-		}).DoRaw(ctx)
+		})
 		if err != nil {
 			continue
 		}
