@@ -294,7 +294,7 @@ could not load the data. It then judges the change:
 A change that did not converge is reset immediately.
 
 The tester keeps a version change in its own process. A tester that starts
-during a stuck change adopts it when all of these hold:
+during a stuck change adopts it when the instance shows this state:
 
 - Exactly one redis pod runs the image of the spec. It is not Ready, it does
   not replicate, and its log says that it cannot load the data.
@@ -302,14 +302,17 @@ during a stuck change adopts it when all of these hold:
   master is one of them.
 - The chain has an `unknown` or `fail` edge from the version of the other pods
   to the new one.
-- The master accepts writes, and the ledger check finds no lost write.
 
 The tester reads the instance at each observer interval until it finds this
 state, the instance is quiet, or the deadline passes. The deadline is the
-convergence timeout minus one minute of grace, the verification bound of two
-minutes and one minute of margin, counted from the start. The state must hold
-for the grace of one minute. The tester then judges the change `failed_safe`,
-logs `adopted=true` and resets the instance.
+convergence timeout minus the grace, the verification bound and one minute of
+margin, counted from the start. The grace is one minute, and the verification
+bound is two minutes.
+
+After the grace, the tester takes the mutation lock and reads the instance
+again. The state must still hold. The tester then checks that the master accepts
+writes and that the ledger shows no lost write. It judges the change
+`failed_safe`, logs `adopted=true` and resets the instance.
 
 The tester never adopts a change along an `ok` edge, because a stuck replica
 there is a finding. It adopts no other state, and the observer counts findings
@@ -318,6 +321,17 @@ finds a lost write, the tester does not adopt the change. The instance then
 stays stalled, and `redis_soak_mutation_stalled_seconds` shows this. An adopted
 change has no `redis_soak_version_mixed_seconds` sample. Its ledger check
 covers only the writes since the start.
+
+Adoption has these limits:
+
+- Adoption can wait for the mutation lock. Another instance can run an
+  exclusive mutation, `password_rotate_offline`, while adoption polls or waits.
+  Later phases of that mutation can outlast the startup window, and findings
+  can appear. Adoption still resets the instance afterwards.
+- A tester can start between the spec patch and the first pod deletion by the
+  operator. The startup window then closes at the first round, because all
+  invariants hold. Adoption does not run. This gap is shorter than the start of
+  the tester, but it exists.
 
 ### Chaos
 
