@@ -52,13 +52,16 @@ jobs:
               - 'manifests/kustomize/base/databases.spotahome.com_redisfailovers.yaml'
               - 'charts/redisoperator/crds/databases.spotahome.com_redisfailovers.yaml'
               - '.github/workflows/**'
-            # The tests in api/ and operator/ read example/redisfailover.
+            # The tests in api/ and operator/ read example/redisfailover. The
+            # Codecov service applies codecov.yml to the coverage upload of
+            # this job.
             unit:
               - '**/*.go'
               - 'go.mod'
               - 'go.sum'
               - 'Makefile'
               - 'example/**'
+              - 'codecov.yml'
               - '.github/workflows/**'
             # The job applies the CRD file of the operator.
             integration:
