@@ -1,9 +1,9 @@
 # The versions profile: the server version and fork instances of
 # deploy/config.yaml, with 2 redis pods each (kind-e2e.sh patches the
-# templates), except redis-chain-big, whose 256Mi of data does not fit the
-# kind node. Seed 549 picks every kind of every instance and takes every edge
-# within 16 steps, also if the changes along the unknown edges all converge.
-# The last edge is valkey-9 -> valkey-8 of the instance downgrade.
+# templates), except redis-chain-big. Its 256Mi of data make each step and
+# each reset too slow for the kind job. Seed 291 picks every kind of every
+# instance and takes every edge within 16 steps, for each of the 4096
+# combinations of converged and stuck changes along the 12 unknown edges.
 del(.chaos)
 | .observer += {
     convergenceTimeout: "6m",
@@ -12,7 +12,7 @@ del(.chaos)
     replicaReadyWithoutData: false
   }
 | .mutation += {
-    interval: "10s", jitter: "10s", seed: 549, stopAfter: $stopAfter,
+    interval: "10s", jitter: "10s", seed: 291, stopAfter: $stopAfter,
     timeouts: {
       image_upgrade: {base: "3m", perPod: "90s"},
       sentinel_image_upgrade: {base: "3m", perPod: "30s"},

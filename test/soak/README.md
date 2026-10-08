@@ -301,9 +301,11 @@ kind, or for one more minute after a pod on the new version logged that it
 could not load the data. It then judges the change:
 
 - `ok`: it converged.
-- `failed_safe`: it did not converge, but the single master still runs the
-  old version, accepts writes, and lost no acknowledged write. If the
-  Sentinels did not change image, each of them still reports this master.
+- `failed_safe`: it did not converge, but the rollout stopped. The single
+  master still runs the old version, accepts writes, and lost no
+  acknowledged write. At most one pod runs the new image, and it is not the
+  master. If the Sentinels did not change image, each of them still reports
+  this master.
 - `failed_unsafe`: all other cases. This is a finding.
 
 A change that did not converge is reset immediately.
@@ -380,8 +382,14 @@ script asserts these conditions from the metrics:
 - versions: every edge was taken, and every `ok` edge ended `ok`;
 - chaos: every action converged, and no action found a change in progress.
 
-The versions profile leaves out `redis-chain-big`, because 256Mi of data does
-not fit the kind node.
+The versions profile leaves out `redis-chain-big`. Its 256Mi of data make
+each step and each reset too slow for the kind job.
+
+The versions profile runs 3600 seconds by default. The instance `downgrade`
+needs 16 steps in that time. This holds only if each stuck change logs that
+it could not load the data, because the change then ends 1 minute later. A
+silent stuck change waits 6 minutes, about 9 minutes with its reset. Then set
+`DURATION=4500`.
 
 The script keeps the logs of the tester and the operator, the events and
 the last scrape in `bin/kind-e2e-artifacts/`. The workflow

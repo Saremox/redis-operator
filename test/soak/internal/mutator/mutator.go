@@ -71,6 +71,8 @@ type Mutator struct {
 	// itself.
 	convergeTimeout time.Duration
 	observerCfg     config.Observer
+	// sentinelPort is the port of the Sentinels.
+	sentinelPort int
 	// versions holds the version catalogue and the transition graph.
 	versions *config.Config
 	kube     kubernetes.Interface
@@ -115,6 +117,7 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		timeout:         cfg.Probe.Timeout.Duration,
 		convergeTimeout: cfg.Observer.ConvergenceTimeout.Duration,
 		observerCfg:     cfg.Observer,
+		sentinelPort:    sentinelPort,
 		versions:        cfg,
 		kube:            kube,
 		rfs:             rfs,
@@ -733,7 +736,7 @@ func (m *Mutator) servers(ctx context.Context, redisPods, sentinels []corev1.Pod
 		sections []string
 	}{
 		{redisPods, port, m.auth.Provider(), nil},
-		{sentinels, sentinelPort, auth.Fixed(""), []string{"server"}},
+		{sentinels, m.sentinelPort, auth.Fixed(""), []string{"server"}},
 	} {
 		vals, errs := eachPod(ctx, m, set.pods, set.port, set.creds, func(ctx context.Context, c *redis.Client) (string, error) {
 			return c.Info(ctx, set.sections...).Result()
@@ -751,7 +754,7 @@ func (m *Mutator) servers(ctx context.Context, redisPods, sentinels []corev1.Pod
 }
 
 func (m *Mutator) sentinelMasters(ctx context.Context, pods []corev1.Pod) map[string]sentinelMaster {
-	vals, errs := eachPod(ctx, m, pods, sentinelPort, auth.Fixed(""), observer.SentinelMaster)
+	vals, errs := eachPod(ctx, m, pods, m.sentinelPort, auth.Fixed(""), observer.SentinelMaster)
 	out := map[string]sentinelMaster{}
 	for _, p := range pods {
 		out[p.Name] = sentinelMaster{fields: vals[p.Name], err: errs[p.Name]}

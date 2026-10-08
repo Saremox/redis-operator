@@ -353,6 +353,8 @@ type observation struct {
 	// sentinels is why a Sentinel does not report the master, nil if they all
 	// do.
 	sentinels error
+	// onNew are the redis pods that run the new image.
+	onNew []string
 	// pods describes what each pod of the changed image does.
 	pods []string
 }
@@ -360,8 +362,9 @@ type observation struct {
 // classify judges a version change. ok: it converged. failed_safe: it did not
 // converge, but the rollout stopped and kept the data. The master stayed on
 // the old version and writable, it loaded its data, no acknowledged write
-// was lost, and the Sentinels that stayed still report it. failed_unsafe: all
-// other cases.
+// was lost, the Sentinels that stayed still report it, and at most one pod
+// runs the new image. That pod is a replica that cannot load the data, so the
+// operator did not replace another pod. failed_unsafe: all other cases.
 func classify(t *transition, o observation) (string, []string) {
 	if o.converged {
 		return transitionOK, nil
@@ -388,6 +391,9 @@ func classify(t *transition, o observation) (string, []string) {
 		if o.sentinels != nil {
 			unsafe = append(unsafe, fmt.Sprintf("the Sentinels don't all report the master %s: %v", o.master, o.sentinels))
 		}
+	}
+	if len(o.onNew) > 1 {
+		unsafe = append(unsafe, fmt.Sprintf("%d pods on %s: %s", len(o.onNew), t.to.Name, strings.Join(o.onNew, ", ")))
 	}
 	if len(unsafe) > 0 {
 		return transitionFailedUnsafe, unsafe

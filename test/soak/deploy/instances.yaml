@@ -334,8 +334,8 @@ spec:
 ---
 # 256Mi of data. The limit holds the data twice for the fork of a full sync,
 # the operator reserve of 32Mi, and 96Mi for the allocator and the replica
-# buffers. A save writes a second file next to the first, so the volume holds
-# more than two RDB files.
+# buffers. A save writes a second file next to the first, so the volume must
+# hold two RDB files.
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover
 metadata:

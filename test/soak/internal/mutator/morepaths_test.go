@@ -306,10 +306,38 @@ func TestSentinelsAgree(t *testing.T) {
 	}
 }
 
+// sentinelServer answers as the Sentinels, and reports ip and port as the
+// master. It returns its port.
+func sentinelServer(t *testing.T, ip string, port int) int {
+	t.Helper()
+	srv := miniredis.RunT(t)
+	srv.Server().SetPreHook(func(c *miniserver.Peer, cmd string, args ...string) bool {
+		switch {
+		case strings.EqualFold(cmd, "INFO"):
+			c.WriteBulk("# Server\r\nredis_version:7.4.11\r\nredis_mode:sentinel\r\n")
+		case strings.EqualFold(cmd, "SENTINEL") && len(args) > 0 && strings.EqualFold(args[0], "get-master-addr-by-name"):
+			c.WriteStrings([]string{ip, strconv.Itoa(port)})
+		case strings.EqualFold(cmd, "SENTINEL"):
+			c.WriteStrings([]string{"name", "mymaster", "ip", ip, "port", strconv.Itoa(port), "flags", "master"})
+		default:
+			return false
+		}
+		return true
+	})
+	sentinelPort, err := strconv.Atoi(srv.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sentinelPort
+}
+
 // stuckInstance returns the mutator of a Sentinel instance with one redis pod
-// that is the master, and Sentinel pods that do not answer. The observer
-// knows the master.
-func stuckInstance(t *testing.T, sentinels bool) *Mutator {
+// that is the master, and one Sentinel pod for each element of sentinelIPs
+// (its IP, "" for a pod without one). The Sentinels with an IP answer as
+// sentinelServer says, and report sentinelSays as the master. Each element of
+// replicaImages is a replica pod without an IP that runs that image, "" for a
+// pod without a redis container. The observer knows the master.
+func stuckInstance(t *testing.T, sentinelIPs []string, sentinelSays string, replicaImages ...string) *Mutator {
 	t.Helper()
 	srv := miniredis.RunT(t)
 	srv.Server().SetPreHook(func(c *miniserver.Peer, cmd string, _ ...string) bool {
@@ -322,6 +350,10 @@ func stuckInstance(t *testing.T, sentinels bool) *Mutator {
 	port, err := strconv.Atoi(srv.Port())
 	if err != nil {
 		t.Fatal(err)
+	}
+	sentinelsAt := 0
+	if slices.ContainsFunc(sentinelIPs, func(ip string) bool { return ip != "" }) {
+		sentinelsAt = sentinelServer(t, sentinelSays, port)
 	}
 	cfg, err := config.Parse([]byte(versionsConfig))
 	if err != nil {
@@ -343,21 +375,30 @@ func stuckInstance(t *testing.T, sentinels bool) *Mutator {
 			Status:     corev1.PodStatus{PodIP: "127.0.0.1", Phase: corev1.PodRunning, Conditions: ready},
 		},
 	}
-	if sentinels {
-		for _, n := range []string{"a", "b", "c"} {
-			objects = append(objects, &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{Name: "rfs-migrate-" + n, Namespace: in.Namespace, Labels: labels("sentinel"), UID: types.UID("s" + n)},
-				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: sentinelName, Image: redis74.Image}}},
-				Status:     corev1.PodStatus{Phase: corev1.PodRunning, Conditions: ready},
-			})
+	for i, image := range replicaImages {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "rfr-migrate-" + strconv.Itoa(i+1), Namespace: in.Namespace, Labels: labels("redis"), UID: types.UID("r" + strconv.Itoa(i+1))},
+			Status:     corev1.PodStatus{Phase: corev1.PodRunning, Conditions: ready},
 		}
+		if image != "" {
+			pod.Spec.Containers = []corev1.Container{{Name: redisName, Image: image}}
+		}
+		objects = append(objects, pod)
+	}
+	for i, ip := range sentinelIPs {
+		n := strconv.Itoa(i)
+		objects = append(objects, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "rfs-migrate-" + n, Namespace: in.Namespace, Labels: labels("sentinel"), UID: types.UID("s" + n)},
+			Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: sentinelName, Image: redis74.Image}}},
+			Status:     corev1.PodStatus{PodIP: ip, Phase: corev1.PodRunning, Conditions: ready},
+		})
 	}
 	kube := fake.NewClientset(objects...)
-	enabled := sentinels
+	enabled := len(sentinelIPs) > 0
 	rf := &redisfailoverv1.RedisFailover{
 		ObjectMeta: metav1.ObjectMeta{Name: in.Name, Namespace: in.Namespace, UID: "uid"},
 		Spec: redisfailoverv1.RedisFailoverSpec{
-			Redis:    redisfailoverv1.RedisSettings{Replicas: 1, Port: int32(port), Image: redis74.Image},
+			Redis:    redisfailoverv1.RedisSettings{Replicas: int32(1 + len(replicaImages)), Port: int32(port), Image: redis74.Image},
 			Sentinel: redisfailoverv1.SentinelSettings{Enabled: &enabled, Replicas: 3},
 		},
 	}
@@ -379,32 +420,141 @@ func stuckInstance(t *testing.T, sentinels bool) *Mutator {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return New(in, cfg, kube, rfs, o, fakeData{}, a, lock, nil, mt, log)
+	m := New(in, cfg, kube, rfs, o, fakeData{}, a, lock, nil, mt, log)
+	if sentinelsAt != 0 {
+		m.sentinelPort = sentinelsAt
+	}
+	return m
 }
 
-// judge reads the master, its version and the Sentinels of a change that did
-// not converge. A Sentinel that does not report the master is unsafe only if
-// the Sentinels stay as they are.
+// observe reads the Sentinels of a change that did not converge, and judge
+// classifies it. A Sentinel that does not report the master, or that has no
+// pod IP, makes the change unsafe only if the Sentinels stay as they are.
 func TestJudgeSentinels(t *testing.T) {
 	redis74 := config.Version{Name: "redis-7.4"}
 	for name, c := range map[string]struct {
-		sentinels, stay bool
-		result          string
+		ips    []string
+		says   string
+		stay   bool
+		reason string
+		result string
 	}{
-		"Sentinels that do not report the master": {true, true, transitionFailedUnsafe},
-		"Sentinels that restart with the change":  {true, false, transitionFailedSafe},
-		"no Sentinels":                            {false, true, transitionFailedSafe},
+		"Sentinels that report the master":       {[]string{"127.0.0.1", "127.0.0.1", "127.0.0.1"}, "127.0.0.1", true, "", transitionFailedSafe},
+		"Sentinels that report another master":   {[]string{"127.0.0.1", "127.0.0.1", "127.0.0.1"}, "10.0.0.9", true, "reports 10.0.0.9:", transitionFailedUnsafe},
+		"a Sentinel without a pod IP":            {[]string{"127.0.0.1", "", "127.0.0.1"}, "127.0.0.1", true, "rfs-migrate-1: no pod IP", transitionFailedUnsafe},
+		"Sentinels that restart with the change": {[]string{"", "", ""}, "", false, "", transitionFailedSafe},
+		"no Sentinels":                           {nil, "", true, "", transitionFailedSafe},
 	} {
 		t.Run(name, func(t *testing.T) {
-			m := stuckInstance(t, c.sentinels)
+			m := stuckInstance(t, c.ips, c.says)
 			tr := &transition{edge: config.Edge{From: "redis-7.4", To: "valkey-8", Expect: config.ExpectUnknown},
 				from: redis74, to: config.Version{Name: "valkey-8"}, sentinelsStay: c.stay}
+			o := m.observe(context.Background(), tr)
+			switch {
+			case c.reason == "" && o.sentinels != nil:
+				t.Errorf("observe found: %v", o.sentinels)
+			case c.reason != "" && (o.sentinels == nil || !strings.Contains(o.sentinels.Error(), c.reason)):
+				t.Errorf("observe found: %v, want %q", o.sentinels, c.reason)
+			}
 			if got := m.judge(context.Background(), tr, false, 0, nil, slog.New(slog.DiscardHandler)); got != c.result {
 				t.Errorf("judge = %s, want %s", got, c.result)
 			}
 			findings := testutil.ToFloat64(m.findings.WithLabelValues(invVersionTransition))
 			if want := map[string]float64{transitionFailedUnsafe: 1}[c.result]; findings != want {
 				t.Errorf("findings = %v, want %v", findings, want)
+			}
+		})
+	}
+}
+
+// A change that did not converge leaves at most one pod on the new image: the
+// replica that cannot load the data. The master and the other replicas stay.
+func TestJudgeReplicas(t *testing.T) {
+	cfg, err := config.Parse([]byte(versionsConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := func(name string) config.Version {
+		v, _ := cfg.VersionNamed(name)
+		return v
+	}
+	old, valkey, redis72 := version("redis-7.4").Image, version("valkey-8").Image, version("redis-7.2").Image
+	up := func() *transition {
+		return &transition{edge: config.Edge{From: "redis-7.4", To: "valkey-8", Expect: config.ExpectUnknown},
+			from: version("redis-7.4"), to: version("valkey-8"), sentinelsStay: true}
+	}
+	down := func() *transition {
+		return &transition{edge: config.Edge{From: "redis-7.4", To: "redis-7.2", Expect: config.ExpectUnknown, Group: "downgrade"},
+			from: version("redis-7.4"), to: version("redis-7.2"), sentinelsStay: true}
+	}
+	sentinels := func() *transition {
+		return &transition{edge: config.Edge{From: "valkey-8", To: "redis-7.4", Expect: config.ExpectUnknown},
+			from: version("valkey-8"), to: version("redis-7.4"), sentinel: true}
+	}
+	local := []string{"127.0.0.1", "127.0.0.1", "127.0.0.1"}
+	for name, c := range map[string]struct {
+		t         func() *transition
+		replicas  []string
+		sentinels []string
+		onNew     []string
+		result    string
+	}{
+		"one stuck replica":                  {up, []string{valkey, old}, nil, []string{"rfr-migrate-1"}, transitionFailedSafe},
+		"one stuck replica with Sentinels":   {up, []string{old, valkey}, local, []string{"rfr-migrate-2"}, transitionFailedSafe},
+		"no pod on the new image":            {up, []string{old, old}, nil, nil, transitionFailedSafe},
+		"two pods on the new image":          {up, []string{valkey, valkey}, nil, []string{"rfr-migrate-1", "rfr-migrate-2"}, transitionFailedUnsafe},
+		"two pods with Sentinels":            {up, []string{valkey, valkey}, local, []string{"rfr-migrate-1", "rfr-migrate-2"}, transitionFailedUnsafe},
+		"a pod without an image":             {up, []string{"", valkey}, nil, []string{"rfr-migrate-2"}, transitionFailedSafe},
+		"a pod with another image":           {up, []string{"busybox:1", valkey}, nil, []string{"rfr-migrate-2"}, transitionFailedSafe},
+		"a pod without an image and two new": {up, []string{"", valkey, valkey}, nil, []string{"rfr-migrate-2", "rfr-migrate-3"}, transitionFailedUnsafe},
+		"one stuck replica of a downgrade":   {down, []string{redis72, old}, nil, []string{"rfr-migrate-1"}, transitionFailedSafe},
+		"two pods of a downgrade":            {down, []string{redis72, redis72}, nil, []string{"rfr-migrate-1", "rfr-migrate-2"}, transitionFailedUnsafe},
+		"a Sentinel change":                  {sentinels, []string{old, old}, local, nil, transitionFailedSafe},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := stuckInstance(t, c.sentinels, "127.0.0.1", c.replicas...)
+			tr := c.t()
+			o := m.observe(context.Background(), tr)
+			if !slices.Equal(o.onNew, c.onNew) {
+				t.Errorf("pods on the new image: %v, want %v", o.onNew, c.onNew)
+			}
+			if got := m.judge(context.Background(), tr, false, 0, nil, slog.New(slog.DiscardHandler)); got != c.result {
+				t.Errorf("judge = %s, want %s", got, c.result)
+			}
+			findings := testutil.ToFloat64(m.findings.WithLabelValues(invVersionTransition))
+			if want := map[string]float64{transitionFailedUnsafe: 1}[c.result]; findings != want {
+				t.Errorf("findings = %v, want %v", findings, want)
+			}
+		})
+	}
+}
+
+func TestClassifyReplicas(t *testing.T) {
+	tr := &transition{edge: config.Edge{From: "redis-8", To: "valkey-8", Expect: config.ExpectUnknown},
+		from: config.Version{Name: "redis-8"}, to: config.Version{Name: "valkey-8"}}
+	stuck := observation{verified: true, master: "rfr-x-0", masterOn: "redis-8", onNew: []string{"rfr-x-2"}}
+	for name, c := range map[string]struct {
+		o       func(o observation) observation
+		result  string
+		reasons string
+	}{
+		"one stuck replica": {func(o observation) observation { return o }, transitionFailedSafe, ""},
+		"two pods on the new image": {func(o observation) observation {
+			o.onNew = []string{"rfr-x-1", "rfr-x-2"}
+			return o
+		}, transitionFailedUnsafe, "2 pods on valkey-8: rfr-x-1, rfr-x-2"},
+		"the master on the new image": {func(o observation) observation {
+			o.masterOn, o.onNew = "valkey-8", []string{"rfr-x-0"}
+			return o
+		}, transitionFailedUnsafe, "runs valkey-8, not redis-8"},
+		"a converged change": {func(observation) observation {
+			return observation{converged: true, verified: true, onNew: []string{"rfr-x-0", "rfr-x-1", "rfr-x-2"}}
+		}, transitionOK, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result, reasons := classify(tr, c.o(stuck))
+			if joined := strings.Join(reasons, "; "); result != c.result || (c.reasons != "" && !strings.Contains(joined, c.reasons)) {
+				t.Errorf("classify = %s %v, want %s with %q", result, reasons, c.result, c.reasons)
 			}
 		})
 	}

@@ -261,12 +261,15 @@ expect "one master" '/^redis_soak_readable\{/ && l("path") == "rfrs" { boot[l("r
 # Every enabled kind converged, and none timed out or was rejected. A
 # version change along an edge that can fail is judged by the edge below. The
 # Sentinels of such an instance change image only after a data change that
-# converged.
+# converged, so their change need not converge, but it must not time out.
 judged=$(yq -r '.instances[] | select(.chain.expect and (.chain.expect | index("ok") | not)) | .name' "$overlay/config.yaml" | paste -sd'|' -)
 expect "every kind converged, none timed out or was rejected" -v judged="^(${judged:-none})$" '
-  /^redis_soak_mutation_total\{/ && !(l("rf") ~ judged && l("kind") ~ /^(sentinel_)?image_upgrade$/) {
+  /^redis_soak_mutation_total\{/ && !(l("rf") ~ judged && l("kind") == "image_upgrade") {
     k = l("rf") " " l("kind")
-    if (l("result") == "converged") { n[k] += 0; if ($NF > 0) ok[k] = 1 }
+    if (l("result") == "converged") {
+      if (!(l("rf") ~ judged && l("kind") == "sentinel_image_upgrade")) n[k] += 0
+      if ($NF > 0) ok[k] = 1
+    }
     if (l("result") ~ /^(timeout|rejected)$/ && $NF > 0) print
   }
   END { for (k in n) if (!(k in ok)) print k, "never converged" }'
