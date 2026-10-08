@@ -259,7 +259,7 @@ func (l *Lane) waitQuiet(ctx context.Context) []string {
 // verify verifies every instance's data after the action, event being its
 // kind, or config.EventReset for an instance it reset. An operator restart or
 // upgrade does not touch a redis pod, and a drain evicts gracefully, so it
-// loses no write on volumes.
+// loses no write on volumes, if the server waits for its replicas on SIGTERM.
 func (l *Lane) verify(ctx context.Context, a *action, log *slog.Logger) {
 	reports := l.reports()
 	ctx, cancel := context.WithTimeout(ctx, l.cfg.Timeout.Duration)
@@ -272,7 +272,7 @@ func (l *Lane) verify(ctx context.Context, a *action, log *slog.Logger) {
 			continue
 		}
 		event := string(a.kind)
-		lossless := a.kind != config.NodeDrain || reports[in.Name].Volumes
+		lossless := a.kind != config.NodeDrain || reports[in.Name].Volumes && reports[in.Name].Waits
 		if a.resets[in.Name] {
 			event, lossless = config.EventReset, false
 		}

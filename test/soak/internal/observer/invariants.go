@@ -72,6 +72,7 @@ type snapshot struct {
 	sourceOffset     int64
 	sourceErr        error
 	pvc              bool
+	waits            bool
 	sentinel         bool
 	redisReplicas    int32
 	sentinelReplicas int32

@@ -324,7 +324,8 @@ func TestDrainBlocked(t *testing.T) {
 
 // A drain that evicted the only redis pod of an instance without a volume
 // reset it: its data is verified as a reset's, every other's as the
-// drain's. A drain must lose no write only on volumes.
+// drain's. A drain must lose no write only on volumes, and on a server that
+// waits for its replicas on SIGTERM, which Redis 6.2 does not.
 func TestDrainResets(t *testing.T) {
 	w1 := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "w1"},
 		Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}}
@@ -334,11 +335,12 @@ func TestDrainResets(t *testing.T) {
 		})
 		return &p
 	}
-	l, kube, _, _ := fakeLane(t, "chaos: {kinds: {node_drain: 1}, timeout: 2s, drain: {hold: 10ms}}", w1, redis("single"), redis("pvc"), redis("empty"))
-	single, pvc, empty := &fakeData{}, &fakeData{}, &fakeData{}
+	l, kube, _, _ := fakeLane(t, "chaos: {kinds: {node_drain: 1}, timeout: 2s, drain: {hold: 10ms}}", w1, redis("single"), redis("pvc"), redis("pvc62"), redis("empty"))
+	single, pvc, pvc62, empty := &fakeData{}, &fakeData{}, &fakeData{}, &fakeData{}
 	l.instances = []Instance{
 		{Name: "single", Namespace: "single", Observer: &fakeObserver{ephemeral: true}, Data: single},
-		{Name: "pvc", Namespace: "pvc", Observer: &fakeObserver{volumes: true}, Data: pvc},
+		{Name: "pvc", Namespace: "pvc", Observer: &fakeObserver{volumes: true, waits: true}, Data: pvc},
+		{Name: "pvc62", Namespace: "pvc62", Observer: &fakeObserver{volumes: true}, Data: pvc62},
 		{Name: "empty", Namespace: "empty", Observer: &fakeObserver{}, Data: empty},
 	}
 	kube.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
@@ -354,6 +356,9 @@ func TestDrainResets(t *testing.T) {
 	}
 	if got := strings.Join(pvc.calls, ","); got != "begin,verify node_drain lossless" {
 		t.Errorf("pvc: %s", got)
+	}
+	if got := strings.Join(pvc62.calls, ","); got != "begin,verify node_drain" {
+		t.Errorf("pvc62: %s", got)
 	}
 	if got := strings.Join(empty.calls, ","); got != "begin,verify node_drain" {
 		t.Errorf("empty: %s", got)

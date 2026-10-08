@@ -108,9 +108,10 @@ the event must lose no write, and counts such losses in
 - for a bootstrapping instance: each source write that a pod that caught up
   does not have.
 
-Redis 6.2 does not wait for its replicas on SIGTERM. On an instance that runs
-Redis 6.2, the tester does not require a lossless result for an event that
-stops a redis pod. It counts such a loss in `redis_soak_lost_writes_total`.
+Redis 6.2 does not wait for its replicas on SIGTERM. For an instance on
+Redis 6.2, the tester does not require a lossless result for a mutation or
+a `node_drain` that stops a redis pod. It counts such a loss in
+`redis_soak_lost_writes_total`.
 
 The ledger keys must never be evicted, because the tester cannot tell an
 eviction from a loss. Config validation rejects a ledger on an instance

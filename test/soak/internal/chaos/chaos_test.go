@@ -25,12 +25,13 @@ type fakeObserver struct {
 	failing   []string
 	ephemeral bool
 	volumes   bool
+	waits     bool
 }
 
 func (f *fakeObserver) Report() observer.Report {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return observer.Report{At: time.Now(), Quiet: len(f.failing) == 0, Failing: f.failing, Ephemeral: f.ephemeral, Volumes: f.volumes}
+	return observer.Report{At: time.Now(), Quiet: len(f.failing) == 0, Failing: f.failing, Ephemeral: f.ephemeral, Volumes: f.volumes, Waits: f.waits}
 }
 
 type fakeData struct {

@@ -399,10 +399,7 @@ func (m *Mutator) verify(ctx context.Context, event string, step int, lossless b
 // A Sentinel image flip stops no redis pod.
 func (m *Mutator) lossless(p plan, s state) bool {
 	volumes := s.rf.Spec.Redis.Storage.PersistentVolumeClaim != nil
-	waits := true
-	if v, ok := m.versions.VersionOf(s.rf.Spec.Redis.Image); ok {
-		waits = v.WaitsForReplicas()
-	}
+	waits := m.versions.WaitsForReplicas(s.rf.Spec.Redis.Image)
 	switch p.kind {
 	case config.SentinelImageFlip:
 		return true

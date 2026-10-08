@@ -192,6 +192,31 @@ func TestWaitsForReplicas(t *testing.T) {
 	}
 }
 
+// An image that is no configured version waits, as the mutator and the
+// observer assume.
+func TestConfigWaitsForReplicas(t *testing.T) {
+	c, err := Parse([]byte(`
+versions:
+  - {name: redis-6.2, image: "redis:6.2.24-alpine"}
+  - {name: redis-7.2, image: "redis:7.2.16-alpine"}
+  - {name: valkey-8, image: "valkey/valkey:8.1.10-alpine"}
+instances: [{name: a, namespace: ns}]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for image, want := range map[string]bool{
+		"redis:6.2.24-alpine":         false,
+		"redis:7.2.16-alpine":         true,
+		"valkey/valkey:8.1.10-alpine": true,
+		"redis:6-alpine":              true,
+	} {
+		if got := c.WaitsForReplicas(image); got != want {
+			t.Errorf("%s: %t, want %t", image, got, want)
+		}
+	}
+}
+
 // The shipped config has the Redis 6.2 start of the upgrade chains: a pinned
 // image, the edge to Redis 7.2, and the two instances.
 func TestShippedRedis62(t *testing.T) {

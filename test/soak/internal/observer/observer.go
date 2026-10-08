@@ -38,6 +38,7 @@ const (
 
 type Observer struct {
 	in       config.Instance
+	versions *config.Config
 	interval time.Duration
 	timeout  time.Duration
 	kube     kubernetes.Interface
@@ -99,6 +100,7 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 	labels := prometheus.Labels{"rf": in.Name, "namespace": in.Namespace, "mode": string(in.Mode)}
 	o := &Observer{
 		in:         in,
+		versions:   cfg,
 		interval:   cfg.Observer.Interval.Duration,
 		timeout:    cfg.Probe.Timeout.Duration,
 		kube:       kube,
@@ -172,6 +174,7 @@ type view struct {
 	// ephemeral is an instance whose only redis pod has no volume.
 	ephemeral bool
 	volumes   bool
+	waits     bool
 	master    string
 	masterIP  string
 	// sentinelPath is whether the instance runs Sentinels that are Ready
@@ -218,6 +221,9 @@ type Report struct {
 	Ephemeral bool
 	// Volumes is an instance whose redis pods keep their data on volumes.
 	Volumes bool
+	// Waits is an instance whose redis server waits for its replicas on
+	// SIGTERM.
+	Waits bool
 }
 
 // Report returns what the last round found, a zero Report before the first.
@@ -226,7 +232,7 @@ func (o *Observer) Report() Report {
 	if v == nil {
 		return Report{}
 	}
-	return Report{At: v.at, Quiet: v.quiet, Failing: v.failing, Ephemeral: v.ephemeral, Volumes: v.volumes}
+	return Report{At: v.at, Quiet: v.quiet, Failing: v.failing, Ephemeral: v.ephemeral, Volumes: v.volumes, Waits: v.waits}
 }
 
 // Master returns the name of the pod that last was the single master.
@@ -304,6 +310,7 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 		uid:              string(rf.UID),
 		bootstrap:        spec.Spec.BootstrapNode,
 		pvc:              spec.Spec.Redis.Storage.PersistentVolumeClaim != nil,
+		waits:            o.versions.WaitsForReplicas(spec.Spec.Redis.Image),
 		sentinel:         spec.SentinelEnabled(),
 		redisReplicas:    spec.Spec.Redis.Replicas,
 		sentinelReplicas: spec.Spec.Sentinel.Replicas,
@@ -562,6 +569,7 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 		failing:      failing,
 		ephemeral:    s.bootstrap == nil && s.redisReplicas == 1 && !s.pvc,
 		volumes:      s.pvc,
+		waits:        s.waits,
 		quiet:        allOK && !o.tracker.windowOpen(),
 		windowOpen:   o.tracker.windowOpen(),
 		master:       o.master.Name,

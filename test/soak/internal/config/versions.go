@@ -29,6 +29,13 @@ func (v Version) WaitsForReplicas() bool {
 	return v.Server != "redis" || compareReleases(v.Release, "7.0.0") >= 0
 }
 
+// WaitsForReplicas reports whether the redis pods that run image wait for
+// their replicas on SIGTERM. An image that is no configured version does.
+func (c *Config) WaitsForReplicas(image string) bool {
+	v, ok := c.VersionOf(image)
+	return !ok || v.WaitsForReplicas()
+}
+
 // Expectations of an edge, the values of the expect label.
 const (
 	ExpectOK      = "ok"
