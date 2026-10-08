@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -61,10 +62,40 @@ type Client interface {
 	GetMemoryInfo(ip, port, password string) (*MemoryInfo, error)
 	SetPassword(ip, port, password, newPassword string) error
 	SetSentinelAuthPass(ip, password string) error
+	GetConfig(ip, port, password, parameter string) (string, error)
+	SetConfig(ip, port, password, parameter, value string) error
+	KillClientsOnPort(ip, port, password, localPort string) (int, error)
+	GetServerVersion(ip, port, password string) (string, error)
 }
 
 type client struct {
 	metricsRecorder metrics.Recorder
+	tls             *TLSTargets
+}
+
+// TLSTargets are the Redis pods of one RedisFailover that run with TLS. The
+// operator dials them only on Port with Config, never on the plaintext port.
+type TLSTargets struct {
+	Port   string
+	Config *tls.Config
+	IPs    map[string]bool
+}
+
+// ForTLS returns a client that dials the pods of targets over TLS. The client
+// is for one RedisFailover, because a pod IP can later belong to another one.
+func (c *client) ForTLS(targets *TLSTargets) Client {
+	bound := *c
+	bound.tls = targets
+	return &bound
+}
+
+func (c *client) nodeOptions(ip, port, password string) *rediscli.Options {
+	if c.tls == nil || !c.tls.IPs[ip] {
+		return redisOptions(net.JoinHostPort(ip, port), password)
+	}
+	options := redisOptions(net.JoinHostPort(ip, c.tls.Port), password)
+	options.TLSConfig = c.tls.Config
+	return options
 }
 
 // New returns a redis client
@@ -237,7 +268,7 @@ func (c *client) GetSlaveOf(ip, port, password string) (string, error) {
 	if ip == "" {
 		return "", errNoIP
 	}
-	options := redisOptions(net.JoinHostPort(ip, port), password)
+	options := c.nodeOptions(ip, port, password)
 	rClient := rediscli.NewClient(options)
 	defer func(rClient *rediscli.Client) {
 		err := rClient.Close()
@@ -265,7 +296,7 @@ func (c *client) IsMaster(ip, port, password string) (bool, error) {
 	if ip == "" {
 		return false, errNoIP
 	}
-	options := redisOptions(net.JoinHostPort(ip, port), password)
+	options := c.nodeOptions(ip, port, password)
 	rClient := rediscli.NewClient(options)
 	defer func(rClient *rediscli.Client) {
 		err := rClient.Close()
@@ -334,7 +365,7 @@ func (c *client) MakeMaster(ip string, port string, password string) error {
 	if ip == "" {
 		return errNoIP
 	}
-	options := redisOptions(net.JoinHostPort(ip, port), password)
+	options := c.nodeOptions(ip, port, password)
 	rClient := rediscli.NewClient(options)
 	defer func(rClient *rediscli.Client) {
 		err := rClient.Close()
@@ -363,7 +394,7 @@ func (c *client) MakeSlaveOfWithPort(ip, port, masterIP, masterPort, password st
 	if ip == "" {
 		return errNoIP
 	}
-	options := redisOptions(net.JoinHostPort(ip, port), password)
+	options := c.nodeOptions(ip, port, password)
 	rClient := rediscli.NewClient(options)
 	defer func(rClient *rediscli.Client) {
 		err := rClient.Close()
@@ -391,7 +422,7 @@ func (c *client) DisconnectClients(ip, port, password string) error {
 	if ip == "" {
 		return errNoIP
 	}
-	options := redisOptions(net.JoinHostPort(ip, port), password)
+	options := c.nodeOptions(ip, port, password)
 	rClient := rediscli.NewClient(options)
 	defer closeClient(rClient)
 
@@ -650,7 +681,7 @@ func (c *client) SetCustomRedisConfig(ip string, port string, configs []string, 
 	if ip == "" {
 		return errNoIP
 	}
-	options := redisOptions(net.JoinHostPort(ip, port), password)
+	options := c.nodeOptions(ip, port, password)
 	rClient := rediscli.NewClient(options)
 	defer func(rClient *rediscli.Client) {
 		err := rClient.Close()
@@ -749,7 +780,7 @@ func (c *client) SlaveIsReady(ip, port, password string) (bool, error) {
 	if ip == "" {
 		return false, errNoIP
 	}
-	options := redisOptions(net.JoinHostPort(ip, port), password)
+	options := c.nodeOptions(ip, port, password)
 	rClient := rediscli.NewClient(options)
 	defer func(rClient *rediscli.Client) {
 		err := rClient.Close()
@@ -776,7 +807,7 @@ func (c *client) GetReplicationInfo(ip, port, password string) (*ReplicationInfo
 	if ip == "" {
 		return nil, errNoIP
 	}
-	options := redisOptions(net.JoinHostPort(ip, port), password)
+	options := c.nodeOptions(ip, port, password)
 	rClient := rediscli.NewClient(options)
 	defer func(rClient *rediscli.Client) {
 		err := rClient.Close()
@@ -845,7 +876,7 @@ func (c *client) SetPassword(ip, port, password, newPassword string) error {
 	if ip == "" {
 		return errNoIP
 	}
-	rClient := rediscli.NewClient(redisOptions(net.JoinHostPort(ip, port), password))
+	rClient := rediscli.NewClient(c.nodeOptions(ip, port, password))
 	defer func(rClient *rediscli.Client) {
 		if err := rClient.Close(); err != nil {
 			log.Error(err.Error())
@@ -886,7 +917,7 @@ func (c *client) GetMemoryInfo(ip, port, password string) (*MemoryInfo, error) {
 	if ip == "" {
 		return nil, errNoIP
 	}
-	rClient := rediscli.NewClient(redisOptions(net.JoinHostPort(ip, port), password))
+	rClient := rediscli.NewClient(c.nodeOptions(ip, port, password))
 	defer func(rClient *rediscli.Client) {
 		if err := rClient.Close(); err != nil {
 			log.Error(err.Error())
@@ -932,7 +963,9 @@ func (c *client) GetMemoryInfo(ip, port, password string) (*MemoryInfo, error) {
 }
 
 func getRedisError(err error) string {
-	if strings.Contains(err.Error(), "NOAUTH") {
+	if IsTLSError(err) {
+		return metrics.TLS_ERROR
+	} else if strings.Contains(err.Error(), "NOAUTH") {
 		return metrics.NOAUTH
 	} else if strings.Contains(err.Error(), "WRONGPASS") {
 		return metrics.WRONG_PASSWORD_USED
@@ -965,12 +998,28 @@ func IsNoPasswordError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "without any password configured")
 }
 
+// IsTLSError reports a failed TLS handshake or certificate check, for example
+// an expired certificate or an unknown CA. The node runs, so the callers must
+// not treat it as unreachable: a failover does not repair a certificate.
+func IsTLSError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var verifyErr *tls.CertificateVerificationError
+	var headerErr tls.RecordHeaderError
+	if errors.As(err, &verifyErr) || errors.As(err, &headerErr) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "tls: ") || strings.Contains(msg, "x509: ")
+}
+
 // IsUnreachableError reports whether the client could not reach the Redis
 // node, for example after a dial error, a timeout or a reset. The callers skip
 // such a node, but return the errors of a command, for example a bad config
 // value or a wrong password.
 func IsUnreachableError(err error) bool {
-	if err == nil {
+	if err == nil || IsTLSError(err) {
 		return false
 	}
 	if errors.Is(err, errNoIP) {
@@ -988,4 +1037,116 @@ func IsUnreachableError(err error) bool {
 		strings.Contains(msg, "no route to host") ||
 		strings.Contains(msg, "network is unreachable") ||
 		strings.Contains(msg, "connection reset")
+}
+
+// GetConfig returns the value of one CONFIG GET parameter.
+func (c *client) GetConfig(ip, port, password, parameter string) (string, error) {
+	if ip == "" {
+		return "", errNoIP
+	}
+	rClient := rediscli.NewClient(c.nodeOptions(ip, port, password))
+	defer closeClient(rClient)
+	res, err := rClient.ConfigGet(context.TODO(), parameter).Result()
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_CONFIG, metrics.FAIL, getRedisError(err))
+		return "", err
+	}
+	if len(res) != 2 {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_CONFIG, metrics.FAIL, metrics.MISC)
+		return "", fmt.Errorf("CONFIG GET %s: unknown parameter", parameter)
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_CONFIG, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return fmt.Sprint(res[1]), nil
+}
+
+// SetConfig sets one parameter with CONFIG SET.
+func (c *client) SetConfig(ip, port, password, parameter, value string) error {
+	if ip == "" {
+		return errNoIP
+	}
+	rClient := rediscli.NewClient(c.nodeOptions(ip, port, password))
+	defer closeClient(rClient)
+	if err := rClient.ConfigSet(context.TODO(), parameter, value).Err(); err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.SET_CONFIG, metrics.FAIL, getRedisError(err))
+		return err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.SET_CONFIG, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return nil
+}
+
+// KillClientsOnPort closes the normal and pub/sub connections that came in on
+// localPort, and returns their number. A closed listener does not close the
+// connections that it accepted before. It does not close replication links.
+func (c *client) KillClientsOnPort(ip, port, password, localPort string) (int, error) {
+	if ip == "" {
+		return 0, errNoIP
+	}
+	rClient := rediscli.NewClient(c.nodeOptions(ip, port, password))
+	defer closeClient(rClient)
+
+	var ids []string
+	for _, clientType := range []string{"normal", "pubsub"} {
+		list, err := rClient.Do(context.TODO(), "CLIENT", "LIST", "TYPE", clientType).Text()
+		if err != nil {
+			c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.KILL_CLIENTS_ON_PORT, metrics.FAIL, getRedisError(err))
+			return 0, err
+		}
+		ids = append(ids, clientIDsOnPort(list, localPort)...)
+	}
+	killed := 0
+	for _, id := range ids {
+		n, err := rClient.ClientKillByFilter(context.TODO(), "ID", id).Result()
+		if err != nil {
+			c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.KILL_CLIENTS_ON_PORT, metrics.FAIL, getRedisError(err))
+			return killed, err
+		}
+		killed += int(n)
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.KILL_CLIENTS_ON_PORT, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return killed, nil
+}
+
+// clientIDsOnPort reads the CLIENT LIST lines whose local address has the
+// port localPort.
+func clientIDsOnPort(list, localPort string) []string {
+	var ids []string
+	for _, line := range strings.Split(list, "\n") {
+		var id string
+		onPort := false
+		for _, field := range strings.Fields(line) {
+			if v, ok := strings.CutPrefix(field, "id="); ok {
+				id = v
+			}
+			if v, ok := strings.CutPrefix(field, "laddr="); ok {
+				onPort = strings.HasSuffix(v, ":"+localPort)
+			}
+		}
+		if id != "" && onPort {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// GetServerVersion returns redis_version of INFO server. Valkey reports the
+// Redis version that it is compatible with.
+func (c *client) GetServerVersion(ip, port, password string) (string, error) {
+	if ip == "" {
+		return "", errNoIP
+	}
+	rClient := rediscli.NewClient(c.nodeOptions(ip, port, password))
+	defer closeClient(rClient)
+	info, err := rClient.Info(context.TODO(), "server").Result()
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_SERVER_VERSION, metrics.FAIL, getRedisError(err))
+		return "", err
+	}
+	for _, line := range strings.Split(info, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "redis_version:"); ok {
+			c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_SERVER_VERSION, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+			return v, nil
+		}
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_SERVER_VERSION, metrics.FAIL, metrics.MISC)
+	return "", errors.New("INFO server has no redis_version")
 }

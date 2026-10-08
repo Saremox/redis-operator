@@ -54,6 +54,10 @@ func TestEmptyIPReturnsAnErrorWithoutDialing(t *testing.T) {
 		"GetMemoryInfo":                   func() error { _, err := c.GetMemoryInfo("", port, "pw"); return err },
 		"SetPassword":                     func() error { return c.SetPassword("", port, "pw", "new") },
 		"SetSentinelAuthPass":             func() error { return c.SetSentinelAuthPass("", "pw") },
+		"GetConfig":                       func() error { _, err := c.GetConfig("", port, "pw", "port"); return err },
+		"SetConfig":                       func() error { return c.SetConfig("", port, "pw", "port", "0") },
+		"KillClientsOnPort":               func() error { _, err := c.KillClientsOnPort("", port, "pw", port); return err },
+		"GetServerVersion":                func() error { _, err := c.GetServerVersion("", port, "pw"); return err },
 	}
 	for name, call := range calls {
 		t.Run(name, func(t *testing.T) {

@@ -30,6 +30,34 @@ func (_m *Client) DisconnectClients(ip string, port string, password string) err
 	return r0
 }
 
+// GetConfig provides a mock function with given fields: ip, port, password, parameter
+func (_m *Client) GetConfig(ip string, port string, password string, parameter string) (string, error) {
+	ret := _m.Called(ip, port, password, parameter)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetConfig")
+	}
+
+	var r0 string
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, string, string, string) (string, error)); ok {
+		return rf(ip, port, password, parameter)
+	}
+	if rf, ok := ret.Get(0).(func(string, string, string, string) string); ok {
+		r0 = rf(ip, port, password, parameter)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+
+	if rf, ok := ret.Get(1).(func(string, string, string, string) error); ok {
+		r1 = rf(ip, port, password, parameter)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetMemoryInfo provides a mock function with given fields: ip, port, password
 func (_m *Client) GetMemoryInfo(ip string, port string, password string) (*redis.MemoryInfo, error) {
 	ret := _m.Called(ip, port, password)
@@ -211,6 +239,34 @@ func (_m *Client) GetSentinelReplicas(ip string) ([]string, error) {
 	return r0, r1
 }
 
+// GetServerVersion provides a mock function with given fields: ip, port, password
+func (_m *Client) GetServerVersion(ip string, port string, password string) (string, error) {
+	ret := _m.Called(ip, port, password)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetServerVersion")
+	}
+
+	var r0 string
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, string, string) (string, error)); ok {
+		return rf(ip, port, password)
+	}
+	if rf, ok := ret.Get(0).(func(string, string, string) string); ok {
+		r0 = rf(ip, port, password)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+
+	if rf, ok := ret.Get(1).(func(string, string, string) error); ok {
+		r1 = rf(ip, port, password)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetSlaveOf provides a mock function with given fields: ip, port, password
 func (_m *Client) GetSlaveOf(ip string, port string, password string) (string, error) {
 	ret := _m.Called(ip, port, password)
@@ -260,6 +316,34 @@ func (_m *Client) IsMaster(ip string, port string, password string) (bool, error
 
 	if rf, ok := ret.Get(1).(func(string, string, string) error); ok {
 		r1 = rf(ip, port, password)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// KillClientsOnPort provides a mock function with given fields: ip, port, password, localPort
+func (_m *Client) KillClientsOnPort(ip string, port string, password string, localPort string) (int, error) {
+	ret := _m.Called(ip, port, password, localPort)
+
+	if len(ret) == 0 {
+		panic("no return value specified for KillClientsOnPort")
+	}
+
+	var r0 int
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, string, string, string) (int, error)); ok {
+		return rf(ip, port, password, localPort)
+	}
+	if rf, ok := ret.Get(0).(func(string, string, string, string) int); ok {
+		r0 = rf(ip, port, password, localPort)
+	} else {
+		r0 = ret.Get(0).(int)
+	}
+
+	if rf, ok := ret.Get(1).(func(string, string, string, string) error); ok {
+		r1 = rf(ip, port, password, localPort)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -419,6 +503,24 @@ func (_m *Client) SentinelMasterDown(ip string) (bool, error) {
 	}
 
 	return r0, r1
+}
+
+// SetConfig provides a mock function with given fields: ip, port, password, parameter, value
+func (_m *Client) SetConfig(ip string, port string, password string, parameter string, value string) error {
+	ret := _m.Called(ip, port, password, parameter, value)
+
+	if len(ret) == 0 {
+		panic("no return value specified for SetConfig")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string, string, string, string) error); ok {
+		r0 = rf(ip, port, password, parameter, value)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
 }
 
 // SetCustomRedisConfig provides a mock function with given fields: ip, port, configs, password
