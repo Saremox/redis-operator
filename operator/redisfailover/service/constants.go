@@ -1,8 +1,10 @@
 package service
 
+import redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+
 // Settings of the Redis exporter and the Sentinel exporter containers.
 const (
-	exporterPort                  = 9121
+	exporterPort                  = redisfailoverv1.DefaultRedisExporterPort
 	sentinelExporterPort          = 9355
 	exporterPortName              = "http-metrics"
 	exporterContainerName         = "redis-exporter"

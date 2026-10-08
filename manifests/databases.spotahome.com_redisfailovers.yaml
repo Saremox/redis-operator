@@ -17045,6 +17045,66 @@ spec:
                       type: object
                     type: array
                 type: object
+              tls:
+                description: |-
+                  TLS adds a TLS port to Redis. Validation rejects this field in this
+                  release, because the operator does not yet change a running
+                  RedisFailover to TLS or renew its certificates.
+                properties:
+                  ca:
+                    description: CA replaces ca.crt of secretName as the trusted CA
+                      bundle.
+                    properties:
+                      configMapName:
+                        type: string
+                      key:
+                        description: Key is the key of the CA bundle. Defaults to
+                          ca.crt.
+                        type: string
+                      secretName:
+                        type: string
+                    type: object
+                  clientAuth:
+                    description: |-
+                      ClientAuth sets tls-auth-clients: Required (yes), Optional or None
+                      (no). Defaults to Required.
+                    enum:
+                    - Required
+                    - Optional
+                    - None
+                    type: string
+                  plaintextPort:
+                    description: |-
+                      PlaintextPort keeps redis.port open next to the TLS port for the
+                      applications. Disabled closes it. Defaults to Enabled.
+                    enum:
+                    - Enabled
+                    - Disabled
+                    type: string
+                  port:
+                    description: |-
+                      Port is the TLS port of Redis. It is separate from redis.port, so it
+                      does not change when the plaintext port closes. Defaults to 6380.
+                    format: int32
+                    maximum: 65535
+                    minimum: 0
+                    type: integer
+                  secretName:
+                    description: |-
+                      SecretName is the Secret with tls.crt, tls.key and ca.crt, for example
+                      from cert-manager. The Redis pods and the operator use the same
+                      certificate. Thus with clientAuth Required or Optional, the certificate
+                      needs the client auth usage next to server auth.
+                    type: string
+                  serverName:
+                    description: |-
+                      ServerName is the name that the operator checks in the certificate of
+                      each Redis pod, because pod IPs change. Defaults to the DNS name of the
+                      master Service, rfrm-<name>.<namespace>.svc.
+                    type: string
+                required:
+                - secretName
+                type: object
             type: object
           status:
             description: |-
@@ -17057,6 +17117,36 @@ spec:
                 type: string
               state:
                 type: string
+              tls:
+                description: |-
+                  TLSStatus is the observed TLS state of the Redis pods. The operator writes
+                  the Redis config from it, so that a restarted pod starts in this state.
+                properties:
+                  certificateNotAfter:
+                    format: date-time
+                    type: string
+                  internalLinks:
+                    description: |-
+                      InternalLinks tells how the replicas connect to the master:
+                      Plaintext, Mixed or TLS.
+                    type: string
+                  lastTransition:
+                    type: string
+                  message:
+                    type: string
+                  phase:
+                    type: string
+                  plaintextPort:
+                    description: PlaintextPort is Open, Mixed or Closed.
+                    type: string
+                  port:
+                    format: int32
+                    type: integer
+                  target:
+                    description: 'Target is the state that the spec asks for: Dual,
+                      TLSOnly or None.'
+                    type: string
+                type: object
             type: object
         required:
         - spec

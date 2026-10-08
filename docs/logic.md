@@ -15,7 +15,7 @@ Each reconcile does these steps in this order:
 1. Delete: if the RedisFailover has a deletion timestamp, the operator removes its metrics and in-memory state, then removes its finalizer. Nothing else runs. The operator also removes the metrics and the state of a RedisFailover that is gone before a reconcile sees its deletion timestamp. This happens after a manual removal of the finalizer.
 2. Finalizer: the operator adds its finalizer. With it, the operator sees the deletion timestamp before the object is gone.
 3. Skip: if the annotation `redisfailovers.databases.spotahome.com/skip-reconcile` is `"true"`, the operator stops here. Use it to repair a cluster by hand.
-4. Validate: `Validate()` rejects an invalid spec and sets the defaults.
+4. Validate: `Validate()` rejects an invalid spec and sets the defaults. It also rejects `tls`, because the TLS support is not complete.
 5. Ensure: the operator creates or updates the objects below. It overwrites a manual change of these objects:
    - Redis service (if exporter enabled)
    - Redis master service and Redis replica service

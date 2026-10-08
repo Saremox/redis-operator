@@ -20,6 +20,27 @@ const (
 	NotHealthyState              = "NotHealthy"
 )
 
+// DefaultRedisExporterPort is the port of the Redis exporter when
+// redis.exporter.port is 0.
+const DefaultRedisExporterPort = 9121
+
+// The values of the TLS settings, and their defaults.
+const (
+	DefaultTLSPort           = 6380
+	DefaultTLSCAKey          = "ca.crt"
+	TLSPlaintextPortEnabled  = "Enabled"
+	TLSPlaintextPortDisabled = "Disabled"
+	TLSClientAuthRequired    = "Required"
+	TLSClientAuthOptional    = "Optional"
+	TLSClientAuthNone        = "None"
+)
+
+// The values of the TLS status fields that the Redis config depends on.
+const (
+	TLSStatusLinksTLS        = "TLS"
+	TLSStatusPlaintextClosed = "Closed"
+)
+
 // The Sentinel timeouts that apply when sentinel.customConfig does not set them.
 // sentinel.conf and the readiness script of the Redis pods use the same values.
 const (

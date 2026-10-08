@@ -99,6 +99,15 @@ func (r *RedisFailover) Validate() error {
 
 	r.Spec.Sentinel.CustomConfig = addSentinelDefaults(r.Spec.Sentinel.CustomConfig)
 
+	if r.Spec.TLS != nil {
+		if err := r.validateTLS(); err != nil {
+			return err
+		}
+		if !tlsAvailable {
+			return errTLSNotAvailable
+		}
+	}
+
 	return nil
 }
 

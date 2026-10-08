@@ -31,6 +31,47 @@ type RedisFailoverSpec struct {
 	Auth           AuthSettings       `json:"auth,omitempty"`
 	LabelWhitelist []string           `json:"labelWhitelist,omitempty"`
 	BootstrapNode  *BootstrapSettings `json:"bootstrapNode,omitempty"`
+	// TLS adds a TLS port to Redis. Validation rejects this field in this
+	// release, because the operator does not yet change a running
+	// RedisFailover to TLS or renew its certificates.
+	TLS *TLSSettings `json:"tls,omitempty"`
+}
+
+// TLSSettings configures TLS for the Redis pods and for the connections of
+// the operator. Without it, Redis uses no TLS.
+type TLSSettings struct {
+	// SecretName is the Secret with tls.crt, tls.key and ca.crt, for example
+	// from cert-manager. The Redis pods and the operator use the same
+	// certificate. Thus with clientAuth Required or Optional, the certificate
+	// needs the client auth usage next to server auth.
+	SecretName string `json:"secretName"`
+	// CA replaces ca.crt of secretName as the trusted CA bundle.
+	CA *TLSCASource `json:"ca,omitempty"`
+	// Port is the TLS port of Redis. It is separate from redis.port, so it
+	// does not change when the plaintext port closes. Defaults to 6380.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port,omitempty"`
+	// PlaintextPort keeps redis.port open next to the TLS port for the
+	// applications. Disabled closes it. Defaults to Enabled.
+	// +kubebuilder:validation:Enum=Enabled;Disabled
+	PlaintextPort string `json:"plaintextPort,omitempty"`
+	// ClientAuth sets tls-auth-clients: Required (yes), Optional or None
+	// (no). Defaults to Required.
+	// +kubebuilder:validation:Enum=Required;Optional;None
+	ClientAuth string `json:"clientAuth,omitempty"`
+	// ServerName is the name that the operator checks in the certificate of
+	// each Redis pod, because pod IPs change. Defaults to the DNS name of the
+	// master Service, rfrm-<name>.<namespace>.svc.
+	ServerName string `json:"serverName,omitempty"`
+}
+
+// TLSCASource names one Secret or one ConfigMap that holds the CA bundle.
+type TLSCASource struct {
+	SecretName    string `json:"secretName,omitempty"`
+	ConfigMapName string `json:"configMapName,omitempty"`
+	// Key is the key of the CA bundle. Defaults to ca.crt.
+	Key string `json:"key,omitempty"`
 }
 
 // RedisCommandRename is a "rename-command" entry of redis.conf.
@@ -276,7 +317,25 @@ type RedisFailoverList struct {
 // RedisFailoverStatus is the result of the last reconcile. State is Healthy or
 // NotHealthy, and Message gives the reason.
 type RedisFailoverStatus struct {
-	State       string `json:"state,omitempty"`
-	LastChanged string `json:"lastChanged,omitempty"`
-	Message     string `json:"message,omitempty"`
+	State       string     `json:"state,omitempty"`
+	LastChanged string     `json:"lastChanged,omitempty"`
+	Message     string     `json:"message,omitempty"`
+	TLS         *TLSStatus `json:"tls,omitempty"`
+}
+
+// TLSStatus is the observed TLS state of the Redis pods. The operator writes
+// the Redis config from it, so that a restarted pod starts in this state.
+type TLSStatus struct {
+	Phase string `json:"phase,omitempty"`
+	// Target is the state that the spec asks for: Dual, TLSOnly or None.
+	Target string `json:"target,omitempty"`
+	// InternalLinks tells how the replicas connect to the master:
+	// Plaintext, Mixed or TLS.
+	InternalLinks string `json:"internalLinks,omitempty"`
+	// PlaintextPort is Open, Mixed or Closed.
+	PlaintextPort       string       `json:"plaintextPort,omitempty"`
+	Port                int32        `json:"port,omitempty"`
+	CertificateNotAfter *metav1.Time `json:"certificateNotAfter,omitempty"`
+	Message             string       `json:"message,omitempty"`
+	LastTransition      string       `json:"lastTransition,omitempty"`
 }
