@@ -608,7 +608,7 @@ The soak test runs RedisFailovers with these server images, in [operator-managed
 
 The soak test does not run other versions: Redis 6.x and 7.0, other patch releases of Redis 7.4 and 8, and Valkey 8.0.
 
-An in-place upgrade is a change of `spec.redis.image` on a RedisFailover that runs. The soak test made 3,775 such changes. Each instance had 3 Redis pods, a 16 MiB data set and a write ledger. The ledger checks each acknowledged write.
+An in-place upgrade is a change of `spec.redis.image` on a RedisFailover that runs. The soak test made 3,775 such changes. Each instance had up to 3 Redis pods, a 16 MiB data set and a write ledger. The ledger checks each acknowledged write.
 
 | From | To | Result | Count (operator-managed / Sentinel mode) |
 |---|---|---|---|
@@ -641,8 +641,6 @@ In Sentinel mode, the Sentinel image changes separately or follows the data imag
 - The Sentinel image follows the data image on the chain Redis 7.2, 7.4 and 8: converged.
 
 The durations are relative figures from a test cluster with nested VMs and local volumes. A data image upgrade took 144 s on average (95th percentile 177 s) in operator-managed mode and 162 s (241 s) in Sentinel mode. Pods of two versions ran side by side for about 90 s.
-
-The soak test saw one incident: a 5 s `Healthy` flap on a Sentinel instance after a Sentinel image upgrade, with the message `unable to set sentinel custom config`. The instance lost no data and healed by itself, and the cause is not known.
 
 The soak test does not cover:
 
