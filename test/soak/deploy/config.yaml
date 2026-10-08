@@ -33,8 +33,10 @@ mutation:
     image_upgrade: {base: 5m, perPod: 2m}
     sentinel_image_upgrade: {base: 5m, perPod: 1m}
     reset: {base: 5m, perPod: 1m}
-# Exact patch tags, from Docker Hub on 2026-10-01.
+# Exact patch tags, from Docker Hub on 2026-10-01, and redis-6.2 on
+# 2026-10-08.
 versions:
+  - {name: redis-6.2, image: "redis:6.2.24-alpine"}
   - {name: redis-7.2, image: "redis:7.2.16-alpine"}
   - {name: redis-7.4, image: "redis:7.4.11-alpine"}
   - {name: redis-8, image: "redis:8.10.2-alpine"}
@@ -42,6 +44,8 @@ versions:
   - {name: valkey-8, image: "valkey/valkey:8.1.10-alpine"}
   - {name: valkey-9, image: "valkey/valkey:9.1.2-alpine"}
 edges:
+  # Redis 7.2 reads the RDB format of Redis 6.2.
+  - {from: redis-6.2, to: redis-7.2, expect: ok}
   - {from: redis-7.2, to: redis-7.4, expect: ok}
   - {from: redis-7.4, to: redis-8, expect: ok}
   - {from: valkey-7.2, to: valkey-8, expect: ok}
@@ -202,6 +206,34 @@ instances:
     template: instances.yaml
     mode: sentinel
     chain: {start: [redis-7.2], versions: [redis-7.2, redis-7.4, redis-8], sentinel: follow}
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # Redis 6.2 -> 7.2 -> 7.4 -> 8, then reset; with replica and resource
+  # changes.
+  - name: redis-chain-62
+    template: instances.yaml
+    chain: {start: [redis-6.2], versions: [redis-6.2, redis-7.2, redis-7.4, redis-8]}
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 4
+        redis_replicas: 1
+        redis_resources: 1
+      redisReplicas: {min: 1, max: 3}
+      resources:
+        requests:
+          cpu: {min: 25, max: 100}
+  # The same chain with Sentinels that follow the data image.
+  - name: redis-chain-62-sent
+    template: instances.yaml
+    mode: sentinel
+    chain: {start: [redis-6.2], versions: [redis-6.2, redis-7.2, redis-7.4, redis-8], sentinel: follow}
     data:
       fill: {sizeMi: 16}
       ledger: {}

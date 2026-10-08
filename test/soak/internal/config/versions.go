@@ -22,6 +22,13 @@ type Version struct {
 	Release string `json:"-"`
 }
 
+// WaitsForReplicas reports whether the server, on SIGTERM, waits until its
+// replicas have the writes, up to shutdown-timeout. Redis 7.0 and later and
+// Valkey do. Redis 6.2 only flushes the replica buffers once, and then exits.
+func (v Version) WaitsForReplicas() bool {
+	return v.Server != "redis" || compareReleases(v.Release, "7.0.0") >= 0
+}
+
 // Expectations of an edge, the values of the expect label.
 const (
 	ExpectOK      = "ok"

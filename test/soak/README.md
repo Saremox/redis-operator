@@ -108,6 +108,10 @@ the event must lose no write, and counts such losses in
 - for a bootstrapping instance: each source write that a pod that caught up
   does not have.
 
+Redis 6.2 does not wait for its replicas on SIGTERM. On an instance that runs
+Redis 6.2, the tester does not require a lossless result for an event that
+stops a redis pod. It counts such a loss in `redis_soak_lost_writes_total`.
+
 The ledger keys must never be evicted, because the tester cannot tell an
 eviction from a loss. Config validation rejects a ledger on an instance
 that can run under `allkeys-*`, and a ledger under `volatile-*` without
@@ -228,6 +232,12 @@ gets its judgement below, not `timeout`.
 cannot load a newer RDB. Thus a chain goes back to its start with a
 `reset`. The `chain` of an instance is the part of the graph that it moves
 through.
+
+The instances `redis-chain-62` and `redis-chain-62-sent` (with Sentinels)
+start on `redis-6.2`, the oldest Redis version in the graph. They move
+through `redis-7.2` and `redis-7.4` to `redis-8`, and then reset on
+`redis-6.2`. The edge `redis-6.2 -> redis-7.2` is `ok`, because Redis 7.2
+reads the RDB data of Redis 6.2.
 
 `image_upgrade` follows an edge from the current version. The tester
 observes a change along an `unknown` or `fail` edge for the timeout of the

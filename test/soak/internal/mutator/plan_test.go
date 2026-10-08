@@ -337,14 +337,50 @@ func TestLossless(t *testing.T) {
 		{plan{kind: config.ImageUpgrade, edge: ok}, false, true},
 		{plan{kind: config.ImageUpgrade, edge: unknown}, false, false},
 	}
+	m := versionMutator(t, "chain")
 	for _, c := range cases {
 		s := testState()
-		if got := lossless(c.p, s); got != c.emptyDir {
+		if got := m.lossless(c.p, s); got != c.emptyDir {
 			t.Errorf("%s on emptyDir: %v", c.p.kind, got)
 		}
 		s.rf.Spec.Redis.Storage.PersistentVolumeClaim = &redisfailoverv1.EmbeddedPersistentVolumeClaim{}
-		if got := lossless(c.p, s); got != c.volumes {
+		if got := m.lossless(c.p, s); got != c.volumes {
 			t.Errorf("%s on volumes: %v", c.p.kind, got)
+		}
+	}
+}
+
+// Redis 6.2 does not wait for its replicas on SIGTERM, so a kind that stops
+// a redis pod can lose acknowledged writes there. Redis 7.2 and Valkey wait.
+func TestLosslessByServer(t *testing.T) {
+	ok := &transition{edge: config.Edge{Expect: config.ExpectOK}}
+	m := versionMutator(t, "chain")
+	for _, c := range []struct {
+		image string
+		p     plan
+		want  bool
+	}{
+		{"redis:6.2.24-alpine", plan{kind: config.PasswordRotate}, false},
+		{"redis:6.2.24-alpine", plan{kind: config.AuthAdd}, false},
+		{"redis:6.2.24-alpine", plan{kind: config.AuthRemove}, false},
+		{"redis:6.2.24-alpine", plan{kind: config.PasswordRotateOffline}, false},
+		{"redis:6.2.24-alpine", plan{kind: config.SentinelToggle}, false},
+		{"redis:6.2.24-alpine", plan{kind: config.KillMaster}, false},
+		{"redis:6.2.24-alpine", plan{kind: config.RedisReplicas}, false},
+		{"redis:6.2.24-alpine", plan{kind: config.ImageUpgrade, edge: ok}, false},
+		{"redis:6.2.24-alpine", plan{kind: config.SentinelImageFlip}, true},
+		{"redis:7.2.16-alpine", plan{kind: config.PasswordRotate}, true},
+		{"redis:7.2.16-alpine", plan{kind: config.KillMaster}, true},
+		{"redis:7.2.16-alpine", plan{kind: config.ImageUpgrade, edge: ok}, true},
+		{"valkey/valkey:7.2.14-alpine", plan{kind: config.KillMaster}, true},
+		// An image that is no configured version keeps the rule of Redis 7.
+		{"redis:6-alpine", plan{kind: config.KillMaster}, true},
+	} {
+		s := testState()
+		s.rf.Spec.Redis.Image = c.image
+		s.rf.Spec.Redis.Storage.PersistentVolumeClaim = &redisfailoverv1.EmbeddedPersistentVolumeClaim{}
+		if got := m.lossless(c.p, s); got != c.want {
+			t.Errorf("%s on %s: %v, want %v", c.p.kind, c.image, got, c.want)
 		}
 	}
 }

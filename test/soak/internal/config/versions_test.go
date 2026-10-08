@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -168,6 +169,61 @@ func TestVersionDefaults(t *testing.T) {
 		v.setDefaults()
 		if got := [2]string{v.Server, v.Release}; got != want {
 			t.Errorf("%s: server and release %v, want %v", image, got, want)
+		}
+	}
+}
+
+// Redis before 7.0 does not wait for its replicas on SIGTERM.
+func TestWaitsForReplicas(t *testing.T) {
+	for image, want := range map[string]bool{
+		"redis:6.2.24-alpine":  false,
+		"redis:6.2.9":          false,
+		"redis:7.0.0":          true,
+		"redis:7.2.16-alpine":  true,
+		"redis:8.10.2-alpine":  true,
+		"valkey/valkey:7.2.14": true,
+		"valkey/valkey:8.1.10": true,
+	} {
+		v := Version{Name: "v", Image: image}
+		v.setDefaults()
+		if got := v.WaitsForReplicas(); got != want {
+			t.Errorf("%s waits for replicas: %t, want %t", image, got, want)
+		}
+	}
+}
+
+// The shipped config has the Redis 6.2 start of the upgrade chains: a pinned
+// image, the edge to Redis 7.2, and the two instances.
+func TestShippedRedis62(t *testing.T) {
+	c, err := Load("../../deploy/config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, ok := c.VersionNamed("redis-6.2")
+	if !ok || v.Server != "redis" || !strings.HasPrefix(v.Release, "6.2.") || v.WaitsForReplicas() {
+		t.Fatalf("redis-6.2 = %+v, %t", v, ok)
+	}
+	if e, ok := c.Edge("redis-6.2", "redis-7.2"); !ok || e.Expect != ExpectOK {
+		t.Errorf("edge redis-6.2 -> redis-7.2 = %+v, %t", e, ok)
+	}
+	if len(c.EdgesFrom("redis-6.2", &Chain{Versions: []string{"redis-6.2", "redis-7.2", "valkey-9"}})) != 1 {
+		t.Error("redis-6.2 must have the one edge to redis-7.2")
+	}
+	want := []string{"redis-6.2", "redis-7.2", "redis-7.4", "redis-8"}
+	for _, name := range []string{"redis-chain-62", "redis-chain-62-sent"} {
+		i := slices.IndexFunc(c.Instances, func(in Instance) bool { return in.Name == name })
+		if i < 0 {
+			t.Fatalf("%s is not in deploy/config.yaml", name)
+		}
+		in := c.Instances[i]
+		if !slices.Equal(in.Chain.Start, []string{"redis-6.2"}) || !slices.Equal(in.Chain.Versions, want) || in.Version != "redis-6.2" {
+			t.Errorf("%s chain %+v, version %s", name, in.Chain, in.Version)
+		}
+		if !c.Reaches(in.Chain, "redis-6.2", "redis-8") {
+			t.Errorf("%s does not reach redis-8", name)
+		}
+		if _, ok := in.Mutations.Kinds[ImageUpgrade]; !ok {
+			t.Errorf("%s does not run image_upgrade", name)
 		}
 	}
 }

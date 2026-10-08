@@ -19,6 +19,7 @@ import (
 
 const versionsConfig = `
 versions:
+  - {name: redis-6.2, image: "redis:6.2.24-alpine"}
   - {name: redis-7.2, image: "redis:7.2.16-alpine"}
   - {name: redis-7.4, image: "redis:7.4.11-alpine"}
   - {name: redis-8, image: "redis:8.10.2-alpine"}
@@ -26,6 +27,7 @@ versions:
   - {name: valkey-8, image: "valkey/valkey:8.1.10-alpine"}
   - {name: valkey-9, image: "valkey/valkey:9.1.2-alpine"}
 edges:
+  - {from: redis-6.2, to: redis-7.2, expect: ok}
   - {from: redis-7.2, to: redis-7.4, expect: ok}
   - {from: redis-7.4, to: redis-8, expect: ok}
   - {from: valkey-7.2, to: valkey-8, expect: ok}
@@ -428,5 +430,55 @@ func TestMixedComponent(t *testing.T) {
 	}
 	if want := map[string]uint64{"redis": 1, "sentinel": 2}; !maps.Equal(got, want) {
 		t.Errorf("windows by component %v, want %v", got, want)
+	}
+}
+
+// The Redis 6.2 chains of deploy/config.yaml walk to Redis 8, and then reset
+// on Redis 6.2.
+func TestChains62(t *testing.T) {
+	cfg, err := config.Load("../../deploy/config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name     string
+		sentinel bool
+	}{{"redis-chain-62", false}, {"redis-chain-62-sent", true}} {
+		i := slices.IndexFunc(cfg.Instances, func(in config.Instance) bool { return in.Name == c.name })
+		if i < 0 {
+			t.Fatalf("%s is not in deploy/config.yaml", c.name)
+		}
+		in := cfg.Instances[i]
+		m := &Mutator{in: in, versions: cfg}
+		if m.instance, err = instances.New(in, nil, nil, slog.New(slog.DiscardHandler)); err != nil {
+			t.Fatal(err)
+		}
+		cur, _ := cfg.VersionNamed(in.Version)
+		if cur.Name != "redis-6.2" {
+			t.Fatalf("%s starts on %q", c.name, in.Version)
+		}
+		var walked []string
+		for step := 1; ; step++ {
+			sentinel := ""
+			if c.sentinel {
+				sentinel = cur.Image
+			}
+			p := m.planImage(stepRand(1, in, step), onImages(cur.Image, sentinel))
+			if p.kind == config.Reset {
+				if !strings.HasPrefix(p.params, "recreate on redis-6.2") {
+					t.Errorf("%s resets with %q", c.name, p.params)
+				}
+				break
+			}
+			if p.edge == nil || step > 10 {
+				t.Fatalf("%s step %d: %+v", c.name, step, p)
+			}
+			walked = append(walked, p.edge.edge.String())
+			cur = p.edge.to
+		}
+		want := []string{"redis-6.2 -> redis-7.2", "redis-7.2 -> redis-7.4", "redis-7.4 -> redis-8"}
+		if !slices.Equal(walked, want) {
+			t.Errorf("%s walked %v, want %v", c.name, walked, want)
+		}
 	}
 }

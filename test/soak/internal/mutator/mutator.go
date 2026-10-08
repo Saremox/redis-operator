@@ -353,7 +353,7 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 		event = config.EventReset
 	}
 	vctx, cancel := context.WithTimeout(ctx, verifyBound)
-	lost, verr := m.verify(vctx, event, step, lossless(p, s))
+	lost, verr := m.verify(vctx, event, step, m.lossless(p, s))
 	cancel()
 	if p.edge == nil || applyErr != nil {
 		if verr != nil && ctx.Err() == nil {
@@ -394,17 +394,25 @@ func (m *Mutator) verify(ctx context.Context, event string, step int, lossless b
 // a failover can lose writes to asynchronous replication. So can
 // sentinel_reset_kill_master. If its shutdown script gets no failover, the
 // master accepts writes until Redis gets SIGTERM. Redis 7 and later then wait
-// for the replicas only up to shutdown-timeout.
-func lossless(p plan, s state) bool {
+// for the replicas only up to shutdown-timeout. Redis 6.2 does not wait, so
+// each kind that stops a redis pod is lossless only on a server that waits.
+// A Sentinel image flip stops no redis pod.
+func (m *Mutator) lossless(p plan, s state) bool {
 	volumes := s.rf.Spec.Redis.Storage.PersistentVolumeClaim != nil
+	waits := true
+	if v, ok := m.versions.VersionOf(s.rf.Spec.Redis.Image); ok {
+		waits = v.WaitsForReplicas()
+	}
 	switch p.kind {
-	case config.PasswordRotate, config.AuthAdd, config.AuthRemove, config.PasswordRotateOffline,
-		config.SentinelToggle, config.SentinelImageFlip:
+	case config.SentinelImageFlip:
 		return true
+	case config.PasswordRotate, config.AuthAdd, config.AuthRemove, config.PasswordRotateOffline,
+		config.SentinelToggle:
+		return waits
 	case config.KillMaster, config.RedisReplicas:
-		return volumes
+		return volumes && waits
 	case config.ImageUpgrade:
-		return volumes && p.edge != nil && p.edge.edge.Expect == config.ExpectOK
+		return volumes && waits && p.edge != nil && p.edge.edge.Expect == config.ExpectOK
 	}
 	return false
 }
@@ -691,8 +699,8 @@ func (m *Mutator) checkPassword(ctx context.Context, pods []corev1.Pod, port int
 	return out
 }
 
-// servers reads INFO server, and INFO replication, from every redis and
-// Sentinel pod.
+// servers reads INFO from every redis pod, and INFO server from every Sentinel
+// pod. INFO takes one section: Redis 6.2 rejects a list of sections.
 func (m *Mutator) servers(ctx context.Context, redisPods, sentinels []corev1.Pod, port int) map[string]server {
 	out := map[string]server{}
 	for _, set := range []struct {
@@ -701,7 +709,7 @@ func (m *Mutator) servers(ctx context.Context, redisPods, sentinels []corev1.Pod
 		creds    func() (string, string)
 		sections []string
 	}{
-		{redisPods, port, m.auth.Provider(), []string{"server", "replication"}},
+		{redisPods, port, m.auth.Provider(), nil},
 		{sentinels, sentinelPort, auth.Fixed(""), []string{"server"}},
 	} {
 		vals, errs := eachPod(ctx, m, set.pods, set.port, set.creds, func(ctx context.Context, c *redis.Client) (string, error) {

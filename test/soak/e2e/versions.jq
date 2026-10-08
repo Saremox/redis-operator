@@ -10,7 +10,7 @@ del(.chaos)
     replicaReadyWithoutData: false
   }
 | .mutation += {
-    interval: "10s", jitter: "10s", seed: 5, stopAfter: $stopAfter,
+    interval: "10s", jitter: "10s", seed: 272, stopAfter: $stopAfter,
     timeouts: {
       image_upgrade: {base: "3m", perPod: "90s"},
       sentinel_image_upgrade: {base: "3m", perPod: "30s"},
