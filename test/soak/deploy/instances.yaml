@@ -285,6 +285,83 @@ spec:
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover
 metadata:
+  name: edge-sent
+spec:
+  sentinel:
+    enabled: true
+    replicas: 3
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: skip
+spec:
+  sentinel:
+    enabled: false
+  auth:
+    secretPath: skip-auth
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}
+    storage:
+      persistentVolumeClaim:
+        metadata:
+          name: redis-data
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests: {storage: 128Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: downgrade
+spec:
+  sentinel:
+    enabled: false
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 192Mi}
+---
+# 256Mi of data. The limit holds the data twice for the fork of a full sync,
+# the operator reserve of 32Mi, and 96Mi for the allocator and the replica
+# buffers. A save writes a second file next to the first, so the volume holds
+# more than two RDB files.
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: redis-chain-big
+spec:
+  sentinel:
+    enabled: false
+  auth:
+    secretPath: redis-chain-big-auth
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 320Mi}
+      limits: {memory: 640Mi}
+    storage:
+      persistentVolumeClaim:
+        metadata:
+          name: redis-data
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests: {storage: 1Gi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
   name: valkey-op
 spec:
   sentinel:

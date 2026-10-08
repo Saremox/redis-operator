@@ -45,11 +45,12 @@ func (m *Mutator) judge(ctx context.Context, t *transition, converged bool, lost
 }
 
 // observe collects what a version change that did not converge left behind:
-// the master, its version and whether it accepts writes, and for each pod of
-// the changed image its state and any log line about the data load.
+// the master, its version and whether it accepts writes, whether the Sentinels
+// that stayed report it, and for each pod of the changed image its state and
+// any log line about the data load.
 func (m *Mutator) observe(ctx context.Context, t *transition) observation {
 	var o observation
-	s, err := m.fetch(ctx, fetchOpts{servers: true})
+	s, err := m.fetch(ctx, fetchOpts{servers: true, sentinelMaster: t.sentinelsStay})
 	if err != nil {
 		o.pods = []string{"reading the instance: " + err.Error()}
 		return o
@@ -58,6 +59,9 @@ func (m *Mutator) observe(ctx context.Context, t *transition) observation {
 	if addr != "" {
 		o.master = m.observer.Master()
 		o.writable = m.writable(ctx, addr)
+		if t.sentinelsStay {
+			o.sentinels = sentinelsAgree(s, addr)
+		}
 	}
 	pods := s.redis
 	if t.sentinel {

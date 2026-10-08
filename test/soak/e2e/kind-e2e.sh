@@ -8,7 +8,7 @@
 # - CLUSTER, KIND_NODE, SUBNET: the kind cluster, see kind-up.sh.
 # - E2E_PROFILE: full, versions or chaos.
 # - DURATION: how many seconds the tester starts mutations. Default 2100,
-#   3000 for versions, 1500 for chaos.
+#   3600 for versions, 1500 for chaos.
 # - OPERATOR_VERSION: a released version to install. Empty builds the
 #   operator from this checkout.
 # - UPGRADE_FROM, UPGRADE_TO (chaos only): the git refs to build and upgrade
@@ -29,7 +29,7 @@ artifacts=$soak/bin/kind-e2e-artifacts
 overlay=$soak/bin/kind-e2e
 case $profile in
 full) duration=${DURATION:-2100} ;;
-versions) duration=${DURATION:-3000} ;;
+versions) duration=${DURATION:-3600} ;;
 chaos) duration=${DURATION:-1500} ;;
 *)
   echo "E2E_PROFILE must be full, versions or chaos" >&2
@@ -259,10 +259,12 @@ expect "one master" '/^redis_soak_readable\{/ && l("path") == "rfrs" { boot[l("r
   /^redis_soak_masters\{/ { m[l("rf")] = $NF }
   END { for (rf in m) if (m[rf] != (rf in boot ? 0 : 1)) print rf, m[rf] }'
 # Every enabled kind converged, and none timed out or was rejected. A
-# version change along an edge that can fail is judged by the edge below.
+# version change along an edge that can fail is judged by the edge below. The
+# Sentinels of such an instance change image only after a data change that
+# converged.
 judged=$(yq -r '.instances[] | select(.chain.expect and (.chain.expect | index("ok") | not)) | .name' "$overlay/config.yaml" | paste -sd'|' -)
 expect "every kind converged, none timed out or was rejected" -v judged="^(${judged:-none})$" '
-  /^redis_soak_mutation_total\{/ && !(l("rf") ~ judged && l("kind") == "image_upgrade") {
+  /^redis_soak_mutation_total\{/ && !(l("rf") ~ judged && l("kind") ~ /^(sentinel_)?image_upgrade$/) {
     k = l("rf") " " l("kind")
     if (l("result") == "converged") { n[k] += 0; if ($NF > 0) ok[k] = 1 }
     if (l("result") ~ /^(timeout|rejected)$/ && $NF > 0) print

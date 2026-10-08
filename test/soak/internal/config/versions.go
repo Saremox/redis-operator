@@ -43,12 +43,15 @@ const (
 	ExpectUnknown = "unknown"
 )
 
-// Edge is a version change that the tester can make. Downgrades are never
-// edges, because an older server cannot load a newer RDB.
+// Edge is a version change that the tester can make. A downgrade never
+// expects ok, because an older server may not load a newer RDB.
 type Edge struct {
 	From   string `json:"from"`
 	To     string `json:"to"`
 	Expect string `json:"expect"`
+	// Group keeps the edge out of every chain whose group differs. Edges
+	// without a group form the main graph.
+	Group string `json:"group"`
 }
 
 func (e Edge) String() string { return e.From + " -> " + e.To }
@@ -71,6 +74,9 @@ type Chain struct {
 	Versions []string `json:"versions"`
 	// Expect, if set, takes only edges of these expectations.
 	Expect []string `json:"expect"`
+	// Group takes only the edges of that group, none of the main graph. Empty
+	// takes the main graph.
+	Group string `json:"group"`
 	// Sentinel is follow, separate, or empty for the Sentinel image the
 	// instance is created with.
 	Sentinel string `json:"sentinel"`
@@ -116,7 +122,7 @@ func (c *Config) Edge(from, to string) (Edge, bool) {
 }
 
 func (ch *Chain) allows(e Edge) bool {
-	return slices.Contains(ch.Versions, e.From) && slices.Contains(ch.Versions, e.To) &&
+	return e.Group == ch.Group && slices.Contains(ch.Versions, e.From) && slices.Contains(ch.Versions, e.To) &&
 		(len(ch.Expect) == 0 || slices.Contains(ch.Expect, e.Expect))
 }
 
@@ -155,7 +161,8 @@ func splitImage(image string) (repo, tag string) {
 }
 
 // validateVersions checks the catalogue and the graph: unique names, exact
-// tags, edges between known versions that change the version.
+// tags, edges between known versions that change the version, and no
+// downgrade that expects ok.
 func (c *Config) validateVersions() error {
 	seen := map[string]bool{}
 	images := map[string]bool{}
@@ -186,8 +193,8 @@ func (c *Config) validateVersions() error {
 		}
 		from, _ := c.VersionNamed(e.From)
 		to, _ := c.VersionNamed(e.To)
-		if from.Server == to.Server && compareReleases(to.Release, from.Release) < 0 {
-			return fmt.Errorf("edges: %s is a downgrade", e)
+		if from.Server == to.Server && compareReleases(to.Release, from.Release) < 0 && e.Expect == ExpectOK {
+			return fmt.Errorf("edges: %s is a downgrade, so it cannot expect %s", e, ExpectOK)
 		}
 		edges[e.String()] = true
 	}

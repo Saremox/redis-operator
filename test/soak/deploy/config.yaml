@@ -61,6 +61,20 @@ edges:
   - {from: redis-8, to: valkey-7.2, expect: unknown}
   - {from: redis-8, to: valkey-8, expect: unknown}
   - {from: redis-8, to: valkey-9, expect: unknown}
+  # A skip leaves out a version of the main graph. A chain takes the edges of
+  # a group only if it names the group. The newer server reads older RDB data.
+  - {from: redis-6.2, to: redis-7.4, expect: ok, group: skip}
+  - {from: redis-6.2, to: redis-8, expect: ok, group: skip}
+  - {from: redis-7.2, to: redis-8, expect: ok, group: skip}
+  - {from: valkey-7.2, to: valkey-9, expect: ok, group: skip}
+  # An older Redis may not load the RDB format of a newer one.
+  - {from: redis-7.4, to: redis-7.2, expect: unknown, group: downgrade}
+  - {from: redis-8, to: redis-7.4, expect: unknown, group: downgrade}
+  - {from: redis-8, to: redis-7.2, expect: unknown, group: downgrade}
+  # An older Valkey may not load the RDB format of a newer one.
+  - {from: valkey-8, to: valkey-7.2, expect: unknown, group: downgrade}
+  - {from: valkey-9, to: valkey-8, expect: unknown, group: downgrade}
+  - {from: valkey-9, to: valkey-7.2, expect: unknown, group: downgrade}
 instances:
   - name: op-basic
     template: instances.yaml
@@ -277,6 +291,68 @@ instances:
     mutations:
       kinds:
         image_upgrade: 1
+  # The same edges with Sentinels. The Sentinels change image after the data
+  # image, so that a data change that gets stuck leaves them as they are.
+  - name: edge-sent
+    template: instances.yaml
+    mode: sentinel
+    chain:
+      start: [redis-7.4, redis-8]
+      versions: [redis-7.4, redis-8, valkey-7.2, valkey-8, valkey-9]
+      expect: [unknown]
+      sentinel: separate
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # Forward skips of the group skip, on volumes. Each reset starts on the
+  # next version.
+  - name: skip
+    template: instances.yaml
+    chain:
+      start: [redis-6.2, redis-7.2, valkey-7.2]
+      versions: [redis-6.2, redis-7.2, redis-7.4, redis-8, valkey-7.2, valkey-9]
+      group: skip
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # The downgrades of the group downgrade. Each reset starts on the next
+  # version.
+  - name: downgrade
+    template: instances.yaml
+    chain:
+      start: [redis-7.4, redis-8, valkey-8, valkey-9]
+      versions: [redis-7.2, redis-7.4, redis-8, valkey-7.2, valkey-8, valkey-9]
+      expect: [unknown]
+      group: downgrade
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # The chain of redis-chain with 256Mi of data on volumes, for the full
+  # sync and the fork of each step.
+  - name: redis-chain-big
+    template: instances.yaml
+    chain: {start: [redis-7.2], versions: [redis-7.2, redis-7.4, redis-8]}
+    data:
+      fill: {sizeMi: 256}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 4
+        redis_replicas: 1
+        redis_resources: 1
+      redisReplicas: {min: 1, max: 3}
+      resources:
+        requests:
+          cpu: {min: 25, max: 100}
   # Valkey 9 with maxMemory allkeys-lfu. Filler only, because allkeys-*
   # can evict ledger keys.
   - name: valkey-op

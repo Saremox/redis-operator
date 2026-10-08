@@ -266,16 +266,34 @@ gets its judgement below, not `timeout`.
 
 `versions` names each server version, pinned to an exact patch tag.
 `edges` is the transition graph, with the expectation `ok`, `fail` or
-`unknown` of each edge. Downgrades are not edges, because an older server
-cannot load a newer RDB. Thus a chain goes back to its start with a
-`reset`. The `chain` of an instance is the part of the graph that it moves
-through.
+`unknown` of each edge. A downgrade never expects `ok`, because an older
+server may not load a newer RDB. The main graph has no downgrade, so a chain
+goes back to its start with a `reset`. The `chain` of an instance is the part
+of the graph that it moves through.
+
+An edge can have a `group`. A chain takes only the edges of its own `group`,
+and a chain without a `group` takes only the edges without one. Thus a group
+does not change the other instances.
 
 The instances `redis-chain-62` and `redis-chain-62-sent` (with Sentinels)
 start on `redis-6.2`, the oldest Redis version in the graph. They move
 through `redis-7.2` and `redis-7.4` to `redis-8`, and then reset on
 `redis-6.2`. The edge `redis-6.2 -> redis-7.2` is `ok`, because Redis 7.2
 reads the RDB data of Redis 6.2.
+
+The group `skip` has four `ok` edges that leave out a version, for example
+`redis-6.2 -> redis-8`. The newer server reads the older RDB data. The
+instance `skip` takes them, on volumes. The group `downgrade` has six
+`unknown` edges, for example `redis-8 -> redis-7.4`. The tester does not
+know if the older server loads the data, so a safe failure and a convergence
+both pass. The instance `downgrade` takes them. Both instances start on each
+of their start versions in turn.
+
+The instance `edge-sent` takes the same edges as `edge`, with Sentinels. The
+Sentinels change image after the data image, so a stuck data change leaves
+them as they are. The instance `redis-chain-big` is `redis-chain` with 256Mi
+of data and a memory limit of 640Mi, for the fork and the full sync of each
+step.
 
 `image_upgrade` follows an edge from the current version. The tester
 observes a change along an `unknown` or `fail` edge for the timeout of the
@@ -284,7 +302,8 @@ could not load the data. It then judges the change:
 
 - `ok`: it converged.
 - `failed_safe`: it did not converge, but the single master still runs the
-  old version, accepts writes, and lost no acknowledged write.
+  old version, accepts writes, and lost no acknowledged write. If the
+  Sentinels did not change image, each of them still reports this master.
 - `failed_unsafe`: all other cases. This is a finding.
 
 A change that did not converge is reset immediately.
@@ -360,6 +379,9 @@ script asserts these conditions from the metrics:
 - no finding and no unexpected lost write occurred;
 - versions: every edge was taken, and every `ok` edge ended `ok`;
 - chaos: every action converged, and no action found a change in progress.
+
+The versions profile leaves out `redis-chain-big`, because 256Mi of data does
+not fit the kind node.
 
 The script keeps the logs of the tester and the operator, the events and
 the last scrape in `bin/kind-e2e-artifacts/`. The workflow

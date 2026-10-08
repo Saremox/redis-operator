@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net"
 	"slices"
 	"strings"
 	"time"
@@ -39,6 +40,9 @@ type transition struct {
 	edge     config.Edge
 	from, to config.Version
 	sentinel bool
+	// sentinelsStay is whether the Sentinels keep their pods while the change
+	// runs, so that they must still agree on the master if it gets stuck.
+	sentinelsStay bool
 }
 
 func (t *transition) container() string {
@@ -88,7 +92,7 @@ func (m *Mutator) planImage(r *rand.Rand, s state) plan {
 		kind:      kind,
 		params:    params,
 		patch:     mergePatch(spec),
-		edge:      &transition{edge: e, from: cur, to: to},
+		edge:      &transition{edge: e, from: cur, to: to, sentinelsStay: ch.Sentinel != config.SentinelFollow},
 		fetch:     fetchOpts{servers: true},
 		converged: convergedOn(m.versions, to.Image, sentinelImage),
 	}
@@ -346,14 +350,18 @@ type observation struct {
 	masterOn  string
 	writable  error
 	loadError string
+	// sentinels is why a Sentinel does not report the master, nil if they all
+	// do.
+	sentinels error
 	// pods describes what each pod of the changed image does.
 	pods []string
 }
 
 // classify judges a version change. ok: it converged. failed_safe: it did not
 // converge, but the rollout stopped and kept the data. The master stayed on
-// the old version and writable, it loaded its data, and no acknowledged write
-// was lost. failed_unsafe: all other cases.
+// the old version and writable, it loaded its data, no acknowledged write
+// was lost, and the Sentinels that stayed still report it. failed_unsafe: all
+// other cases.
 func classify(t *transition, o observation) (string, []string) {
 	if o.converged {
 		return transitionOK, nil
@@ -377,11 +385,29 @@ func classify(t *transition, o observation) (string, []string) {
 		if o.loadError != "" {
 			unsafe = append(unsafe, fmt.Sprintf("the master %s couldn't load the data: %s", o.master, o.loadError))
 		}
+		if o.sentinels != nil {
+			unsafe = append(unsafe, fmt.Sprintf("the Sentinels don't all report the master %s: %v", o.master, o.sentinels))
+		}
 	}
 	if len(unsafe) > 0 {
 		return transitionFailedUnsafe, unsafe
 	}
 	return transitionFailedSafe, o.pods
+}
+
+// sentinelsAgree checks that every Sentinel of the state reports the address
+// of the master.
+func sentinelsAgree(s state, master string) error {
+	var errs []error
+	for _, p := range s.sentinels {
+		m := s.sentinelMasters[p.Name]
+		if m.err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", p.Name, m.err))
+		} else if got := net.JoinHostPort(m.fields["ip"], m.fields["port"]); got != master {
+			errs = append(errs, fmt.Errorf("%s reports %s", p.Name, got))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // describePod says what a pod of a stuck version change does: its version,
