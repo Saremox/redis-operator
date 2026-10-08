@@ -215,18 +215,33 @@ explanation:
 
   The tester records the recovery path of each converged run in the log
   field `recovery_path` and in `redis_soak_no_master_recovery_total{path}`.
-  The path never changes the result. The tester reads `config-epoch` of the
-  master from each Sentinel before the reset and after the convergence.
-  `SENTINEL RESET` keeps the epoch. The paths are:
-  - `sentinel`: the epoch rose. A Sentinel failover raises the epoch.
-  - `operator`: the epoch fell. The operator makes each Sentinel monitor the
-    new master with `SENTINEL MONITOR`, which sets the epoch to 0.
-  - `unknown`: the epoch did not change, it rose on one Sentinel and fell on
-    another, or the tester could not read the epoch on every Sentinel.
+  The path never changes the result. The tester uses two signals:
+  - The status message. From before the reset until the convergence, the
+    tester watches the `status.message` of the RedisFailover. The operator
+    sets `Sentinel knew no replica to fail over to, the operator promoted`
+    and the pod name when no Sentinel can fail over and it elects a master.
+    The log field `operator_message` tells if the tester saw this message.
+  - The epoch. The tester reads `config-epoch` of the master from each
+    Sentinel before the reset and after the convergence, and logs the change
+    as `config_epoch`. `SENTINEL RESET` keeps the epoch.
 
-  The epoch is 0 on a new instance and after an election by the operator.
-  Then an election by the operator leaves no trace, and the path is
-  `unknown`. Thus `unknown` does not show that the operator did not run.
+  The paths are:
+  - `operator`: the tester saw the message, or the epoch fell. The operator
+    makes each Sentinel monitor the new master with `SENTINEL MONITOR`, which
+    sets the epoch to 0.
+  - `sentinel`: the tester saw no message, and the epoch rose. A Sentinel
+    failover raises the epoch.
+  - `unknown`: all other cases. The epoch did not change, it rose on one
+    Sentinel and fell on another, or the tester could not read it.
+
+  The message wins over the epoch. A run with the message and a risen epoch
+  is `operator`, and `config_epoch` shows the rise. The operator sets no
+  message when it elects a master with `SetOldestAsMaster`, without a Sentinel
+  quorum, or when every pod has `127.0.0.1` as master. These elections leave
+  no trace if the epoch was 0 before. The epoch is 0 on a new instance and
+  after an election by the operator. Thus `unknown` does not show that the
+  operator did not run. The watch can end before the message arrives, for
+  example if the API server closes it. Then the tester sees no message.
 - `password_rotate_offline` is scenario C. It stops the operator, changes
   the password, starts the operator with its replicas, expects
   `unable to apply the configured password`, sets the previous password,

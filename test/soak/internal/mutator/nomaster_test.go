@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -18,11 +19,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	rffake "github.com/saremox/redis-operator/client/k8s/clientset/versioned/fake"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 )
@@ -161,7 +165,9 @@ func noMasterEnv(t *testing.T, rec *calls, failing map[string]string) (*Mutator,
 		rec.add("delete %s uid=%s%s", d.GetName(), uid, grace)
 		return false, nil, nil
 	})
-	m := &Mutator{in: config.Instance{Name: "x", Namespace: "ns"}, kube: kube, timeout: time.Second}
+	rfs := rffake.NewSimpleClientset(&redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "x", Namespace: "ns"}})
+	m := &Mutator{in: config.Instance{Name: "x", Namespace: "ns"}, kube: kube, rfs: rfs, timeout: time.Second}
+	m.observerCfg.ConvergenceTimeout.Duration = time.Minute
 	return m, s, port
 }
 
@@ -362,31 +368,67 @@ func TestDeletePod(t *testing.T) {
 	}
 }
 
-func TestRecoveryPath(t *testing.T) {
+func TestEpochChange(t *testing.T) {
 	type epochs = map[string]int64
 	cases := []struct {
 		name          string
 		before, after epochs
 		want          string
 	}{
-		{"every epoch rose", epochs{"a": 1, "b": 1, "c": 1}, epochs{"a": 2, "b": 2, "c": 2}, pathSentinel},
-		{"one epoch rose", epochs{"a": 0, "b": 0, "c": 0}, epochs{"a": 1, "b": 0, "c": 0}, pathSentinel},
-		{"every epoch fell to 0", epochs{"a": 3, "b": 3, "c": 3}, epochs{"a": 0, "b": 0, "c": 0}, pathOperator},
-		{"one epoch fell", epochs{"a": 3, "b": 3, "c": 3}, epochs{"a": 0, "b": 3, "c": 3}, pathOperator},
-		{"no epoch changed", epochs{"a": 3, "b": 3, "c": 3}, epochs{"a": 3, "b": 3, "c": 3}, pathUnknown},
-		{"no epoch changed from 0", epochs{"a": 0, "b": 0, "c": 0}, epochs{"a": 0, "b": 0, "c": 0}, pathUnknown},
-		{"one rose and one fell", epochs{"a": 3, "b": 3, "c": 3}, epochs{"a": 4, "b": 0, "c": 3}, pathUnknown},
-		{"the epochs before were not read", nil, epochs{"a": 1, "b": 1, "c": 1}, pathUnknown},
-		{"the epochs after were not read", epochs{"a": 1, "b": 1, "c": 1}, nil, pathUnknown},
-		{"fewer Sentinels after", epochs{"a": 1, "b": 1, "c": 1}, epochs{"a": 2, "b": 2}, pathUnknown},
-		{"another Sentinel after", epochs{"a": 1, "b": 1}, epochs{"a": 2, "c": 2}, pathUnknown},
+		{"every epoch rose", epochs{"a": 1, "b": 1, "c": 1}, epochs{"a": 2, "b": 2, "c": 2}, epochRose},
+		{"one epoch rose", epochs{"a": 0, "b": 0, "c": 0}, epochs{"a": 1, "b": 0, "c": 0}, epochRose},
+		{"every epoch fell to 0", epochs{"a": 3, "b": 3, "c": 3}, epochs{"a": 0, "b": 0, "c": 0}, epochFell},
+		{"one epoch fell", epochs{"a": 3, "b": 3, "c": 3}, epochs{"a": 0, "b": 3, "c": 3}, epochFell},
+		{"no epoch changed", epochs{"a": 3, "b": 3, "c": 3}, epochs{"a": 3, "b": 3, "c": 3}, epochUnchanged},
+		{"no epoch changed from 0", epochs{"a": 0, "b": 0, "c": 0}, epochs{"a": 0, "b": 0, "c": 0}, epochUnchanged},
+		{"one rose and one fell", epochs{"a": 3, "b": 3, "c": 3}, epochs{"a": 4, "b": 0, "c": 3}, epochMixed},
+		{"the epochs before were not read", nil, epochs{"a": 1, "b": 1, "c": 1}, epochUnread},
+		{"the epochs after were not read", epochs{"a": 1, "b": 1, "c": 1}, nil, epochUnread},
+		{"fewer Sentinels after", epochs{"a": 1, "b": 1, "c": 1}, epochs{"a": 2, "b": 2}, epochUnread},
+		{"another Sentinel after", epochs{"a": 1, "b": 1}, epochs{"a": 2, "c": 2}, epochUnread},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := recoveryPath(c.before, c.after); got != c.want {
-				t.Errorf("path %q, want %q", got, c.want)
+			if got := epochChange(c.before, c.after); got != c.want {
+				t.Errorf("change %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+func TestRecoveryPath(t *testing.T) {
+	cases := []struct {
+		elected bool
+		change  string
+		want    string
+	}{
+		{false, epochRose, pathSentinel},
+		{false, epochFell, pathOperator},
+		{false, epochUnchanged, pathUnknown},
+		{false, epochMixed, pathUnknown},
+		{false, epochUnread, pathUnknown},
+		{true, epochUnchanged, pathOperator},
+		{true, epochUnread, pathOperator},
+		{true, epochMixed, pathOperator},
+		{true, epochRose, pathOperator},
+		{true, epochFell, pathOperator},
+	}
+	for _, c := range cases {
+		if got := recoveryPath(c.elected, c.change); got != c.want {
+			t.Errorf("message %v, epoch %s: path %q, want %q", c.elected, c.change, got, c.want)
+		}
+	}
+}
+
+// The tester matches the status text of the operator, so a change of the text
+// must fail a test.
+func TestOperatorElectedText(t *testing.T) {
+	src, err := os.ReadFile("../../../../operator/redisfailover/checker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), `"`+operatorElected+`%s"`) {
+		t.Errorf("checker.go has no status message %q followed by the pod name", operatorElected)
 	}
 }
 
@@ -417,21 +459,68 @@ func TestNoMasterReadsTheEpochsFirst(t *testing.T) {
 	}
 }
 
+// setStatus sets the status message of the RedisFailover name in ns, which the
+// fake client creates if it does not exist.
+func setStatus(t *testing.T, m *Mutator, name, message string) {
+	t.Helper()
+	rfs := m.rfs.DatabasesV1().RedisFailovers("ns")
+	rf, err := rfs.Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		rf = &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns"}}
+		rf.Status.Message = message
+		_, err = rfs.Create(context.Background(), rf, metav1.CreateOptions{})
+	} else {
+		rf.Status.Message = message
+		_, err = rfs.Update(context.Background(), rf, metav1.UpdateOptions{})
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+const electionMessage = operatorElected + "rfr-x-1"
+
 func TestNoMasterRecovery(t *testing.T) {
 	cases := []struct {
 		name   string
 		before string
-		// after changes the fake Sentinels once the mutation is applied.
-		after func(*calls)
-		want  string
+		// after changes the fake Sentinels, and the status of the
+		// RedisFailover, once the mutation is applied.
+		after  func(*testing.T, *Mutator, *calls)
+		want   string
+		change string
+		sawMsg bool
 	}{
-		{"Sentinel failover", "3", func(r *calls) { setEpochs(r, "4") }, pathSentinel},
-		{"Sentinel failover seen on one Sentinel", "3", func(r *calls) { r.setEpoch("127.0.0.2", "4") }, pathSentinel},
-		{"operator election", "3", func(r *calls) { setEpochs(r, "0") }, pathOperator},
-		{"operator election from epoch 0", "0", func(*calls) {}, pathUnknown},
-		{"no change", "3", func(*calls) {}, pathUnknown},
-		{"a Sentinel does not answer after", "3", func(r *calls) { delete(r.epochs, "127.0.0.3") }, pathUnknown},
-		{"a Sentinel answers no epoch after", "3", func(r *calls) { r.setEpoch("127.0.0.3", "") }, pathUnknown},
+		{"Sentinel failover", "3", func(_ *testing.T, _ *Mutator, r *calls) { setEpochs(r, "4") }, pathSentinel, epochRose, false},
+		{"Sentinel failover seen on one Sentinel", "3", func(_ *testing.T, _ *Mutator, r *calls) { r.setEpoch("127.0.0.2", "4") }, pathSentinel, epochRose, false},
+		{"operator election with the epoch reset", "3", func(_ *testing.T, _ *Mutator, r *calls) { setEpochs(r, "0") }, pathOperator, epochFell, false},
+		{"no change", "3", func(*testing.T, *Mutator, *calls) {}, pathUnknown, epochUnchanged, false},
+		{"a Sentinel does not answer after", "3", func(_ *testing.T, _ *Mutator, r *calls) { delete(r.epochs, "127.0.0.3") }, pathUnknown, epochUnread, false},
+		{"a Sentinel answers no epoch after", "3", func(_ *testing.T, _ *Mutator, r *calls) { r.setEpoch("127.0.0.3", "") }, pathUnknown, epochUnread, false},
+		{"operator election from epoch 0", "0", func(t *testing.T, m *Mutator, _ *calls) { setStatus(t, m, "x", electionMessage) }, pathOperator, epochUnchanged, true},
+		{"the election message is replaced", "0", func(t *testing.T, m *Mutator, _ *calls) {
+			setStatus(t, m, "x", "no master, waiting for the Sentinel failover")
+			setStatus(t, m, "x", electionMessage)
+			setStatus(t, m, "x", "")
+		}, pathOperator, epochUnchanged, true},
+		{"the election message and a rise", "3", func(t *testing.T, m *Mutator, r *calls) {
+			setStatus(t, m, "x", electionMessage)
+			setEpochs(r, "4")
+		}, pathOperator, epochRose, true},
+		{"the election message and no epoch read", "3", func(t *testing.T, m *Mutator, r *calls) {
+			setStatus(t, m, "x", electionMessage)
+			delete(r.epochs, "127.0.0.1")
+		}, pathOperator, epochUnread, true},
+		{"another message and a rise", "3", func(t *testing.T, m *Mutator, r *calls) {
+			setStatus(t, m, "x", "no master, waiting for the Sentinel failover")
+			setEpochs(r, "4")
+		}, pathSentinel, epochRose, false},
+		{"another message and no change", "0", func(t *testing.T, m *Mutator, _ *calls) {
+			setStatus(t, m, "x", "no master, waiting for the Sentinel failover")
+		}, pathUnknown, epochUnchanged, false},
+		{"the message of another RedisFailover", "0", func(t *testing.T, m *Mutator, _ *calls) {
+			setStatus(t, m, "other", electionMessage)
+		}, pathUnknown, epochUnchanged, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -442,11 +531,58 @@ func TestNoMasterRecovery(t *testing.T) {
 			if err := m.apply(context.Background(), p, slog.New(slog.DiscardHandler)); err != nil {
 				t.Fatal(err)
 			}
-			c.after(rec)
-			if got := p.recovery(context.Background()); got != c.want {
-				t.Errorf("path %q, want %q", got, c.want)
+			c.after(t, m, rec)
+			path, attrs := p.recovery(context.Background())
+			if path != c.want {
+				t.Errorf("path %q, want %q", path, c.want)
+			}
+			if want := []any{"config_epoch", c.change, "operator_message", c.sawMsg}; !slices.Equal(attrs, want) {
+				t.Errorf("attributes %v, want %v", attrs, want)
 			}
 		})
+	}
+}
+
+// A watch that does not start does not fail the mutation, and the epochs
+// alone decide the path.
+func TestNoMasterWatchFails(t *testing.T) {
+	for epoch, want := range map[string]string{"4": pathSentinel, "3": pathUnknown} {
+		rec := &calls{}
+		m, s, port := noMasterEnv(t, rec, nil)
+		m.rfs.(*rffake.Clientset).PrependWatchReactor("redisfailovers", func(k8stesting.Action) (bool, watch.Interface, error) {
+			return true, nil, errors.New("forbidden")
+		})
+		setEpochs(rec, "3")
+		p := m.planNoMaster(s, "rfr-x-0", port)
+		if err := m.apply(context.Background(), p, slog.New(slog.DiscardHandler)); err != nil {
+			t.Fatal(err)
+		}
+		setEpochs(rec, epoch)
+		if path, _ := p.recovery(context.Background()); path != want {
+			t.Errorf("epoch %s: path %q, want %q", epoch, path, want)
+		}
+	}
+}
+
+// A watch that ended keeps the messages that it delivered.
+func TestNoMasterWatchEnds(t *testing.T) {
+	rec := &calls{}
+	m, s, port := noMasterEnv(t, rec, nil)
+	w := watch.NewRaceFreeFake()
+	m.rfs.(*rffake.Clientset).PrependWatchReactor("redisfailovers", func(k8stesting.Action) (bool, watch.Interface, error) {
+		return true, w, nil
+	})
+	setEpochs(rec, "0")
+	p := m.planNoMaster(s, "rfr-x-0", port)
+	if err := m.apply(context.Background(), p, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "x"}}
+	rf.Status.Message = electionMessage
+	w.Modify(rf)
+	w.Stop()
+	if path, _ := p.recovery(context.Background()); path != pathOperator {
+		t.Errorf("path %q, want %q", path, pathOperator)
 	}
 }
 
@@ -470,7 +606,7 @@ func TestNoMasterEpochNotReadBefore(t *testing.T) {
 				t.Errorf("calls %v, want the delete as the last call", got)
 			}
 			setEpochs(rec, "4")
-			if got := p.recovery(context.Background()); got != pathUnknown {
+			if got, _ := p.recovery(context.Background()); got != pathUnknown {
 				t.Errorf("path %q, want %q", got, pathUnknown)
 			}
 		})
@@ -492,14 +628,14 @@ func TestRecordRecovery(t *testing.T) {
 	labels := prometheus.Labels{"rf": "x", "namespace": "ns", "mode": "sentinel"}
 	cases := []struct {
 		name     string
-		recovery func(context.Context) string
+		recovery func(context.Context) (string, []any)
 		result   string
 		counted  string
 	}{
-		{"converged", func(context.Context) string { return pathOperator }, resultConverged, pathOperator},
-		{"timeout", func(context.Context) string {
+		{"converged", func(context.Context) (string, []any) { return pathOperator, []any{"why", "x"} }, resultConverged, pathOperator},
+		{"timeout", func(context.Context) (string, []any) {
 			t.Error("classified a mutation that did not converge")
-			return pathUnknown
+			return pathUnknown, nil
 		}, resultTimeout, ""},
 		{"no classification", nil, resultConverged, ""},
 	}
@@ -520,6 +656,9 @@ func TestRecordRecovery(t *testing.T) {
 			}
 			if got := strings.Contains(buf.String(), `"recovery_path":"`+c.counted+`"`); got != (c.counted != "") {
 				t.Errorf("log %s, recovery_path logged: %v", buf.String(), got)
+			}
+			if got := strings.Contains(buf.String(), `"why":"x"`); got != (c.counted != "") {
+				t.Errorf("log %s, attributes logged: %v", buf.String(), got)
 			}
 		})
 	}
