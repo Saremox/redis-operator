@@ -263,8 +263,8 @@ kill on an instance with one pod). A version change that does not converge
 gets its judgement below, not `timeout`.
 
 The mutator mutates only a quiet instance. `redis_soak_mutation_stalled_seconds`
-shows how long it has waited for one. It is 0 while the instance is quiet and
-while a mutation runs.
+shows the seconds that the mutator waits for one. It is 0 while the instance is
+quiet and while a mutation runs.
 
 ### Server versions
 
@@ -293,22 +293,31 @@ could not load the data. It then judges the change:
 
 A change that did not converge is reset immediately.
 
-The tester keeps a version change in its own process. A tester that restarts
+The tester keeps a version change in its own process. A tester that starts
 during a stuck change adopts it when all of these hold:
 
 - Exactly one redis pod runs the image of the spec. It is not Ready, it does
   not replicate, and its log says that it cannot load the data.
-- All other redis pods are Ready and run one older image. The master is one
-  of them.
-- The chain has an `unknown` edge from the older version to the new one.
+- All other redis pods are Ready and run one other configured image. The
+  master is one of them.
+- The chain has an `unknown` or `fail` edge from the version of the other pods
+  to the new one.
 - The master accepts writes, and the ledger check finds no lost write.
 
-The state must hold for one minute. The tester then judges the change
-`failed_safe`, logs `adopted=true` and resets the instance. It never adopts a change along an `ok` edge, because a stuck
-replica there is a finding. It adopts no other state. The observer then counts
-findings after the convergence timeout, as before. An adopted change has no
-`redis_soak_version_mixed_seconds` sample. Its ledger check covers only the
-writes since the restart.
+The tester reads the instance at each observer interval until it finds this
+state, the instance is quiet, or the deadline passes. The deadline is the
+convergence timeout minus one minute of grace, the verification bound of two
+minutes and one minute of margin, counted from the start. The state must hold
+for the grace of one minute. The tester then judges the change `failed_safe`,
+logs `adopted=true` and resets the instance.
+
+The tester never adopts a change along an `ok` edge, because a stuck replica
+there is a finding. It adopts no other state, and the observer counts findings
+after the convergence timeout. If the master refuses writes or the ledger check
+finds a lost write, the tester does not adopt the change. The instance then
+stays stalled, and `redis_soak_mutation_stalled_seconds` shows this. An adopted
+change has no `redis_soak_version_mixed_seconds` sample. Its ledger check
+covers only the writes since the start.
 
 ### Chaos
 
@@ -425,8 +434,9 @@ together with the window: inside a window, it is the cost of the change.
 - The tester never reverts `spec.redis.image` to the old image after a
   failed-safe Redis to Valkey change: it resets. Once, a revert by hand
   repaired a stuck replica (3 pods, 16 MiB). The operator recreated the
-  replica on the old image. It was Ready after about 50 seconds, and the
-  replication synced. Nothing was deleted.
+  replica on the old image. The replica was Ready after about 50 seconds, and
+  the replication synced. The operator deleted no data. The tester does not
+  test this path.
 - The tester does not compare `currentRevision` of the StatefulSet: for
   `OnDelete`, the controller never advances it.
 - Run one tester for each cluster. Two testers write the same keys.

@@ -33,6 +33,9 @@ import (
 	"github.com/saremox/redis-operator/test/soak/internal/observer"
 )
 
+// past is a start of the tester so long ago that the adoption looks once.
+var past = time.Now().Add(-time.Hour)
+
 const (
 	imageRedis74 = "redis:7.4.11-alpine"
 	imageValkey8 = "valkey/valkey:8.1.10-alpine"
@@ -59,11 +62,17 @@ func TestStuckChange(t *testing.T) {
 		instance string
 		change   func(s *state)
 		master   string
-		want     bool
+		// tweak changes the mutator before the check.
+		tweak func(m *Mutator)
+		want  bool
 	}{
 		{name: "one replica stuck on the new image", want: true},
 		{name: "the link is unreadable", change: func(s *state) { s.servers["rfr-x-2"] = server{err: errors.New("refused")} }, want: true},
 		{name: "the link is up", change: func(s *state) { s.servers["rfr-x-2"] = server{fields: map[string]string{"master_link_status": "up"}} }},
+		{name: "a fail edge", tweak: func(m *Mutator) {
+			m.in.Chain.Expect = nil
+			m.versions.Edges[slices.IndexFunc(m.versions.Edges, func(e config.Edge) bool { return e.String() == "redis-7.4 -> valkey-8" })].Expect = config.ExpectFail
+		}, want: true},
 		{name: "an ok edge", instance: "chain", change: func(s *state) {
 			for i := range s.redis {
 				s.redis[i].Spec.Containers[0].Image = "redis:7.2.16-alpine"
@@ -80,8 +89,8 @@ func TestStuckChange(t *testing.T) {
 		}},
 		{name: "an instance without a chain", instance: "mixed"},
 		{name: "an image that is no version", change: func(s *state) { s.rf.Spec.Redis.Image = "valkey/valkey:8-alpine" }},
-		{name: "an older pod that is no version", change: func(s *state) { s.redis[1].Spec.Containers[0].Image = "redis:6-alpine" }},
-		{name: "older pods on two versions", change: func(s *state) { s.redis[1].Spec.Containers[0].Image = "redis:8.10.2-alpine" }},
+		{name: "another pod that is no version", change: func(s *state) { s.redis[1].Spec.Containers[0].Image = "redis:6-alpine" }},
+		{name: "other pods on two versions", change: func(s *state) { s.redis[1].Spec.Containers[0].Image = "redis:8.10.2-alpine" }},
 		{name: "the pod that is not Ready runs the old image", change: func(s *state) {
 			s.redis[1].Status.Conditions = []corev1.PodCondition{notReady}
 			s.redis[2].Spec.Containers[0].Image = imageRedis74
@@ -103,7 +112,8 @@ func TestStuckChange(t *testing.T) {
 		{name: "no pod on the new image", change: func(s *state) { s.redis[2].Spec.Containers[0].Image = imageRedis74 }},
 		{name: "the master is unknown", master: "rfr-x-9"},
 		{name: "the master is the pod on the new image", master: "rfr-x-2"},
-		{name: "a missing pod", change: func(s *state) { s.redis = s.redis[:2] }},
+		{name: "the last pod is missing", change: func(s *state) { s.redis = s.redis[:2] }},
+		{name: "a middle pod is missing", change: func(s *state) { s.redis = slices.Delete(s.redis, 1, 2) }},
 		{name: "one pod", change: func(s *state) {
 			s.rf.Spec.Redis.Replicas = 1
 			s.redis = s.redis[2:]
@@ -120,12 +130,15 @@ func TestStuckChange(t *testing.T) {
 			if tc.change != nil {
 				tc.change(&s)
 			}
+			if tc.tweak != nil {
+				tc.tweak(m)
+			}
 			master := cmpOr(tc.master, "rfr-x-0")
 			tr, pod := m.stuckChange(s, master)
 			if (tr != nil) != tc.want {
 				t.Fatalf("stuckChange = %v, want a change: %t", tr, tc.want)
 			}
-			if tc.want && (pod.Name != "rfr-x-2" || tr.edge.String() != "redis-7.4 -> valkey-8" || tr.edge.Expect != config.ExpectUnknown || tr.from.Name != "redis-7.4" || tr.to.Name != "valkey-8") {
+			if tc.want && (pod.Name != "rfr-x-2" || tr.edge.String() != "redis-7.4 -> valkey-8" || tr.edge.Expect == config.ExpectOK || tr.from.Name != "redis-7.4" || tr.to.Name != "valkey-8") {
 				t.Errorf("stuckChange = %+v on %s", tr, pod.Name)
 			}
 		})
@@ -334,7 +347,7 @@ func (e *adoptEnv) findings() float64 {
 // the former tester would have, and resets the instance once.
 func TestAdopt(t *testing.T) {
 	e := newAdoptEnv(t)
-	e.m.adopt(context.Background())
+	e.m.adopt(context.Background(), time.Now())
 	if got := e.transitions(transitionFailedSafe); got != 1 {
 		t.Errorf("failed_safe changes = %v, want 1", got)
 	}
@@ -390,7 +403,7 @@ func TestAdoptRefuses(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			e := newAdoptEnv(t)
 			setup(e)
-			e.m.adopt(context.Background())
+			e.m.adopt(context.Background(), past)
 			for _, result := range []string{transitionOK, transitionFailedSafe, transitionFailedUnsafe} {
 				if got := e.transitions(result); got != 0 {
 					t.Errorf("%s changes = %v, want 0", result, got)
@@ -417,7 +430,7 @@ func TestAdoptRechecks(t *testing.T) {
 		}
 		return nil, nil
 	}
-	e.m.adopt(context.Background())
+	e.m.adopt(context.Background(), past)
 	if e.deletes.Load() != 0 || e.transitions(transitionFailedSafe) != 0 {
 		t.Errorf("deletes %d, failed_safe %v", e.deletes.Load(), e.transitions(transitionFailedSafe))
 	}
@@ -431,7 +444,7 @@ func TestAdoptStops(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.m.adopt(ctx)
+		e.m.adopt(ctx, time.Now())
 	}()
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -454,7 +467,7 @@ func TestAdoptWaitsForTheObserver(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.m.adopt(ctx)
+		e.m.adopt(ctx, time.Now())
 	}()
 	time.Sleep(100 * time.Millisecond)
 	if e.logCalls.Load() != 0 {
@@ -577,5 +590,171 @@ func TestJudge(t *testing.T) {
 		if got := e.findings(); got != c.findings {
 			t.Errorf("findings = %v, want %v", got, c.findings)
 		}
+	}
+}
+
+// setPod changes the pod rfr-edge-2 of the environment.
+func (e *adoptEnv) setPod(t *testing.T, image string, ready corev1.ConditionStatus) {
+	t.Helper()
+	pods := e.kube.CoreV1().Pods("ns")
+	p, err := pods.Get(context.Background(), "rfr-edge-2", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Spec.Containers[0].Image = image
+	p.Status.Conditions[0].Status = ready
+	if _, err := pods.Update(context.Background(), p, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// listCalls counts the lists of pods.
+func (e *adoptEnv) listCalls() *atomic.Int32 {
+	var n atomic.Int32
+	e.kube.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		n.Add(1)
+		return false, nil, nil
+	})
+	return &n
+}
+
+// A restart can come before the operator replaced a pod, and before the new
+// pod logged its load error. The adoption waits for both, and adopts once.
+func TestAdoptPolls(t *testing.T) {
+	e := newAdoptEnv(t)
+	e.setPod(t, imageRedis74, corev1.ConditionTrue)
+	lists := e.listCalls()
+	var reads atomic.Int32
+	e.m.logs = func(_ context.Context, pod string, _ *corev1.PodLogOptions) ([]byte, error) {
+		if pod == "rfr-edge-2" && reads.Add(1) >= 3 {
+			return []byte("# Can't handle RDB format version 12\n"), nil
+		}
+		return nil, nil
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.m.adopt(context.Background(), time.Now())
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if e.deletes.Load() != 0 || lists.Load() < 3 {
+		t.Fatalf("deletes %d, lists %d: the adoption did not wait", e.deletes.Load(), lists.Load())
+	}
+	e.setPod(t, imageValkey8, corev1.ConditionFalse)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("adopt did not return")
+	}
+	if reads.Load() < 3 {
+		t.Errorf("log reads = %d, want at least 3", reads.Load())
+	}
+	if e.deletes.Load() != 1 || e.creates.Load() != 1 || e.transitions(transitionFailedSafe) != 1 {
+		t.Errorf("deletes %d, creates %d, failed_safe %v, want 1 each", e.deletes.Load(), e.creates.Load(), e.transitions(transitionFailedSafe))
+	}
+}
+
+// An instance that becomes quiet while the adoption waits is not adopted.
+func TestAdoptStopsWhenQuiet(t *testing.T) {
+	e := newAdoptEnv(t)
+	e.setPod(t, imageRedis74, corev1.ConditionTrue)
+	lists := e.listCalls()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.m.adopt(context.Background(), time.Now())
+	}()
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("adopt returned before the instance was quiet")
+	default:
+	}
+	e.m.observer.(*stubObserver).quiet.Store(true)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("adopt did not return")
+	}
+	if lists.Load() < 3 || e.deletes.Load() != 0 || e.transitions(transitionFailedSafe) != 0 {
+		t.Errorf("lists %d, deletes %d, failed_safe %v", lists.Load(), e.deletes.Load(), e.transitions(transitionFailedSafe))
+	}
+}
+
+// The deadline ends the wait for a stuck change: the convergence timeout
+// minus the grace, the verification bound and adoptMargin, after the start.
+func TestAdoptDeadline(t *testing.T) {
+	e := newAdoptEnv(t)
+	e.setPod(t, imageRedis74, corev1.ConditionTrue)
+	e.m.convergeTimeout = 10 * time.Minute
+	started := time.Now()
+	if got, want := e.m.adoptDeadline(started), started.Add(10*time.Minute-e.m.grace-verifyBound-adoptMargin); !got.Equal(want) {
+		t.Fatalf("deadline %s, want %s", got, want)
+	}
+	// 150 ms remain.
+	started = time.Now().Add(-(10*time.Minute - e.m.grace - verifyBound - adoptMargin) + 150*time.Millisecond)
+	lists := e.listCalls()
+	begin := time.Now()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.m.adopt(context.Background(), started)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("adopt did not return at its deadline")
+	}
+	if d := time.Since(begin); d < 100*time.Millisecond {
+		t.Errorf("returned after %s, before the deadline", d)
+	}
+	if lists.Load() < 3 || e.deletes.Load() != 0 {
+		t.Errorf("lists %d, deletes %d", lists.Load(), e.deletes.Load())
+	}
+}
+
+// Another mutation or a chaos action can run while the adoption waits for the
+// lock. The adoption reads the instance again after it.
+func TestAdoptRechecksAfterTheLock(t *testing.T) {
+	e := newAdoptEnv(t)
+	unlock := e.m.lock.Exclusive()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.m.adopt(context.Background(), time.Now())
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for e.logCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	e.setPod(t, imageRedis74, corev1.ConditionTrue)
+	unlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("adopt did not return")
+	}
+	if e.deletes.Load() != 0 || e.transitions(transitionFailedSafe) != 0 {
+		t.Errorf("deletes %d, failed_safe %v, want none", e.deletes.Load(), e.transitions(transitionFailedSafe))
+	}
+}
+
+// Ending the tester ends the wait for a stuck change.
+func TestAdoptStopsWhilePolling(t *testing.T) {
+	e := newAdoptEnv(t)
+	e.setPod(t, imageRedis74, corev1.ConditionTrue)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.m.adopt(ctx, time.Now())
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("adopt did not return")
 	}
 }

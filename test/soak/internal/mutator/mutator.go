@@ -183,11 +183,12 @@ func (m *Mutator) Current() string {
 }
 
 func (m *Mutator) Run(ctx context.Context) {
-	stop := time.Now().Add(m.cfg.StopAfter.Duration)
+	started := time.Now()
+	stop := started.Add(m.cfg.StopAfter.Duration)
 	if !m.waitFilled(ctx) {
 		return
 	}
-	m.adopt(ctx)
+	m.adopt(ctx, started)
 	for step := 1; ; step++ {
 		if !m.waitQuiet(ctx) {
 			return
