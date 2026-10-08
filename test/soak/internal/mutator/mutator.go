@@ -42,6 +42,12 @@ const (
 	resultSkipped   = "skipped"
 )
 
+// holdHandle is what a mutation needs of its window: the observer's Hold.
+type holdHandle interface {
+	Applied()
+	Done() <-chan bool
+}
+
 // Data is what the mutator needs of an instance's data.
 type Data interface {
 	Filled() bool
@@ -70,9 +76,11 @@ type Mutator struct {
 	kube     kubernetes.Interface
 	rfs      versioned.Interface
 	observer *observer.Observer
-	data     Data
-	auth     *auth.Source
-	lock     *global.Lock
+	// hold opens the convergence window of a mutation in the observer.
+	hold func(time.Duration, func(context.Context) error) holdHandle
+	data Data
+	auth *auth.Source
+	lock *global.Lock
 	// instance recreates the instance from its template, nil without one.
 	instance *instances.Instance
 	log      *slog.Logger
@@ -111,6 +119,7 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		kube:            kube,
 		rfs:             rfs,
 		observer:        o,
+		hold:            func(d time.Duration, f func(context.Context) error) holdHandle { return o.Hold(d, f) },
 		data:            data,
 		auth:            a,
 		lock:            lock,
@@ -249,6 +258,13 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 		log.Info("mutation skipped", "result", resultSkipped, "reason", p.skip)
 		return ""
 	}
+	return m.execute(ctx, step, s, p, log)
+}
+
+// execute applies the plan p of a mutation and waits until it converged. It
+// returns what mutate returns.
+func (m *Mutator) execute(ctx context.Context, step int, s state, p plan, log *slog.Logger) config.Kind {
+	kind := p.kind
 	timeout := m.cfg.Timeout(kind, m.observerCfg, s.rf.Spec.Redis.Replicas)
 	log = log.With("params", p.params, "redis_replicas", s.rf.Spec.Redis.Replicas)
 	before := uids(s.redis)
@@ -281,7 +297,7 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 	// A rejected mutation changed nothing, so its window only waits for
 	// the invariants.
 	var applied, rejected atomic.Bool
-	h := m.observer.Hold(hold, func(ctx context.Context) error {
+	h := m.hold(hold, func(ctx context.Context) error {
 		switch {
 		case rejected.Load():
 			return nil
@@ -451,7 +467,7 @@ const stuckGrace = time.Minute
 // set, and samples the mixed window. A watched change also ends stuckGrace
 // after a pod on its new version could not load the data. It reports whether
 // the mutation converged; ok is false if ctx is done.
-func (m *Mutator) await(ctx context.Context, h *observer.Hold, bound time.Duration, watch *transition) (converged, ok bool) {
+func (m *Mutator) await(ctx context.Context, h holdHandle, bound time.Duration, watch *transition) (converged, ok bool) {
 	var limit <-chan time.Time
 	if bound > 0 {
 		t := time.NewTimer(bound)

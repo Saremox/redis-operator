@@ -80,11 +80,12 @@ func (m *Mutator) planNoMaster(s state, master string, port int) plan {
 	var before map[string]int64
 	var messages *statusWatch
 	timeout := m.cfg.Timeout(kind, m.observerCfg, s.rf.Spec.Redis.Replicas)
+	version := s.rf.ResourceVersion
 	return plan{
 		kind:   kind,
 		params: fmt.Sprintf("SENTINEL RESET * on %d Sentinels, delete pod %s (graceful)", len(sentinels), pod.Name),
 		action: func(ctx context.Context) error {
-			messages = m.watchStatus(ctx, timeout)
+			messages = m.watchStatus(ctx, timeout, version)
 			before = m.configEpochs(ctx, sentinels, port)
 			if err := m.resetSentinels(ctx, sentinels, port); err != nil {
 				return err
@@ -114,11 +115,13 @@ type statusWatch struct {
 }
 
 // watchStatus starts to collect the status messages of the instance for at
-// most limit. It returns nil if the watch does not start: the recovery then
-// has no message to look at.
-func (m *Mutator) watchStatus(ctx context.Context, limit time.Duration) *statusWatch {
+// most limit. The watch starts at the resource version of the plan, so that a
+// message from before the mutation is not an event. It returns nil if the watch
+// does not start: the recovery then has no message to look at.
+func (m *Mutator) watchStatus(ctx context.Context, limit time.Duration, version string) *statusWatch {
 	ctx, cancel := context.WithTimeout(ctx, limit)
-	w, err := m.rfs.DatabasesV1().RedisFailovers(m.in.Namespace).Watch(ctx, metav1.ListOptions{FieldSelector: "metadata.name=" + m.in.Name})
+	opts := metav1.ListOptions{FieldSelector: "metadata.name=" + m.in.Name, ResourceVersion: version}
+	w, err := m.rfs.DatabasesV1().RedisFailovers(m.in.Namespace).Watch(ctx, opts)
 	if err != nil {
 		cancel()
 		return nil
@@ -126,6 +129,8 @@ func (m *Mutator) watchStatus(ctx context.Context, limit time.Duration) *statusW
 	sw := &statusWatch{w: w, cancel: cancel, done: make(chan struct{}), name: m.in.Name, seen: map[string]bool{}}
 	go func() {
 		defer close(sw.done)
+		// A blocked receive goroutine of the watch ends only with Stop.
+		defer w.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -156,7 +161,6 @@ func (sw *statusWatch) sawPrefix(prefix string) bool {
 	}
 	sw.cancel()
 	<-sw.done
-	sw.w.Stop()
 	for e := range sw.w.ResultChan() {
 		sw.add(e)
 	}
@@ -186,8 +190,8 @@ func (m *Mutator) configEpochs(ctx context.Context, pods []corev1.Pod, port int)
 
 // epochChange tells how the config-epoch changed on the Sentinels between the
 // reads before the reset and after the convergence. It is epochUnread if a
-// read failed or the Sentinels differ, and epochMixed if the epoch rose on one
-// Sentinel and fell on another.
+// read failed or the Sentinels differ. It is epochMixed if the epoch rose on
+// one Sentinel and fell on another.
 func epochChange(before, after map[string]int64) string {
 	if before == nil || len(before) != len(after) {
 		return epochUnread
@@ -213,15 +217,15 @@ func epochChange(before, after map[string]int64) string {
 }
 
 // recoveryPath names the party that made the new master. The operator message
-// shows an election by the operator. Without it, the epoch decides: a Sentinel
-// failover raises the config-epoch, and the operator makes each Sentinel
-// monitor the new master again, which sets the epoch to 0. SENTINEL RESET
+// shows that the operator promoted a replica. Without it, the epoch decides.
+// A Sentinel failover raises the config-epoch. The operator monitors the new
+// master again on each Sentinel, which sets the epoch to 0. SENTINEL RESET
 // keeps the epoch.
 //
 // The path is unknown if the epoch did not change, if it rose on one Sentinel
 // and fell on another, or if a read failed. The operator sets the message
-// only if no Sentinel can fail over. Its other elections leave no trace when
-// the epoch was 0 before.
+// only if no Sentinel can fail over. Its other elections leave a trace only
+// when the epoch was above 0 before.
 func recoveryPath(elected bool, change string) string {
 	switch {
 	case elected, change == epochFell:

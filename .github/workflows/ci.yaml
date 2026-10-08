@@ -79,12 +79,14 @@ jobs:
         id: filter
         with:
           # The tester builds against the operator API types through the
-          # replace in its go.mod, so changes to them also run this job.
+          # replace in its go.mod, so changes to them also run this job. A test
+          # reads the status text of the operator checker.
           filters: |
             soak:
               - 'test/soak/**'
               - 'api/**'
               - 'client/**'
+              - 'operator/redisfailover/checker.go'
               - 'go.mod'
               - 'go.sum'
               - '.github/workflows/ci.yaml'

@@ -18,6 +18,7 @@ import (
 	miniserver "github.com/alicebob/miniredis/v2/server"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,7 +28,9 @@ import (
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	rffake "github.com/saremox/redis-operator/client/k8s/clientset/versioned/fake"
+	"github.com/saremox/redis-operator/test/soak/internal/auth"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
+	"github.com/saremox/redis-operator/test/soak/internal/global"
 	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 )
 
@@ -564,25 +567,179 @@ func TestNoMasterWatchFails(t *testing.T) {
 	}
 }
 
-// A watch that ended keeps the messages that it delivered.
-func TestNoMasterWatchEnds(t *testing.T) {
-	rec := &calls{}
-	m, s, port := noMasterEnv(t, rec, nil)
-	w := watch.NewRaceFreeFake()
-	m.rfs.(*rffake.Clientset).PrependWatchReactor("redisfailovers", func(k8stesting.Action) (bool, watch.Interface, error) {
+// fakeWatcher is a watch whose channel and Stop the test controls: Stop closes
+// the channel, as the watches of the API client do.
+type fakeWatcher struct {
+	result  chan watch.Event
+	stopped chan struct{}
+	once    sync.Once
+}
+
+func newFakeWatcher() *fakeWatcher {
+	return &fakeWatcher{result: make(chan watch.Event, 10), stopped: make(chan struct{})}
+}
+
+func (f *fakeWatcher) ResultChan() <-chan watch.Event { return f.result }
+
+func (f *fakeWatcher) Stop() {
+	f.once.Do(func() {
+		close(f.stopped)
+		close(f.result)
+	})
+}
+
+func (f *fakeWatcher) send(message string) {
+	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "x"}}
+	rf.Status.Message = message
+	f.result <- watch.Event{Type: watch.Modified, Object: rf}
+}
+
+// useWatcher makes the watch of the RedisFailovers return w. The returned
+// function gives the resource version that the watch asked for.
+func useWatcher(m *Mutator, w watch.Interface) func() string {
+	var mu sync.Mutex
+	version := "not asked"
+	m.rfs.(*rffake.Clientset).PrependWatchReactor("redisfailovers", func(a k8stesting.Action) (bool, watch.Interface, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		version = a.(k8stesting.WatchAction).GetWatchRestrictions().ResourceVersion
 		return true, w, nil
 	})
-	setEpochs(rec, "0")
+	return func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return version
+	}
+}
+
+func awaitClosed(t *testing.T, c <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-c:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s did not happen", what)
+	}
+}
+
+// A mutation that ends without the recovery, by its timeout or because the API
+// refused it, must still stop the watch.
+func TestStatusWatchStopsAtTheLimit(t *testing.T) {
+	m, _, _ := noMasterEnv(t, &calls{}, nil)
+	w := newFakeWatcher()
+	useWatcher(m, w)
+	sw := m.watchStatus(context.Background(), 10*time.Millisecond, "")
+	awaitClosed(t, w.stopped, "the stop of the watch")
+	awaitClosed(t, sw.done, "the end of the goroutine")
+}
+
+// A watch that ended keeps the messages that it delivered.
+func TestStatusWatchEnds(t *testing.T) {
+	m, _, _ := noMasterEnv(t, &calls{}, nil)
+	w := newFakeWatcher()
+	useWatcher(m, w)
+	sw := m.watchStatus(context.Background(), time.Minute, "")
+	w.send(electionMessage)
+	w.Stop()
+	awaitClosed(t, sw.done, "the end of the goroutine")
+	if !sw.sawPrefix(operatorElected) {
+		t.Error("the message of a watch that ended is lost")
+	}
+}
+
+// The recovery reads the events that the watch holds but the goroutine did not
+// take yet.
+func TestStatusWatchDrains(t *testing.T) {
+	w := newFakeWatcher()
+	w.send("waiting")
+	w.send(electionMessage)
+	w.Stop()
+	sw := &statusWatch{w: w, cancel: func() {}, done: make(chan struct{}), name: "x", seen: map[string]bool{}}
+	close(sw.done)
+	if !sw.sawPrefix(operatorElected) {
+		t.Error("the held events are lost")
+	}
+	if !sw.seen["waiting"] {
+		t.Errorf("messages %v", sw.seen)
+	}
+}
+
+// The watch starts at the resource version of the plan, so that the message
+// from before the mutation is not an event.
+func TestNoMasterWatchStartsAtThePlanVersion(t *testing.T) {
+	m, s, port := noMasterEnv(t, &calls{}, nil)
+	version := useWatcher(m, newFakeWatcher())
+	s.rf.ResourceVersion = "42"
 	p := m.planNoMaster(s, "rfr-x-0", port)
 	if err := m.apply(context.Background(), p, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatal(err)
 	}
-	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "x"}}
-	rf.Status.Message = electionMessage
-	w.Modify(rf)
-	w.Stop()
-	if path, _ := p.recovery(context.Background()); path != pathOperator {
-		t.Errorf("path %q, want %q", path, pathOperator)
+	if got := version(); got != "42" {
+		t.Errorf("the watch asked for version %q, want 42", got)
+	}
+	p.recovery(context.Background())
+}
+
+// fakeHold is a convergence window that closes when the mutation is applied.
+type fakeHold struct {
+	done    chan bool
+	applied func()
+}
+
+func (h *fakeHold) Applied() {
+	h.applied()
+	h.done <- true
+}
+
+func (h *fakeHold) Done() <-chan bool { return h.done }
+
+// A converged run counts and logs its recovery path.
+func TestExecuteRecordsTheRecovery(t *testing.T) {
+	rec := &calls{}
+	env, s, port := noMasterEnv(t, rec, nil)
+	cfg, err := config.Parse([]byte(versionsConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := cfg.Instances[slices.IndexFunc(cfg.Instances, func(in config.Instance) bool { return in.Name == "mixed" })]
+	in.Name, in.Namespace = "x", "ns"
+	in.Mutations.Kinds = map[config.Kind]int{config.SentinelResetKillMaster: 1}
+	kube := env.kube.(*fake.Clientset)
+	if _, err := kube.AppsV1().StatefulSets("ns").Create(context.Background(), &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "rfr-x", Namespace: "ns"}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	a := auth.New(func(name string) (*corev1.Secret, error) {
+		return kube.CoreV1().Secrets("ns").Get(context.Background(), name, metav1.GetOptions{})
+	})
+	var out bytes.Buffer
+	mt := metrics.New(prometheus.NewRegistry(), time.Minute)
+	m := New(in, cfg, kube, env.rfs, nil, nil, a, &global.Lock{}, nil, mt, slog.New(slog.NewJSONHandler(&out, nil)))
+	m.timeout = time.Second
+	m.observerCfg.Interval.Duration = 10 * time.Millisecond
+	// The Sentinels fail over when the mutation is applied.
+	m.hold = func(time.Duration, func(context.Context) error) holdHandle {
+		return &fakeHold{done: make(chan bool, 1), applied: func() { setEpochs(rec, "4") }}
+	}
+	setEpochs(rec, "3")
+	p := m.planNoMaster(s, "rfr-x-0", port)
+	if next := m.execute(context.Background(), 1, s, p, m.log); next != "" {
+		t.Fatalf("next kind %q", next)
+	}
+	if got := testutil.ToFloat64(m.recoveries.WithLabelValues(pathSentinel)); got != 1 {
+		t.Errorf("sentinel recoveries = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.total.WithLabelValues(string(config.SentinelResetKillMaster), resultConverged)); got != 1 {
+		t.Errorf("converged mutations = %v, want 1", got)
+	}
+	done := ""
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.Contains(line, `"mutation done"`) {
+			done = line
+		}
+	}
+	for _, want := range []string{`"recovery_path":"sentinel"`, `"config_epoch":"rose"`, `"operator_message":false`, `"result":"converged"`} {
+		if !strings.Contains(done, want) {
+			t.Errorf("the log line %q has no %s", done, want)
+		}
 	}
 }
 
