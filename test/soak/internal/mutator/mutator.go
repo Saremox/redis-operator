@@ -450,7 +450,7 @@ func (m *Mutator) plan(r *rand.Rand, kind config.Kind, s state) plan {
 	case config.SentinelImageFlip:
 		return m.planSentinelFlip(r, s)
 	case config.SentinelResetKillMaster:
-		return m.planNoMaster(s, m.observer.Master(), sentinelPort)
+		return m.planNoMaster(s, m.observer.Master(), m.sentinelPort)
 	case config.Reset:
 		why := "picked"
 		if m.resetWhy != "" {

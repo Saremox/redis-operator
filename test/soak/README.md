@@ -303,9 +303,10 @@ could not load the data. It then judges the change:
 - `ok`: it converged.
 - `failed_safe`: it did not converge, but the rollout stopped. The single
   master still runs the old version, accepts writes, and lost no
-  acknowledged write. At most one pod runs the new image, and it is not the
-  master. If the Sentinels did not change image, each of them still reports
-  this master.
+  acknowledged write. At most one pod on the new image is not Ready or
+  fails to load the data, and it is not the master. This rule does not apply
+  to a Sentinel image change. If the Sentinels did not change image, each of
+  them still reports this master.
 - `failed_unsafe`: all other cases. This is a finding.
 
 A change that did not converge is reset immediately.
@@ -388,8 +389,9 @@ each step and each reset too slow for the kind job.
 The versions profile runs 3600 seconds by default. The instance `downgrade`
 needs 16 steps in that time. This holds only if each stuck change logs that
 it could not load the data, because the change then ends 1 minute later. A
-silent stuck change waits 6 minutes, about 9 minutes with its reset. Then set
-`DURATION=4500`.
+silent stuck change waits 6 minutes, about 9 minutes with its reset. In that
+case, set `DURATION=4500`. The last needed edge starts at step 15, about 4000
+seconds in.
 
 The script keeps the logs of the tester and the operator, the events and
 the last scrape in `bin/kind-e2e-artifacts/`. The workflow

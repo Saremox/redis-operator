@@ -353,7 +353,8 @@ type observation struct {
 	// sentinels is why a Sentinel does not report the master, nil if they all
 	// do.
 	sentinels error
-	// onNew are the redis pods that run the new image.
+	// onNew are the redis pods that run the new image and are not Ready or
+	// logged that they could not load the data.
 	onNew []string
 	// pods describes what each pod of the changed image does.
 	pods []string
@@ -363,8 +364,10 @@ type observation struct {
 // converge, but the rollout stopped and kept the data. The master stayed on
 // the old version and writable, it loaded its data, no acknowledged write
 // was lost, the Sentinels that stayed still report it, and at most one pod
-// runs the new image. That pod is a replica that cannot load the data, so the
-// operator did not replace another pod. failed_unsafe: all other cases.
+// on the new image is not Ready or cannot load the data. The operator replaces
+// the next pod only after the previous one is Ready, so a second such pod is
+// unsafe. A slow rollout has Ready pods on the new image. failed_unsafe: all
+// other cases.
 func classify(t *transition, o observation) (string, []string) {
 	if o.converged {
 		return transitionOK, nil
@@ -393,7 +396,7 @@ func classify(t *transition, o observation) (string, []string) {
 		}
 	}
 	if len(o.onNew) > 1 {
-		unsafe = append(unsafe, fmt.Sprintf("%d pods on %s: %s", len(o.onNew), t.to.Name, strings.Join(o.onNew, ", ")))
+		unsafe = append(unsafe, fmt.Sprintf("%d pods on %s that are not Ready or cannot load the data: %s", len(o.onNew), t.to.Name, strings.Join(o.onNew, ", ")))
 	}
 	if len(unsafe) > 0 {
 		return transitionFailedUnsafe, unsafe
