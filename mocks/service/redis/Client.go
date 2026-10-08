@@ -3,6 +3,8 @@
 package mocks
 
 import (
+	time "time"
+
 	redis "github.com/saremox/redis-operator/service/redis"
 	mock "github.com/stretchr/testify/mock"
 )
@@ -23,6 +25,24 @@ func (_m *Client) DisconnectClients(ip string, port string, password string) err
 	var r0 error
 	if rf, ok := ret.Get(0).(func(string, string, string) error); ok {
 		r0 = rf(ip, port, password)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// FailoverTo provides a mock function with given fields: ip, port, password, targetIP, timeout
+func (_m *Client) FailoverTo(ip string, port string, password string, targetIP string, timeout time.Duration) error {
+	ret := _m.Called(ip, port, password, targetIP, timeout)
+
+	if len(ret) == 0 {
+		panic("no return value specified for FailoverTo")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string, string, string, time.Duration) error); ok {
+		r0 = rf(ip, port, password, targetIP, timeout)
 	} else {
 		r0 = ret.Error(0)
 	}

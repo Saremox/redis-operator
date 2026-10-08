@@ -74,6 +74,7 @@ const (
 	GET_MEMORY_INFO             = "GET_MEMORY_INFO"
 	DISCONNECT_CLIENTS          = "DISCONNECT_CLIENTS_ON_DEMOTED_INSTANCE"
 	SET_PASSWORD                = "SET_PASSWORD"
+	FAILOVER_TO                 = "FAILOVER_TO_REPLICA"
 )
 
 var ( // used for garbage collection of metrics

@@ -163,9 +163,11 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			// operator promotes a replica. One replica that stays unavailable
 			// must not block the master replacement, so a quorum is sufficient.
 			//
-			// In operator-managed mode, no Sentinel exists. Case 0 of
-			// checkAndHealOperatorManagedMode waits until the master pod stops,
-			// and then elects a replica.
+			// In operator-managed mode, no Sentinel exists. With more than one
+			// pod, the master hands its role over to a replica first, so that a
+			// master exists at all times. Without FAILOVER, or with one pod,
+			// case 0 of checkAndHealOperatorManagedMode waits until the master pod
+			// stops, and then elects a master.
 			if !rf.OperatorManagedFailover() {
 				sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
 				if err != nil {
@@ -176,6 +178,10 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 						r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("Waiting for sentinels to see a quorum of slaves before replacing the master: %s", err.Error())
 						return nil
 					}
+				}
+			} else if rf.Spec.Redis.Replicas > 1 {
+				if handled, err := r.handOverMaster(rf, masterIP, master); err != nil || handled {
+					return err
 				}
 			}
 
@@ -189,6 +195,100 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 	}
 
 	return nil
+}
+
+// handOverMaster moves the master role to the best synced replica with
+// FAILOVER, and does not delete the stale master pod. The demoted master is
+// then a stale replica, so a later reconcile replaces it after the same checks
+// as each other replica. It reports false when the master has no FAILOVER
+// command. The caller then deletes the master pod.
+func (r *RedisFailoverHandler) handOverMaster(rf *redisfailoverv1.RedisFailover, masterIP, master string) (bool, error) {
+	key := failoverKey(rf)
+	logger := r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("pod", master)
+	if v, ok := r.handoverRetries.Load(key); ok && r.now().Before(v.(handoverRetry).at) {
+		setHandoverStatus(rf, v.(handoverRetry).message)
+		return true, nil
+	}
+	best, err := r.rfChecker.GetBestReplicaForPromotion(rf)
+	if err != nil {
+		return true, err
+	}
+	// An unsynced replica can lack data that the healthy master has.
+	if !best.Synced {
+		return true, fmt.Errorf("no synced replica to take the master role from pod %s", master)
+	}
+	result, err := r.rfHealer.HandOverMaster(masterIP, best.IP, rf)
+	if err != nil {
+		return true, err
+	}
+	switch result {
+	case rfservice.HandoverUnsupported:
+		if _, logged := r.handoverUnsupportedLogged.LoadOrStore(key, true); !logged {
+			logger.Infof("pod %s has no FAILOVER command (Redis before 6.2, or renamed), so the rollout deletes it", master)
+		}
+		return false, nil
+	case rfservice.HandoverAborted:
+		r.retryHandover(rf, fmt.Sprintf("the handover of the master role to pod %s was aborted", best.PodName))
+		return true, nil
+	case rfservice.HandoverRefused:
+		r.retryHandover(rf, fmt.Sprintf("the master refused the handover of the master role to pod %s", best.PodName))
+		return true, nil
+	case rfservice.HandoverInProgress:
+		setHandoverStatus(rf, fmt.Sprintf("the handover of the master role to pod %s is in progress", best.PodName))
+		return true, nil
+	}
+	r.handoverRetries.Delete(key)
+
+	// The old master is a replica already, so the labels change after the
+	// role. The new master gets its label first: until the old master loses
+	// its label, the master Service also routes to a pod that refuses writes.
+	err = r.rfHealer.PromoteBestReplica(best.IP, rf)
+	// A partial reconciliation leaves a replica on the old master or a wrong
+	// label. The next reconcile corrects both.
+	if err != nil && !errors.Is(err, rfservice.ErrPartialReconciliation) {
+		return true, err
+	}
+	if err != nil {
+		logger.Warningf("handed the master role over to %s, but not all replicas changed: %v", best.PodName, err)
+		return true, nil
+	}
+	logger.Infof("handed the master role over to %s before the replacement of the stale master pod", best.PodName)
+	return true, nil
+}
+
+// handoverRetry is the wait after a handover that did not move the master
+// role. Each attempt can pause the writes, so the wait doubles up to
+// handoverRetryMax. It is in memory: after an operator restart, the next
+// reconcile tries at once.
+type handoverRetry struct {
+	at      time.Time
+	delay   time.Duration
+	message string
+}
+
+const (
+	handoverRetryMin = 30 * time.Second
+	handoverRetryMax = 5 * time.Minute
+)
+
+func (r *RedisFailoverHandler) retryHandover(rf *redisfailoverv1.RedisFailover, reason string) {
+	key := failoverKey(rf)
+	delay := handoverRetryMin
+	if v, ok := r.handoverRetries.Load(key); ok {
+		delay = min(2*v.(handoverRetry).delay, handoverRetryMax)
+	}
+	message := fmt.Sprintf("%s, the next attempt is after %s", reason, delay)
+	r.handoverRetries.Store(key, handoverRetry{at: r.now().Add(delay), delay: delay, message: message})
+	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).Warningf("%s", message)
+	setHandoverStatus(rf, message)
+	// No pod event comes at the end of the wait.
+	if r.requeue != nil {
+		r.requeue(key, delay)
+	}
+}
+
+func setHandoverStatus(rf *redisfailoverv1.RedisFailover, message string) {
+	rf.Status = redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.NotHealthyState, Message: message}
 }
 
 // redisPodNamesByIP leaves out terminating pods, because the rollout must not

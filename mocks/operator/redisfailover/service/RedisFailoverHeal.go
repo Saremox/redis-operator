@@ -115,6 +115,34 @@ func (_m *RedisFailoverHeal) EnsureRedisMaxMemory(rFailover *v1.RedisFailover, m
 	return r0, r1
 }
 
+// HandOverMaster provides a mock function with given fields: masterIP, targetIP, rFailover
+func (_m *RedisFailoverHeal) HandOverMaster(masterIP string, targetIP string, rFailover *v1.RedisFailover) (service.HandoverResult, error) {
+	ret := _m.Called(masterIP, targetIP, rFailover)
+
+	if len(ret) == 0 {
+		panic("no return value specified for HandOverMaster")
+	}
+
+	var r0 service.HandoverResult
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, string, *v1.RedisFailover) (service.HandoverResult, error)); ok {
+		return rf(masterIP, targetIP, rFailover)
+	}
+	if rf, ok := ret.Get(0).(func(string, string, *v1.RedisFailover) service.HandoverResult); ok {
+		r0 = rf(masterIP, targetIP, rFailover)
+	} else {
+		r0 = ret.Get(0).(service.HandoverResult)
+	}
+
+	if rf, ok := ret.Get(1).(func(string, string, *v1.RedisFailover) error); ok {
+		r1 = rf(masterIP, targetIP, rFailover)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // MakeMaster provides a mock function with given fields: ip, rFailover
 func (_m *RedisFailoverHeal) MakeMaster(ip string, rFailover *v1.RedisFailover) error {
 	ret := _m.Called(ip, rFailover)

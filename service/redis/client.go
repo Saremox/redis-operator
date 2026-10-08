@@ -25,6 +25,9 @@ type ReplicationInfo struct {
 	MasterReplOffset int64  // replication offset for masters
 	ConnectedSlaves  int    // number of connected slaves (for masters)
 	SyncInProgress   bool   // true if slave is syncing
+	// FailoverState is master_failover_state. It is empty before Redis 6.2,
+	// which has no FAILOVER command.
+	FailoverState string
 }
 
 // MemoryInfo contains the memory figures of a Redis instance relevant to maxmemory
@@ -61,6 +64,7 @@ type Client interface {
 	GetMemoryInfo(ip, port, password string) (*MemoryInfo, error)
 	SetPassword(ip, port, password, newPassword string) error
 	SetSentinelAuthPass(ip, password string) error
+	FailoverTo(ip, port, password, targetIP string, timeout time.Duration) error
 }
 
 type client struct {
@@ -831,6 +835,8 @@ func (c *client) GetReplicationInfo(ip, port, password string) (*ReplicationInfo
 			}
 		case "master_sync_in_progress":
 			replInfo.SyncInProgress = value == "1"
+		case "master_failover_state":
+			replInfo.FailoverState = value
 		}
 	}
 
@@ -878,6 +884,27 @@ func (c *client) SetSentinelAuthPass(ip, password string) error {
 		return err
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.SET_PASSWORD, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return nil
+}
+
+// FailoverTo starts FAILOVER on the master at ip. The target is the replica at
+// targetIP, on the same port. Redis runs the failover in the background, so
+// the caller reads master_failover_state for the result.
+func (c *client) FailoverTo(ip, port, password, targetIP string, timeout time.Duration) error {
+	if ip == "" {
+		return errNoIP
+	}
+	options := redisOptions(net.JoinHostPort(ip, port), password)
+	// A retry after a lost reply gets "FAILOVER already in progress".
+	options.MaxRetries = -1
+	rClient := rediscli.NewClient(options)
+	defer closeClient(rClient)
+	err := rClient.Do(context.TODO(), "FAILOVER", "TO", targetIP, port, "TIMEOUT", strconv.FormatInt(timeout.Milliseconds(), 10)).Err()
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_TO, metrics.FAIL, getRedisError(err))
+		return err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_TO, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
 }
 

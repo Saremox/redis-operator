@@ -5,11 +5,13 @@ package redisfailover_test
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	rediscli "github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -111,27 +113,138 @@ func (c *ommClients) podUIDs(labelSelector string) (map[string]types.UID, error)
 // different UID in the cluster, or until the timeout.
 func (c *ommClients) waitForAllPodsRecreated(labelSelector string, before map[string]types.UID, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	recreated := 0
 	for time.Now().Before(deadline) {
 		current, err := c.podUIDs(labelSelector)
 		if err != nil {
 			return err
 		}
 
-		allRecreated := len(current) == len(before)
+		recreated = 0
 		for podName, oldUID := range before {
-			newUID, ok := current[podName]
-			if !ok || newUID == oldUID {
-				allRecreated = false
-				break
+			if newUID, ok := current[podName]; ok && newUID != oldUID {
+				recreated++
 			}
 		}
-		if allRecreated {
+		if recreated == len(before) && len(current) == len(before) {
 			return nil
 		}
 
 		time.Sleep(5 * time.Second)
 	}
-	return fmt.Errorf("timed out waiting for all pods matching %q to be recreated", labelSelector)
+	// The count shows a slow rollout apart from a rollout that stopped.
+	return fmt.Errorf("timed out waiting for all pods matching %q to be recreated: %d of %d recreated",
+		labelSelector, recreated, len(before))
+}
+
+// mastersNow returns the number of pods that answer as master. During a
+// rollout, 0 is a valid result and not an error.
+func (c *ommClients) mastersNow(labelSelector string) int {
+	pods, err := c.k8sClient.CoreV1().Pods(ommNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: labelSelector})
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, pod := range pods.Items {
+		if pod.Status.PodIP == "" {
+			continue
+		}
+		if ok, _ := c.redisClient.IsMaster(pod.Status.PodIP, "6379", ommTestPass); ok {
+			n++
+		}
+	}
+	return n
+}
+
+// masterAvailability is the result of sampleMasterAvailability. A single
+// sample without a master can be a promotion in progress. longestOutage is
+// the longest series of such samples, so it shows how long the clients had
+// no master.
+type masterAvailability struct {
+	samples       int
+	masterless    int
+	longestOutage int
+	interval      time.Duration
+}
+
+func (m masterAvailability) outage() time.Duration {
+	return time.Duration(m.longestOutage) * m.interval
+}
+
+// sampleMasterAvailability counts the masters at each interval until stop
+// closes, and then sends the result to done.
+func (c *ommClients) sampleMasterAvailability(labelSelector string, interval time.Duration, stop <-chan struct{}, done chan<- masterAvailability) {
+	result := masterAvailability{interval: interval}
+	run := 0
+	for {
+		select {
+		case <-stop:
+			done <- result
+			return
+		default:
+		}
+
+		result.samples++
+		if c.mastersNow(labelSelector) == 0 {
+			result.masterless++
+			run++
+			if run > result.longestOutage {
+				result.longestOutage = run
+			}
+		} else {
+			run = 0
+		}
+		time.Sleep(interval)
+	}
+}
+
+func (c *ommClients) masterClient(ip string) *rediscli.Client {
+	return rediscli.NewClient(&rediscli.Options{Addr: net.JoinHostPort(ip, "6379"), Password: ommTestPass, MaxRetries: -1})
+}
+
+// writeToMaster writes a new key to the master at each interval until stop
+// closes, and then sends the keys that a master acknowledged to done. A
+// write to a master that became a replica gets READONLY and is not counted.
+func (c *ommClients) writeToMaster(labelSelector string, interval time.Duration, stop <-chan struct{}, done chan<- []string) {
+	var acked []string
+	for i := 0; ; i++ {
+		select {
+		case <-stop:
+			done <- acked
+			return
+		default:
+		}
+		if master, err := c.onlyMaster(labelSelector); err == nil {
+			key := fmt.Sprintf("rollout-%d", i)
+			client := c.masterClient(master)
+			if client.Set(context.Background(), key, i, 0).Err() == nil {
+				acked = append(acked, key)
+			}
+			_ = client.Close()
+		}
+		time.Sleep(interval)
+	}
+}
+
+// missingKeys returns the number of keys that the master does not have.
+func (c *ommClients) missingKeys(labelSelector string, keys []string) (int, error) {
+	master, err := c.onlyMaster(labelSelector)
+	if err != nil {
+		return 0, err
+	}
+	client := c.masterClient(master)
+	defer func() { _ = client.Close() }()
+	missing := 0
+	for _, key := range keys {
+		n, err := client.Exists(context.Background(), key).Result()
+		if err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			missing++
+		}
+	}
+	return missing, nil
 }
 
 func (c *ommClients) onlyMaster(labelSelector string) (string, error) {
@@ -157,6 +270,8 @@ func (c *ommClients) onlyMaster(labelSelector string) (string, error) {
 // operator-managed mode (#161). In this mode no Sentinel exists, so the
 // Sentinel check before the master replacement must not run. Otherwise the
 // rollout never replaces the master, and the RedisFailover stays NotHealthy.
+// The test also measures how long the RedisFailover has no master during the
+// rollout, and checks that no acknowledged write is lost.
 //
 // The other test in this package enables Sentinel. The e2e-sentinel-free job
 // in e2e.yml also tests the default mode, but this is the only test of a
@@ -272,6 +387,42 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 		require.NoError(err)
 		require.Len(before, int(ommRedisSize))
 
+		// The pod UIDs and the master count at the end do not show a
+		// period without a master. Only samples during the rollout show it.
+		availStop := make(chan struct{})
+		availDone := make(chan masterAvailability, 1)
+		go c.sampleMasterAvailability(redisLabelSelector, 500*time.Millisecond, availStop, availDone)
+		defer func() {
+			close(availStop)
+			avail := <-availDone
+			t.Logf("master availability during rollout: %d samples, %d masterless, longest masterless run %d samples (%s)",
+				avail.samples, avail.masterless, avail.longestOutage, avail.outage())
+
+			// A replica gets the master role before the old master pod
+			// stops, so a master exists at all times. One sample of
+			// tolerance is for a sample during the promotion. A delete of
+			// the master before the election measured up to 118 samples.
+			assert.LessOrEqual(avail.longestOutage, 1,
+				"cluster was left without a master for %s (%d consecutive samples) during the rollout; "+
+					"the master role must be handed over before the master pod is replaced",
+				avail.outage(), avail.longestOutage)
+		}()
+
+		// FAILOVER pauses the writes until the new master has them all, so
+		// each write that a master acknowledged must be on the last master.
+		writeStop := make(chan struct{})
+		writeDone := make(chan []string, 1)
+		go c.writeToMaster(redisLabelSelector, 50*time.Millisecond, writeStop, writeDone)
+		defer func() {
+			close(writeStop)
+			acked := <-writeDone
+			missing, err := c.missingKeys(redisLabelSelector, acked)
+			assert.NoError(err)
+			t.Logf("acknowledged writes during rollout: %d, missing after rollout: %d", len(acked), missing)
+			assert.NotEmpty(acked)
+			assert.Zero(missing, "the rollout lost acknowledged writes")
+		}()
+
 		// generateRedisStatefulSet copies PodAnnotations into the pod
 		// template, so this change gives a new update revision. The
 		// StatefulSet uses OnDelete, so only UpdateRedisesPods replaces the
@@ -283,7 +434,10 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 		require.NoError(err)
 
 		// The rollout must also replace the master without a Sentinel check.
-		if err := c.waitForAllPodsRecreated(redisLabelSelector, before, 5*time.Minute); err != nil {
+		// It replaces one pod at a time, and each new pod does a full sync
+		// before the next replacement. On a slow CI runner this took about
+		// 5 minutes.
+		if err := c.waitForAllPodsRecreated(redisLabelSelector, before, 10*time.Minute); err != nil {
 			t.Fatalf("rollout never completed: %v", err)
 		}
 

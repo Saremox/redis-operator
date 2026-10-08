@@ -46,7 +46,15 @@ This is the default mode (`sentinel.enabled` not set or `false`). There is no Se
 - The master does not answer, or is not a master: the operator waits `sentinel.failoverTimeout` as above, then promotes the best replica. Without a replica to promote, it does not promote the oldest pod. The status message is then `no healthy replica available for failover`.
 - All Redis replicas replicate from the master.
 - Redis has the custom configuration and the managed `maxmemory`.
-- Stale Redis pods get the new statefulset revision.
+- Stale Redis pods get the new statefulset revision. The operator does not delete a stale master pod that has replicas. First, it hands the master role over to the best synced replica with the Redis `FAILOVER` command:
+  1. The master pauses the writes and waits until the replica has its whole replication stream. Clients that write in this time wait.
+  2. The master becomes a replica of that replica, and the replica becomes the master. No write that the old master acknowledged is lost.
+  3. The operator gives the master label to the new master, and makes the other pods its replicas.
+  4. The old master is then a stale replica. A later reconcile replaces it.
+
+  The master waits 2s at most. A synced replica usually catches up in less than 1s. If it does not catch up in 2s, Redis aborts the failover, and the master continues. The operator then tries again after 30s and doubles the wait up to 5 minutes. The status message shows the wait.
+
+  Redis before 6.2 has no `FAILOVER` command, and a `customCommandRenames` entry can disable it. Then, and with `redis.replicas: 1`, the operator deletes the master pod and elects a master after the pod stops. With `redis.replicas: 3`, a rollout takes three pod restarts and three initial syncs, one after the other.
 
 The best replica is a synced replica first, then the replica with the highest replication offset, then a Ready pod. This choice loses the fewest writes.
 
