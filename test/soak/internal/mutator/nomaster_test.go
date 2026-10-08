@@ -1,6 +1,7 @@
 package mutator
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	miniserver "github.com/alicebob/miniredis/v2/server"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
@@ -21,12 +24,32 @@ import (
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
+	"github.com/saremox/redis-operator/test/soak/internal/metrics"
 )
 
 // calls records the steps of a mutation in the order that they happen.
 type calls struct {
 	mu     sync.Mutex
 	events []string
+	// epochs is the config-epoch that a fake Sentinel reports by address. A
+	// Sentinel without an entry answers SENTINEL MASTER with an error.
+	epochs map[string]string
+}
+
+func (c *calls) setEpoch(addr, epoch string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.epochs == nil {
+		c.epochs = map[string]string{}
+	}
+	c.epochs[addr] = epoch
+}
+
+func (c *calls) epoch(addr string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.epochs[addr]
+	return e, ok
 }
 
 func (c *calls) add(format string, a ...any) {
@@ -43,7 +66,8 @@ func (c *calls) get() []string {
 
 // fakeSentinels starts one fake Sentinel for each loopback address, all on
 // the same port, and returns the port. A Sentinel answers SENTINEL RESET
-// with failing[addr], or with 1. Only SENTINEL RESET * is valid.
+// with failing[addr], or with 1. SENTINEL MASTER mymaster answers with the
+// epoch of rec. No other command is valid.
 func fakeSentinels(t *testing.T, rec *calls, failing map[string]string) (port int, addrs []string) {
 	t.Helper()
 	addrs = []string{"127.0.0.1", "127.0.0.2", "127.0.0.3"}
@@ -66,6 +90,16 @@ func fakeSentinels(t *testing.T, rec *calls, failing map[string]string) (port in
 			m.Server().SetPreHook(func(c *miniserver.Peer, cmd string, args ...string) bool {
 				if !strings.EqualFold(cmd, "SENTINEL") {
 					return false
+				}
+				if len(args) == 2 && strings.EqualFold(args[0], "MASTER") && args[1] == "mymaster" {
+					epoch, ok := rec.epoch(addr)
+					if !ok {
+						c.WriteError("ERR no such master with that name")
+						return true
+					}
+					rec.add("epoch %s", addr)
+					c.WriteStrings([]string{"name", "mymaster", "flags", "master", "config-epoch", epoch})
+					return true
 				}
 				if len(args) != 2 || !strings.EqualFold(args[0], "RESET") || args[1] != "*" {
 					c.WriteError("ERR unexpected " + strings.Join(args, " "))
@@ -326,4 +360,204 @@ func TestDeletePod(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestRecoveryPath(t *testing.T) {
+	type epochs = map[string]int64
+	cases := []struct {
+		name          string
+		before, after epochs
+		want          string
+	}{
+		{"every epoch rose", epochs{"a": 1, "b": 1, "c": 1}, epochs{"a": 2, "b": 2, "c": 2}, pathSentinel},
+		{"one epoch rose", epochs{"a": 0, "b": 0, "c": 0}, epochs{"a": 1, "b": 0, "c": 0}, pathSentinel},
+		{"every epoch fell to 0", epochs{"a": 3, "b": 3, "c": 3}, epochs{"a": 0, "b": 0, "c": 0}, pathOperator},
+		{"one epoch fell", epochs{"a": 3, "b": 3, "c": 3}, epochs{"a": 0, "b": 3, "c": 3}, pathOperator},
+		{"no epoch changed", epochs{"a": 3, "b": 3, "c": 3}, epochs{"a": 3, "b": 3, "c": 3}, pathUnknown},
+		{"no epoch changed from 0", epochs{"a": 0, "b": 0, "c": 0}, epochs{"a": 0, "b": 0, "c": 0}, pathUnknown},
+		{"one rose and one fell", epochs{"a": 3, "b": 3, "c": 3}, epochs{"a": 4, "b": 0, "c": 3}, pathUnknown},
+		{"the epochs before were not read", nil, epochs{"a": 1, "b": 1, "c": 1}, pathUnknown},
+		{"the epochs after were not read", epochs{"a": 1, "b": 1, "c": 1}, nil, pathUnknown},
+		{"fewer Sentinels after", epochs{"a": 1, "b": 1, "c": 1}, epochs{"a": 2, "b": 2}, pathUnknown},
+		{"another Sentinel after", epochs{"a": 1, "b": 1}, epochs{"a": 2, "c": 2}, pathUnknown},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := recoveryPath(c.before, c.after); got != c.want {
+				t.Errorf("path %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// setEpochs sets the config-epoch of all fake Sentinels.
+func setEpochs(rec *calls, epoch string) {
+	for _, addr := range []string{"127.0.0.1", "127.0.0.2", "127.0.0.3"} {
+		rec.setEpoch(addr, epoch)
+	}
+}
+
+// The mutation reads the epochs before the reset, so that the reset cannot
+// change what it compares with.
+func TestNoMasterReadsTheEpochsFirst(t *testing.T) {
+	rec := &calls{}
+	m, s, port := noMasterEnv(t, rec, nil)
+	setEpochs(rec, "5")
+	if err := m.apply(context.Background(), m.planNoMaster(s, "rfr-x-0", port), slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.get()
+	if len(got) != 7 || got[6] != "delete rfr-x-0 uid=u0" {
+		t.Fatalf("calls %v, want 3 epoch reads, 3 resets and the delete", got)
+	}
+	for i, e := range got[:6] {
+		if want := []string{"epoch", "reset"}[i/3]; !strings.HasPrefix(e, want) {
+			t.Errorf("call %d is %q, want %s", i, e, want)
+		}
+	}
+}
+
+func TestNoMasterRecovery(t *testing.T) {
+	cases := []struct {
+		name   string
+		before string
+		// after changes the fake Sentinels once the mutation is applied.
+		after func(*calls)
+		want  string
+	}{
+		{"Sentinel failover", "3", func(r *calls) { setEpochs(r, "4") }, pathSentinel},
+		{"Sentinel failover seen on one Sentinel", "3", func(r *calls) { r.setEpoch("127.0.0.2", "4") }, pathSentinel},
+		{"operator election", "3", func(r *calls) { setEpochs(r, "0") }, pathOperator},
+		{"operator election from epoch 0", "0", func(*calls) {}, pathUnknown},
+		{"no change", "3", func(*calls) {}, pathUnknown},
+		{"a Sentinel does not answer after", "3", func(r *calls) { delete(r.epochs, "127.0.0.3") }, pathUnknown},
+		{"a Sentinel answers no epoch after", "3", func(r *calls) { r.setEpoch("127.0.0.3", "") }, pathUnknown},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := &calls{}
+			m, s, port := noMasterEnv(t, rec, nil)
+			setEpochs(rec, c.before)
+			p := m.planNoMaster(s, "rfr-x-0", port)
+			if err := m.apply(context.Background(), p, slog.New(slog.DiscardHandler)); err != nil {
+				t.Fatal(err)
+			}
+			c.after(rec)
+			if got := p.recovery(context.Background()); got != c.want {
+				t.Errorf("path %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// A Sentinel that does not answer before the reset does not fail the
+// mutation. The path is then unknown, even if all Sentinels answer later.
+func TestNoMasterEpochNotReadBefore(t *testing.T) {
+	for name, epoch := range map[string]string{"error": "", "not a number": "x"} {
+		t.Run(name, func(t *testing.T) {
+			rec := &calls{}
+			m, s, port := noMasterEnv(t, rec, nil)
+			rec.setEpoch("127.0.0.1", "3")
+			rec.setEpoch("127.0.0.2", "3")
+			if epoch != "" {
+				rec.setEpoch("127.0.0.3", epoch)
+			}
+			p := m.planNoMaster(s, "rfr-x-0", port)
+			if err := m.apply(context.Background(), p, slog.New(slog.DiscardHandler)); err != nil {
+				t.Fatalf("apply: %v", err)
+			}
+			if got := rec.get(); got[len(got)-1] != "delete rfr-x-0 uid=u0" {
+				t.Errorf("calls %v, want the delete as the last call", got)
+			}
+			setEpochs(rec, "4")
+			if got := p.recovery(context.Background()); got != pathUnknown {
+				t.Errorf("path %q, want %q", got, pathUnknown)
+			}
+		})
+	}
+}
+
+// A Sentinel without an address cannot be read, as it cannot be reset.
+func TestConfigEpochsNoIP(t *testing.T) {
+	rec := &calls{}
+	m, s, port := noMasterEnv(t, rec, nil)
+	setEpochs(rec, "3")
+	s.sentinels[0].Status.PodIP = ""
+	if got := m.configEpochs(context.Background(), s.sentinels, port); got != nil {
+		t.Errorf("epochs %v, want none", got)
+	}
+}
+
+func TestRecordRecovery(t *testing.T) {
+	labels := prometheus.Labels{"rf": "x", "namespace": "ns", "mode": "sentinel"}
+	cases := []struct {
+		name     string
+		recovery func(context.Context) string
+		result   string
+		counted  string
+	}{
+		{"converged", func(context.Context) string { return pathOperator }, resultConverged, pathOperator},
+		{"timeout", func(context.Context) string {
+			t.Error("classified a mutation that did not converge")
+			return pathUnknown
+		}, resultTimeout, ""},
+		{"no classification", nil, resultConverged, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := &Mutator{recoveries: metrics.New(prometheus.NewRegistry(), time.Minute).NoMasterRecovery.MustCurryWith(labels)}
+			var buf bytes.Buffer
+			log := slog.New(slog.NewJSONHandler(&buf, nil))
+			m.recordRecovery(context.Background(), plan{recovery: c.recovery}, c.result, log).Info("done")
+			for _, path := range recoveryPaths {
+				want := 0.0
+				if path == c.counted {
+					want = 1
+				}
+				if got := testutil.ToFloat64(m.recoveries.WithLabelValues(path)); got != want {
+					t.Errorf("path %s counted %v, want %v", path, got, want)
+				}
+			}
+			if got := strings.Contains(buf.String(), `"recovery_path":"`+c.counted+`"`); got != (c.counted != "") {
+				t.Errorf("log %s, recovery_path logged: %v", buf.String(), got)
+			}
+		})
+	}
+}
+
+// Rates need a series that starts at 0, so New creates every path of an
+// instance that runs the kind, and none for another instance.
+func TestNewCreatesRecoverySeries(t *testing.T) {
+	cfg, err := config.Parse([]byte(versionsConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := cfg.Instances[slices.IndexFunc(cfg.Instances, func(in config.Instance) bool { return in.Name == "mixed" })]
+	reg := prometheus.NewRegistry()
+	mt := metrics.New(reg, time.Minute)
+	log := slog.New(slog.DiscardHandler)
+	New(in, cfg, nil, nil, nil, nil, nil, nil, nil, mt, log)
+	if n := testutil.CollectAndCount(mt.NoMasterRecovery); n != 0 {
+		t.Errorf("%d series for an instance without the kind", n)
+	}
+	in.Mutations.Kinds = map[config.Kind]int{config.SentinelResetKillMaster: 1}
+	m := New(in, cfg, nil, nil, nil, nil, nil, nil, nil, mt, log)
+	if n := testutil.CollectAndCount(mt.NoMasterRecovery); n != len(recoveryPaths) {
+		t.Errorf("%d series, want %d", n, len(recoveryPaths))
+	}
+	for _, path := range recoveryPaths {
+		if got := testutil.ToFloat64(m.recoveries.WithLabelValues(path)); got != 0 {
+			t.Errorf("path %s starts at %v", path, got)
+		}
+	}
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range families {
+		if f.GetName() == "redis_soak_no_master_recovery_total" {
+			return
+		}
+	}
+	t.Error("redis_soak_no_master_recovery_total is not registered")
 }

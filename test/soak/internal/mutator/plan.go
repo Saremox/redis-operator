@@ -84,6 +84,9 @@ type plan struct {
 	converged func(state) error
 	fetch     fetchOpts
 	probe     func(context.Context) error
+	// recovery returns the recovery path of a converged mutation, as
+	// recoveryPaths lists. It never decides the result.
+	recovery func(context.Context) string
 }
 
 type secretChange struct {

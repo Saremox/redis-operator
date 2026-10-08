@@ -212,6 +212,21 @@ explanation:
   writes and wait for the replicas, up to `shutdown-timeout`. A write is
   lost only if a replica lags, so the tester does not require a lossless
   result.
+
+  The tester records the recovery path of each converged run in the log
+  field `recovery_path` and in `redis_soak_no_master_recovery_total{path}`.
+  The path never changes the result. The tester reads `config-epoch` of the
+  master from each Sentinel before the reset and after the convergence.
+  `SENTINEL RESET` keeps the epoch. The paths are:
+  - `sentinel`: the epoch rose. A Sentinel failover raises the epoch.
+  - `operator`: the epoch fell. The operator makes each Sentinel monitor the
+    new master with `SENTINEL MONITOR`, which sets the epoch to 0.
+  - `unknown`: the epoch did not change, it rose on one Sentinel and fell on
+    another, or the tester could not read the epoch on every Sentinel.
+
+  The epoch is 0 on a new instance and after an election by the operator.
+  Then an election by the operator leaves no trace, and the path is
+  `unknown`. Thus `unknown` does not show that the operator did not run.
 - `password_rotate_offline` is scenario C. It stops the operator, changes
   the password, starts the operator with its replicas, expects
   `unable to apply the configured password`, sets the previous password,

@@ -93,6 +93,7 @@ type Mutator struct {
 	transitions  *prometheus.CounterVec
 	mixedSeconds prometheus.ObserverVec
 	findings     *prometheus.CounterVec
+	recoveries   *prometheus.CounterVec
 }
 
 // New returns the mutator of an instance; data is nil for an instance
@@ -122,11 +123,17 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		transitions:     m.VersionTransition.MustCurryWith(labels),
 		mixedSeconds:    m.VersionMixed.MustCurryWith(labels),
 		findings:        m.Findings.MustCurryWith(labels),
+		recoveries:      m.NoMasterRecovery.MustCurryWith(labels),
 	}
 	// Alerts use the increase of mutation_total, which does not show a series
 	// that starts at 1.
 	for _, k := range in.MutationKinds() {
 		mu.inProgress.WithLabelValues(string(k)).Set(0)
+		if k == config.SentinelResetKillMaster {
+			for _, path := range recoveryPaths {
+				mu.recoveries.WithLabelValues(path)
+			}
+		}
 		for _, r := range []string{resultConverged, resultTimeout, resultRejected, resultSkipped} {
 			mu.total.WithLabelValues(string(k), r)
 		}
@@ -334,6 +341,7 @@ func (m *Mutator) mutate(ctx context.Context, step int, r *rand.Rand, kind confi
 				"duration_seconds", time.Since(appliedAt).Seconds())
 		}
 	}
+	log = m.recordRecovery(ctx, p, result, log)
 	if !judged(p.edge, applyErr, converged) {
 		m.total.WithLabelValues(string(kind), result).Inc()
 	}
@@ -661,7 +669,9 @@ func eachPod[T any](ctx context.Context, m *Mutator, pods []corev1.Pod, port int
 	for i := range pods {
 		p := &pods[i]
 		if p.Status.PodIP == "" {
+			mu.Lock()
 			errs[p.Name] = errors.New("no pod IP")
+			mu.Unlock()
 			continue
 		}
 		wg.Go(func() {
