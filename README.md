@@ -606,7 +606,7 @@ The soak test runs RedisFailovers with these server images, in [operator-managed
 | Valkey 8 | `valkey/valkey:8.1.10-alpine` |
 | Valkey 9 | `valkey/valkey:9.1.2-alpine` |
 
-The soak test does not run other versions: Redis 6.x and 7.0, other patch releases of Redis 7.4 and 8, and Valkey 7.0 and 8.0.
+The soak test does not run other versions: Redis 6.x and 7.0, other patch releases of Redis 7.4 and 8, and Valkey 8.0.
 
 An in-place upgrade is a change of `spec.redis.image` on a RedisFailover that runs. The soak test made 3,775 such changes. Each instance had 3 Redis pods, a 16 MiB data set and a write ledger. The ledger checks each acknowledged write.
 
