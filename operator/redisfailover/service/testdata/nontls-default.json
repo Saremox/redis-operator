@@ -1,0 +1,398 @@
+{
+  "configmap": {
+    "metadata": {
+      "name": "rfr-test",
+      "namespace": "testns",
+      "labels": {
+        "app.kubernetes.io/component": "redis",
+        "app.kubernetes.io/name": "test",
+        "app.kubernetes.io/part-of": "redis-failover"
+      },
+      "ownerReferences": [
+        {
+          "apiVersion": "",
+          "kind": "",
+          "name": "default",
+          "uid": ""
+        }
+      ]
+    },
+    "data": {
+      "redis.conf": "slaveof 127.0.0.1 6379\nport 6379\ntcp-keepalive 60\nsave 900 1\nsave 300 10\nuser pinger -@all +ping on \u003epingpass\n"
+    }
+  },
+  "service-rfr-test": {
+    "metadata": {
+      "name": "rfr-test",
+      "namespace": "testns",
+      "labels": {
+        "app.kubernetes.io/component": "redis",
+        "app.kubernetes.io/name": "test",
+        "app.kubernetes.io/part-of": "redis-failover"
+      },
+      "annotations": {
+        "prometheus.io/path": "/metrics",
+        "prometheus.io/port": "9121",
+        "prometheus.io/scrape": "true"
+      },
+      "ownerReferences": [
+        {
+          "apiVersion": "",
+          "kind": "",
+          "name": "default",
+          "uid": ""
+        }
+      ]
+    },
+    "spec": {
+      "ports": [
+        {
+          "name": "http-metrics",
+          "protocol": "TCP",
+          "port": 9121,
+          "targetPort": 0
+        }
+      ],
+      "selector": {
+        "app.kubernetes.io/component": "redis",
+        "app.kubernetes.io/name": "test",
+        "app.kubernetes.io/part-of": "redis-failover"
+      },
+      "clusterIP": "None",
+      "type": "ClusterIP"
+    },
+    "status": {
+      "loadBalancer": {}
+    }
+  },
+  "service-rfrm-test": {
+    "metadata": {
+      "name": "rfrm-test",
+      "namespace": "testns",
+      "labels": {
+        "app.kubernetes.io/component": "redis",
+        "app.kubernetes.io/name": "test",
+        "app.kubernetes.io/part-of": "redis-failover",
+        "redisfailovers-role": "master"
+      },
+      "ownerReferences": [
+        {
+          "apiVersion": "",
+          "kind": "",
+          "name": "default",
+          "uid": ""
+        }
+      ]
+    },
+    "spec": {
+      "ports": [
+        {
+          "name": "redis",
+          "protocol": "TCP",
+          "port": 6379,
+          "targetPort": "redis"
+        }
+      ],
+      "selector": {
+        "app.kubernetes.io/component": "redis",
+        "app.kubernetes.io/name": "test",
+        "app.kubernetes.io/part-of": "redis-failover",
+        "redisfailovers-role": "master"
+      },
+      "type": "ClusterIP"
+    },
+    "status": {
+      "loadBalancer": {}
+    }
+  },
+  "service-rfrs-test": {
+    "metadata": {
+      "name": "rfrs-test",
+      "namespace": "testns",
+      "labels": {
+        "app.kubernetes.io/component": "redis",
+        "app.kubernetes.io/name": "test",
+        "app.kubernetes.io/part-of": "redis-failover",
+        "redisfailovers-role": "slave"
+      },
+      "ownerReferences": [
+        {
+          "apiVersion": "",
+          "kind": "",
+          "name": "default",
+          "uid": ""
+        }
+      ]
+    },
+    "spec": {
+      "ports": [
+        {
+          "name": "redis",
+          "protocol": "TCP",
+          "port": 6379,
+          "targetPort": "redis"
+        }
+      ],
+      "selector": {
+        "app.kubernetes.io/component": "redis",
+        "app.kubernetes.io/name": "test",
+        "app.kubernetes.io/part-of": "redis-failover",
+        "redisfailovers-role": "slave"
+      },
+      "type": "ClusterIP"
+    },
+    "status": {
+      "loadBalancer": {}
+    }
+  },
+  "statefulset": {
+    "metadata": {
+      "name": "rfr-test",
+      "namespace": "testns",
+      "labels": {
+        "app.kubernetes.io/component": "redis",
+        "app.kubernetes.io/name": "test",
+        "app.kubernetes.io/part-of": "redis-failover",
+        "redisfailovers-role": "slave"
+      },
+      "ownerReferences": [
+        {
+          "apiVersion": "",
+          "kind": "",
+          "name": "default",
+          "uid": ""
+        }
+      ]
+    },
+    "spec": {
+      "replicas": 3,
+      "selector": {
+        "matchLabels": {
+          "app.kubernetes.io/component": "redis",
+          "app.kubernetes.io/name": "test",
+          "app.kubernetes.io/part-of": "redis-failover"
+        }
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/component": "redis",
+            "app.kubernetes.io/name": "test",
+            "app.kubernetes.io/part-of": "redis-failover",
+            "redisfailovers-role": "slave"
+          },
+          "annotations": {
+            "redisfailovers.databases.spotahome.com/secret-checksum": "6fecf0e151249e80df864e84286b2e91cfe53fbf865480d4aaa36e20ea0e9b1b"
+          }
+        },
+        "spec": {
+          "volumes": [
+            {
+              "name": "redis-config",
+              "configMap": {
+                "name": "rfr-test"
+              }
+            },
+            {
+              "name": "redis-shutdown-config",
+              "configMap": {
+                "name": "rfr-s-test",
+                "defaultMode": 484
+              }
+            },
+            {
+              "name": "redis-readiness-config",
+              "configMap": {
+                "name": "rfr-readiness-test",
+                "defaultMode": 484
+              }
+            },
+            {
+              "name": "redis-data",
+              "emptyDir": {}
+            }
+          ],
+          "initContainers": [
+            {
+              "name": "rdb-tempfile-cleanup",
+              "image": "redis:7.2.12-alpine",
+              "command": [
+                "sh",
+                "-c",
+                "find /data -maxdepth 1 -type f -name 'temp-*.rdb' -delete"
+              ],
+              "resources": {
+                "limits": {
+                  "cpu": "10m",
+                  "memory": "32Mi"
+                },
+                "requests": {
+                  "cpu": "10m",
+                  "memory": "32Mi"
+                }
+              },
+              "volumeMounts": [
+                {
+                  "name": "redis-data",
+                  "mountPath": "/data"
+                }
+              ],
+              "imagePullPolicy": "Always",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "privileged": false,
+                "runAsUser": 1000,
+                "runAsGroup": 1000,
+                "runAsNonRoot": true,
+                "readOnlyRootFilesystem": true,
+                "allowPrivilegeEscalation": false
+              }
+            }
+          ],
+          "containers": [
+            {
+              "name": "redis",
+              "image": "redis:7.2.12-alpine",
+              "command": [
+                "redis-server",
+                "/redis/redis.conf"
+              ],
+              "ports": [
+                {
+                  "name": "redis",
+                  "containerPort": 6379,
+                  "protocol": "TCP"
+                }
+              ],
+              "env": [
+                {
+                  "name": "REDIS_ADDR",
+                  "value": "redis://127.0.0.1:6379"
+                },
+                {
+                  "name": "REDIS_PORT",
+                  "value": "6379"
+                },
+                {
+                  "name": "REDIS_USER",
+                  "value": "default"
+                }
+              ],
+              "resources": {},
+              "volumeMounts": [
+                {
+                  "name": "redis-config",
+                  "mountPath": "/redis"
+                },
+                {
+                  "name": "redis-shutdown-config",
+                  "mountPath": "/redis-shutdown"
+                },
+                {
+                  "name": "redis-readiness-config",
+                  "mountPath": "/redis-readiness"
+                },
+                {
+                  "name": "redis-data",
+                  "mountPath": "/data"
+                }
+              ],
+              "livenessProbe": {
+                "exec": {
+                  "command": [
+                    "sh",
+                    "-c",
+                    "t=; command -v timeout \u003e/dev/null 2\u003e\u00261 \u0026\u0026 t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'"
+                  ]
+                },
+                "initialDelaySeconds": 30,
+                "timeoutSeconds": 5,
+                "periodSeconds": 15,
+                "failureThreshold": 6
+              },
+              "readinessProbe": {
+                "exec": {
+                  "command": [
+                    "/bin/sh",
+                    "/redis-readiness/ready.sh"
+                  ]
+                },
+                "initialDelaySeconds": 30,
+                "timeoutSeconds": 5
+              },
+              "lifecycle": {
+                "preStop": {
+                  "exec": {
+                    "command": [
+                      "/bin/sh",
+                      "/redis-shutdown/shutdown.sh"
+                    ]
+                  }
+                }
+              },
+              "imagePullPolicy": "Always",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "privileged": false,
+                "runAsUser": 1000,
+                "runAsGroup": 1000,
+                "runAsNonRoot": true,
+                "readOnlyRootFilesystem": true,
+                "allowPrivilegeEscalation": false
+              }
+            }
+          ],
+          "terminationGracePeriodSeconds": 30,
+          "dnsPolicy": "ClusterFirst",
+          "automountServiceAccountToken": false,
+          "securityContext": {
+            "runAsUser": 1000,
+            "runAsGroup": 1000,
+            "runAsNonRoot": true,
+            "fsGroup": 1000,
+            "seccompProfile": {
+              "type": "RuntimeDefault"
+            }
+          },
+          "affinity": {
+            "podAntiAffinity": {
+              "preferredDuringSchedulingIgnoredDuringExecution": [
+                {
+                  "weight": 100,
+                  "podAffinityTerm": {
+                    "labelSelector": {
+                      "matchLabels": {
+                        "app.kubernetes.io/component": "redis",
+                        "app.kubernetes.io/name": "test",
+                        "app.kubernetes.io/part-of": "redis-failover"
+                      }
+                    },
+                    "topologyKey": "kubernetes.io/hostname"
+                  }
+                }
+              ]
+            }
+          },
+          "enableServiceLinks": false
+        }
+      },
+      "serviceName": "rfr-test",
+      "podManagementPolicy": "Parallel",
+      "updateStrategy": {
+        "type": "OnDelete"
+      }
+    },
+    "status": {
+      "replicas": 0,
+      "availableReplicas": 0
+    }
+  }
+}

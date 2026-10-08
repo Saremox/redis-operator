@@ -26,7 +26,7 @@ const (
 	redisConfigurationVolumeName = "redis-config"
 	// Template used to build the Redis configuration
 	redisConfigTemplate = `slaveof 127.0.0.1 {{.Spec.Redis.Port}}
-port {{.Spec.Redis.Port}}
+port {{redisListenPort .}}
 tcp-keepalive 60
 save 900 1
 save 300 10
@@ -155,15 +155,8 @@ func generateRedisMasterService(rf *redisfailoverv1.RedisFailover, labels map[st
 			Annotations:     rf.Spec.Redis.ServiceAnnotations,
 		},
 		Spec: corev1.ServiceSpec{
-			Type: corev1.ServiceTypeClusterIP,
-			Ports: []corev1.ServicePort{
-				{
-					Name:       "redis",
-					Port:       rf.Spec.Redis.Port,
-					TargetPort: intstr.FromString("redis"),
-					Protocol:   corev1.ProtocolTCP,
-				},
-			},
+			Type:     corev1.ServiceTypeClusterIP,
+			Ports:    redisServicePorts(rf),
 			Selector: selectorLabels,
 		},
 	}
@@ -188,15 +181,8 @@ func generateRedisSlaveService(rf *redisfailoverv1.RedisFailover, labels map[str
 			Annotations:     rf.Spec.Redis.ServiceAnnotations,
 		},
 		Spec: corev1.ServiceSpec{
-			Type: corev1.ServiceTypeClusterIP,
-			Ports: []corev1.ServicePort{
-				{
-					Name:       "redis",
-					Port:       rf.Spec.Redis.Port,
-					TargetPort: intstr.FromString("redis"),
-					Protocol:   corev1.ProtocolTCP,
-				},
-			},
+			Type:     corev1.ServiceTypeClusterIP,
+			Ports:    redisServicePorts(rf),
 			Selector: selectorLabels,
 		},
 	}
@@ -237,7 +223,7 @@ func generateRedisConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string
 	name := GetRedisName(rf)
 	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
 
-	tmpl, err := template.New("redis").Parse(redisConfigTemplate)
+	tmpl, err := template.New("redis").Funcs(template.FuncMap{"redisListenPort": redisListenPort}).Parse(redisConfigTemplate)
 	if err != nil {
 		panic(err)
 	}
@@ -250,7 +236,7 @@ func generateRedisConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string
 	// The password is not in this ConfigMap. Without a custom redis.command,
 	// redis-server gets requirepass and masterauth as arguments from the
 	// REDIS_PASSWORD env var (see getRedisCommand).
-	redisConfigFileContent := tplOutput.String()
+	redisConfigFileContent := tplOutput.String() + redisTLSConfig(rf)
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -354,11 +340,14 @@ fi
 `, GetSentinelName(rf), port)
 	}
 	shutdownContent += fmt.Sprintf(`cmd="redis-cli -p %v"
+if [ -n "${REDIS_TLS_PORT}" ]; then
+	cmd="redis-cli %s"
+fi
 if [ ! -z "${REDIS_PASSWORD}" ]; then
 	export REDISCLI_AUTH=${REDIS_PASSWORD}
 fi
 save_command="${cmd} save"
-eval $save_command`, port)
+eval $save_command`, port, tlsCLIArgs)
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -421,6 +410,9 @@ LINK_DOWN_SINCE="master_link_down_since_seconds:"
 MAX_LINK_DOWN_SECONDS=%[2]v
 
 cmd="redis-cli -p %[1]v"
+if [ -n "${REDIS_TLS_PORT}" ]; then
+	cmd="redis-cli %[3]s"
+fi
 # A frozen server still accepts connections, and redis-cli would wait for its
 # reply forever, holding the probe open past its timeout on some runtimes.
 if command -v timeout >/dev/null 2>&1; then
@@ -477,7 +469,7 @@ case $role in
 		*)
 				echo "unexpected"
 				exit 1
-esac`, port, redisReadinessMaxLinkDownSeconds(rf))
+esac`, port, redisReadinessMaxLinkDownSeconds(rf), tlsCLIArgs)
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -626,7 +618,7 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 						// a refused login gets NOAUTH, and the grep fails the probe.
 						// A server that loads its dataset answers LOADING and is
 						// alive: a restart starts the load again.
-						fmt.Sprintf("t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p %[1]v --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'", rf.Spec.Redis.Port),
+						fmt.Sprintf("t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) %[1]s --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'", redisLivenessCLIArgs(rf)),
 					},
 				},
 			},
@@ -691,6 +683,18 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 	redisEnv := getRedisEnv(rf)
 	mainEnv := append(ss.Spec.Template.Spec.Containers[0].Env, rf.Spec.Redis.Env...)
 	ss.Spec.Template.Spec.Containers[0].Env = append(mainEnv, redisEnv...)
+
+	if redisTLSOn(rf) {
+		redis := &ss.Spec.Template.Spec.Containers[0]
+		redis.Ports = append(redis.Ports, corev1.ContainerPort{
+			Name:          redisTLSPortName,
+			ContainerPort: rf.Spec.TLS.Port,
+			Protocol:      corev1.ProtocolTCP,
+		})
+		redis.VolumeMounts = append(redis.VolumeMounts, redisTLSVolumeMounts(rf)...)
+		redis.Env = append(redis.Env, redisTLSEnv(rf)...)
+		ss.Spec.Template.Spec.Volumes = append(ss.Spec.Template.Spec.Volumes, redisTLSVolumes(rf)...)
+	}
 
 	return ss
 }
@@ -970,6 +974,10 @@ func createRedisExporterContainer(rf *redisfailoverv1.RedisFailover) corev1.Cont
 
 	redisEnv := getRedisExporterEnv(rf)
 	container.Env = append(container.Env, redisEnv...)
+	if redisTLSOn(rf) {
+		container.Env = append(container.Env, redisExporterTLSEnv(rf)...)
+		container.VolumeMounts = redisTLSVolumeMounts(rf)
+	}
 	// Only for a custom port, so default pod templates stay unchanged.
 	if rf.Spec.Redis.Exporter.Port != 0 {
 		container.Env = append(container.Env, corev1.EnvVar{
@@ -1412,16 +1420,21 @@ func getRedisCommand(rf *redisfailoverv1.RedisFailover) []string {
 	// REDIS_PASSWORD env var, a SecretKeyRef. Thus the password is not in a
 	// ConfigMap or in the pod spec. The shell expands the env var, and exec
 	// keeps redis-server as PID 1, so it gets SIGTERM.
-	if rf.Spec.Auth.SecretPath != "" {
-		return []string{
-			"sh", "-c",
-			fmt.Sprintf(`exec redis-server /redis/%s --requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD"`, redisConfigFileName),
-		}
+	var tlsArgs []string
+	if redisTLSOn(rf) {
+		tlsArgs = redisTLSArgs(rf)
 	}
-	return []string{
+	if rf.Spec.Auth.SecretPath != "" {
+		script := fmt.Sprintf(`exec redis-server /redis/%s --requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD"`, redisConfigFileName)
+		if len(tlsArgs) > 0 {
+			script += " " + strings.Join(tlsArgs, " ")
+		}
+		return []string{"sh", "-c", script}
+	}
+	return append([]string{
 		"redis-server",
 		fmt.Sprintf("/redis/%s", redisConfigFileName),
-	}
+	}, tlsArgs...)
 }
 
 func getSentinelCommand(rf *redisfailoverv1.RedisFailover) []string {
@@ -1511,14 +1524,19 @@ func getRedisEnv(rf *redisfailoverv1.RedisFailover) []corev1.EnvVar {
 func getRedisExporterEnv(rf *redisfailoverv1.RedisFailover) []corev1.EnvVar {
 	var env []corev1.EnvVar
 
+	// The exporter uses the TLS port, because the plaintext port can close.
+	scheme, port := "redis", rf.Spec.Redis.Port
+	if redisTLSOn(rf) {
+		scheme, port = "rediss", rf.Spec.TLS.Port
+	}
 	env = append(env, corev1.EnvVar{
 		Name:  "REDIS_ADDR",
-		Value: fmt.Sprintf("redis://127.0.0.1:%[1]v", rf.Spec.Redis.Port),
+		Value: fmt.Sprintf("%s://127.0.0.1:%v", scheme, port),
 	})
 
 	env = append(env, corev1.EnvVar{
 		Name:  "REDIS_PORT",
-		Value: fmt.Sprintf("%[1]v", rf.Spec.Redis.Port),
+		Value: fmt.Sprintf("%[1]v", port),
 	})
 
 	if !envExists(rf.Spec.Redis.Exporter.Env, "REDIS_USER") {
