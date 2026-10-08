@@ -10,9 +10,100 @@ on:
   pull_request:
 
 jobs:
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    # On a pull request, the action reads the changed files with the REST API.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      codegen: ${{ steps.filter.outputs.codegen }}
+      unit: ${{ steps.filter.outputs.unit }}
+      integration: ${{ steps.filter.outputs.integration }}
+      chart: ${{ steps.filter.outputs.chart }}
+      docker: ${{ steps.filter.outputs.docker }}
+      e2e: ${{ steps.filter.outputs.e2e }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # A job runs when a changed file matches a rule of its filter. Each
+          # filter has the workflow files, so a change to a workflow runs the
+          # jobs. Documentation and metadata files match no rule.
+          filters: |
+            # Build and lint.
+            go:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - '.golangci*'
+              - '.github/workflows/**'
+            # Also compares the CRD files, as listed in CRD_MANIFESTS in the
+            # Makefile, with the generated files.
+            codegen:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'Makefile'
+              - 'manifests/databases.spotahome.com_redisfailovers.yaml'
+              - 'manifests/kustomize/base/databases.spotahome.com_redisfailovers.yaml'
+              - 'charts/redisoperator/crds/databases.spotahome.com_redisfailovers.yaml'
+              - '.github/workflows/**'
+            # The tests in api/ and operator/ read example/redisfailover.
+            unit:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'Makefile'
+              - 'example/**'
+              - '.github/workflows/**'
+            # The job applies the CRD file of the operator.
+            integration:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'Makefile'
+              - 'manifests/databases.spotahome.com_redisfailovers.yaml'
+              - '.github/workflows/**'
+            # scripts/helm-tests.sh reads the chart, manifests/kustomize,
+            # example/operator, scripts/release.sh and release.yml.
+            chart:
+              - 'charts/**'
+              - 'manifests/**'
+              - 'scripts/**'
+              - 'example/**'
+              - 'Makefile'
+              - '.github/workflows/**'
+            # The Dockerfile builds the binaries with scripts/build.sh.
+            docker:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'docker/**'
+              - '.dockerignore'
+              - 'scripts/**'
+              - '.github/workflows/**'
+            # The test builds the image and installs the chart and the CRD.
+            e2e:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'docker/**'
+              - '.dockerignore'
+              - 'scripts/**'
+              - 'charts/**'
+              - 'manifests/**'
+              - 'test/**'
+              - '.github/workflows/**'
+
   build:
     name: Build
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -26,6 +117,8 @@ jobs:
   check:
     name: Lint
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -41,6 +134,8 @@ jobs:
   verify-codegen:
     name: Verify generated code
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.codegen == 'true'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -53,6 +148,8 @@ jobs:
   unit-test:
     name: Unit test
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.unit == 'true'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -71,8 +168,10 @@ jobs:
   integration-test:
     name: Integration test
     runs-on: ubuntu-24.04
-    # No `needs`: this matrix does not use the output of check or unit-test,
-    # so it runs in parallel with them.
+    needs: changes
+    if: needs.changes.outputs.integration == 'true'
+    # No `needs` on check or unit-test: this matrix does not use their
+    # output, so it runs in parallel with them.
     strategy:
       matrix:
         kubernetes: [1.35.8, 1.36.4, 1.37.0]
@@ -118,6 +217,8 @@ jobs:
   chart-test:
     name: Chart testing
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.chart == 'true'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -132,7 +233,13 @@ jobs:
   docker:
     name: Docker build
     runs-on: ubuntu-latest
-    needs: [build, unit-test]
+    needs: [changes, build, unit-test]
+    # A skipped build or unit-test job does not skip this job. A failed or
+    # cancelled job does.
+    if: >-
+      !cancelled() && needs.changes.outputs.docker == 'true'
+      && contains(fromJSON('["success", "skipped"]'), needs.build.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.unit-test.result)
     steps:
       - uses: actions/checkout@v7
       - name: Set up QEMU
@@ -152,3 +259,10 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: false
           tags: ghcr.io/${{ env.REPO }}:${{ github.sha }}
+
+  e2e:
+    name: E2E
+    needs: changes
+    # The test runs on pull requests only, not on a push to main.
+    if: github.event_name == 'pull_request' && needs.changes.outputs.e2e == 'true'
+    uses: ./.github/workflows/e2e.yml

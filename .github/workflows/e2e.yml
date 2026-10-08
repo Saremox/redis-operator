@@ -5,10 +5,11 @@ name: E2E Tests
 # RedisFailover: master election, replication, a failover by the operator,
 # and the endpoints of the master Service after it.
 #
-# Runs on every pull request. A workflow that only triggered for one base
-# branch could not be tested on the pull request that changed it.
+# The CI workflow calls this workflow on a pull request when a changed file
+# can affect the test, and when the pull request changes a workflow file. The
+# test of a changed workflow runs on the pull request that changes it.
 on:
-  pull_request:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
