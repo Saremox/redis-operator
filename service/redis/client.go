@@ -67,6 +67,7 @@ type Client interface {
 	FailoverTo(ip, port, password, targetIP string, timeout time.Duration) error
 	FailoverAbort(ip, port, password string) error
 	GetRunID(ip, port, password string) (string, error)
+	GetFailoverState(ip, port, password string) (string, error)
 }
 
 type client struct {
@@ -930,17 +931,45 @@ func (c *client) FailoverAbort(ip, port, password string) error {
 	return nil
 }
 
+// quickOptions are for a check whose caller treats a slow answer like no
+// answer. Each step waits 500ms at most, and the client does not retry.
+func quickOptions(addr, password string) *rediscli.Options {
+	options := redisOptions(addr, password)
+	options.DialTimeout, options.ReadTimeout, options.WriteTimeout = 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond
+	options.MaxRetries = -1
+	return options
+}
+
+// GetFailoverState returns master_failover_state of the Redis at ip, or ""
+// before Redis 6.2. It uses quickOptions.
+func (c *client) GetFailoverState(ip, port, password string) (string, error) {
+	if ip == "" {
+		return "", errNoIP
+	}
+	rClient := rediscli.NewClient(quickOptions(net.JoinHostPort(ip, port), password))
+	defer closeClient(rClient)
+	info, err := rClient.Info(context.TODO(), "replication").Result()
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_FAILOVER_STATE, metrics.FAIL, getRedisError(err))
+		return "", err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_FAILOVER_STATE, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	for _, line := range strings.Split(info, "\n") {
+		if state, ok := strings.CutPrefix(strings.TrimSpace(line), "master_failover_state:"); ok {
+			return state, nil
+		}
+	}
+	return "", nil
+}
+
 // GetRunID returns the run_id of the Redis at ip, which changes at each
-// restart. It waits 500ms at most and does not retry, because the caller
-// treats a slow answer as a stop.
+// restart. It uses quickOptions, because the caller treats a slow answer as a
+// stop.
 func (c *client) GetRunID(ip, port, password string) (string, error) {
 	if ip == "" {
 		return "", errNoIP
 	}
-	options := redisOptions(net.JoinHostPort(ip, port), password)
-	options.DialTimeout, options.ReadTimeout, options.WriteTimeout = 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond
-	options.MaxRetries = -1
-	rClient := rediscli.NewClient(options)
+	rClient := rediscli.NewClient(quickOptions(net.JoinHostPort(ip, port), password))
 	defer closeClient(rClient)
 	info, err := rClient.Info(context.TODO(), "server").Result()
 	if err != nil {

@@ -68,6 +68,34 @@ func (_m *Client) FailoverTo(ip string, port string, password string, targetIP s
 	return r0
 }
 
+// GetFailoverState provides a mock function with given fields: ip, port, password
+func (_m *Client) GetFailoverState(ip string, port string, password string) (string, error) {
+	ret := _m.Called(ip, port, password)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetFailoverState")
+	}
+
+	var r0 string
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, string, string) (string, error)); ok {
+		return rf(ip, port, password)
+	}
+	if rf, ok := ret.Get(0).(func(string, string, string) string); ok {
+		r0 = rf(ip, port, password)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+
+	if rf, ok := ret.Get(1).(func(string, string, string) error); ok {
+		r1 = rf(ip, port, password)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetMemoryInfo provides a mock function with given fields: ip, port, password
 func (_m *Client) GetMemoryInfo(ip string, port string, password string) (*redis.MemoryInfo, error) {
 	ret := _m.Called(ip, port, password)

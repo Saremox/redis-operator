@@ -80,6 +80,7 @@ const (
 	FAILOVER_TO                 = "FAILOVER_TO_REPLICA"
 	FAILOVER_ABORT              = "FAILOVER_ABORT"
 	GET_RUN_ID                  = "GET_RUN_ID"
+	GET_FAILOVER_STATE          = "GET_FAILOVER_STATE"
 )
 
 var ( // used for garbage collection of metrics

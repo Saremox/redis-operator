@@ -1106,8 +1106,8 @@ func (r *RedisFailoverHandler) electMasterForSentinel(rf *redisfailoverv1.RedisF
 // reconcile watches, for example after an operator restart in a handover.
 // Without the abort, the old master stays a replica without writes, and the
 // election below can promote a second master. The handover of this reconcile
-// starts later, in UpdateRedisesPods. A FAILOVER that a user sends by hand is
-// also aborted.
+// starts later, in UpdateRedisesPods. The check also aborts a FAILOVER that a
+// user sends by hand.
 func (r *RedisFailoverHandler) abortOrphanedFailover(rf *redisfailoverv1.RedisFailover) (bool, error) {
 	// The checks below list the pods again and report a failed list.
 	pod, _ := r.labelledMasterPod(rf)

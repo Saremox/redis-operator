@@ -288,20 +288,26 @@ func TestFailoverAbortConnectionError(t *testing.T) {
 	assert.ErrorIs(t, c.FailoverAbort("", strconv.Itoa(port), ""), errNoIP)
 }
 
-// The run ID changes at each restart of the server and stays the same until
-// then.
+// The run ID stays the same until the server restarts, and changes then.
 func TestGetRunID(t *testing.T) {
 	requireRedisServer(t)
-	server := startRedisProcess(t)
+	port, err := findFreePort()
+	require.NoError(t, err)
+	server := startRedisProcessOnAddr(t, testLoopbackIP, port)
 	c := newTestClient()
 
-	first, err := c.GetRunID(server.IP, strconv.Itoa(server.Port), "")
+	first, err := c.GetRunID(server.IP, strconv.Itoa(port), "")
 	require.NoError(t, err)
-	second, err := c.GetRunID(server.IP, strconv.Itoa(server.Port), "")
+	second, err := c.GetRunID(server.IP, strconv.Itoa(port), "")
+	require.NoError(t, err)
+	killProc(server)
+	restarted := startRedisProcessOnAddr(t, testLoopbackIP, port)
+	third, err := c.GetRunID(restarted.IP, strconv.Itoa(port), "")
 	require.NoError(t, err)
 
 	assert.Len(t, first, 40)
 	assert.Equal(t, first, second)
+	assert.NotEqual(t, first, third)
 }
 
 func TestGetRunIDErrors(t *testing.T) {
@@ -331,4 +337,75 @@ func TestGetRunIDErrors(t *testing.T) {
 	require.NoError(t, err)
 	_, err = c.GetRunID(host, p, "")
 	assert.ErrorContains(t, err, "no run_id")
+}
+
+func TestGetFailoverState(t *testing.T) {
+	requireRedisServer(t)
+	server := startRedisProcess(t)
+	c := newTestClient()
+
+	state, err := c.GetFailoverState(server.IP, strconv.Itoa(server.Port), "")
+
+	require.NoError(t, err)
+	if state == "" {
+		t.Skip("redis-server before 6.2 has no master_failover_state")
+	}
+	assert.Equal(t, "no-failover", state)
+}
+
+// fakeServer accepts connections. With reply, it answers the first request
+// with reply. Without reply, it never answers, as a frozen node.
+func fakeServer(t *testing.T, reply string) (string, string) {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				_, _ = conn.Read(make([]byte, 1024))
+				if reply != "" {
+					_, _ = conn.Write([]byte(reply))
+				}
+				time.Sleep(3 * time.Second)
+			}()
+		}
+	}()
+	host, port, err := net.SplitHostPort(l.Addr().String())
+	require.NoError(t, err)
+	return host, port
+}
+
+// The check runs at each reconcile, so a node that does not answer must not
+// hold it for the 4s of the default options.
+func TestGetFailoverStateOfAFrozenNode(t *testing.T) {
+	host, port := fakeServer(t, "")
+
+	start := time.Now()
+	_, err := newTestClient().GetFailoverState(host, port, "")
+
+	assert.Error(t, err)
+	assert.Less(t, time.Since(start), 1500*time.Millisecond)
+}
+
+func TestGetFailoverStateErrors(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	c := newTestClient()
+
+	_, err = c.GetFailoverState(testLoopbackIP, strconv.Itoa(port), "")
+	assert.Error(t, err)
+	_, err = c.GetFailoverState("", strconv.Itoa(port), "")
+	assert.ErrorIs(t, err, errNoIP)
+
+	// Redis before 6.2 has no master_failover_state.
+	host, p := fakeServer(t, "$11\r\nrole:master\r\n")
+	state, err := c.GetFailoverState(host, p, "")
+	assert.NoError(t, err)
+	assert.Empty(t, state)
 }

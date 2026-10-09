@@ -317,26 +317,26 @@ func TestHandOverMasterPasswordError(t *testing.T) {
 func TestAbortOrphanedFailover(t *testing.T) {
 	errBoom := errors.New("boom")
 	tests := []struct {
-		name    string
-		info    *redis.ReplicationInfo
-		infoErr error
-		abort   *error
-		want    bool
-		wantErr string
+		name     string
+		state    string
+		stateErr error
+		abort    *error
+		want     bool
+		wantErr  string
 	}{
-		{name: "a role change runs", info: replicaInfo("failover-in-progress", handoverTarget), abort: ptrTo[error](nil), want: true},
-		{name: "a catch-up runs", info: masterInfo("waiting-for-sync"), abort: ptrTo[error](nil), want: true},
-		{name: "the failover ends just before the abort", info: masterInfo("waiting-for-sync"), abort: ptrTo(errors.New("ERR No failover in progress.")), want: true},
-		{name: "the abort fails", info: masterInfo("waiting-for-sync"), abort: ptrTo(errBoom), wantErr: "boom"},
-		{name: "no failover runs", info: masterInfo("no-failover")},
-		{name: "Redis before 6.2", info: masterInfo("")},
+		{name: "a role change runs", state: "failover-in-progress", abort: ptrTo[error](nil), want: true},
+		{name: "a catch-up runs", state: "waiting-for-sync", abort: ptrTo[error](nil), want: true},
+		{name: "the failover ends just before the abort", state: "waiting-for-sync", abort: ptrTo(errors.New("ERR No failover in progress.")), want: true},
+		{name: "the abort fails", state: "waiting-for-sync", abort: ptrTo(errBoom), wantErr: "boom"},
+		{name: "no failover runs", state: "no-failover"},
+		{name: "Redis before 6.2"},
 		// The checks of the master handle a master that does not answer.
-		{name: "the master does not answer", infoErr: errBoom},
+		{name: "the master does not answer", stateErr: errBoom},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			mr := &mRedisService.Client{}
-			mr.On("GetReplicationInfo", handoverMaster, "6379", "").Once().Return(test.info, test.infoErr)
+			mr.On("GetFailoverState", handoverMaster, "6379", "").Once().Return(test.state, test.stateErr)
 			if test.abort != nil {
 				mr.On("FailoverAbort", handoverMaster, "6379", "").Once().Return(*test.abort)
 			}
@@ -355,16 +355,21 @@ func TestAbortOrphanedFailover(t *testing.T) {
 	}
 }
 
-func TestAbortOrphanedFailoverPasswordError(t *testing.T) {
+// The checks after the FAILOVER check read the same password and report the
+// error, so the check only skips.
+func TestAbortOrphanedFailoverWithoutAPassword(t *testing.T) {
 	rf := handoverRF()
 	rf.Spec.Auth.SecretPath = "redis-secret"
 	ms := &mK8SService.Services{}
 	ms.On("GetSecret", "testns", "redis-secret").Once().Return(nil, errors.New("secret unavailable"))
-	healer := NewRedisFailoverHealer(ms, &mRedisService.Client{}, log.Dummy)
+	mr := &mRedisService.Client{}
+	healer := NewRedisFailoverHealer(ms, mr, log.Dummy)
 
-	_, err := healer.AbortOrphanedFailover(handoverMaster, rf)
+	aborted, err := healer.AbortOrphanedFailover(handoverMaster, rf)
 
-	assert.ErrorContains(t, err, "secret unavailable")
+	assert.NoError(t, err)
+	assert.False(t, aborted)
+	mr.AssertNotCalled(t, "GetFailoverState", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func ptrTo[T any](v T) *T { return &v }

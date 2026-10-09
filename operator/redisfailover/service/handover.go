@@ -49,10 +49,9 @@ var (
 // HandOverMaster moves the master role from masterIP to targetIP with FAILOVER.
 // The master pauses the writes until the target has its whole replication
 // stream, so in the normal case no acknowledged write is lost. Without FORCE,
-// a timeout aborts the failover and the master continues. A failover that
-// runs already, for example after an operator restart, is not started again.
-// A role change that does not end in the wait is aborted, and the old master
-// continues.
+// a timeout aborts the failover and the master continues. HandOverMaster
+// does not start a second failover while one runs. It aborts a role change
+// that does not end in the wait, and the old master continues.
 func (r *RedisFailoverHealer) HandOverMaster(masterIP, targetIP string, rf *redisfailoverv1.RedisFailover) (HandoverResult, error) {
 	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
 	password, err := k8s.GetRedisPassword(r.k8sService, rf)
@@ -154,16 +153,18 @@ func (r *RedisFailoverHealer) targetRestarted(targetIP, port, password string, r
 // whether a failover ran. In operator-managed mode, only the rollout sends
 // FAILOVER, and it waits for the end in the same reconcile. Thus a failover at
 // the start of a reconcile has no watcher, for example after an operator
-// restart. Redis has no time limit for its role change. A master that does not
-// answer is not an error here, because the checks of the master handle it.
+// restart. Redis has no time limit for its role change. A missing password or
+// a master that does not answer in time is not an error here, because the
+// checks after it read the same password and the same master and report them.
 func (r *RedisFailoverHealer) AbortOrphanedFailover(masterIP string, rf *redisfailoverv1.RedisFailover) (bool, error) {
 	password, err := k8s.GetRedisPassword(r.k8sService, rf)
 	if err != nil {
-		return false, err
+		return false, nil
 	}
 	port := getRedisPort(rf.Spec.Redis.Port)
-	info, err := r.redisClient.GetReplicationInfo(masterIP, port, password)
-	if err != nil || info.FailoverState == "" || info.FailoverState == noFailover {
+	// The check runs at each reconcile, so a slow master must not hold it.
+	state, err := r.redisClient.GetFailoverState(masterIP, port, password)
+	if err != nil || state == "" || state == noFailover {
 		return false, nil
 	}
 	err = r.redisClient.FailoverAbort(masterIP, port, password)
