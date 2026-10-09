@@ -154,8 +154,8 @@ func (r *RedisFailoverHealer) targetRestarted(targetIP, port, password string, r
 // FAILOVER, and it waits for the end in the same reconcile. Thus a failover at
 // the start of a reconcile has no watcher, for example after an operator
 // restart. Redis has no time limit for its role change. A missing password or
-// a master that does not answer in time is not an error here, because the
-// checks after it read the same password and the same master and report them.
+// a master that does not answer in time is not an error here. The checks after
+// it read the same password and the same master and report them.
 func (r *RedisFailoverHealer) AbortOrphanedFailover(masterIP string, rf *redisfailoverv1.RedisFailover) (bool, error) {
 	password, err := k8s.GetRedisPassword(r.k8sService, rf)
 	if err != nil {
