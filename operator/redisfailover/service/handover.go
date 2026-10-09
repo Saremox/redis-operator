@@ -89,17 +89,18 @@ func (r *RedisFailoverHealer) HandOverMaster(masterIP, targetIP string, rf *redi
 	}
 
 	deadline := time.Now().Add(handoverWritePause + handoverWaitMargin)
+	var ended bool
 	for {
-		info, err = r.redisClient.GetReplicationInfo(masterIP, port, password)
-		if err != nil {
-			return 0, err
-		}
-		if info.FailoverState == noFailover || !time.Now().Before(deadline) || r.targetRestarted(targetIP, port, password, &targetRunID) {
+		// A failed or slow read does not end the wait. The deadline limits it,
+		// and the abort after it ends a failover that still runs.
+		state, err := r.redisClient.GetFailoverState(masterIP, port, password)
+		ended = err == nil && state == noFailover
+		if ended || !time.Now().Before(deadline) || r.targetRestarted(targetIP, port, password, &targetRunID) {
 			break
 		}
 		time.Sleep(handoverPollInterval)
 	}
-	if info.FailoverState != noFailover {
+	if !ended {
 		// The abort keeps the old master with all its data. A target that took
 		// the role at the same time has no client writes, and the check of
 		// multiple masters makes it a replica again.
@@ -111,14 +112,13 @@ func (r *RedisFailoverHealer) HandOverMaster(masterIP, targetIP string, rf *redi
 		case !strings.HasPrefix(err.Error(), "ERR No failover in progress"):
 			return 0, err
 		}
-		if info, err = r.redisClient.GetReplicationInfo(masterIP, port, password); err != nil {
-			return 0, err
-		}
-		if info.FailoverState != noFailover {
-			return 0, fmt.Errorf("FAILOVER on %s still runs after FAILOVER ABORT", masterIP)
-		}
+	}
+	if info, err = r.redisClient.GetReplicationInfo(masterIP, port, password); err != nil {
+		return 0, err
 	}
 	switch {
+	case info.FailoverState != noFailover:
+		return 0, fmt.Errorf("FAILOVER on %s still runs after the wait", masterIP)
 	case info.Role == "master":
 		return HandoverAborted, nil
 	case info.MasterHost != targetIP:
@@ -130,6 +130,19 @@ func (r *RedisFailoverHealer) HandOverMaster(masterIP, targetIP string, rf *redi
 	}
 	if !isMaster {
 		return 0, fmt.Errorf("after FAILOVER, %s is not a master", targetIP)
+	}
+	// The target can restart after the last read of its run ID and take the
+	// role with older data. No check can undo that, and an error would only
+	// delay the label change. Thus the result stays HandoverDone, and the log
+	// reports the restart.
+	runID, err := r.redisClient.GetRunID(targetIP, port, password)
+	switch {
+	case err != nil:
+		logger.Warningf("%s did not answer after the FAILOVER, so a restart in the FAILOVER is not excluded: %v", targetIP, err)
+	// An empty targetRunID: a failover ran before this call, and the wait
+	// read no run ID. Then nothing shows a restart before this read.
+	case targetRunID != "" && runID != targetRunID:
+		logger.Errorf("%s took the master role with run ID %s, not %s: it restarted in the FAILOVER, and the data of its RDB file can be older", targetIP, runID, targetRunID)
 	}
 	return HandoverDone, nil
 }

@@ -52,6 +52,7 @@ func TestHandOverMaster(t *testing.T) {
 	tests := []struct {
 		name string
 		// infos are the INFO replication replies of the old master, in order.
+		// The reads of master_failover_state in the wait also take them.
 		infos       []*redis.ReplicationInfo
 		infoErr     error
 		failover    bool
@@ -65,6 +66,12 @@ func TestHandOverMaster(t *testing.T) {
 		// runIDs are the GetRunID replies of the target, in order. The last
 		// one repeats. An empty entry is an error. nil means "run-1".
 		runIDs []string
+		// stateErr makes each read of master_failover_state in the wait fail,
+		// and stateReads is the least number of such reads that the wait makes.
+		stateErr   bool
+		stateReads int
+		// runReads is the number of GetRunID calls, if the test checks it.
+		runReads int
 		// maxReads limits the INFO reads of the old master before the abort,
 		// when the abort must come before the end of the wait.
 		maxReads int
@@ -76,7 +83,9 @@ func TestHandOverMaster(t *testing.T) {
 			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), masterInfo("waiting-for-sync"), replicaInfo("failover-in-progress", handoverTarget), replicaInfo("no-failover", handoverTarget)},
 			failover:   true,
 			targetRole: ptrTo(true),
-			want:       HandoverDone,
+			// One read before FAILOVER, two in the wait, and one at the end.
+			runReads: 4,
+			want:     HandoverDone,
 		},
 		{
 			name:     "Redis aborts on the timeout",
@@ -147,13 +156,16 @@ func TestHandOverMaster(t *testing.T) {
 			failover:   true,
 			abort:      ptrTo[error](nil),
 			afterAbort: replicaInfo("failover-in-progress", handoverTarget),
-			wantErr:    "still runs after FAILOVER ABORT",
+			wantErr:    "still runs after the wait",
 		},
 		{
 			name:       "a restart continues a running failover",
 			infos:      []*redis.ReplicationInfo{masterInfo("waiting-for-sync"), replicaInfo("no-failover", handoverTarget)},
 			targetRole: ptrTo(true),
-			want:       HandoverDone,
+			// The wait reads no run ID, so the read at the end has nothing
+			// to compare with.
+			runReads: 1,
+			want:     HandoverDone,
 		},
 		{
 			name:       "a restart takes the run ID of the target in the wait",
@@ -207,10 +219,51 @@ func TestHandOverMaster(t *testing.T) {
 			wantErr: "boom",
 		},
 		{
-			name:     "INFO fails in the wait",
-			infos:    []*redis.ReplicationInfo{masterInfo("no-failover")},
+			name:       "a failed read in the wait does not end the wait",
+			infos:      []*redis.ReplicationInfo{masterInfo("no-failover")},
+			failover:   true,
+			stateErr:   true,
+			stateReads: 2,
+			abort:      ptrTo[error](nil),
+			afterAbort: masterInfo("no-failover"),
+			want:       HandoverAborted,
+		},
+		{
+			name:       "a target that restarted before the end of the wait does not stop the handover",
+			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("no-failover", handoverTarget)},
+			failover:   true,
+			runIDs:     []string{"run-1", "run-2"},
+			targetRole: ptrTo(true),
+			runReads:   2,
+			want:       HandoverDone,
+		},
+		{
+			name:       "a target that restarted between two reads of the wait does not stop the handover",
+			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget), replicaInfo("no-failover", handoverTarget)},
+			failover:   true,
+			runIDs:     []string{"run-1", "run-1", "run-2"},
+			targetRole: ptrTo(true),
+			runReads:   3,
+			want:       HandoverDone,
+		},
+		{
+			name:       "a target that does not answer after the role change does not stop the handover",
+			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("no-failover", handoverTarget)},
+			failover:   true,
+			runIDs:     []string{"run-1", ""},
+			targetRole: ptrTo(true),
+			runReads:   2,
+			want:       HandoverDone,
+		},
+		// The old master keeps all its data, so a restart of the target is
+		// no loss.
+		{
+			name:     "a failover that ends in an abort reads no run ID at the end",
+			infos:    []*redis.ReplicationInfo{masterInfo("no-failover"), masterInfo("no-failover")},
 			failover: true,
-			wantErr:  "boom",
+			runIDs:   []string{"run-1", "run-2"},
+			runReads: 1,
+			want:     HandoverAborted,
 		},
 		{
 			name:     "the old master follows a different master",
@@ -238,19 +291,29 @@ func TestHandOverMaster(t *testing.T) {
 			shortHandoverWait(t)
 			mr := &mRedisService.Client{}
 			reads, aborted := 0, false
-			mr.On("GetReplicationInfo", handoverMaster, "6379", "").Return(func(string, string, string) (*redis.ReplicationInfo, error) {
+			nextInfo := func(string, string, string) (*redis.ReplicationInfo, error) {
 				switch {
 				case aborted && test.afterAbort == nil:
 					return nil, errBoom
 				case aborted:
 					return test.afterAbort, nil
-				case test.infoErr != nil, test.name == "INFO fails in the wait" && reads == len(test.infos):
+				case test.infoErr != nil:
 					return nil, errBoom
 				}
 				// The last reply repeats until the wait ends.
 				info := test.infos[min(reads, len(test.infos)-1)]
 				reads++
 				return info, nil
+			}
+			mr.On("GetReplicationInfo", handoverMaster, "6379", "").Return(nextInfo)
+			stateReads := 0
+			mr.On("GetFailoverState", handoverMaster, "6379", "").Maybe().Return(func(ip, port, password string) (string, error) {
+				stateReads++
+				if test.stateErr {
+					return "", errBoom
+				}
+				info, err := nextInfo(ip, port, password)
+				return info.FailoverState, err
 			})
 			runIDs := test.runIDs
 			if runIDs == nil {
@@ -294,6 +357,10 @@ func TestHandOverMaster(t *testing.T) {
 			if test.abort == nil {
 				mr.AssertNotCalled(t, "FailoverAbort", mock.Anything, mock.Anything, mock.Anything)
 			}
+			if test.runReads > 0 {
+				assert.Equal(t, test.runReads, runReads)
+			}
+			assert.GreaterOrEqual(t, stateReads, test.stateReads, "a failed read ended the wait")
 			if test.maxReads > 0 {
 				assert.LessOrEqual(t, reads, test.maxReads, "the abort came only at the end of the wait")
 			}
