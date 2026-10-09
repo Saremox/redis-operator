@@ -332,15 +332,17 @@ margin, counted from the start. The grace is one minute, and the verification
 bound is two minutes.
 
 After the grace, the tester takes the mutation lock and reads the instance
-again. The state must still hold. The tester then checks that the master accepts
-writes and that the ledger shows no lost write. It judges the change
-`failed_safe`, logs `adopted=true` and resets the instance.
+again. The state must still hold. The tester then judges the change by the rules
+above. The master must accept writes, the ledger must show no lost write, and
+each Sentinel that kept its image must report the master. If the judgement is
+`failed_safe`, it logs `adopted=true` and resets the instance.
 
 The tester never adopts a change along an `ok` edge, because a stuck replica
 there is a finding. It adopts no other state, and the observer counts findings
-after the convergence timeout. If the master refuses writes or the ledger check
-finds a lost write, the tester does not adopt the change. The instance then
-stays stalled, and `redis_soak_mutation_stalled_seconds` shows this. An adopted
+after the convergence timeout. If one of the checks fails, for example a Sentinel
+does not answer, the tester does not adopt the change. The instance then stays
+stalled, and `redis_soak_mutation_stalled_seconds` shows this. Adoption runs
+once per tester start, so one failed read brings back the stall. An adopted
 change has no `redis_soak_version_mixed_seconds` sample. Its ledger check
 covers only the writes since the start.
 

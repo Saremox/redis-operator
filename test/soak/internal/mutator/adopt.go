@@ -117,9 +117,10 @@ func (m *Mutator) findStuck(ctx context.Context, deadline time.Time) (t *transit
 // adopt judges a version change that a former process started, and resets
 // the instance if the change failed safely. started is the start of the
 // tester. Without adoption, the instance stays in a violation that no window
-// explains, and the mutator waits for it forever. If the master refuses writes
-// or the ledger shows a lost write, the instance stays as it is, and the gauge
-// shows the stall.
+// explains, and the mutator waits for it forever. If a check of the judgement
+// fails, the instance stays as it is, and the gauge shows the stall. A check
+// fails when, for example, the master refuses writes or a Sentinel does not
+// answer.
 func (m *Mutator) adopt(ctx context.Context, started time.Time) {
 	if m.in.Chain == nil || m.instance == nil {
 		return
