@@ -1,0 +1,135 @@
+# promtool unit tests of the alerts in deploy/monitoring/prometheusrule.yaml.
+# make check-monitoring runs them.
+rule_files: [rules.yaml]
+evaluation_interval: 15s
+tests:
+  - name: not writable outside a window
+    interval: 15s
+    input_series:
+      - series: 'redis_soak_writable{rf="a",namespace="a",mode="operator",path="rfrm",client="pooled"}'
+        values: '1 0x12'
+      - series: 'redis_soak_window_open{rf="a",namespace="a",mode="operator"}'
+        values: '0x12'
+      # In a window: expected.
+      - series: 'redis_soak_writable{rf="b",namespace="b",mode="operator",path="rfrm",client="pooled"}'
+        values: '1 0x12'
+      - series: 'redis_soak_window_open{rf="b",namespace="b",mode="operator"}'
+        values: '0 1x12'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: RedisSoakNotWritable
+      - eval_time: 2m
+        alertname: RedisSoakNotWritable
+        exp_alerts:
+          - exp_labels: {severity: critical, rf: a, namespace: a, mode: operator, path: rfrm, client: pooled}
+            exp_annotations:
+              summary: "a/a has not been writable through rfrm (pooled client) for over 1m outside a convergence window."
+
+  - name: masters outside a window
+    interval: 15s
+    input_series:
+      - series: 'redis_soak_masters{rf="split",namespace="split",mode="sentinel"}'
+        values: '1 2x8'
+      - series: 'redis_soak_window_open{rf="split",namespace="split",mode="sentinel"}'
+        values: '0x8'
+      - series: 'redis_soak_masters{rf="failing-over",namespace="failing-over",mode="operator"}'
+        values: '1 0x8'
+      - series: 'redis_soak_window_open{rf="failing-over",namespace="failing-over",mode="operator"}'
+        values: '0 1x8'
+      # A bootstrapping instance has no master of its own.
+      - series: 'redis_soak_masters{rf="bootstrap",namespace="bootstrap",mode="operator"}'
+        values: '0x8'
+      - series: 'redis_soak_window_open{rf="bootstrap",namespace="bootstrap",mode="operator"}'
+        values: '0x8'
+      - series: 'redis_soak_readable{rf="bootstrap",namespace="bootstrap",mode="operator",path="rfrs",client="pooled"}'
+        values: '1x8'
+    alert_rule_test:
+      - eval_time: 1m30s
+        alertname: RedisSoakMasters
+        exp_alerts:
+          - exp_labels: {severity: critical, rf: split, namespace: split, mode: sentinel}
+            exp_annotations:
+              summary: "split/split has 2 masters outside a convergence window: 0 is no master, 2 or more a split brain."
+
+  - name: findings, timeouts, losses and unsafe transitions
+    interval: 15s
+    input_series:
+      - series: 'redis_soak_findings_total{rf="a",namespace="a",mode="operator",invariant="one_master"}'
+        values: '0 0 1x8'
+      - series: 'redis_soak_findings_total{rf="a",namespace="a",mode="operator",invariant="pods"}'
+        values: '0x10'
+      - series: 'redis_soak_mutation_total{rf="a",namespace="a",mode="operator",kind="kill_master",result="timeout"}'
+        values: '0 0 1x8'
+      - series: 'redis_soak_mutation_total{rf="a",namespace="a",mode="operator",kind="kill_master",result="converged"}'
+        values: '0+1x10'
+      - series: 'redis_soak_chaos_total{kind="node_drain",result="timeout"}'
+        values: '0 0 1x8'
+      - series: 'redis_soak_chaos_total{kind="operator_restart",result="converged"}'
+        values: '0+1x10'
+      # A graceful master kill on volumes must lose none.
+      - series: 'redis_soak_unexpected_lost_writes_total{rf="a",namespace="a",mode="operator",event="kill_master"}'
+        values: '0 0 3x8'
+      # A drain on emptyDir may lose writes to asynchronous replication.
+      - series: 'redis_soak_lost_writes_total{rf="b",namespace="b",mode="operator",event="node_drain"}'
+        values: '0 0 3x8'
+      - series: 'redis_soak_unexpected_lost_writes_total{rf="b",namespace="b",mode="operator",event="node_drain"}'
+        values: '0x10'
+      - series: 'redis_soak_version_transition_total{rf="edge",namespace="edge",mode="operator",from="redis-8",to="valkey-9",expect="unknown",result="failed_unsafe"}'
+        values: '1x10'
+      - series: 'redis_soak_version_transition_total{rf="edge",namespace="edge",mode="operator",from="redis-8",to="valkey-8",expect="unknown",result="failed_safe"}'
+        values: '1x10'
+      - series: 'redis_soak_version_transition_total{rf="chain",namespace="chain",mode="operator",from="redis-7.2",to="redis-7.4",expect="ok",result="failed_safe"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RedisSoakFinding
+        exp_alerts:
+          - exp_labels: {severity: critical, rf: a, namespace: a, mode: operator, invariant: one_master}
+            exp_annotations:
+              summary: "a/a violated one_master outside a convergence window, or past its timeout."
+      - eval_time: 2m
+        alertname: RedisSoakMutationTimeout
+        exp_alerts:
+          - exp_labels: {severity: warning, rf: a, namespace: a, mode: operator, kind: kill_master, result: timeout}
+            exp_annotations:
+              summary: "A kill_master mutation of a/a didn't converge in time."
+      - eval_time: 2m
+        alertname: RedisSoakChaosTimeout
+        exp_alerts:
+          - exp_labels: {severity: warning, kind: node_drain, result: timeout}
+            exp_annotations:
+              summary: "A node_drain chaos action ended timeout: the instances or the operator didn't converge in time, or the action failed."
+      - eval_time: 2m
+        alertname: RedisSoakLostWritesLossless
+        exp_alerts:
+          - exp_labels: {severity: critical, rf: a, namespace: a, mode: operator, event: kill_master}
+            exp_annotations:
+              summary: "a/a lost acknowledged writes in a kill_master, which should lose none."
+      - eval_time: 2m
+        alertname: RedisSoakVersionTransitionFailed
+        exp_alerts:
+          - exp_labels: {severity: warning, rf: chain, namespace: chain, mode: operator, from: redis-7.2, to: redis-7.4, expect: ok, result: failed_safe}
+            exp_annotations:
+              summary: "chain/chain did not complete the change redis-7.2 -> redis-7.4, which must succeed."
+      - eval_time: 2m
+        alertname: RedisSoakVersionTransitionUnsafe
+        exp_alerts:
+          - exp_labels: {severity: critical, rf: edge, namespace: edge, mode: operator, from: redis-8, to: valkey-9, expect: unknown, result: failed_unsafe}
+            exp_annotations:
+              summary: "edge/edge failed unsafely changing redis-8 -> valkey-9 (unknown)."
+
+  - name: follower auth outage
+    interval: 15s
+    input_series:
+      - series: 'redis_soak_probe_total{rf="a",namespace="a",mode="sentinel",path="sentinel",client="follower",op="set",result="auth"}'
+        values: '0+15x20'
+      # A short one, while the operator applies a password change.
+      - series: 'redis_soak_probe_total{rf="b",namespace="b",mode="operator",path="rfrm",client="follower",op="set",result="auth"}'
+        values: '0+15x4 60x16'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: RedisSoakFollowerAuthOutage
+        exp_alerts:
+          - exp_labels: {severity: warning, rf: a, namespace: a, mode: sentinel, path: sentinel, client: follower, op: set, result: auth}
+            exp_annotations:
+              summary: "a/a has refused the current password through sentinel for over 2m."
