@@ -18,11 +18,15 @@ const (
 	// HandoverAborted: the old master stays the master, because Redis ended the
 	// failover, for example when the target did not reach the offset in time.
 	HandoverAborted
-	// HandoverRefused: the old master did not start the failover, for example
-	// because the target is not an online replica of it.
+	// HandoverRefused: the old master did not start the failover. The target
+	// is not an online replica at the address and port of the pod, or an ACL
+	// denies FAILOVER.
 	HandoverRefused
-	// HandoverInProgress: the failover did not end in the wait. The old master
-	// is a replica already, and it accepts no writes.
+	// HandoverInProgress: the catch-up ended, but the role change did not end
+	// in the wait. Redis has no time limit for that step. The old master is a
+	// replica already and accepts no writes. It leaves that state only when the
+	// target accepts or rejects the role. The next reconcile sees no master or
+	// the new master, and the checks of those cases continue.
 	HandoverInProgress
 	// HandoverUnsupported: the old master has no FAILOVER command. It is
 	// before Redis 6.2, or a rename-command disables the command.
@@ -31,13 +35,16 @@ const (
 
 const noFailover = "no-failover"
 
+// HandoverCatchUpLimit is the TIMEOUT of FAILOVER: the longest catch-up, in
+// which the master pauses the writes. A synced replica acknowledges its offset
+// each second, so the catch-up usually ends in 1s.
+const HandoverCatchUpLimit = 2 * time.Second
+
 var (
-	// handoverWritePause is the TIMEOUT of FAILOVER: the longest time that the
-	// master pauses the writes while it waits for the target. A synced replica
-	// acknowledges its offset each second, so the pause usually ends in 1s.
-	handoverWritePause = 2 * time.Second
-	// handoverWaitMargin is the time after the pause for the PSYNC FAILOVER
-	// handshake. Redis has no timeout for that step.
+	// handoverWritePause is HandoverCatchUpLimit. The tests make it shorter.
+	handoverWritePause = HandoverCatchUpLimit
+	// handoverWaitMargin is the time after the catch-up for the role change,
+	// the PSYNC FAILOVER handshake. Redis has no time limit for that step.
 	handoverWaitMargin = 3 * time.Second
 	// handoverPollInterval is the interval of the INFO replication reads.
 	handoverPollInterval = 100 * time.Millisecond
@@ -69,7 +76,7 @@ func (r *RedisFailoverHealer) HandOverMaster(masterIP, targetIP string, rf *redi
 		case err == nil:
 		case strings.HasPrefix(err.Error(), "ERR unknown command"):
 			return HandoverUnsupported, nil
-		case strings.HasPrefix(err.Error(), "ERR FAILOVER"):
+		case strings.HasPrefix(err.Error(), "ERR FAILOVER"), strings.HasPrefix(err.Error(), "NOPERM"):
 			logger.Warningf("FAILOVER to %s refused: %v", targetIP, err)
 			return HandoverRefused, nil
 		default:

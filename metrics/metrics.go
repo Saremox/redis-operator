@@ -40,6 +40,9 @@ const (
 	MISC                                   = "MISC_ERROR"
 	SENTINEL_NUMBER_IN_MEMORY_MISMATCH     = "SENTINEL_NUMBER_IN_MEMORY_MISMATCH"
 	REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH = "REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH"
+	// MASTER_HANDOVER_ABORTED counts a FAILOVER of the rollout that Redis
+	// aborted, because the replica did not catch up in time.
+	MASTER_HANDOVER_ABORTED = "MASTER_HANDOVER_ABORTED"
 	// redis connection related errors
 	WRONG_PASSWORD_USED = "WRONG_PASSWORD_USED"
 	NOAUTH              = "AUTH_CREDENTIALS_NOT_PROVIDED"

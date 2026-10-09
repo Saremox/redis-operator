@@ -112,6 +112,13 @@ func TestHandOverMaster(t *testing.T) {
 			want:        HandoverRefused,
 		},
 		{
+			name:        "an ACL denies FAILOVER",
+			infos:       []*redis.ReplicationInfo{masterInfo("no-failover")},
+			failover:    true,
+			failoverErr: errors.New("NOPERM User operator has no permissions to run the 'failover' command"),
+			want:        HandoverRefused,
+		},
+		{
 			name:        "FAILOVER fails",
 			infos:       []*redis.ReplicationInfo{masterInfo("no-failover")},
 			failover:    true,

@@ -138,11 +138,12 @@ func (c *ommClients) waitForAllPodsRecreated(labelSelector string, before map[st
 }
 
 // mastersNow returns the number of pods that answer as master. During a
-// rollout, 0 is a valid result and not an error.
-func (c *ommClients) mastersNow(labelSelector string) int {
+// rollout, 0 is a valid result. It returns false when the pod list fails,
+// because that says nothing about the master.
+func (c *ommClients) mastersNow(labelSelector string) (int, bool) {
 	pods, err := c.k8sClient.CoreV1().Pods(ommNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	n := 0
 	for _, pod := range pods.Items {
@@ -153,7 +154,7 @@ func (c *ommClients) mastersNow(labelSelector string) int {
 			n++
 		}
 	}
-	return n
+	return n, true
 }
 
 // masterAvailability is the result of sampleMasterAvailability. A single
@@ -184,14 +185,18 @@ func (c *ommClients) sampleMasterAvailability(labelSelector string, interval tim
 		default:
 		}
 
-		result.samples++
-		if c.mastersNow(labelSelector) == 0 {
+		masters, ok := c.mastersNow(labelSelector)
+		switch {
+		case !ok:
+		case masters == 0:
+			result.samples++
 			result.masterless++
 			run++
 			if run > result.longestOutage {
 				result.longestOutage = run
 			}
-		} else {
+		default:
+			result.samples++
 			run = 0
 		}
 		time.Sleep(interval)

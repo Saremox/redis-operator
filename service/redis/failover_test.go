@@ -30,6 +30,11 @@ func failoverPair(t *testing.T, masterArgs ...string) (master, replica *redisPro
 		info, err := c.GetReplicationInfo(replica.IP, strconv.Itoa(port), "")
 		return err == nil && info.MasterLinkStatus == "up" && !info.SyncInProgress
 	}), "the replica did not sync")
+	info, err := c.GetReplicationInfo(master.IP, strconv.Itoa(port), "")
+	require.NoError(t, err)
+	if info.FailoverState == "" {
+		t.Skip("redis-server before 6.2 has no FAILOVER command")
+	}
 	return master, replica
 }
 
