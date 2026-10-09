@@ -79,6 +79,7 @@ make helm-test
 
 ## CI / Workflow
 
-- CI is defined in `.github/workflows/ci.yaml` and `.github/workflows/e2e.yml`
-- All PRs must pass: build, lint (golangci-lint), verify-codegen, unit tests, integration tests (multi-version Kubernetes matrix), Helm chart tests, the Docker build, and the e2e test (minikube, operator-managed mode)
+- CI is defined in `.github/workflows/ci.yaml` and `.github/workflows/e2e.yml`. The `ci.yaml` file calls `e2e.yml`
+- A PR must pass these jobs: build, lint (golangci-lint), verify-codegen, unit tests, integration tests (multi-version Kubernetes matrix), Helm chart tests, the Docker build, and the e2e test (minikube, operator-managed mode)
+- The `changes` job in `ci.yaml` lists the paths that each job reads. The workflow skips a job when the PR changes none of its paths, for example a PR that changes only documentation. When a job reads a new path, add the path to the filter of the job
 - Docker images are built for `linux/amd64` and `linux/arm64`
