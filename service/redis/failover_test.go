@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -30,6 +31,15 @@ func failoverPair(t *testing.T, masterArgs ...string) (master, replica *redisPro
 		info, err := c.GetReplicationInfo(replica.IP, strconv.Itoa(port), "")
 		return err == nil && info.MasterLinkStatus == "up" && !info.SyncInProgress
 	}), "the replica did not sync")
+	// The replica reports the link up before the master has it online, for
+	// example while the RDB child of a diskless sync runs. FAILOVER TO needs
+	// an online replica.
+	m := rediscli.NewClient(redisOptions(master.Addr(), ""))
+	defer closeClient(m)
+	require.True(t, waitForCondition(t, 10*time.Second, func() bool {
+		info, err := m.Info(context.Background(), "replication").Result()
+		return err == nil && strings.Contains(info, "ip=127.0.0.2,port="+strconv.Itoa(port)+",state=online")
+	}), "the master does not have the replica online")
 	info, err := c.GetReplicationInfo(master.IP, strconv.Itoa(port), "")
 	require.NoError(t, err)
 	if info.FailoverState == "" {
@@ -176,4 +186,96 @@ func TestFailoverToLosesNoAcknowledgedWrite(t *testing.T) {
 	t.Logf("%d acknowledged writes, longest write %s", len(res.acked), res.longest)
 	assert.Zero(t, missing, "acknowledged writes missing on the new master")
 	assert.Less(t, res.longest, pause+time.Second)
+}
+
+// waitForAck waits until the master has the acknowledgement of the whole
+// replication stream from the replica.
+func waitForAck(t *testing.T, master *redisProc) {
+	t.Helper()
+	m := rediscli.NewClient(redisOptions(master.Addr(), ""))
+	defer closeClient(m)
+	require.True(t, waitForCondition(t, 10*time.Second, func() bool {
+		info, err := m.Info(context.Background(), "replication").Result()
+		if err != nil {
+			return false
+		}
+		var offset, acked string
+		for _, line := range strings.Split(info, "\r\n") {
+			if v, ok := strings.CutPrefix(line, "master_repl_offset:"); ok {
+				offset = v
+			}
+			if strings.HasPrefix(line, "slave0:") {
+				if _, after, ok := strings.Cut(line, ",offset="); ok {
+					acked, _, _ = strings.Cut(after, ",")
+				}
+			}
+		}
+		return offset != "" && offset == acked
+	}), "the replica did not acknowledge the replication stream")
+}
+
+// A target that stops after the catch-up keeps the old master in the role
+// change, a replica that accepts no writes. FAILOVER ABORT makes it the master
+// again with all its data, and the target cannot take the role later.
+func TestFailoverAbortEndsAStalledRoleChange(t *testing.T) {
+	master, replica := failoverPair(t)
+	port := strconv.Itoa(master.Port)
+	m := rediscli.NewClient(redisOptions(master.Addr(), ""))
+	defer closeClient(m)
+	for i := range 150 {
+		require.NoError(t, m.Set(context.Background(), "k"+strconv.Itoa(i), i, 0).Err())
+	}
+	waitForAck(t, master)
+	require.NoError(t, replica.cmd.Process.Signal(syscall.SIGSTOP))
+	stopped := true
+	defer func() {
+		if stopped {
+			_ = replica.cmd.Process.Signal(syscall.SIGCONT)
+		}
+	}()
+
+	c := newTestClient()
+	require.NoError(t, c.FailoverTo(master.IP, port, "", replica.IP, 2*time.Second))
+	require.True(t, waitForCondition(t, 5*time.Second, func() bool {
+		info, err := c.GetReplicationInfo(master.IP, port, "")
+		return err == nil && info.FailoverState == "failover-in-progress"
+	}), "the role change did not start")
+
+	require.NoError(t, c.FailoverAbort(master.IP, port, ""))
+
+	info, err := c.GetReplicationInfo(master.IP, port, "")
+	require.NoError(t, err)
+	assert.Equal(t, "no-failover", info.FailoverState)
+	assert.Equal(t, "master", info.Role)
+	assert.Equal(t, int64(150), m.DBSize(context.Background()).Val())
+	require.NoError(t, m.Set(context.Background(), "after-abort", 1, 0).Err())
+
+	// The target continues as a replica, and the master keeps its role.
+	require.NoError(t, replica.cmd.Process.Signal(syscall.SIGCONT))
+	stopped = false
+	time.Sleep(time.Second)
+	isMaster, err := c.IsMaster(master.IP, port, "")
+	require.NoError(t, err)
+	assert.True(t, isMaster)
+	assert.Equal(t, int64(151), m.DBSize(context.Background()).Val())
+}
+
+// An abort after the end of the failover gets an error, and the caller reads
+// the state again.
+func TestFailoverAbortWithoutAFailover(t *testing.T) {
+	master, _ := failoverPair(t)
+
+	err := newTestClient().FailoverAbort(master.IP, strconv.Itoa(master.Port), "")
+
+	require.Error(t, err)
+	assert.Regexp(t, "^ERR No failover in progress", err.Error())
+}
+
+func TestFailoverAbortConnectionError(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	c := newTestClient()
+
+	assert.Error(t, c.FailoverAbort(testLoopbackIP, strconv.Itoa(port), ""))
+	assert.ErrorIs(t, c.FailoverAbort("", strconv.Itoa(port), ""), errNoIP)
 }

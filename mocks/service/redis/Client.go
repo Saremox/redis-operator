@@ -32,6 +32,24 @@ func (_m *Client) DisconnectClients(ip string, port string, password string) err
 	return r0
 }
 
+// FailoverAbort provides a mock function with given fields: ip, port, password
+func (_m *Client) FailoverAbort(ip string, port string, password string) error {
+	ret := _m.Called(ip, port, password)
+
+	if len(ret) == 0 {
+		panic("no return value specified for FailoverAbort")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string, string) error); ok {
+		r0 = rf(ip, port, password)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // FailoverTo provides a mock function with given fields: ip, port, password, targetIP, timeout
 func (_m *Client) FailoverTo(ip string, port string, password string, targetIP string, timeout time.Duration) error {
 	ret := _m.Called(ip, port, password, targetIP, timeout)

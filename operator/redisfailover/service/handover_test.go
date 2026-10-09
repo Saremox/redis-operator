@@ -58,8 +58,12 @@ func TestHandOverMaster(t *testing.T) {
 		failoverErr error
 		targetRole  *bool
 		targetErr   error
-		want        HandoverResult
-		wantErr     string
+		// abort is the reply to FAILOVER ABORT, if the test expects one, and
+		// afterAbort the INFO replication reply after it.
+		abort      *error
+		afterAbort *redis.ReplicationInfo
+		want       HandoverResult
+		wantErr    string
 	}{
 		{
 			name:       "the failover moves the role",
@@ -75,10 +79,43 @@ func TestHandOverMaster(t *testing.T) {
 			want:     HandoverAborted,
 		},
 		{
-			name:     "the failover does not end in the wait",
+			name:       "a role change that does not end in the wait is aborted",
+			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget)},
+			failover:   true,
+			abort:      ptrTo[error](nil),
+			afterAbort: masterInfo("no-failover"),
+			want:       HandoverAborted,
+		},
+		{
+			name:       "the role change ends just before the abort",
+			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget)},
+			failover:   true,
+			abort:      ptrTo(errors.New("ERR No failover in progress.")),
+			afterAbort: replicaInfo("no-failover", handoverTarget),
+			targetRole: ptrTo(true),
+			want:       HandoverDone,
+		},
+		{
+			name:     "FAILOVER ABORT fails",
 			infos:    []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget)},
 			failover: true,
-			want:     HandoverInProgress,
+			abort:    ptrTo(errBoom),
+			wantErr:  "boom",
+		},
+		{
+			name:     "INFO fails after the abort",
+			infos:    []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget)},
+			failover: true,
+			abort:    ptrTo[error](nil),
+			wantErr:  "boom",
+		},
+		{
+			name:       "the failover still runs after the abort",
+			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget)},
+			failover:   true,
+			abort:      ptrTo[error](nil),
+			afterAbort: replicaInfo("failover-in-progress", handoverTarget),
+			wantErr:    "still runs after FAILOVER ABORT",
 		},
 		{
 			name:       "a restart continues a running failover",
@@ -161,15 +198,26 @@ func TestHandOverMaster(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			shortHandoverWait(t)
 			mr := &mRedisService.Client{}
-			for _, info := range test.infos {
-				mr.On("GetReplicationInfo", handoverMaster, "6379", "").Once().Return(info, nil)
-			}
-			if test.infoErr != nil || test.name == "INFO fails in the wait" {
-				mr.On("GetReplicationInfo", handoverMaster, "6379", "").Once().Return(nil, errBoom)
-			}
-			// The last reply repeats until the wait ends.
-			if n := len(test.infos); n > 1 {
-				mr.On("GetReplicationInfo", handoverMaster, "6379", "").Maybe().Return(test.infos[n-1], nil)
+			reads, aborted := 0, false
+			mr.On("GetReplicationInfo", handoverMaster, "6379", "").Return(func(string, string, string) (*redis.ReplicationInfo, error) {
+				switch {
+				case aborted && test.afterAbort == nil:
+					return nil, errBoom
+				case aborted:
+					return test.afterAbort, nil
+				case test.infoErr != nil, test.name == "INFO fails in the wait" && reads == len(test.infos):
+					return nil, errBoom
+				}
+				// The last reply repeats until the wait ends.
+				info := test.infos[min(reads, len(test.infos)-1)]
+				reads++
+				return info, nil
+			})
+			if test.abort != nil {
+				mr.On("FailoverAbort", handoverMaster, "6379", "").Once().Return(func(string, string, string) error {
+					aborted = true
+					return *test.abort
+				})
 			}
 			if test.failover {
 				mr.On("FailoverTo", handoverMaster, "6379", "", handoverTarget, handoverWritePause).Once().Return(test.failoverErr)
@@ -190,6 +238,9 @@ func TestHandOverMaster(t *testing.T) {
 			}
 			if !test.failover {
 				mr.AssertNotCalled(t, "FailoverTo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+			}
+			if test.abort == nil {
+				mr.AssertNotCalled(t, "FailoverAbort", mock.Anything, mock.Anything, mock.Anything)
 			}
 			mr.AssertExpectations(t)
 		})

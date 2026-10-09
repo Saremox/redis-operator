@@ -65,6 +65,7 @@ type Client interface {
 	SetPassword(ip, port, password, newPassword string) error
 	SetSentinelAuthPass(ip, password string) error
 	FailoverTo(ip, port, password, targetIP string, timeout time.Duration) error
+	FailoverAbort(ip, port, password string) error
 }
 
 type client struct {
@@ -905,6 +906,26 @@ func (c *client) FailoverTo(ip, port, password, targetIP string, timeout time.Du
 		return err
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_TO, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return nil
+}
+
+// FailoverAbort ends the FAILOVER that runs on the master at ip. The master
+// then is the master, with all its data, and ends the write pause.
+func (c *client) FailoverAbort(ip, port, password string) error {
+	if ip == "" {
+		return errNoIP
+	}
+	options := redisOptions(net.JoinHostPort(ip, port), password)
+	// A retry after a lost reply gets "No failover in progress".
+	options.MaxRetries = -1
+	rClient := rediscli.NewClient(options)
+	defer closeClient(rClient)
+	err := rClient.Do(context.TODO(), "FAILOVER", "ABORT").Err()
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_ABORT, metrics.FAIL, getRedisError(err))
+		return err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_ABORT, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
 }
 

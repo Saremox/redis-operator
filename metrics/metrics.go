@@ -78,6 +78,7 @@ const (
 	DISCONNECT_CLIENTS          = "DISCONNECT_CLIENTS_ON_DEMOTED_INSTANCE"
 	SET_PASSWORD                = "SET_PASSWORD"
 	FAILOVER_TO                 = "FAILOVER_TO_REPLICA"
+	FAILOVER_ABORT              = "FAILOVER_ABORT"
 )
 
 var ( // used for garbage collection of metrics

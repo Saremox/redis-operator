@@ -48,20 +48,22 @@ This is the default mode (`sentinel.enabled` not set or `false`). There is no Se
 - Redis has the custom configuration and the managed `maxmemory`.
 - Stale Redis pods get the new statefulset revision. The operator does not delete a stale master pod that has replicas. First, it hands the master role over to the best synced replica with the Redis `FAILOVER` command:
   1. The master pauses the writes and waits until the replica has its whole replication stream. Clients that write in this time wait.
-  2. The master becomes a replica of that replica, and the replica becomes the master. No write that the old master acknowledged is lost.
+  2. The master becomes a replica of that replica, and the replica becomes the master. In the normal case, no write that the old master acknowledged is lost. The exceptions are below.
   3. The operator gives the master label to the new master, and makes the other pods its replicas.
   4. The old master is then a stale replica. A later reconcile replaces it.
 
-  The catch-up takes 2s at most, and a synced replica usually catches up in less than 1s. The role change after the catch-up has no Redis time limit, and usually takes milliseconds.
+  The catch-up takes 2s at most, and a synced replica usually catches up in less than 1s. The role change after the catch-up has no Redis time limit, and usually takes milliseconds. If the failover does not end 3s after the command, the operator sends `FAILOVER ABORT`. The old master then continues with all its data. A replica that took the role at the same time has no client writes, and the check for multiple masters makes it a replica again.
 
-  If the replica does not catch up in 2s, Redis aborts the failover, and the master continues. The operator tries again after 30s, and doubles the wait up to 5 minutes. An abort never deletes the master, so the rollout waits until the replica catches up. The status message gives the reason. The metric `redis_operator_controller_redis_checks_total` with the indicator `MASTER_HANDOVER_ABORTED` and the status `UNHEALTHY` counts the aborts.
+  After an abort, by Redis or by the operator, the operator tries again after 30s, and doubles the wait up to 5 minutes. An abort never deletes the master, so the rollout waits until the replica catches up. The status message gives the reason. The metric `redis_operator_controller_redis_checks_total` with the indicator `MASTER_HANDOVER_ABORTED` and the status `UNHEALTHY` counts the aborts.
 
-  If the replica stops during the role change, the old master stays a replica of it and accepts no writes. Redis retries the connection without a time limit, and the old master refuses `REPLICAOF`. The operator then finds no master, and elects one as in the case "No master" above. The rollout replaces the old master later as a stale replica. A replica that restarts in place usually rejects the role. Then the old master is the master again, and the handover starts again.
+  Two cases can still lose acknowledged writes:
+  - The replica restarts in place during the role change, and comes back before the abort. Its RDB file holds the replication ID of the master, so it takes the role with its older data. The old master then copies that data. The abort prevents this when the restart and the start of the sync take more than 3s. The Redis 7 default `repl-diskless-sync-delay 5` gives that time. Redis 6.2 syncs from disk by default, so there a faster restart loses the writes after the RDB file.
+  - The operator restarts during the role change, and the replica does not end the role change. The new operator finds no master and elects one at once, because the old master pod is still Ready. The old master can then become the master again with writes that the elected master does not have. The check for multiple masters drops those writes. A role change usually takes milliseconds, so both events must come together.
 
   The operator deletes the master pod, and elects a master after the pod stops, in these cases:
   - `redis.replicas: 1`.
   - Redis before 6.2, which has no `FAILOVER` command, or a `customCommandRenames` entry that disables it.
-  - The master refused the same replica 3 times in a row. A master can see its replicas at an address other than the pod IP, for example behind a service mesh sidecar, with NAT, or with `replica-announce-ip`. An ACL that denies `FAILOVER` has the same result.
+  - The master refused 3 attempts in a row. A master can see its replicas at an address other than the pod IP. Examples are a service mesh sidecar, NAT and `replica-announce-ip`. An ACL that denies `FAILOVER` has the same result.
 
   The rollout replaces one pod at a time. With `redis.replicas: 3`, it takes three pod restarts and three initial syncs, one after the other.
 

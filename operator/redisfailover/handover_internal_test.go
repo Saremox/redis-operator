@@ -89,7 +89,7 @@ func (ht *handoverTest) message(t *testing.T, result rfservice.HandoverResult) s
 	return message
 }
 
-const aborted = "the handover of the master role to pod rfr-test-1 was aborted, because the replica did not catch up with the master in 2s, the next attempt is after "
+const aborted = "the handover of the master role to pod rfr-test-1 was aborted, because the replica did not catch up with the master in time, the next attempt is after "
 
 // Each attempt can pause the writes, so an aborted handover waits before the
 // next attempt, and the wait doubles. An abort never deletes the master: the
@@ -131,8 +131,8 @@ func TestHandOverMasterWaitsBeforeTheNextAttempt(t *testing.T) {
 }
 
 // A master that sees its replicas at another address refuses each FAILOVER
-// TO the pod IP. After handoverMaxRefusals refusals of the same target in a
-// row, the rollout deletes the master pod, as without FAILOVER.
+// TO a pod IP. After handoverMaxRefusals refusals in a row, also of different
+// targets, the rollout deletes the master pod, as without FAILOVER.
 func TestHandOverMasterFallsBackAfterRepeatedRefusals(t *testing.T) {
 	ht := newHandoverTest()
 	const refused = "the master refused the handover of the master role to pod rfr-test-1 "
@@ -163,11 +163,12 @@ func TestHandOverMasterFallsBackAfterRepeatedRefusals(t *testing.T) {
 	message, _ = refuse()
 	assert.Contains(t, message, "(1 of 3)")
 
-	// A refusal of a different target starts a new count.
+	// Two synced replicas can swap the top offset. A different target
+	// continues the count.
 	refuse()
 	ht.best = &rfservice.ReplicaInfo{IP: "10.0.0.3", PodName: "rfr-test-1", Synced: true}
-	message, _ = refuse()
-	assert.Contains(t, message, "(1 of 3)")
+	_, handled = refuse()
+	assert.False(t, handled)
 
 	// A handover that moves the role resets the count.
 	refuse()
@@ -183,6 +184,25 @@ func TestHandOverMasterFallsBackAfterRepeatedRefusals(t *testing.T) {
 	assert.Contains(t, message, "(1 of 3)")
 	_, logged := ht.handler.handoverFallbackLogged.Load(failoverKey(ht.rf))
 	assert.False(t, logged)
+}
+
+// A wait and a count of an earlier master pod, for example before a
+// failover, do not apply to a new master pod.
+func TestHandOverMasterForgetsTheStateOfAnEarlierMasterPod(t *testing.T) {
+	ht := newHandoverTest()
+	ht.handOver(t, rfservice.HandoverRefused)
+	ht.clock = ht.clock.Add(handoverRetryMax)
+	ht.handOver(t, rfservice.HandoverRefused)
+
+	// The wait of rfr-test-0 runs, but the master pod is rfr-test-2 now.
+	ht.heal.ExpectedCalls = nil
+	ht.heal.Calls = nil
+	ht.heal.On("HandOverMaster", "10.0.0.9", "10.0.0.2", ht.rf).Return(rfservice.HandoverRefused, nil)
+	handled, err := ht.handler.handOverMaster(ht.rf, "10.0.0.9", "rfr-test-2")
+	require.NoError(t, err)
+	assert.True(t, handled)
+	ht.heal.AssertCalled(t, "HandOverMaster", "10.0.0.9", "10.0.0.2", ht.rf)
+	assert.Equal(t, "the master refused the handover of the master role to pod rfr-test-1 (1 of 3), the next attempt is after 30s", ht.rf.Status.Message)
 }
 
 // Without FAILOVER, the rollout deletes the master pod at each attempt, and

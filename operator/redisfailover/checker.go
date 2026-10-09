@@ -201,12 +201,17 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 // FAILOVER, and does not delete the stale master pod. The demoted master is
 // then a stale replica, so a later reconcile replaces it after the same checks
 // as each other replica. It reports false when the caller must delete the
-// master pod: the master has no FAILOVER command, or it refused the target
-// handoverMaxRefusals times in a row.
+// master pod: the master has no FAILOVER command, or it refused
+// handoverMaxRefusals attempts in a row.
 func (r *RedisFailoverHandler) handOverMaster(rf *redisfailoverv1.RedisFailover, masterIP, master string) (bool, error) {
 	key := failoverKey(rf)
 	v, _ := r.handoverRetries.Load(key)
 	last, _ := v.(handoverRetry)
+	// A wait or a count of an earlier master pod does not apply to a new one,
+	// for example after a failover.
+	if last.master != master {
+		last = handoverRetry{}
+	}
 	if r.now().Before(last.at) {
 		setHandoverStatus(rf, last.message)
 		return true, nil
@@ -223,32 +228,27 @@ func (r *RedisFailoverHandler) handOverMaster(rf *redisfailoverv1.RedisFailover,
 	if err != nil {
 		return true, err
 	}
-	next := handoverRetry{target: best.IP, delay: last.delay}
+	next := handoverRetry{master: master, delay: last.delay}
 	switch result {
 	case rfservice.HandoverUnsupported:
 		r.logHandoverFallback(rf, fmt.Sprintf("pod %s has no FAILOVER command (Redis before 6.2, or renamed), so the rollout deletes it", master))
 		return false, nil
 	case rfservice.HandoverAborted:
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.MASTER_HANDOVER_ABORTED, metrics.NOT_APPLICABLE, errors.New("handover aborted"))
-		r.retryHandover(rf, next, fmt.Sprintf("the handover of the master role to pod %s was aborted, because the replica did not catch up with the master in %s", best.PodName, rfservice.HandoverCatchUpLimit))
+		r.retryHandover(rf, next, fmt.Sprintf("the handover of the master role to pod %s was aborted, because the replica did not catch up with the master in time", best.PodName))
 		return true, nil
 	case rfservice.HandoverRefused:
 		// The master can see its replicas at an address other than the pod
-		// IP, for example behind a service mesh sidecar. Then each attempt
-		// fails, and only the delete of the master pod continues the rollout.
-		next.refusals = 1
-		if last.target == best.IP {
-			next.refusals = last.refusals + 1
-		}
+		// IP, for example behind a service mesh sidecar, or an ACL can deny
+		// FAILOVER. Then each attempt fails, also with another target, and
+		// only the delete of the master pod continues the rollout.
+		next.refusals = last.refusals + 1
 		if next.refusals >= handoverMaxRefusals {
 			r.handoverRetries.Store(key, next)
 			r.logHandoverFallback(rf, fmt.Sprintf("the master refused the handover of the master role %d times in a row, so the rollout deletes the master pod %s", handoverMaxRefusals, master))
 			return false, nil
 		}
 		r.retryHandover(rf, next, fmt.Sprintf("the master refused the handover of the master role to pod %s (%d of %d)", best.PodName, next.refusals, handoverMaxRefusals))
-		return true, nil
-	case rfservice.HandoverInProgress:
-		setHandoverStatus(rf, fmt.Sprintf("the master role moves to pod %s, and the old master accepts no writes until the move ends", best.PodName))
 		return true, nil
 	}
 	r.handoverRetries.Delete(key)
@@ -272,16 +272,16 @@ func (r *RedisFailoverHandler) handOverMaster(rf *redisfailoverv1.RedisFailover,
 	return true, nil
 }
 
-// handoverRetry is the state after a handover that did not move the master
-// role. Each attempt can pause the writes, so the wait doubles up to
-// handoverRetryMax. refusals counts the refusals of target in a row. The
+// handoverRetry is the state after a handover from the master pod master
+// that did not move the role. Each attempt can pause the writes, so the wait
+// doubles up to handoverRetryMax. refusals counts the refusals in a row. The
 // state is in memory: after an operator restart, the next reconcile tries at
 // once and counts from zero.
 type handoverRetry struct {
 	at       time.Time
 	delay    time.Duration
 	message  string
-	target   string
+	master   string
 	refusals int
 }
 
@@ -293,10 +293,7 @@ const (
 
 func (r *RedisFailoverHandler) retryHandover(rf *redisfailoverv1.RedisFailover, next handoverRetry, reason string) {
 	key := failoverKey(rf)
-	next.delay = handoverRetryMin
-	if v, ok := r.handoverRetries.Load(key); ok {
-		next.delay = min(2*v.(handoverRetry).delay, handoverRetryMax)
-	}
+	next.delay = min(max(2*next.delay, handoverRetryMin), handoverRetryMax)
 	next.message = fmt.Sprintf("%s, the next attempt is after %s", reason, next.delay)
 	next.at = r.now().Add(next.delay)
 	r.handoverRetries.Store(key, next)
