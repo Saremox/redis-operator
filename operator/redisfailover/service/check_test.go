@@ -1980,6 +1980,39 @@ func TestGetReplicaReplicationOffsetsSkipsPodOnReplicationInfoError(t *testing.T
 	}
 }
 
+// After the catch-up of a FAILOVER, the old master is a replica until the
+// target accepts the role. It refuses REPLICAOF NO ONE in that time.
+func TestGetReplicaReplicationOffsetsSkipsAMasterInAFailover(t *testing.T) {
+	rf := generateRF()
+	pods := &corev1.PodList{Items: []corev1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Name: "old-master"}, Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "target"}, Status: corev1.PodStatus{PodIP: "2.2.2.2", Phase: corev1.PodRunning}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "before-6.2"}, Status: corev1.PodStatus{PodIP: "3.3.3.3", Phase: corev1.PodRunning}},
+	}}
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetReplicationInfo", "1.1.1.1", "0", "").Once().Return(&redis.ReplicationInfo{
+		Role: "slave", MasterLinkStatus: "down", SlaveReplOffset: 300, FailoverState: "failover-in-progress",
+	}, nil)
+	mr.On("GetReplicationInfo", "2.2.2.2", "0", "").Once().Return(&redis.ReplicationInfo{
+		Role: "slave", MasterLinkStatus: "up", SlaveReplOffset: 300, FailoverState: "no-failover",
+	}, nil)
+	mr.On("GetReplicationInfo", "3.3.3.3", "0", "").Once().Return(&redis.ReplicationInfo{
+		Role: "slave", MasterLinkStatus: "up", SlaveReplOffset: 200,
+	}, nil)
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	replicas, err := checker.GetReplicaReplicationOffsets(rf)
+
+	assert.NoError(t, err)
+	var ips []string
+	for _, replica := range replicas {
+		ips = append(ips, replica.IP)
+	}
+	assert.Equal(t, []string{"2.2.2.2", "3.3.3.3"}, ips)
+}
+
 func TestGetReplicaReplicationOffsetsExcludesMaster(t *testing.T) {
 	assert := assert.New(t)
 

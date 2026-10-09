@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -98,6 +99,7 @@ func TestHandleSkipReconcileAnnotation(t *testing.T) {
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe().Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mrfs := &mRFService.RedisFailoverClient{}
@@ -154,6 +156,7 @@ func TestHandleNotARedisFailover(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
@@ -177,6 +180,7 @@ func TestHandleValidateError(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
@@ -218,6 +222,7 @@ func TestHandleEnsureError(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
@@ -248,6 +253,7 @@ func TestHandleEnsureNameConflict(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
 	mrfs.On("EnsureNotPresentRedisService", rf).Once().Return(conflict)
 	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Once().Return(nil)
@@ -285,6 +291,7 @@ func TestHandleCheckAndHealError(t *testing.T) {
 	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
@@ -299,8 +306,9 @@ func TestHandleCheckAndHealError(t *testing.T) {
 	mrfs.On("EnsureRedisStatefulset", rf, mock.Anything, mock.Anything).Once().Return(nil)
 	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Once().Return(nil)
 
-	// CheckAndHeal routes to checkAndHealOperatorManagedMode and fails at
-	// GetNumberMasters.
+	// CheckAndHeal routes to checkAndHealOperatorManagedMode, finds no
+	// FAILOVER to abort, and fails at GetNumberMasters.
+	mk.On("GetStatefulSetPods", rf.Namespace, mock.Anything).Return(&corev1.PodList{}, nil)
 	mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 	mrfc.On("GetNumberMasters", rf).Once().Return(0, checkErr)
 
@@ -382,6 +390,7 @@ func TestHandleGetLabelsWhitelistFiltering(t *testing.T) {
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mrfs := &mRFService.RedisFailoverClient{}
@@ -440,6 +449,7 @@ func TestHandleAddsFinalizerOnFreshRF(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
@@ -485,6 +495,7 @@ func TestHandleDeletionCleansUpMetricsAndRemovesFinalizer(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
@@ -519,6 +530,7 @@ func TestHandleDeletionWithoutFinalizerIsNoop(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
@@ -547,6 +559,7 @@ func TestHandleFinalizerRegistrationErrorPropagates(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
@@ -579,6 +592,7 @@ func TestHandleDeletionFinalizerRemovalErrorPropagates(t *testing.T) {
 	mk := &mK8SService.Services{}
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
@@ -651,6 +665,7 @@ func TestHandleRecordsClusterMetrics(t *testing.T) {
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mrfs := &mRFService.RedisFailoverClient{}

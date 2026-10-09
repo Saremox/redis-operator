@@ -40,6 +40,9 @@ const (
 	MISC                                   = "MISC_ERROR"
 	SENTINEL_NUMBER_IN_MEMORY_MISMATCH     = "SENTINEL_NUMBER_IN_MEMORY_MISMATCH"
 	REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH = "REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH"
+	// MASTER_HANDOVER_ABORTED counts a FAILOVER of the rollout that Redis or
+	// the operator aborted.
+	MASTER_HANDOVER_ABORTED = "MASTER_HANDOVER_ABORTED"
 	// redis connection related errors
 	WRONG_PASSWORD_USED = "WRONG_PASSWORD_USED"
 	NOAUTH              = "AUTH_CREDENTIALS_NOT_PROVIDED"
@@ -74,6 +77,10 @@ const (
 	GET_MEMORY_INFO             = "GET_MEMORY_INFO"
 	DISCONNECT_CLIENTS          = "DISCONNECT_CLIENTS_ON_DEMOTED_INSTANCE"
 	SET_PASSWORD                = "SET_PASSWORD"
+	FAILOVER_TO                 = "FAILOVER_TO_REPLICA"
+	FAILOVER_ABORT              = "FAILOVER_ABORT"
+	GET_RUN_ID                  = "GET_RUN_ID"
+	GET_FAILOVER_STATE          = "GET_FAILOVER_STATE"
 )
 
 var ( // used for garbage collection of metrics

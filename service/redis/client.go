@@ -25,6 +25,9 @@ type ReplicationInfo struct {
 	MasterReplOffset int64  // replication offset for masters
 	ConnectedSlaves  int    // number of connected slaves (for masters)
 	SyncInProgress   bool   // true if slave is syncing
+	// FailoverState is master_failover_state. It is empty before Redis 6.2,
+	// which has no FAILOVER command.
+	FailoverState string
 }
 
 // MemoryInfo contains the memory figures of a Redis instance relevant to maxmemory
@@ -61,6 +64,10 @@ type Client interface {
 	GetMemoryInfo(ip, port, password string) (*MemoryInfo, error)
 	SetPassword(ip, port, password, newPassword string) error
 	SetSentinelAuthPass(ip, password string) error
+	FailoverTo(ip, port, password, targetIP string, timeout time.Duration) error
+	FailoverAbort(ip, port, password string) error
+	GetRunID(ip, port, password string) (string, error)
+	GetFailoverState(ip, port, password string) (string, error)
 }
 
 type client struct {
@@ -831,6 +838,8 @@ func (c *client) GetReplicationInfo(ip, port, password string) (*ReplicationInfo
 			}
 		case "master_sync_in_progress":
 			replInfo.SyncInProgress = value == "1"
+		case "master_failover_state":
+			replInfo.FailoverState = value
 		}
 	}
 
@@ -879,6 +888,101 @@ func (c *client) SetSentinelAuthPass(ip, password string) error {
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.SET_PASSWORD, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
+}
+
+// FailoverTo starts FAILOVER on the master at ip. The target is the replica at
+// targetIP, on the same port. Redis runs the failover in the background, so
+// the caller reads master_failover_state for the result.
+func (c *client) FailoverTo(ip, port, password, targetIP string, timeout time.Duration) error {
+	if ip == "" {
+		return errNoIP
+	}
+	options := redisOptions(net.JoinHostPort(ip, port), password)
+	// A retry after a lost reply gets "FAILOVER already in progress".
+	options.MaxRetries = -1
+	rClient := rediscli.NewClient(options)
+	defer closeClient(rClient)
+	err := rClient.Do(context.TODO(), "FAILOVER", "TO", targetIP, port, "TIMEOUT", strconv.FormatInt(timeout.Milliseconds(), 10)).Err()
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_TO, metrics.FAIL, getRedisError(err))
+		return err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_TO, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return nil
+}
+
+// FailoverAbort ends the FAILOVER that runs on the master at ip. The master
+// then is the master, with all its data, and ends the write pause.
+func (c *client) FailoverAbort(ip, port, password string) error {
+	if ip == "" {
+		return errNoIP
+	}
+	options := redisOptions(net.JoinHostPort(ip, port), password)
+	// A retry after a lost reply gets "No failover in progress".
+	options.MaxRetries = -1
+	rClient := rediscli.NewClient(options)
+	defer closeClient(rClient)
+	err := rClient.Do(context.TODO(), "FAILOVER", "ABORT").Err()
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_ABORT, metrics.FAIL, getRedisError(err))
+		return err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_ABORT, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return nil
+}
+
+// quickOptions are for a check whose caller treats a slow answer like no
+// answer. Each step waits 500ms at most, and the client does not retry.
+func quickOptions(addr, password string) *rediscli.Options {
+	options := redisOptions(addr, password)
+	options.DialTimeout, options.ReadTimeout, options.WriteTimeout = 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond
+	options.MaxRetries = -1
+	return options
+}
+
+// GetFailoverState returns master_failover_state of the Redis at ip, or ""
+// before Redis 6.2. It uses quickOptions.
+func (c *client) GetFailoverState(ip, port, password string) (string, error) {
+	if ip == "" {
+		return "", errNoIP
+	}
+	rClient := rediscli.NewClient(quickOptions(net.JoinHostPort(ip, port), password))
+	defer closeClient(rClient)
+	info, err := rClient.Info(context.TODO(), "replication").Result()
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_FAILOVER_STATE, metrics.FAIL, getRedisError(err))
+		return "", err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_FAILOVER_STATE, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	for _, line := range strings.Split(info, "\n") {
+		if state, ok := strings.CutPrefix(strings.TrimSpace(line), "master_failover_state:"); ok {
+			return state, nil
+		}
+	}
+	return "", nil
+}
+
+// GetRunID returns the run_id of the Redis at ip, which changes at each
+// restart. It uses quickOptions, because the caller treats a slow answer as a
+// stop.
+func (c *client) GetRunID(ip, port, password string) (string, error) {
+	if ip == "" {
+		return "", errNoIP
+	}
+	rClient := rediscli.NewClient(quickOptions(net.JoinHostPort(ip, port), password))
+	defer closeClient(rClient)
+	info, err := rClient.Info(context.TODO(), "server").Result()
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_RUN_ID, metrics.FAIL, getRedisError(err))
+		return "", err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_RUN_ID, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	for _, line := range strings.Split(info, "\n") {
+		if id, ok := strings.CutPrefix(strings.TrimSpace(line), "run_id:"); ok {
+			return id, nil
+		}
+	}
+	return "", errors.New("INFO server has no run_id")
 }
 
 // GetMemoryInfo returns the maxmemory settings, memory usage and role of a Redis instance.
