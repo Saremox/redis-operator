@@ -45,9 +45,10 @@ func (m *Mutator) judge(ctx context.Context, t *transition, converged bool, lost
 }
 
 // observe collects what a version change that did not converge left behind:
-// the master, its version and whether it accepts writes, whether the Sentinels
-// that stayed report it, which redis pods run the new image and do not load or are not Ready, and for each pod
-// of the changed image its state and any log line about the data load.
+// the master, its version and whether it accepts writes, and whether the
+// Sentinels that stayed report it. It lists the redis pods on the new image
+// that are not Ready or cannot load the data. For each pod of the changed
+// image, it collects its state and any log line about the data load.
 func (m *Mutator) observe(ctx context.Context, t *transition) observation {
 	var o observation
 	s, err := m.fetch(ctx, fetchOpts{servers: true, sentinelMaster: t.sentinelsStay})

@@ -3,7 +3,9 @@ package mutator
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,8 +21,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/kubernetes/scheme"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/rest"
+	fakerest "k8s.io/client-go/rest/fake"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	rffake "github.com/saremox/redis-operator/client/k8s/clientset/versioned/fake"
@@ -333,19 +339,59 @@ func sentinelServer(t *testing.T, ip string, port int) int {
 }
 
 // replica is a replica pod of stuckInstance: the image of its redis container,
-// "" for a pod without one, and whether the pod is not Ready.
+// "" for a pod without one, whether the pod is not Ready, and its log.
 type replica struct {
 	image    string
 	notReady bool
+	log      string
+}
+
+// podLogs serves the log of each pod by its name. The fake clientset serves one
+// log for all pods.
+type podLogs struct {
+	kubernetes.Interface
+	logs map[string]string
+}
+
+func (k podLogs) CoreV1() corev1client.CoreV1Interface {
+	return podLogsCore{k.Interface.CoreV1(), k.logs}
+}
+
+type podLogsCore struct {
+	corev1client.CoreV1Interface
+	logs map[string]string
+}
+
+func (c podLogsCore) Pods(namespace string) corev1client.PodInterface {
+	return podLogsPods{c.CoreV1Interface.Pods(namespace), namespace, c.logs}
+}
+
+type podLogsPods struct {
+	corev1client.PodInterface
+	namespace string
+	logs      map[string]string
+}
+
+func (p podLogsPods) GetLogs(name string, _ *corev1.PodLogOptions) *rest.Request {
+	c := &fakerest.RESTClient{
+		Client: fakerest.CreateHTTPClient(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(p.logs[name]))}, nil
+		}),
+		NegotiatedSerializer: scheme.Codecs.WithoutConversion(),
+		GroupVersion:         corev1.SchemeGroupVersion,
+		VersionedAPIPath:     "/api/v1/namespaces/" + p.namespace + "/pods/" + name + "/log",
+	}
+	return c.Request()
 }
 
 // stuckInstance returns the mutator of a Sentinel instance with one redis pod
 // that is the master, and one Sentinel pod for each element of sentinelIPs
 // (its IP, "" for a pod without one). The Sentinels with an IP answer as
 // sentinelServer says, and report sentinelSays as the master. Each element of
-// replicas is a replica pod without an IP. Each pod logs podLog, if it is not
-// empty. The observer knows the master.
-func stuckInstance(t *testing.T, sentinelIPs []string, sentinelSays, podLog string, replicas ...replica) *Mutator {
+// replicas is a replica pod without an IP. The mutator reads the pod logs
+// from the replicas, and no log from the other pods. The observer knows the
+// master.
+func stuckInstance(t *testing.T, sentinelIPs []string, sentinelSays string, replicas ...replica) *Mutator {
 	t.Helper()
 	srv := miniredis.RunT(t)
 	srv.Server().SetPreHook(func(c *miniserver.Peer, cmd string, _ ...string) bool {
@@ -405,13 +451,9 @@ func stuckInstance(t *testing.T, sentinelIPs []string, sentinelSays, podLog stri
 		})
 	}
 	kube := fake.NewClientset(objects...)
-	if podLog != "" {
-		kube.PrependReactor("get", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
-			if a.GetSubresource() != "log" {
-				return false, nil, nil
-			}
-			return true, &runtime.Unknown{Raw: []byte(podLog)}, nil
-		})
+	logs := map[string]string{}
+	for i, r := range replicas {
+		logs["rfr-migrate-"+strconv.Itoa(i+1)] = r.log
 	}
 	enabled := len(sentinelIPs) > 0
 	rf := &redisfailoverv1.RedisFailover{
@@ -439,7 +481,7 @@ func stuckInstance(t *testing.T, sentinelIPs []string, sentinelSays, podLog stri
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	m := New(in, cfg, kube, rfs, o, fakeData{}, a, lock, nil, mt, log)
+	m := New(in, cfg, podLogs{kube, logs}, rfs, o, fakeData{}, a, lock, nil, mt, log)
 	if sentinelsAt != 0 {
 		m.sentinelPort = sentinelsAt
 	}
@@ -465,7 +507,7 @@ func TestJudgeSentinels(t *testing.T) {
 		"no Sentinels":                           {nil, "", true, "", transitionFailedSafe},
 	} {
 		t.Run(name, func(t *testing.T) {
-			m := stuckInstance(t, c.ips, c.says, "")
+			m := stuckInstance(t, c.ips, c.says)
 			tr := &transition{edge: config.Edge{From: "redis-7.4", To: "valkey-8", Expect: config.ExpectUnknown},
 				from: redis74, to: config.Version{Name: "valkey-8"}, sentinelsStay: c.stay}
 			o := m.observe(context.Background(), tr)
@@ -512,37 +554,51 @@ func TestJudgeReplicas(t *testing.T) {
 			from: version("valkey-8"), to: version("redis-7.4"), sentinel: true}
 	}
 	local := []string{"127.0.0.1", "127.0.0.1", "127.0.0.1"}
-	stuck := func(image string) replica { return replica{image, true} }
+	stuck := func(image string) replica { return replica{image: image, notReady: true} }
 	ready := func(image string) replica { return replica{image: image} }
 	const loadError = "7:S 01 Oct 2026 21:49:55.532 # Can't handle RDB format version 12\n"
+	failing := func(image string) replica { return replica{image: image, log: loadError} }
 	for name, c := range map[string]struct {
 		t         func() *transition
 		replicas  []replica
 		sentinels []string
-		log       string
 		onNew     []string
 		result    string
 	}{
-		"one stuck replica":                    {up, []replica{stuck(valkey), ready(old)}, nil, "", []string{"rfr-migrate-1"}, transitionFailedSafe},
-		"one stuck replica with Sentinels":     {up, []replica{ready(old), stuck(valkey)}, local, "", []string{"rfr-migrate-2"}, transitionFailedSafe},
-		"no pod on the new image":              {up, []replica{ready(old), ready(old)}, nil, "", nil, transitionFailedSafe},
-		"two stuck pods on the new image":      {up, []replica{stuck(valkey), stuck(valkey)}, nil, "", []string{"rfr-migrate-1", "rfr-migrate-2"}, transitionFailedUnsafe},
-		"two stuck pods with Sentinels":        {up, []replica{stuck(valkey), stuck(valkey)}, local, "", []string{"rfr-migrate-1", "rfr-migrate-2"}, transitionFailedUnsafe},
-		"two Ready pods on the new image":      {up, []replica{ready(valkey), ready(valkey)}, nil, "", nil, transitionFailedSafe},
-		"one Ready and one stuck pod":          {up, []replica{ready(valkey), stuck(valkey)}, nil, "", []string{"rfr-migrate-2"}, transitionFailedSafe},
-		"one Ready, one stuck, one old pod":    {up, []replica{ready(valkey), stuck(valkey), ready(old)}, nil, "", []string{"rfr-migrate-2"}, transitionFailedSafe},
-		"two pods with a load error":           {up, []replica{ready(valkey), ready(valkey)}, nil, loadError, []string{"rfr-migrate-1", "rfr-migrate-2"}, transitionFailedUnsafe},
-		"a pod without an image":               {up, []replica{ready(""), stuck(valkey)}, nil, "", []string{"rfr-migrate-2"}, transitionFailedSafe},
-		"a pod with another image":             {up, []replica{ready("busybox:1"), stuck(valkey)}, nil, "", []string{"rfr-migrate-2"}, transitionFailedSafe},
-		"a pod without an image and two stuck": {up, []replica{ready(""), stuck(valkey), stuck(valkey)}, nil, "", []string{"rfr-migrate-2", "rfr-migrate-3"}, transitionFailedUnsafe},
-		"one stuck replica of a downgrade":     {down, []replica{stuck(redis72), ready(old)}, nil, "", []string{"rfr-migrate-1"}, transitionFailedSafe},
-		"two stuck pods of a downgrade":        {down, []replica{stuck(redis72), stuck(redis72)}, nil, "", []string{"rfr-migrate-1", "rfr-migrate-2"}, transitionFailedUnsafe},
-		"two Ready pods of a downgrade":        {down, []replica{ready(redis72), ready(redis72)}, nil, "", nil, transitionFailedSafe},
-		"a Sentinel change":                    {sentinels, []replica{stuck(old), stuck(old)}, local, "", nil, transitionFailedSafe},
+		"one stuck replica":                    {up, []replica{stuck(valkey), ready(old)}, nil, []string{"rfr-migrate-1"}, transitionFailedSafe},
+		"one stuck replica with Sentinels":     {up, []replica{ready(old), stuck(valkey)}, local, []string{"rfr-migrate-2"}, transitionFailedSafe},
+		"no pod on the new image":              {up, []replica{ready(old), ready(old)}, nil, nil, transitionFailedSafe},
+		"two stuck pods on the new image":      {up, []replica{stuck(valkey), stuck(valkey)}, nil, []string{"rfr-migrate-1", "rfr-migrate-2"}, transitionFailedUnsafe},
+		"two stuck pods with Sentinels":        {up, []replica{stuck(valkey), stuck(valkey)}, local, []string{"rfr-migrate-1", "rfr-migrate-2"}, transitionFailedUnsafe},
+		"two Ready pods on the new image":      {up, []replica{ready(valkey), ready(valkey)}, nil, nil, transitionFailedSafe},
+		"one Ready and one stuck pod":          {up, []replica{ready(valkey), stuck(valkey)}, nil, []string{"rfr-migrate-2"}, transitionFailedSafe},
+		"one Ready, one stuck, one old pod":    {up, []replica{ready(valkey), stuck(valkey), ready(old)}, nil, []string{"rfr-migrate-2"}, transitionFailedSafe},
+		"two pods with a load error":           {up, []replica{failing(valkey), failing(valkey)}, nil, []string{"rfr-migrate-1", "rfr-migrate-2"}, transitionFailedUnsafe},
+		"a pod without an image":               {up, []replica{ready(""), stuck(valkey)}, nil, []string{"rfr-migrate-2"}, transitionFailedSafe},
+		"a pod with another image":             {up, []replica{ready("busybox:1"), stuck(valkey)}, nil, []string{"rfr-migrate-2"}, transitionFailedSafe},
+		"a pod without an image and two stuck": {up, []replica{ready(""), stuck(valkey), stuck(valkey)}, nil, []string{"rfr-migrate-2", "rfr-migrate-3"}, transitionFailedUnsafe},
+		"one stuck replica of a downgrade":     {down, []replica{stuck(redis72), ready(old)}, nil, []string{"rfr-migrate-1"}, transitionFailedSafe},
+		"two stuck pods of a downgrade":        {down, []replica{stuck(redis72), stuck(redis72)}, nil, []string{"rfr-migrate-1", "rfr-migrate-2"}, transitionFailedUnsafe},
+		"two Ready pods of a downgrade":        {down, []replica{ready(redis72), ready(redis72)}, nil, nil, transitionFailedSafe},
+		"a Sentinel change":                    {sentinels, []replica{stuck(old), stuck(old)}, local, nil, transitionFailedSafe},
 	} {
 		t.Run(name, func(t *testing.T) {
-			m := stuckInstance(t, c.sentinels, "127.0.0.1", c.log, c.replicas...)
+			m := stuckInstance(t, c.sentinels, "127.0.0.1", c.replicas...)
 			tr := c.t()
+			if tr.sentinel {
+				// The Sentinel pods are the pods that this change looks at.
+				for i := range c.sentinels {
+					name := "rfs-migrate-" + strconv.Itoa(i)
+					pod, err := m.kube.CoreV1().Pods("ns").Get(context.Background(), name, metav1.GetOptions{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}}
+					if _, err := m.kube.CoreV1().Pods("ns").UpdateStatus(context.Background(), pod, metav1.UpdateOptions{}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			o := m.observe(context.Background(), tr)
 			if !slices.Equal(o.onNew, c.onNew) {
 				t.Errorf("pods on the new image that do not load: %v, want %v", o.onNew, c.onNew)

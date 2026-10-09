@@ -392,7 +392,7 @@ func classify(t *transition, o observation) (string, []string) {
 			unsafe = append(unsafe, fmt.Sprintf("the master %s couldn't load the data: %s", o.master, o.loadError))
 		}
 		if o.sentinels != nil {
-			unsafe = append(unsafe, fmt.Sprintf("the Sentinels don't all report the master %s: %v", o.master, o.sentinels))
+			unsafe = append(unsafe, fmt.Sprintf("the Sentinels do not all report the master %s: %v", o.master, o.sentinels))
 		}
 	}
 	if len(o.onNew) > 1 {
