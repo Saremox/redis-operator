@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -89,7 +90,7 @@ func (ht *handoverTest) message(t *testing.T, result rfservice.HandoverResult) s
 	return message
 }
 
-const aborted = "the handover of the master role to pod rfr-test-1 was aborted, because the replica did not catch up with the master in time, the next attempt is after "
+const aborted = "the handover of the master role to pod rfr-test-1 was aborted, because the replica did not take the master role in time, the next attempt is after "
 
 // Each attempt can pause the writes, so an aborted handover waits before the
 // next attempt, and the wait doubles. An abort never deletes the master: the
@@ -229,4 +230,18 @@ func TestHandOverMasterWithoutRequeue(t *testing.T) {
 	ht.handler.requeue = nil
 
 	assert.Contains(t, ht.message(t, rfservice.HandoverAborted), "the next attempt is after 30s")
+}
+
+// A master on the update revision ends the rollout, so the next rollout
+// counts the refusals from zero, also when the same pod is the master again.
+func TestUpdateRedisesPodsDropsTheHandoverStateAfterTheRollout(t *testing.T) {
+	rt := newRolloutTest(t)
+	rt.synced = true
+	rt.pods[0].Labels[appsv1.ControllerRevisionHashLabelKey] = "new"
+	rt.handler.handoverRetries.Store(failoverKey(rt.rf), handoverRetry{master: "rfr-test-0", refusals: 2})
+
+	assert.Empty(t, rt.update(""))
+
+	_, kept := rt.handler.handoverRetries.Load(failoverKey(rt.rf))
+	assert.False(t, kept)
 }

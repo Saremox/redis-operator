@@ -66,6 +66,7 @@ type Client interface {
 	SetSentinelAuthPass(ip, password string) error
 	FailoverTo(ip, port, password, targetIP string, timeout time.Duration) error
 	FailoverAbort(ip, port, password string) error
+	GetRunID(ip, port, password string) (string, error)
 }
 
 type client struct {
@@ -927,6 +928,32 @@ func (c *client) FailoverAbort(ip, port, password string) error {
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_ABORT, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
+}
+
+// GetRunID returns the run_id of the Redis at ip, which changes at each
+// restart. It waits 500ms at most and does not retry, because the caller
+// treats a slow answer as a stop.
+func (c *client) GetRunID(ip, port, password string) (string, error) {
+	if ip == "" {
+		return "", errNoIP
+	}
+	options := redisOptions(net.JoinHostPort(ip, port), password)
+	options.DialTimeout, options.ReadTimeout, options.WriteTimeout = 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond
+	options.MaxRetries = -1
+	rClient := rediscli.NewClient(options)
+	defer closeClient(rClient)
+	info, err := rClient.Info(context.TODO(), "server").Result()
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_RUN_ID, metrics.FAIL, getRedisError(err))
+		return "", err
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_RUN_ID, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	for _, line := range strings.Split(info, "\n") {
+		if id, ok := strings.CutPrefix(strings.TrimSpace(line), "run_id:"); ok {
+			return id, nil
+		}
+	}
+	return "", errors.New("INFO server has no run_id")
 }
 
 // GetMemoryInfo returns the maxmemory settings, memory usage and role of a Redis instance.

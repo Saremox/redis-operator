@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"net"
 	"strconv"
 	"strings"
 	"syscall"
@@ -114,9 +115,16 @@ func TestFailoverToRefusesATargetThatIsNotAReplica(t *testing.T) {
 
 func TestFailoverToRenamedCommand(t *testing.T) {
 	requireRedisServer(t)
+	// Redis before 6.2 does not start with a rename of an unknown command.
+	plain := startRedisProcess(t)
+	info, err := newTestClient().GetReplicationInfo(plain.IP, strconv.Itoa(plain.Port), "")
+	require.NoError(t, err)
+	if info.FailoverState == "" {
+		t.Skip("redis-server before 6.2 has no FAILOVER command")
+	}
 	master := startRedisProcess(t, "--rename-command", "FAILOVER", "")
 
-	err := newTestClient().FailoverTo(master.IP, strconv.Itoa(master.Port), "", "127.0.0.2", time.Second)
+	err = newTestClient().FailoverTo(master.IP, strconv.Itoa(master.Port), "", "127.0.0.2", time.Second)
 
 	require.Error(t, err)
 	assert.Regexp(t, "^ERR unknown command", err.Error())
@@ -278,4 +286,49 @@ func TestFailoverAbortConnectionError(t *testing.T) {
 
 	assert.Error(t, c.FailoverAbort(testLoopbackIP, strconv.Itoa(port), ""))
 	assert.ErrorIs(t, c.FailoverAbort("", strconv.Itoa(port), ""), errNoIP)
+}
+
+// The run ID changes at each restart of the server and stays the same until
+// then.
+func TestGetRunID(t *testing.T) {
+	requireRedisServer(t)
+	server := startRedisProcess(t)
+	c := newTestClient()
+
+	first, err := c.GetRunID(server.IP, strconv.Itoa(server.Port), "")
+	require.NoError(t, err)
+	second, err := c.GetRunID(server.IP, strconv.Itoa(server.Port), "")
+	require.NoError(t, err)
+
+	assert.Len(t, first, 40)
+	assert.Equal(t, first, second)
+}
+
+func TestGetRunIDErrors(t *testing.T) {
+	port, err := findFreePort()
+	require.NoError(t, err)
+	c := newTestClient()
+
+	_, err = c.GetRunID(testLoopbackIP, strconv.Itoa(port), "")
+	assert.Error(t, err)
+	_, err = c.GetRunID("", strconv.Itoa(port), "")
+	assert.ErrorIs(t, err, errNoIP)
+
+	// A server that answers INFO without run_id.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = l.Close() }()
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _ = conn.Read(make([]byte, 1024))
+		_, _ = conn.Write([]byte("$5\r\nfoo:1\r\n"))
+	}()
+	host, p, err := net.SplitHostPort(l.Addr().String())
+	require.NoError(t, err)
+	_, err = c.GetRunID(host, p, "")
+	assert.ErrorContains(t, err, "no run_id")
 }

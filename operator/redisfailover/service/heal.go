@@ -33,6 +33,7 @@ type RedisFailoverHeal interface {
 	DeletePod(podName string, rFailover *redisfailoverv1.RedisFailover) error
 	PromoteBestReplica(newMasterIP string, rFailover *redisfailoverv1.RedisFailover) error
 	HandOverMaster(masterIP, targetIP string, rFailover *redisfailoverv1.RedisFailover) (HandoverResult, error)
+	AbortOrphanedFailover(masterIP string, rFailover *redisfailoverv1.RedisFailover) (bool, error)
 	EnsureRedisMaxMemory(rFailover *redisfailoverv1.RedisFailover, master string, redises []string) (MaxMemoryResult, error)
 	ResizePodInPlace(rFailover *redisfailoverv1.RedisFailover, podName, updateRevision string) (ResizeResult, error)
 	ApplyPassword(rFailover *redisfailoverv1.RedisFailover, password string, previous []string) (bool, error)

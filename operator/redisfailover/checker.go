@@ -192,6 +192,8 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("revision", masterRevision).WithField("pod", master).Debug("deleted primary pod")
 			return nil
 		}
+		// The next rollout counts the refusals from zero.
+		r.handoverRetries.Delete(failoverKey(rf))
 	}
 
 	return nil
@@ -235,7 +237,7 @@ func (r *RedisFailoverHandler) handOverMaster(rf *redisfailoverv1.RedisFailover,
 		return false, nil
 	case rfservice.HandoverAborted:
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.MASTER_HANDOVER_ABORTED, metrics.NOT_APPLICABLE, errors.New("handover aborted"))
-		r.retryHandover(rf, next, fmt.Sprintf("the handover of the master role to pod %s was aborted, because the replica did not catch up with the master in time", best.PodName))
+		r.retryHandover(rf, next, fmt.Sprintf("the handover of the master role to pod %s was aborted, because the replica did not take the master role in time", best.PodName))
 		return true, nil
 	case rfservice.HandoverRefused:
 		// The master can see its replicas at an address other than the pod
@@ -1100,6 +1102,33 @@ func (r *RedisFailoverHandler) electMasterForSentinel(rf *redisfailoverv1.RedisF
 	return true, nil
 }
 
+// abortOrphanedFailover ends a FAILOVER on the pod labelled master that no
+// reconcile watches, for example after an operator restart in a handover.
+// Without the abort, the old master stays a replica without writes, and the
+// election below can promote a second master. The handover of this reconcile
+// starts later, in UpdateRedisesPods. A FAILOVER that a user sends by hand is
+// also aborted.
+func (r *RedisFailoverHandler) abortOrphanedFailover(rf *redisfailoverv1.RedisFailover) (bool, error) {
+	// The checks below list the pods again and report a failed list.
+	pod, _ := r.labelledMasterPod(rf)
+	if pod == nil || pod.Status.PodIP == "" {
+		return false, nil
+	}
+	aborted, err := r.rfHealer.AbortOrphanedFailover(pod.Status.PodIP, rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.NotHealthyState, Message: "unable to abort a FAILOVER that no reconcile watches"}
+		return false, err
+	}
+	if aborted {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.NotHealthyState, Message: fmt.Sprintf("aborted a FAILOVER of pod %s that no reconcile watched", pod.Name)}
+		// The checks run again on the roles after the abort.
+		if r.requeue != nil {
+			r.requeue(failoverKey(rf), time.Second)
+		}
+	}
+	return aborted, nil
+}
+
 // checkAndHealOperatorManagedMode handles failover when Sentinel is disabled.
 // The operator directly manages master election and failover.
 func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailoverv1.RedisFailover) error {
@@ -1115,6 +1144,10 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.REDIS_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Redis quorum not running, waiting for redis statefulset reconcile")
 		return nil
+	}
+
+	if aborted, err := r.abortOrphanedFailover(rf); err != nil || aborted {
+		return err
 	}
 
 	nMasters, err := r.rfChecker.GetNumberMasters(rf)
