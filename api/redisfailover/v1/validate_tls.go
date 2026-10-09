@@ -11,9 +11,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-// tlsAvailable is false until the operator can change a running RedisFailover
-// to TLS and renew its certificates in place. Until then, a certificate that
-// expires in a running pod stops the replication.
+// tlsAvailable stays false while the operator cannot change the Redis pods to
+// TLS or renew their certificates in place. Without the renewal, an expired
+// certificate stops the replication.
 var tlsAvailable = false
 
 var errTLSNotAvailable = errors.New("tls: TLS is not available in this release of the operator")
@@ -29,6 +29,10 @@ var tlsTunableConfigs = []string{
 	"tls-session-cache-size",
 	"tls-session-cache-timeout",
 }
+
+// tlsEnvPrefix is the prefix of the env vars that tell the pod scripts that
+// the pod has TLS.
+const tlsEnvPrefix = "RFO_TLS_"
 
 var imageVersionPattern = regexp.MustCompile(`^v?(\d+)(?:\.(\d+))?`)
 
@@ -82,10 +86,19 @@ func (r *RedisFailover) validateTLS() error {
 	}
 
 	for _, c := range r.Spec.Redis.CustomConfig {
-		param, _, _ := strings.Cut(c, " ")
+		param, value, _ := strings.Cut(c, " ")
 		param = strings.ToLower(param)
 		if param == "port" || (strings.HasPrefix(param, "tls-") && !slices.Contains(tlsTunableConfigs, param)) {
 			return fmt.Errorf("redis.customConfig cannot set %q with TLS, because the operator sets it", param)
+		}
+		if param == "tls-protocols" && !allowsTLS12(value) {
+			return fmt.Errorf("redis.customConfig tls-protocols %q must include TLSv1.2, because the operator connects with TLS 1.2", value)
+		}
+	}
+
+	for _, e := range r.Spec.Redis.Env {
+		if strings.HasPrefix(e.Name, tlsEnvPrefix) {
+			return fmt.Errorf("redis.env cannot set %q with TLS, because the operator sets the %s variables", e.Name, tlsEnvPrefix)
 		}
 	}
 
@@ -121,4 +134,14 @@ func imageVersion(image string) (major, minor int, ok bool) {
 		minor, _ = strconv.Atoi(m[2])
 	}
 	return major, minor, true
+}
+
+// allowsTLS12 tells if a tls-protocols value of customConfig allows TLS 1.2.
+// An empty value keeps the Redis default, which includes TLS 1.2.
+func allowsTLS12(value string) bool {
+	tokens := strings.FieldsFunc(strings.Trim(value, `"' `), func(r rune) bool { return r == ' ' || r == ',' })
+	if len(tokens) == 0 {
+		return true
+	}
+	return slices.ContainsFunc(tokens, func(t string) bool { return strings.EqualFold(t, "TLSv1.2") })
 }

@@ -73,12 +73,12 @@ type client struct {
 	tls             *TLSTargets
 }
 
-// TLSTargets are the Redis pods of one RedisFailover that run with TLS. The
-// operator dials them only on Port with Config, never on the plaintext port.
+// TLSTargets are the Redis pods of one RedisFailover that have TLS. The
+// operator dials them only on Port with the config of their IP, never on the
+// plaintext port.
 type TLSTargets struct {
-	Port   string
-	Config *tls.Config
-	IPs    map[string]bool
+	Port    string
+	Configs map[string]*tls.Config
 }
 
 // ForTLS returns a client that dials the pods of targets over TLS. The client
@@ -90,11 +90,11 @@ func (c *client) ForTLS(targets *TLSTargets) Client {
 }
 
 func (c *client) nodeOptions(ip, port, password string) *rediscli.Options {
-	if c.tls == nil || !c.tls.IPs[ip] {
+	if c.tls == nil || c.tls.Configs[ip] == nil {
 		return redisOptions(net.JoinHostPort(ip, port), password)
 	}
 	options := redisOptions(net.JoinHostPort(ip, c.tls.Port), password)
-	options.TLSConfig = c.tls.Config
+	options.TLSConfig = c.tls.Configs[ip]
 	return options
 }
 
@@ -1076,28 +1076,50 @@ func (c *client) SetConfig(ip, port, password, parameter, value string) error {
 
 // KillClientsOnPort closes the normal and pub/sub connections that came in on
 // localPort, and returns their number. A closed listener does not close the
-// connections that it accepted before. It does not close replication links.
+// connections that it accepted before. It does not close replication links,
+// and it does not close its own connection.
 func (c *client) KillClientsOnPort(ip, port, password, localPort string) (int, error) {
 	if ip == "" {
 		return 0, errNoIP
 	}
 	rClient := rediscli.NewClient(c.nodeOptions(ip, port, password))
 	defer closeClient(rClient)
+	ctx := context.TODO()
+	conn := rClient.Conn(ctx)
+	defer func() { _ = conn.Close() }()
 
+	fail := func(err error) (int, error) {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.KILL_CLIENTS_ON_PORT, metrics.FAIL, getRedisError(err))
+		return 0, err
+	}
+	own, err := conn.ClientID(ctx).Result()
+	if err != nil {
+		return fail(err)
+	}
 	var ids []string
 	for _, clientType := range []string{"normal", "pubsub"} {
-		list, err := rClient.Do(context.TODO(), "CLIENT", "LIST", "TYPE", clientType).Text()
+		cmd := rediscli.NewStringCmd(ctx, "CLIENT", "LIST", "TYPE", clientType)
+		_ = conn.Process(ctx, cmd)
+		list, err := cmd.Result()
 		if err != nil {
-			c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.KILL_CLIENTS_ON_PORT, metrics.FAIL, getRedisError(err))
-			return 0, err
+			return fail(err)
 		}
-		ids = append(ids, clientIDsOnPort(list, localPort)...)
+		if clientType == "normal" && !strings.Contains(list, " laddr=") {
+			// Without laddr, as before Redis 6.2, no client matches, and the
+			// plaintext clients would stay.
+			return fail(errors.New("CLIENT LIST has no laddr field"))
+		}
+		for _, id := range clientIDsOnPort(list, localPort) {
+			if id != strconv.FormatInt(own, 10) {
+				ids = append(ids, id)
+			}
+		}
 	}
 	killed := 0
 	for _, id := range ids {
-		n, err := rClient.ClientKillByFilter(context.TODO(), "ID", id).Result()
+		n, err := conn.ClientKillByFilter(ctx, "ID", id).Result()
 		if err != nil {
-			c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.KILL_CLIENTS_ON_PORT, metrics.FAIL, getRedisError(err))
+			_, err = fail(err)
 			return killed, err
 		}
 		killed += int(n)
@@ -1128,8 +1150,8 @@ func clientIDsOnPort(list, localPort string) []string {
 	return ids
 }
 
-// GetServerVersion returns redis_version of INFO server. Valkey reports the
-// Redis version that it is compatible with.
+// GetServerVersion returns redis_version of INFO server. Valkey 8 and later
+// report 7.2.4 there, the Redis version that they are compatible with.
 func (c *client) GetServerVersion(ip, port, password string) (string, error) {
 	if ip == "" {
 		return "", errNoIP

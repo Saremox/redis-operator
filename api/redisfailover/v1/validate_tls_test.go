@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 )
@@ -131,7 +132,21 @@ func TestValidateTLS(t *testing.T) {
 		},
 		{
 			name:   "customConfig tls-protocols",
-			modify: func(rf *RedisFailover) { rf.Spec.Redis.CustomConfig = []string{"tls-protocols TLSv1.3"} },
+			modify: func(rf *RedisFailover) { rf.Spec.Redis.CustomConfig = []string{"tls-protocols TLSv1.2 TLSv1.3"} },
+		},
+		{
+			name:    "customConfig tls-protocols without TLS 1.2",
+			modify:  func(rf *RedisFailover) { rf.Spec.Redis.CustomConfig = []string{"tls-protocols TLSv1.3"} },
+			wantErr: `redis.customConfig tls-protocols "TLSv1.3" must include TLSv1.2, because the operator connects with TLS 1.2`,
+		},
+		{
+			name:    "user env with the prefix of the operator",
+			modify:  func(rf *RedisFailover) { rf.Spec.Redis.Env = []corev1.EnvVar{{Name: "RFO_TLS_PORT", Value: "7000"}} },
+			wantErr: `redis.env cannot set "RFO_TLS_PORT" with TLS, because the operator sets the RFO_TLS_ variables`,
+		},
+		{
+			name:   "user env of the Bitnami image",
+			modify: func(rf *RedisFailover) { rf.Spec.Redis.Env = []corev1.EnvVar{{Name: "REDIS_TLS_PORT", Value: "7000"}} },
 		},
 		{
 			name:    "old image",
@@ -225,5 +240,24 @@ func TestImageVersion(t *testing.T) {
 			assert.Equal(t, test.major, major, test.image)
 			assert.Equal(t, test.minor, minor, test.image)
 		}
+	}
+}
+
+func TestAllowsTLS12(t *testing.T) {
+	tests := map[string]bool{
+		"TLSv1.2":               true,
+		"tlsv1.2 TLSv1.3":       true,
+		"TLSv1.3 TLSv1.2":       true,
+		"TLSv1.3,TLSv1.2":       true,
+		`"TLSv1.2 TLSv1.3"`:     true,
+		`""`:                    true,
+		"":                      true,
+		"TLSv1.3":               false,
+		"TLSv1.1 TLSv1.3":       false,
+		"TLSv1.20":              false,
+		"TLSv1.3 TLSv1.2.extra": false,
+	}
+	for value, want := range tests {
+		assert.Equal(t, want, allowsTLS12(value), value)
 	}
 }

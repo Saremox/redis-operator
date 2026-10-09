@@ -27,6 +27,8 @@ Each reconcile does these steps in this order:
    - When a flag disables a PodDisruptionBudget or `sentinel.serviceAccountName` is set, the operator deletes the object that it created before. An old PodDisruptionBudget would block node drains. The operator deletes only an object that the RedisFailover owns. It deletes the ServiceAccount when no Sentinel pod uses it, because the old ReplicaSet cannot create a pod without it. Without the RBAC verb, the operator logs a warning and keeps the object.
 6. Check & Heal: connects to every Redis and Sentinel and moves them to the desired state. First, it applies a changed password, because every later check authenticates. Then it uses one mode, described below.
 
+With `tls`, the operator connects to Redis with TLS 1.2, also when Redis and the applications use TLS 1.3. With TLS 1.3, Redis checks the client certificate after the handshake, and a refused certificate can look like a lost connection. The operator must not treat a certificate problem as a pod that does not answer.
+
 ## Check & Heal modes
 
 Operator-managed mode and Sentinel mode need a quorum (a majority) of the pods to run, not the full number in the spec. A Pending pod does not block the heal of the others while the running pods are a majority. With 2 replicas, one Pending pod blocks the heal.

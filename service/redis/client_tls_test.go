@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,9 +119,8 @@ func startTLSRedis(t *testing.T, pki *testPKI, extraArgs ...string) (*redisProc,
 
 func tlsClient(pki *testPKI, ip, port, serverName string) Client {
 	return New(metrics.Dummy).(*client).ForTLS(&TLSTargets{
-		Port:   port,
-		Config: pki.config(serverName),
-		IPs:    map[string]bool{ip: true},
+		Port:    port,
+		Configs: map[string]*tls.Config{ip: pki.config(serverName)},
 	})
 }
 
@@ -141,7 +141,7 @@ func TestForTLS(t *testing.T) {
 	assert.Regexp(t, `^\d+\.\d+\.\d+`, version)
 
 	// The client of other pods and the base client stay on plaintext.
-	other := New(metrics.Dummy).(*client).ForTLS(&TLSTargets{Port: tlsPort, Config: pki.config(testTLSServerName), IPs: map[string]bool{"10.0.0.1": true}})
+	other := New(metrics.Dummy).(*client).ForTLS(&TLSTargets{Port: tlsPort, Configs: map[string]*tls.Config{"10.0.0.1": pki.config(testTLSServerName)}})
 	for _, plain := range []Client{other, New(metrics.Dummy)} {
 		_, err = plain.GetConfig(proc.IP, plainPort, "", "port")
 		require.Error(t, err)
@@ -159,11 +159,11 @@ func TestTLSErrorsAreNotUnreachable(t *testing.T) {
 	otherPKI := newTestPKI(t)
 
 	tests := map[string]Client{
-		"unknown CA":        New(metrics.Dummy).(*client).ForTLS(&TLSTargets{Port: tlsPort, Config: otherPKI.config(testTLSServerName), IPs: map[string]bool{proc.IP: true}}),
+		"unknown CA":        New(metrics.Dummy).(*client).ForTLS(&TLSTargets{Port: tlsPort, Configs: map[string]*tls.Config{proc.IP: otherPKI.config(testTLSServerName)}}),
 		"other server name": tlsClient(pki, proc.IP, tlsPort, "other.example.com"),
-		"no client certificate, TLS 1.2": New(metrics.Dummy).(*client).ForTLS(&TLSTargets{Port: tlsPort, Config: &tls.Config{
+		"no client certificate, TLS 1.2": New(metrics.Dummy).(*client).ForTLS(&TLSTargets{Port: tlsPort, Configs: map[string]*tls.Config{proc.IP: {
 			MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12, RootCAs: pki.pool, ServerName: testTLSServerName,
-		}, IPs: map[string]bool{proc.IP: true}}),
+		}}}),
 	}
 	for name, c := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -191,10 +191,10 @@ func TestGetConfigAndSetConfig(t *testing.T) {
 	port := strconv.Itoa(proc.Port)
 	c := newTestClient()
 
-	require.NoError(t, c.SetConfig(proc.IP, port, "", "tls-auth-clients", "optional"))
-	value, err := c.GetConfig(proc.IP, port, "", "tls-auth-clients")
+	require.NoError(t, c.SetConfig(proc.IP, port, "", "hz", "20"))
+	value, err := c.GetConfig(proc.IP, port, "", "hz")
 	require.NoError(t, err)
-	assert.Equal(t, "optional", value)
+	assert.Equal(t, "20", value)
 
 	_, err = c.GetConfig(proc.IP, port, "", "no-such-parameter")
 	assert.EqualError(t, err, "CONFIG GET no-such-parameter: unknown parameter")
@@ -204,6 +204,20 @@ func TestGetConfigAndSetConfig(t *testing.T) {
 	require.NoError(t, err)
 	_, err = c.GetConfig(testLoopbackIP, strconv.Itoa(free), "", "port")
 	assert.True(t, IsUnreachableError(err))
+}
+
+// TestSetConfigTLSParameter changes a TLS parameter, which a server without
+// TLS does not know.
+func TestSetConfigTLSParameter(t *testing.T) {
+	pki := newTestPKI(t)
+	proc, tlsPort := startTLSRedis(t, pki)
+	c := tlsClient(pki, proc.IP, tlsPort, testTLSServerName)
+	port := strconv.Itoa(proc.Port)
+
+	require.NoError(t, c.SetConfig(proc.IP, port, "", "tls-auth-clients", "optional"))
+	value, err := c.GetConfig(proc.IP, port, "", "tls-auth-clients")
+	require.NoError(t, err)
+	assert.Equal(t, "optional", value)
 }
 
 // TestKillClientsOnPort closes the normal and pub/sub clients of the plaintext
@@ -229,6 +243,12 @@ func TestKillClientsOnPort(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, killed)
 
+	// A client on the plaintext port does not close its own connection.
+	require.NoError(t, plain.Ping(bgCtx()).Err())
+	killed, err = newTestClient().KillClientsOnPort(proc.IP, plainPort, "", plainPort)
+	require.NoError(t, err)
+	assert.Equal(t, 1, killed)
+
 	list, err := secure.ClientList(bgCtx()).Result()
 	require.NoError(t, err)
 	assert.Empty(t, clientIDsOnPort(list, plainPort))
@@ -237,14 +257,18 @@ func TestKillClientsOnPort(t *testing.T) {
 
 func TestKillClientsOnPortErrors(t *testing.T) {
 	requireRedisServer(t)
-	denied := startRedisProcess(t, "--user", "default", "on", "nopass", "~*", "&*", "+@all", "-client|kill")
-	port := strconv.Itoa(denied.Port)
-	idle := rediscli.NewClient(&rediscli.Options{Addr: denied.Addr()})
-	t.Cleanup(func() { _ = idle.Close() })
-	require.NoError(t, idle.Ping(bgCtx()).Err())
+	for _, denied := range []string{"-client|kill", "-client|list"} {
+		t.Run(denied, func(t *testing.T) {
+			proc := startRedisProcess(t, "--user", "default", "on", "nopass", "~*", "&*", "+@all", denied)
+			port := strconv.Itoa(proc.Port)
+			idle := rediscli.NewClient(&rediscli.Options{Addr: proc.Addr()})
+			t.Cleanup(func() { _ = idle.Close() })
+			require.NoError(t, idle.Ping(bgCtx()).Err())
 
-	_, err := newTestClient().KillClientsOnPort(denied.IP, port, "", port)
-	assert.ErrorContains(t, err, "NOPERM")
+			_, err := newTestClient().KillClientsOnPort(proc.IP, port, "", port)
+			assert.ErrorContains(t, err, "NOPERM")
+		})
+	}
 
 	free, err := findFreePort()
 	require.NoError(t, err)
@@ -293,4 +317,41 @@ func TestGetServerVersionErrors(t *testing.T) {
 	require.NoError(t, err)
 	_, err = newTestClient().GetServerVersion(testLoopbackIP, strconv.Itoa(free), "")
 	assert.True(t, IsUnreachableError(err))
+}
+
+// TestKillClientsOnPortWithoutLaddr fails when CLIENT LIST has no laddr, as
+// before Redis 6.2, because then no client matches and all of them stay.
+func TestKillClientsOnPortWithoutLaddr(t *testing.T) {
+	l, err := net.Listen("tcp", net.JoinHostPort(testLoopbackIP, "0"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				buf := make([]byte, 4096)
+				for {
+					n, err := conn.Read(buf)
+					if err != nil {
+						return
+					}
+					reply := ":5\r\n"
+					if strings.Contains(string(buf[:n]), "LIST") {
+						line := "id=5 addr=127.0.0.1:5000 fd=8 name=\n"
+						reply = "$" + strconv.Itoa(len(line)) + "\r\n" + line + "\r\n"
+					}
+					if _, err := conn.Write([]byte(reply)); err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+	_, err = newTestClient().KillClientsOnPort(testLoopbackIP, port, "", "6379")
+	assert.EqualError(t, err, "CLIENT LIST has no laddr field")
 }

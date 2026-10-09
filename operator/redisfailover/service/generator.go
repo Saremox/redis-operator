@@ -340,7 +340,7 @@ fi
 `, GetSentinelName(rf), port)
 	}
 	shutdownContent += fmt.Sprintf(`cmd="redis-cli -p %v"
-if [ -n "${REDIS_TLS_PORT}" ]; then
+if [ -n "${RFO_TLS_PORT}" ]; then
 	cmd="redis-cli %s"
 fi
 if [ ! -z "${REDIS_PASSWORD}" ]; then
@@ -410,7 +410,7 @@ LINK_DOWN_SINCE="master_link_down_since_seconds:"
 MAX_LINK_DOWN_SECONDS=%[2]v
 
 cmd="redis-cli -p %[1]v"
-if [ -n "${REDIS_TLS_PORT}" ]; then
+if [ -n "${RFO_TLS_PORT}" ]; then
 	cmd="redis-cli %[3]s"
 fi
 # A frozen server still accepts connections, and redis-cli would wait for its

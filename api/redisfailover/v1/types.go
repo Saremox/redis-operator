@@ -32,8 +32,8 @@ type RedisFailoverSpec struct {
 	LabelWhitelist []string           `json:"labelWhitelist,omitempty"`
 	BootstrapNode  *BootstrapSettings `json:"bootstrapNode,omitempty"`
 	// TLS adds a TLS port to Redis. Validation rejects this field in this
-	// release, because the operator does not yet change a running
-	// RedisFailover to TLS or renew its certificates.
+	// release: the operator cannot change the Redis pods to TLS or renew
+	// their certificates in place.
 	TLS *TLSSettings `json:"tls,omitempty"`
 }
 

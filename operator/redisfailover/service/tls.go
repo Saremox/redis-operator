@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -32,30 +33,51 @@ const (
 // enough.
 const minRSAKeyBits = 2048
 
+// maxSessionCaches limits the session caches of one TLSMaterial. Pod IPs
+// change at each restart, so the old caches are dropped at this limit.
+const maxSessionCaches = 256
+
 // TLSMaterial is a certificate that CheckTLSMaterial accepted.
 type TLSMaterial struct {
 	Certificate tls.Certificate
 	Roots       *x509.CertPool
 	NotAfter    time.Time
-	// sessions lets the operator resume TLS sessions, because each command
-	// of the operator opens a new connection.
-	sessions tls.ClientSessionCache
+
+	mu sync.Mutex
+	// sessions holds one session cache for each pod IP. Each command of the
+	// operator opens a new connection, and a session cache uses the server
+	// name as key, which is the same for all pods.
+	sessions map[string]tls.ClientSessionCache
 }
 
-// ClientConfig is the TLS config of the operator for a Redis pod. It checks
-// serverName and not the dialled pod IP, because pod IPs change.
-func (m *TLSMaterial) ClientConfig(serverName string) *tls.Config {
+// ClientConfig is the TLS config of the operator for the Redis pod at ip. It
+// checks serverName and not the pod IP, because pod IPs change. It allows
+// only TLS 1.2: with TLS 1.3, Redis checks the client certificate after the
+// handshake, and a refused certificate can then look like a connection reset
+// and not like a TLS error.
+func (m *TLSMaterial) ClientConfig(serverName, ip string) *tls.Config {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cache, ok := m.sessions[ip]
+	if !ok {
+		if len(m.sessions) >= maxSessionCaches {
+			clear(m.sessions)
+		}
+		cache = tls.NewLRUClientSessionCache(1)
+		m.sessions[ip] = cache
+	}
 	return &tls.Config{
 		MinVersion:         tls.VersionTLS12,
+		MaxVersion:         tls.VersionTLS12,
 		RootCAs:            m.Roots,
 		Certificates:       []tls.Certificate{m.Certificate},
 		ServerName:         serverName,
-		ClientSessionCache: m.sessions,
+		ClientSessionCache: cache,
 	}
 }
 
-// CheckTLSMaterial accepts a certificate only when Redis, its replicas and
-// the operator can all use it. The Redis pods and the operator present the
+// CheckTLSMaterial checks the properties of the certificate that Redis, its
+// replicas and the operator need. The Redis pods and the operator present the
 // same certificate as client, so clientAuth Required and Optional need the
 // client auth usage.
 func CheckTLSMaterial(certPEM, keyPEM, caPEM []byte, serverName, clientAuth string, now time.Time) (*TLSMaterial, error) {
@@ -86,6 +108,10 @@ func CheckTLSMaterial(certPEM, keyPEM, caPEM []byte, serverName, clientAuth stri
 	if key, ok := leaf.PublicKey.(*rsa.PublicKey); ok && key.N.BitLen() < minRSAKeyBits {
 		return nil, fmt.Errorf("the RSA key has %d bits, and Redis needs at least %d", key.N.BitLen(), minRSAKeyBits)
 	}
+	// The TLS key exchanges of Go and Redis need a signature from the key.
+	if leaf.KeyUsage != 0 && leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+		return nil, errors.New("the certificate needs the digital signature key usage")
+	}
 	usages := []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 	if clientAuth != redisfailoverv1.TLSClientAuthNone {
 		usages = append(usages, x509.ExtKeyUsageClientAuth)
@@ -113,17 +139,18 @@ func CheckTLSMaterial(certPEM, keyPEM, caPEM []byte, serverName, clientAuth stri
 		Certificate: pair,
 		Roots:       roots,
 		NotAfter:    leaf.NotAfter,
-		sessions:    tls.NewLRUClientSessionCache(0),
+		sessions:    map[string]tls.ClientSessionCache{},
 	}, nil
 }
 
 // hasExtKeyUsage treats a certificate without extended key usages as valid
-// for each usage, as Go and OpenSSL do.
+// for each usage, as Go and OpenSSL do. It does not accept the any usage,
+// because OpenSSL refuses it for TLS.
 func hasExtKeyUsage(c *x509.Certificate, usage x509.ExtKeyUsage) bool {
 	if len(c.ExtKeyUsage) == 0 && len(c.UnknownExtKeyUsage) == 0 {
 		return true
 	}
-	return slices.Contains(c.ExtKeyUsage, usage) || slices.Contains(c.ExtKeyUsage, x509.ExtKeyUsageAny)
+	return slices.Contains(c.ExtKeyUsage, usage)
 }
 
 func extKeyUsageName(usage x509.ExtKeyUsage) string {
@@ -204,14 +231,15 @@ func redisTLSArgs(rf *redisfailoverv1.RedisFailover) []string {
 
 // redisTLSEnv tells ready.sh and shutdown.sh that the pod has TLS. Old and
 // new pods share these ConfigMaps in a rollout, so each pod uses its own
-// setting.
+// setting. The RFO_ prefix keeps these names apart from the env of the user
+// and of the image, for example REDIS_TLS_PORT of the Bitnami image.
 func redisTLSEnv(rf *redisfailoverv1.RedisFailover) []corev1.EnvVar {
 	return []corev1.EnvVar{
-		{Name: "REDIS_TLS_PORT", Value: strconv.Itoa(int(rf.Spec.TLS.Port))},
-		{Name: "REDIS_TLS_CERT_FILE", Value: redisTLSDir + "/" + tlsCertKey},
-		{Name: "REDIS_TLS_KEY_FILE", Value: redisTLSDir + "/" + tlsKeyKey},
-		{Name: "REDIS_TLS_CA_FILE", Value: redisTLSCAFile(rf)},
-		{Name: "REDIS_TLS_SERVER_NAME", Value: rf.Spec.TLS.ServerName},
+		{Name: "RFO_TLS_PORT", Value: strconv.Itoa(int(rf.Spec.TLS.Port))},
+		{Name: "RFO_TLS_CERT_FILE", Value: redisTLSDir + "/" + tlsCertKey},
+		{Name: "RFO_TLS_KEY_FILE", Value: redisTLSDir + "/" + tlsKeyKey},
+		{Name: "RFO_TLS_CA_FILE", Value: redisTLSCAFile(rf)},
+		{Name: "RFO_TLS_SERVER_NAME", Value: rf.Spec.TLS.ServerName},
 	}
 }
 
@@ -316,8 +344,8 @@ func redisServicePorts(rf *redisfailoverv1.RedisFailover) []corev1.ServicePort {
 }
 
 // tlsCLIArgs are the redis-cli arguments of ready.sh and shutdown.sh for a pod
-// with REDIS_TLS_PORT.
-const tlsCLIArgs = "--tls --cacert ${REDIS_TLS_CA_FILE} --cert ${REDIS_TLS_CERT_FILE} --key ${REDIS_TLS_KEY_FILE} -p ${REDIS_TLS_PORT}"
+// with RFO_TLS_PORT.
+const tlsCLIArgs = "--tls --cacert ${RFO_TLS_CA_FILE} --cert ${RFO_TLS_CERT_FILE} --key ${RFO_TLS_KEY_FILE} -p ${RFO_TLS_PORT}"
 
 func redisLivenessCLIArgs(rf *redisfailoverv1.RedisFailover) string {
 	if !redisTLSOn(rf) {

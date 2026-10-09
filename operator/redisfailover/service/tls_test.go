@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +116,10 @@ func TestCheckTLSMaterial(t *testing.T) {
 	expired.NotBefore, expired.NotAfter = testNow.Add(-48*time.Hour), testNow.Add(-24*time.Hour)
 	future := leafTemplate(testServerName)
 	future.NotBefore, future.NotAfter = testNow.Add(time.Hour), testNow.Add(48*time.Hour)
+	anyUsage := leafTemplate(testServerName)
+	anyUsage.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageAny}
+	certSignOnly := leafTemplate(testServerName)
+	certSignOnly.KeyUsage = x509.KeyUsageCertSign
 	smallKey, err := rsa.GenerateKey(rand.Reader, 1024)
 	require.NoError(t, err)
 
@@ -162,6 +167,17 @@ func TestCheckTLSMaterial(t *testing.T) {
 			cert:    good,
 			certPEM: append(append([]byte{}, good.pem...), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("junk")})...),
 			wantErr: "tls.crt has a chain certificate that cannot be parsed",
+		},
+		{
+			// OpenSSL refuses anyExtendedKeyUsage for TLS, and Go accepts it.
+			name:    "any extended key usage",
+			cert:    newTestCert(t, anyUsage, &ca, nil),
+			wantErr: "the certificate needs the server auth usage with clientAuth Required",
+		},
+		{
+			name:    "key usage without digital signature",
+			cert:    newTestCert(t, certSignOnly, &ca, nil),
+			wantErr: "the certificate needs the digital signature key usage",
 		},
 		{name: "no CA", cert: good, ca: []byte("none"), wantErr: "the CA bundle has no PEM certificate"},
 		{name: "expired", cert: newTestCert(t, expired, &ca, nil), wantErr: "the certificate expired at 2025-12-31T00:00:00Z"},
@@ -212,13 +228,66 @@ func TestTLSMaterialClientConfig(t *testing.T) {
 	m, err := rfservice.CheckTLSMaterial(leaf.pem, leaf.keyPEM(t), ca.pem, testServerName, redisfailoverv1.TLSClientAuthRequired, testNow)
 	require.NoError(t, err)
 
-	cfg := m.ClientConfig(testServerName)
+	cfg := m.ClientConfig(testServerName, "10.0.0.1")
 	assert.Equal(t, testServerName, cfg.ServerName)
 	assert.Equal(t, uint16(tls.VersionTLS12), cfg.MinVersion)
 	assert.Same(t, m.Roots, cfg.RootCAs)
 	require.Len(t, cfg.Certificates, 1)
-	assert.NotNil(t, cfg.ClientSessionCache)
-	assert.Same(t, cfg.ClientSessionCache, m.ClientConfig(testServerName).ClientSessionCache, "each connection of the operator must share the session cache")
+	// The session cache uses the server name as key, which is the same for
+	// all pods. Thus each pod IP needs its own cache.
+	assert.Same(t, cfg.ClientSessionCache, m.ClientConfig(testServerName, "10.0.0.1").ClientSessionCache)
+	assert.NotSame(t, cfg.ClientSessionCache, m.ClientConfig(testServerName, "10.0.0.2").ClientSessionCache)
+}
+
+func TestTLSMaterialSessionCacheLimit(t *testing.T) {
+	ca := newTestCA(t)
+	leaf := newTestCert(t, leafTemplate(testServerName), &ca, nil)
+	m, err := rfservice.CheckTLSMaterial(leaf.pem, leaf.keyPEM(t), ca.pem, testServerName, redisfailoverv1.TLSClientAuthRequired, testNow)
+	require.NoError(t, err)
+
+	first := m.ClientConfig(testServerName, "ip-0").ClientSessionCache
+	for i := 1; i <= 256; i++ {
+		m.ClientConfig(testServerName, "ip-"+strconv.Itoa(i))
+	}
+	assert.NotSame(t, first, m.ClientConfig(testServerName, "ip-0").ClientSessionCache, "old caches are dropped at the limit")
+}
+
+// TestTLSMaterialClientConfigUsesTLS12 checks that the operator negotiates
+// TLS 1.2 with a server that offers TLS 1.3.
+func TestTLSMaterialClientConfigUsesTLS12(t *testing.T) {
+	// The handshake checks the certificates at the current time.
+	now := time.Now()
+	caTmpl := &x509.Certificate{
+		Subject:               pkix.Name{CommonName: "test CA"},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(time.Hour),
+	}
+	ca := newTestCert(t, caTmpl, nil, nil)
+	leafTmpl := leafTemplate(testServerName)
+	leafTmpl.NotBefore, leafTmpl.NotAfter = now.Add(-time.Hour), now.Add(time.Hour)
+	leaf := newTestCert(t, leafTmpl, &ca, nil)
+	m, err := rfservice.CheckTLSMaterial(leaf.pem, leaf.keyPEM(t), ca.pem, testServerName, redisfailoverv1.TLSClientAuthRequired, now)
+	require.NoError(t, err)
+	pair, err := tls.X509KeyPair(leaf.pem, leaf.keyPEM(t))
+	require.NoError(t, err)
+	l, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{pair}, MaxVersion: tls.VersionTLS13})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		conn, err := l.Accept()
+		if err == nil {
+			_ = conn.(*tls.Conn).Handshake()
+			_ = conn.Close()
+		}
+	}()
+
+	conn, err := tls.Dial("tcp", l.Addr().String(), m.ClientConfig(testServerName, "127.0.0.1"))
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	assert.Equal(t, uint16(tls.VersionTLS12), conn.ConnectionState().Version)
 }
 
 func tlsTestRF() *redisfailoverv1.RedisFailover {
@@ -433,12 +502,12 @@ func TestRedisStatefulSetTLS(t *testing.T) {
 			assert.Equal(t, test.wantVolumes, spec.Volumes[len(spec.Volumes)-len(test.wantVolumes):])
 			assert.Equal(t, test.wantMounts, redis.VolumeMounts[len(redis.VolumeMounts)-len(test.wantMounts):])
 			for name, want := range map[string]string{
-				"REDIS_TLS_PORT":        "6380",
-				"REDIS_TLS_CERT_FILE":   "/tls/tls.crt",
-				"REDIS_TLS_KEY_FILE":    "/tls/tls.key",
-				"REDIS_TLS_CA_FILE":     test.wantCA,
-				"REDIS_TLS_SERVER_NAME": testServerName,
-				"REDIS_ADDR":            "redis://127.0.0.1:6379",
+				"RFO_TLS_PORT":        "6380",
+				"RFO_TLS_CERT_FILE":   "/tls/tls.crt",
+				"RFO_TLS_KEY_FILE":    "/tls/tls.key",
+				"RFO_TLS_CA_FILE":     test.wantCA,
+				"RFO_TLS_SERVER_NAME": testServerName,
+				"REDIS_ADDR":          "redis://127.0.0.1:6379",
 			} {
 				got, _ := envValue(redis.Env, name)
 				assert.Equal(t, want, got, name)
@@ -566,7 +635,7 @@ func TestRedisConfigAndServicesTLS(t *testing.T) {
 }
 
 // TestRedisScriptsTLS runs ready.sh and shutdown.sh against a fake redis-cli
-// that logs its arguments. A pod with REDIS_TLS_PORT uses the TLS port, and an
+// that logs its arguments. A pod with RFO_TLS_PORT uses the TLS port, and an
 // older pod without it uses the plaintext port of the same script.
 func TestRedisScriptsTLS(t *testing.T) {
 	rf := tlsTestRF()
@@ -584,7 +653,10 @@ func TestRedisScriptsTLS(t *testing.T) {
 	dir := t.TempDir()
 	fakeCLI := "#!/bin/sh\necho \"$*\" >>\"$FAKE_LOG\"\nprintf 'role:master\\r\\n'\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "redis-cli"), []byte(fakeCLI), 0o755))
-	tlsEnv := []string{"REDIS_TLS_PORT=6380", "REDIS_TLS_CA_FILE=/tls-ca/ca.crt", "REDIS_TLS_CERT_FILE=/tls/tls.crt", "REDIS_TLS_KEY_FILE=/tls/tls.key"}
+	tlsEnv := []string{"RFO_TLS_PORT=6380", "RFO_TLS_CA_FILE=/tls-ca/ca.crt", "RFO_TLS_CERT_FILE=/tls/tls.crt", "RFO_TLS_KEY_FILE=/tls/tls.key"}
+	// The env of a pod without TLS can have names of the image, for example
+	// of the Bitnami image. The scripts must ignore them.
+	bitnamiEnv := []string{"REDIS_TLS_PORT=6380", "REDIS_TLS_CA_FILE=/ca", "REDIS_TLS_CERT_FILE=/crt", "REDIS_TLS_KEY_FILE=/key"}
 	tlsCLI := "--tls --cacert /tls-ca/ca.crt --cert /tls/tls.crt --key /tls/tls.key -p 6380 "
 
 	tests := []struct {
@@ -594,6 +666,8 @@ func TestRedisScriptsTLS(t *testing.T) {
 	}{
 		{"ready.sh", tlsEnv, tlsCLI + "info replication"},
 		{"ready.sh", nil, "-p 6379 info replication"},
+		{"ready.sh", bitnamiEnv, "-p 6379 info replication"},
+		{"shutdown.sh", bitnamiEnv, "-p 6379 save"},
 		{"shutdown.sh", tlsEnv, tlsCLI + "save"},
 		{"shutdown.sh", nil, "-p 6379 save"},
 	}
@@ -616,4 +690,14 @@ func TestRedisScriptsTLS(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRedisTLSEnvComesLast checks that the RFO_TLS_ values of the operator
+// come after the env of the user. Kubernetes uses the last value of a name.
+func TestRedisTLSEnvComesLast(t *testing.T) {
+	rf := tlsTestRF()
+	rf.Spec.Redis.Env = []corev1.EnvVar{{Name: "RFO_TLS_PORT", Value: "7000"}}
+	env := generateTLSStatefulSet(t, rf).Spec.Template.Spec.Containers[0].Env
+	got, _ := envValue(env, "RFO_TLS_PORT")
+	assert.Equal(t, "6380", got)
 }
