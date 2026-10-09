@@ -55,7 +55,7 @@ func (m *Mutator) stuckChange(s state, master string) (*transition, *corev1.Pod)
 	}
 	for _, e := range m.versions.EdgesFrom(from.Name, ch) {
 		if e.To == to.Name && e.Expect != config.ExpectOK {
-			return &transition{edge: e, from: from, to: to}, stuck
+			return &transition{edge: e, from: from, to: to, sentinelsStay: ch.Sentinel != config.SentinelFollow}, stuck
 		}
 	}
 	return nil, nil

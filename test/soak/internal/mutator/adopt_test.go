@@ -145,6 +145,27 @@ func TestStuckChange(t *testing.T) {
 	}
 }
 
+// An adopted change on a chain whose Sentinels keep their pods must keep the
+// Sentinel check of the normal path.
+func TestStuckChangeSentinelsStay(t *testing.T) {
+	for _, tc := range []struct {
+		sentinel string
+		want     bool
+	}{{config.SentinelSeparate, true}, {config.SentinelFollow, false}, {"", true}} {
+		t.Run(cmpOr(tc.sentinel, "unset"), func(t *testing.T) {
+			m := versionMutator(t, "edge")
+			m.in.Chain.Sentinel = tc.sentinel
+			tr, _ := m.stuckChange(stuckState(), "rfr-x-0")
+			if tr == nil {
+				t.Fatal("stuckChange found no change")
+			}
+			if tr.sentinelsStay != tc.want {
+				t.Errorf("sentinelsStay = %t, want %t", tr.sentinelsStay, tc.want)
+			}
+		})
+	}
+}
+
 func cmpOr(a, b string) string {
 	if a != "" {
 		return a
