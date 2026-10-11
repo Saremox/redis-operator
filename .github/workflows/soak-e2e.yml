@@ -61,7 +61,7 @@ jobs:
 
       - name: Upload the artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: soak-e2e-${{ inputs.profile }}-${{ inputs.operator_version }}
           path: test/soak/bin/kind-e2e-artifacts
