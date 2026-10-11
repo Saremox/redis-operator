@@ -15,6 +15,9 @@ still cannot pull images. The scripts here solve these problems.
 export KUBECONFIG=/tmp/kind-e2e/kubeconfig
 ```
 
+Set `WORKERS=N` for N worker nodes, for example to drain one. Set
+`SHARED=DIR` to mount the host directory DIR as `/shared` on every node.
+
 The script:
 
 1. Starts `dockerd` if it does not run.
@@ -24,8 +27,8 @@ The script:
    - containerd `restrict_oom_score_adj = true`: the kernel rejects negative
      `oom_score_adj`, so every pod sandbox would fail with `can't get final
      child's PID from pipe: EOF`. This affects every node version, 1.34 too.
-3. Makes a local registry, `kind-registry`, the node's mirror for docker.io
-   and quay.io (`registry.sh`).
+3. Makes a local registry, `kind-registry`, the mirror of each node for
+   docker.io and quay.io (`registry.sh`).
    - The node cannot reach a registry, because its `HTTPS_PROXY` points at
      the 127.0.0.1 proxy of the sandbox.
    - `kind load` is not sufficient: the operator default is `imagePullPolicy:

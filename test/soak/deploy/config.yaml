@@ -1,0 +1,411 @@
+operator:
+  namespace: redis-operator
+  deployment: redis-operator
+# Without kinds, the chaos lane is off. Its rights are equal to
+# cluster-admin, so they are in the opt-in component chaos/. Add that
+# component to the kustomization before you enable a kind.
+chaos:
+  kinds:
+    # operator_restart: 2
+    # node_drain: 1
+    # To also test an upgrade between two RCs, set the two RCs below. The
+    # installed release must be the first one.
+    # operator_upgrade: 1
+  interval: 30m
+  jitter: 10m
+  upgrade:
+    set: [crds.upgradeHook.enabled=true]
+    versions:
+      - name: previous-rc
+        chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
+        version: 4.2.0-rc2
+        image: ghcr.io/saremox/redis-operator:4.2.0-rc2
+      - name: rc
+        chart: oci://ghcr.io/saremox/redis-operator/charts/redis-operator
+        version: 4.2.0-rc3
+        image: ghcr.io/saremox/redis-operator:4.2.0-rc3
+mutation:
+  interval: 2m
+  jitter: 1m
+  # perPod, because the operator replaces each redis pod in turn, and
+  # each new pod starts and syncs.
+  timeouts:
+    image_upgrade: {base: 5m, perPod: 2m}
+    sentinel_image_upgrade: {base: 5m, perPod: 1m}
+    reset: {base: 5m, perPod: 1m}
+# Exact patch tags, from Docker Hub on 2026-10-01, and redis-6.2 on
+# 2026-10-08.
+versions:
+  - {name: redis-6.2, image: "redis:6.2.24-alpine"}
+  - {name: redis-7.2, image: "redis:7.2.16-alpine"}
+  - {name: redis-7.4, image: "redis:7.4.11-alpine"}
+  - {name: redis-8, image: "redis:8.10.2-alpine"}
+  - {name: valkey-7.2, image: "valkey/valkey:7.2.14-alpine"}
+  - {name: valkey-8, image: "valkey/valkey:8.1.10-alpine"}
+  - {name: valkey-9, image: "valkey/valkey:9.1.2-alpine"}
+edges:
+  # Redis 7.2 reads the RDB format of Redis 6.2.
+  - {from: redis-6.2, to: redis-7.2, expect: ok}
+  - {from: redis-7.2, to: redis-7.4, expect: ok}
+  - {from: redis-7.4, to: redis-8, expect: ok}
+  - {from: valkey-7.2, to: valkey-8, expect: ok}
+  - {from: valkey-8, to: valkey-9, expect: ok}
+  # Valkey forked from Redis 7.2.4 and reads its RDB format.
+  - {from: redis-7.2, to: valkey-7.2, expect: ok}
+  - {from: redis-7.2, to: valkey-8, expect: ok}
+  - {from: redis-7.2, to: valkey-9, expect: ok}
+  # Redis changed its RDB format after the fork.
+  - {from: redis-7.4, to: valkey-7.2, expect: unknown}
+  - {from: redis-7.4, to: valkey-8, expect: unknown}
+  - {from: redis-7.4, to: valkey-9, expect: unknown}
+  - {from: redis-8, to: valkey-7.2, expect: unknown}
+  - {from: redis-8, to: valkey-8, expect: unknown}
+  - {from: redis-8, to: valkey-9, expect: unknown}
+  # A skip leaves out a version of the main graph. A chain takes the edges of
+  # a group only if it names the group. The newer server reads older RDB data.
+  - {from: redis-6.2, to: redis-7.4, expect: ok, group: skip}
+  - {from: redis-6.2, to: redis-8, expect: ok, group: skip}
+  - {from: redis-7.2, to: redis-8, expect: ok, group: skip}
+  - {from: valkey-7.2, to: valkey-9, expect: ok, group: skip}
+  # An older Redis may not load the RDB format of a newer one.
+  - {from: redis-7.4, to: redis-7.2, expect: unknown, group: downgrade}
+  - {from: redis-8, to: redis-7.4, expect: unknown, group: downgrade}
+  - {from: redis-8, to: redis-7.2, expect: unknown, group: downgrade}
+  # An older Valkey may not load the RDB format of a newer one.
+  - {from: valkey-8, to: valkey-7.2, expect: unknown, group: downgrade}
+  - {from: valkey-9, to: valkey-8, expect: unknown, group: downgrade}
+  - {from: valkey-9, to: valkey-7.2, expect: unknown, group: downgrade}
+instances:
+  - name: op-basic
+    template: instances.yaml
+    data:
+      fill: {sizeMi: 32}
+      ledger: {}
+    mutations:
+      kinds:
+        redis_replicas: 2
+        redis_resources: 2
+        kill_master: 1
+        kill_master_force: 1
+        kill_replica: 1
+      redisReplicas: {min: 1, max: 5}
+      resources:
+        requests:
+          cpu: {min: 25, max: 200}
+          memory: {min: 32, max: 128}
+        limits:
+          memory: {min: 192, max: 512}
+      forceDeleteProbability: 0.5
+  - name: sent-basic
+    template: instances.yaml
+    mode: sentinel
+    data:
+      fill: {sizeMi: 32}
+      ledger: {}
+    mutations:
+      kinds:
+        redis_replicas: 2
+        sentinel_replicas: 1
+        kill_master: 1
+        kill_master_force: 1
+        kill_replica: 1
+        kill_sentinel: 1
+        # Weight 1, as kill_master: about 1 step in 8 on this instance.
+        sentinel_reset_kill_master: 1
+      redisReplicas: {min: 1, max: 5}
+      sentinelReplicas: {min: 3, max: 5}
+      forceDeleteProbability: 0.5
+  - name: op-maxmem
+    template: instances.yaml
+    maxMemoryPolicy: allkeys-lru
+    data:
+      fill: {percent: 90}
+    mutations:
+      kinds:
+        redis_memory: 2
+        maxmemory_policy: 1
+        maxmemory_percent: 2
+        kill_replica: 1
+      redisMemory: {min: 160, max: 320}
+      maxMemoryPolicies: [allkeys-lru, allkeys-lfu, allkeys-random]
+      maxMemoryPercent: {min: 10, max: 40}
+      forceDeleteProbability: 0.5
+  - name: op-noevict
+    template: instances.yaml
+    maxMemoryPolicy: noeviction
+    data:
+      fill: {percent: 70, ttl: 24h}
+      ledger: {}
+    mutations:
+      kinds:
+        redis_memory: 2
+        maxmemory_policy: 1
+        maxmemory_percent: 2
+        fill_burst: 2
+      redisMemory: {min: 128, max: 256}
+      maxMemoryPolicies: [noeviction, volatile-lru, volatile-ttl]
+      maxMemoryPercent: {min: 10, max: 35}
+  # PVCs and auth (secret op-full-auth). The mutator rotates, removes and
+  # adds the password, and changes it while the operator is stopped.
+  - name: op-full
+    template: instances.yaml
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        password_rotate: 2
+        auth_remove: 1
+        auth_add: 1
+        password_rotate_offline: 1
+        kill_master: 2
+        kill_master_force: 1
+        redis_replicas: 2
+      redisReplicas: {min: 1, max: 3}
+  # Sentinel, auth, port 6380, exporters and customConfig.
+  - name: sent-full
+    template: instances.yaml
+    mode: sentinel
+    port: 6380
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        password_rotate: 2
+        kill_master: 1
+        kill_sentinel: 1
+        sentinel_replicas: 1
+        sentinel_reset_kill_master: 1
+      sentinelReplicas: {min: 3, max: 5}
+      forceDeleteProbability: 0.5
+  # Starts without Sentinel. sentinel_toggle switches Sentinel on and off.
+  - name: toggle
+    template: instances.yaml
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        sentinel_toggle: 2
+        kill_master: 1
+  # Read-only: it replicates from the master of op-basic.
+  - name: bootstrap
+    template: instances.yaml
+    bootstrap: {source: op-basic}
+    mutations:
+      kinds:
+        redis_replicas: 1
+        kill_replica: 1
+      redisReplicas: {min: 1, max: 3}
+      forceDeleteProbability: 0.5
+  # Redis 7.2 -> 7.4 -> 8, then reset; with replica and resource changes.
+  - name: redis-chain
+    template: instances.yaml
+    chain: {start: [redis-7.2], versions: [redis-7.2, redis-7.4, redis-8]}
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 4
+        redis_replicas: 1
+        redis_resources: 1
+      redisReplicas: {min: 1, max: 3}
+      resources:
+        requests:
+          cpu: {min: 25, max: 100}
+  # The same chain with Sentinels that follow the data image.
+  - name: redis-chain-sent
+    template: instances.yaml
+    mode: sentinel
+    chain: {start: [redis-7.2], versions: [redis-7.2, redis-7.4, redis-8], sentinel: follow}
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # Redis 6.2 -> 7.2 -> 7.4 -> 8, then reset; with replica and resource
+  # changes.
+  - name: redis-chain-62
+    template: instances.yaml
+    chain: {start: [redis-6.2], versions: [redis-6.2, redis-7.2, redis-7.4, redis-8]}
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 4
+        redis_replicas: 1
+        redis_resources: 1
+      redisReplicas: {min: 1, max: 3}
+      resources:
+        requests:
+          cpu: {min: 25, max: 100}
+  # The same chain with Sentinels that follow the data image.
+  - name: redis-chain-62-sent
+    template: instances.yaml
+    mode: sentinel
+    chain: {start: [redis-6.2], versions: [redis-6.2, redis-7.2, redis-7.4, redis-8], sentinel: follow}
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # Redis 7.2 -> Valkey 7.2 -> 8 -> 9, then reset.
+  - name: migrate
+    template: instances.yaml
+    chain: {start: [redis-7.2], versions: [redis-7.2, valkey-7.2, valkey-8, valkey-9]}
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # The same migration with Sentinels: the data image first, then the
+  # Sentinel image.
+  - name: migrate-sent
+    template: instances.yaml
+    mode: sentinel
+    chain: {start: [redis-7.2], versions: [redis-7.2, valkey-7.2, valkey-8, valkey-9], sentinel: separate}
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 1
+        sentinel_image_upgrade: 1
+  # Starts on Redis 7.4 or 8, in turn for each reset, and takes only the
+  # unknown edges into Valkey.
+  - name: edge
+    template: instances.yaml
+    chain:
+      start: [redis-7.4, redis-8]
+      versions: [redis-7.4, redis-8, valkey-7.2, valkey-8, valkey-9]
+      expect: [unknown]
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # The same edges with Sentinels. The Sentinels change image after the data
+  # image, so that a data change that gets stuck leaves them as they are.
+  - name: edge-sent
+    template: instances.yaml
+    mode: sentinel
+    chain:
+      start: [redis-7.4, redis-8]
+      versions: [redis-7.4, redis-8, valkey-7.2, valkey-8, valkey-9]
+      expect: [unknown]
+      sentinel: separate
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # Forward skips of the group skip, on volumes. Each reset starts on the
+  # next version.
+  - name: skip
+    template: instances.yaml
+    chain:
+      start: [redis-6.2, redis-7.2, valkey-7.2]
+      versions: [redis-6.2, redis-7.2, redis-7.4, redis-8, valkey-7.2, valkey-9]
+      group: skip
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # The downgrades of the group downgrade. Each reset starts on the next
+  # version.
+  - name: downgrade
+    template: instances.yaml
+    chain:
+      start: [redis-7.4, redis-8, valkey-8, valkey-9]
+      versions: [redis-7.2, redis-7.4, redis-8, valkey-7.2, valkey-8, valkey-9]
+      expect: [unknown]
+      group: downgrade
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 1
+  # The chain of redis-chain with 256Mi of data on volumes, for the full
+  # sync and the fork of each step.
+  - name: redis-chain-big
+    template: instances.yaml
+    chain: {start: [redis-7.2], versions: [redis-7.2, redis-7.4, redis-8]}
+    data:
+      fill: {sizeMi: 256}
+      ledger: {}
+    mutations:
+      kinds:
+        image_upgrade: 4
+        redis_replicas: 1
+        redis_resources: 1
+      redisReplicas: {min: 1, max: 3}
+      resources:
+        requests:
+          cpu: {min: 25, max: 100}
+  # Valkey 9 with maxMemory allkeys-lfu. Filler only, because allkeys-*
+  # can evict ledger keys.
+  - name: valkey-op
+    template: instances.yaml
+    version: valkey-9
+    maxMemoryPolicy: allkeys-lfu
+    data:
+      fill: {percent: 50}
+    mutations:
+      kinds:
+        redis_replicas: 1
+        redis_resources: 1
+        redis_memory: 1
+        kill_master: 1
+        kill_master_force: 1
+        kill_replica: 1
+      redisReplicas: {min: 1, max: 3}
+      resources:
+        requests:
+          cpu: {min: 25, max: 100}
+      redisMemory: {min: 160, max: 320}
+      forceDeleteProbability: 0.5
+  # Valkey 8 data and Sentinels.
+  - name: valkey-sent
+    template: instances.yaml
+    mode: sentinel
+    version: valkey-8
+    sentinelVersion: valkey-8
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        password_rotate: 1
+        kill_master: 1
+        kill_sentinel: 1
+        sentinel_replicas: 1
+      sentinelReplicas: {min: 3, max: 4}
+      forceDeleteProbability: 0.5
+  # Redis 7.2 data with Valkey 9 Sentinels.
+  - name: mixed-sent
+    template: instances.yaml
+    mode: sentinel
+    version: redis-7.2
+    sentinelVersion: valkey-9
+    data:
+      fill: {sizeMi: 16}
+      ledger: {}
+    mutations:
+      kinds:
+        kill_master: 1
+        kill_replica: 1
+        kill_sentinel: 1
+        sentinel_image_flip: 1
+      forceDeleteProbability: 0.5
+      sentinelImages: [valkey-9, redis-7.2]

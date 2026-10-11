@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: soak
+  namespace: redis-soak
+  labels:
+    app.kubernetes.io/name: redis-soak
+spec:
+  selector:
+    app.kubernetes.io/name: redis-soak
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics

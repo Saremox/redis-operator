@@ -1,0 +1,9 @@
+# The rights of the chaos lane, opt-in, because rbac.yaml grants escalate
+# and bind on ClusterRoles. This is equal to cluster-admin. Enable it in a
+# kustomization of ../ with
+#   components:
+#     - chaos
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - rbac.yaml

@@ -2,7 +2,7 @@
 # Local registry that the kind nodes use as their docker.io and quay.io
 # mirror.
 #
-# Usage: registry.sh connect CLUSTER   start the registry, make it CLUSTER's mirror
+# Usage: registry.sh connect CLUSTER   start the registry, make it the mirror of CLUSTER's nodes
 #        registry.sh push IMAGE        copy IMAGE from the host into it
 #        registry.sh pull IMAGE        pull IMAGE to the host, via a mirror if needed
 set -euo pipefail
@@ -49,10 +49,12 @@ connect)
   docker network connect kind "$reg" 2>/dev/null || true
   # Plain HTTP, so containerd doesn't send it through the unreachable
   # HTTPS proxy.
-  for host in docker.io quay.io; do
-    docker exec "$arg-control-plane" mkdir -p "/etc/containerd/certs.d/$host"
-    printf '[host."http://%s:5000"]\n  capabilities = ["pull", "resolve"]\n' "$reg" |
-      docker exec -i "$arg-control-plane" cp /dev/stdin "/etc/containerd/certs.d/$host/hosts.toml"
+  for node in $(kind get nodes --name "$arg"); do
+    for host in docker.io quay.io; do
+      docker exec "$node" mkdir -p "/etc/containerd/certs.d/$host"
+      printf '[host."http://%s:5000"]\n  capabilities = ["pull", "resolve"]\n' "$reg" |
+        docker exec -i "$node" cp /dev/stdin "/etc/containerd/certs.d/$host/hosts.toml"
+    done
   done
   ;;
 pull)

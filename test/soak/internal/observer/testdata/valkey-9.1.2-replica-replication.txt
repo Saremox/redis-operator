@@ -1,0 +1,25 @@
+# Replication
+role:slave
+master_host:172.19.0.2
+master_port:6379
+master_link_status:up
+master_last_io_seconds_ago:1
+master_sync_in_progress:0
+slave_read_repl_offset:78
+slave_repl_offset:78
+replicas_repl_buffer_size:0
+replicas_repl_buffer_peak:0
+slave_priority:100
+slave_read_only:1
+replica_announced:1
+connected_slaves:0
+replicas_waiting_psync:0
+master_failover_state:no-failover
+master_replid:88abf71a314cd6dde9c05aa4be1debf961e73420
+master_replid2:0000000000000000000000000000000000000000
+master_repl_offset:78
+second_repl_offset:-1
+repl_backlog_active:1
+repl_backlog_size:10485760
+repl_backlog_first_byte_offset:1
+repl_backlog_histlen:78

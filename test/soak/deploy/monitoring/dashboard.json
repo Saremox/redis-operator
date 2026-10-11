@@ -1,0 +1,370 @@
+{
+  "uid": "redis-soak",
+  "title": "Redis operator soak",
+  "description": "The probes, invariants, mutations, chaos actions and lost writes of the redis-operator soak tester.",
+  "tags": ["redis", "redis-operator", "soak"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "rf",
+        "type": "query",
+        "label": "Instance",
+        "query": {"query": "label_values(redis_soak_rf_healthy, rf)", "refId": "rf"},
+        "definition": "label_values(redis_soak_rf_healthy, rf)",
+        "multi": true,
+        "includeAll": true,
+        "current": {"text": "All", "value": "$__all"},
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "name": "Chaos",
+        "enable": true,
+        "iconColor": "orange",
+        "expr": "max by (kind) (redis_soak_chaos_in_progress) == 1",
+        "titleFormat": "{{kind}}",
+        "step": "15s"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Run",
+      "collapsed": false,
+      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+      "panels": []
+    },
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Findings in range",
+      "description": "What an RC must not do: violations outside a convergence window or past its timeout. Must be empty.",
+      "gridPos": {"x": 0, "y": 1, "w": 12, "h": 7},
+      "targets": [
+        {
+          "expr": "sum by (rf, invariant) (increase(redis_soak_findings_total[$__range])) > 0",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "options": {"showHeader": true, "cellHeight": "sm"},
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"excludeByName": {"Time": true}}}
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Unexpected lost writes in range",
+      "description": "Writes lost in an event that must lose none. Must be empty.",
+      "gridPos": {"x": 12, "y": 1, "w": 12, "h": 7},
+      "targets": [
+        {
+          "expr": "sum by (rf, event) (increase(redis_soak_unexpected_lost_writes_total[$__range])) > 0",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "options": {"showHeader": true, "cellHeight": "sm"},
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"excludeByName": {"Time": true}}}
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Chaos actions in range",
+      "description": "Chaos actions by kind and result. The actions also show as annotations.",
+      "gridPos": {"x": 0, "y": 8, "w": 8, "h": 6},
+      "targets": [
+        {
+          "expr": "sum by (kind, result) (increase(redis_soak_chaos_total[$__range])) > 0",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "options": {"showHeader": true, "cellHeight": "sm"},
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"excludeByName": {"Time": true}}}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Build",
+      "description": "The operator version is the image tag of its Deployment, so an upgrade shows here.",
+      "gridPos": {"x": 8, "y": 8, "w": 8, "h": 6},
+      "targets": [{"expr": "redis_soak_build_info", "refId": "A", "instant": true, "format": "table"}],
+      "options": {"showHeader": true, "cellHeight": "sm"},
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"excludeByName": {"Time": true}}}
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Tester goroutines and open files",
+      "description": "These grow with leaked connections. The tester restarts when it reaches its memory limit, and a restart sets all counters to 0.",
+      "gridPos": {"x": 16, "y": 8, "w": 8, "h": 6},
+      "targets": [
+        {"expr": "sum(go_goroutines and on (instance) redis_soak_build_info)", "refId": "A", "legendFormat": "goroutines", "range": true},
+        {"expr": "sum(process_open_fds and on (instance) redis_soak_build_info)", "refId": "B", "legendFormat": "open files", "range": true}
+      ]
+    },
+    {
+      "id": 101,
+      "type": "row",
+      "title": "$rf",
+      "collapsed": false,
+      "repeat": "rf",
+      "gridPos": {"x": 0, "y": 14, "w": 24, "h": 1},
+      "panels": []
+    },
+    {
+      "id": 5,
+      "type": "state-timeline",
+      "title": "Writable",
+      "description": "Whether the last write probe succeeded, by path and client style. Read a red part with the window below.",
+      "gridPos": {"x": 0, "y": 15, "w": 12, "h": 7},
+      "targets": [
+        {
+          "expr": "min by (path, client) (redis_soak_writable{rf=\"$rf\"})",
+          "refId": "A",
+          "legendFormat": "{{path}} {{client}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {"0": {"text": "no", "color": "red"}, "1": {"text": "yes", "color": "green"}}
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "mergeValues": true,
+        "rowHeight": 0.8,
+        "legend": {"showLegend": false}
+      }
+    },
+    {
+      "id": 6,
+      "type": "state-timeline",
+      "title": "Readable",
+      "description": "Whether the last read probe succeeded, by path and client style.",
+      "gridPos": {"x": 12, "y": 15, "w": 12, "h": 7},
+      "targets": [
+        {
+          "expr": "min by (path, client) (redis_soak_readable{rf=\"$rf\"})",
+          "refId": "A",
+          "legendFormat": "{{path}} {{client}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {"0": {"text": "no", "color": "red"}, "1": {"text": "yes", "color": "green"}}
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "mergeValues": true,
+        "rowHeight": 0.8,
+        "legend": {"showLegend": false}
+      }
+    },
+    {
+      "id": 7,
+      "type": "state-timeline",
+      "title": "Invariants",
+      "description": "Whether each invariant held at the last check.",
+      "gridPos": {"x": 0, "y": 22, "w": 12, "h": 7},
+      "targets": [
+        {
+          "expr": "min by (invariant) (redis_soak_invariant_ok{rf=\"$rf\"})",
+          "refId": "A",
+          "legendFormat": "{{invariant}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {"0": {"text": "no", "color": "red"}, "1": {"text": "yes", "color": "green"}}
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "mergeValues": true,
+        "rowHeight": 0.8,
+        "legend": {"showLegend": false}
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Window, masters and failovers",
+      "description": "masters is 1 when right: 0 is no master, 2 or more a split brain. A bootstrapping instance has none.",
+      "gridPos": {"x": 12, "y": 22, "w": 12, "h": 7},
+      "targets": [
+        {
+          "expr": "max(redis_soak_window_open{rf=\"$rf\"})",
+          "refId": "A",
+          "legendFormat": "window open",
+          "range": true
+        },
+        {"expr": "max(redis_soak_masters{rf=\"$rf\"})", "refId": "B", "legendFormat": "masters", "range": true},
+        {
+          "expr": "sum(increase(redis_soak_failovers_total{rf=\"$rf\"}[$__rate_interval]))",
+          "refId": "C",
+          "legendFormat": "failovers",
+          "range": true
+        },
+        {"expr": "min(redis_soak_rf_healthy{rf=\"$rf\"})", "refId": "D", "legendFormat": "Healthy", "range": true}
+      ],
+      "fieldConfig": {
+        "defaults": {"custom": {"lineWidth": 1, "fillOpacity": 10, "showPoints": "never"}},
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "right", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Mutations in range",
+      "description": "Mutations by kind and result, and their mean convergence time.",
+      "gridPos": {"x": 0, "y": 29, "w": 8, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (kind, result) (increase(redis_soak_mutation_total{rf=\"$rf\"}[$__range])) > 0",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "count"
+        },
+        {
+          "expr": "sum by (kind) (increase(redis_soak_mutation_converge_seconds_sum{rf=\"$rf\"}[$__range])) / sum by (kind) (increase(redis_soak_mutation_converge_seconds_count{rf=\"$rf\"}[$__range]))",
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "mean seconds"
+        }
+      ],
+      "options": {"showHeader": true, "cellHeight": "sm"},
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"excludeByName": {"Time": true}}}
+      ]
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Lost writes in range",
+      "description": "Verifications and lost writes by the event that they followed. Asynchronous replication can lose writes in a failover.",
+      "gridPos": {"x": 8, "y": 29, "w": 8, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (event) (increase(redis_soak_ledger_verified_total{rf=\"$rf\"}[$__range])) > 0",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "verifications"
+        },
+        {
+          "expr": "sum by (event) (increase(redis_soak_lost_writes_total{rf=\"$rf\"}[$__range]))",
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "lost"
+        },
+        {
+          "expr": "sum by (event) (increase(redis_soak_unexpected_lost_writes_total{rf=\"$rf\"}[$__range]))",
+          "refId": "C",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "unexpected"
+        }
+      ],
+      "options": {"showHeader": true, "cellHeight": "sm"},
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"excludeByName": {"Time": true}}}
+      ]
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Version transitions in range",
+      "description": "Version changes by edge and result. failed_unsafe is a finding.",
+      "gridPos": {"x": 16, "y": 29, "w": 8, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (from, to, expect, result) (increase(redis_soak_version_transition_total{rf=\"$rf\"}[$__range])) > 0",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "count"
+        }
+      ],
+      "options": {"showHeader": true, "cellHeight": "sm"},
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"excludeByName": {"Time": true}}}
+      ]
+    }
+  ]
+}
