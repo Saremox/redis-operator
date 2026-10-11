@@ -145,7 +145,7 @@ func TestCheckAllSlavesFromMasterLogContext(t *testing.T) {
 
 	// The caller logs the returned error. A different master comes first,
 	// because it can be a second master.
-	assert.EqualError(t, err, "slave 10.0.0.5 don't have the master 10.0.0.1, has 10.0.0.9")
+	assert.EqualError(t, err, "slave 10.0.0.5 (pod rfr-4) don't have the master 10.0.0.1, has 10.0.0.9")
 	entries := logs.all()
 	assertRFFields(t, entries)
 	// A pod that is not Ready usually restarts.
@@ -175,13 +175,13 @@ func TestCheckAllSlavesFromMasterLogsEachWrongMasterOnce(t *testing.T) {
 		{
 			name:    "only new replicas",
 			masters: []string{"127.0.0.1", "127.0.0.1"},
-			expErr:  "slave 10.0.0.2 don't have the master 10.0.0.1, has 127.0.0.1",
+			expErr:  "slave 10.0.0.2 (pod rfr-1) don't have the master 10.0.0.1, has 127.0.0.1",
 			expLogs: []string{"info rfr-2"},
 		},
 		{
 			name:    "two different masters after a new replica",
 			masters: []string{"127.0.0.1", "10.0.0.9", "10.0.0.8"},
-			expErr:  "slave 10.0.0.3 don't have the master 10.0.0.1, has 10.0.0.9",
+			expErr:  "slave 10.0.0.3 (pod rfr-2) don't have the master 10.0.0.1, has 10.0.0.9",
 			expLogs: []string{"info rfr-1", "warning rfr-3"},
 		},
 	}
@@ -209,6 +209,33 @@ func TestCheckAllSlavesFromMasterLogsEachWrongMasterOnce(t *testing.T) {
 			assertRFFields(t, logs.all())
 		})
 	}
+}
+
+// A failed label update returns at once, so the replicas with a wrong
+// master found before it need their own lines.
+func TestCheckAllSlavesFromMasterLogsTheWrongMastersBeforeALabelError(t *testing.T) {
+	rf := generateRF()
+	pods := &corev1.PodList{Items: []corev1.Pod{
+		readyPod("rfr-0", "10.0.0.1"),
+		readyPod("rfr-1", "10.0.0.2"),
+		readyPod("rfr-2", "10.0.0.3"),
+	}}
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	ms.On("UpdatePodLabels", namespace, "rfr-0", mock.Anything).Return(nil)
+	ms.On("UpdatePodLabels", namespace, "rfr-1", mock.Anything).Return(nil)
+	ms.On("UpdatePodLabels", namespace, "rfr-2", mock.Anything).Return(errors.New("forbidden"))
+	mr := &mRedisService.Client{}
+	mr.On("GetSlaveOf", "10.0.0.1", "0", "").Once().Return("", nil)
+	mr.On("GetSlaveOf", "10.0.0.2", "0", "").Once().Return("10.0.0.9", nil)
+	logger, logs := newRecordingLogger()
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
+	err := checker.CheckAllSlavesFromMaster("10.0.0.1", rf)
+
+	assert.EqualError(t, err, "forbidden")
+	assert.Equal(t, []string{"warning rfr-1"}, levelsAndPods(logs.all()))
+	assertRFFields(t, logs.all())
 }
 
 func TestCheckSentinelQuorumLeavesTheLogToTheCaller(t *testing.T) {
@@ -302,11 +329,12 @@ func TestGetMasterIPAndGetNumberMastersLogAWarning(t *testing.T) {
 		assert.Equal(t, "warning", e.level)
 		assert.Contains(t, e.msg, "connection refused")
 	}
+	assert.Equal(t, "rfr-0", entries[0].fields["pod"])
 	assert.Equal(t, "rfr-0", entries[1].fields["pod"])
 }
 
 // A pod that is not Ready usually restarts, so each reconcile finds it.
-func TestGetNumberMastersLogsAPodThatIsNotReadyAtDebug(t *testing.T) {
+func TestGetNumberMastersAndGetMasterIPLogAPodThatIsNotReadyAtDebug(t *testing.T) {
 	rf := generateRF()
 	pods := &corev1.PodList{Items: []corev1.Pod{runningPod("rfr-0", "10.0.0.1")}}
 	ms := &mK8SService.Services{}
@@ -317,9 +345,11 @@ func TestGetNumberMastersLogsAPodThatIsNotReadyAtDebug(t *testing.T) {
 
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
 	_, err := checker.GetNumberMasters(rf)
-
 	assert.NoError(t, err)
-	assert.Equal(t, []string{"debug rfr-0"}, levelsAndPods(logs.all()))
+	_, err = checker.GetMasterIP(rf)
+	assert.ErrorIs(t, err, rfservice.ErrAmbiguousMasterCount)
+
+	assert.Equal(t, []string{"debug rfr-0", "debug rfr-0"}, levelsAndPods(logs.all()))
 	assertRFFields(t, logs.all())
 }
 
@@ -412,9 +442,11 @@ func TestClientDisconnectorLogLevel(t *testing.T) {
 	tests := []struct {
 		name     string
 		current  *corev1.Pod
+		noUID    bool
 		expLevel string
 	}{
 		{name: "the pod runs", current: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: uid}}, expLevel: "warning"},
+		{name: "the pod runs and its UID is not known", current: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: uid}}, noUID: true, expLevel: "warning"},
 		{name: "the pod is deleted", expLevel: "info"},
 		{name: "the pod terminates", current: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: uid, DeletionTimestamp: &metav1.Time{Time: time.Now()}, Finalizers: []string{"test"}}}, expLevel: "info"},
 		{name: "a new pod has the name", current: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "new"}}, expLevel: "info"},
@@ -433,7 +465,9 @@ func TestClientDisconnectorLogLevel(t *testing.T) {
 			disconnector := rfservice.NewClientDisconnector(kubeClient, mr, logger, time.Minute, 0)
 
 			demoted := podWithRole("old-master", "1.1.1.1", slaveRoleLabel)
-			demoted.UID = uid
+			if !test.noUID {
+				demoted.UID = uid
+			}
 			disconnector.DisconnectDemoted(rf, demoted, "0", "")
 			select {
 			case <-called:
@@ -491,4 +525,26 @@ func TestApplyPasswordNamesEachRefusingPodOnce(t *testing.T) {
 			assert.True(t, strings.HasPrefix(err.Error(), test.expErr), err.Error())
 		})
 	}
+}
+
+func TestGetMasterIPSkipsPodsNotRunningOrTerminating(t *testing.T) {
+	rf := generateRF()
+	terminating := readyPod("rfr-2", "10.0.0.3")
+	terminating.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+	pods := &corev1.PodList{Items: []corev1.Pod{
+		readyPod("rfr-0", "10.0.0.1"),
+		{ObjectMeta: metav1.ObjectMeta{Name: "rfr-1"}, Status: corev1.PodStatus{Phase: corev1.PodPending}},
+		terminating,
+	}}
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("IsMaster", "10.0.0.1", "0", "").Once().Return(true, nil)
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+	master, err := checker.GetMasterIP(rf)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "10.0.0.1", master)
+	mr.AssertExpectations(t)
 }

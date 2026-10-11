@@ -2424,14 +2424,15 @@ func TestCheckIfMasterLocalhostGetSlaveOfError(t *testing.T) {
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
 	mr := &mRedisService.Client{}
-	mr.On("GetSlaveOf", "1.1.1.1", "0", "").Once().Return("", errors.New("i/o timeout"))
+	timeout := errors.New("i/o timeout")
+	mr.On("GetSlaveOf", "1.1.1.1", "0", "").Once().Return("", timeout)
 
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
 
 	ok, err := checker.CheckIfMasterLocalhost(rf)
-	// The error names the pod IP and keeps its type.
+	// The error names the pod IP and wraps the original error.
 	assert.EqualError(err, "redis 1.1.1.1: i/o timeout")
-	assert.True(redis.IsUnreachableError(err))
+	assert.ErrorIs(err, timeout)
 	assert.False(ok)
 }
 

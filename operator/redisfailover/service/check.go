@@ -202,14 +202,12 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 	for _, rp := range rps.Items {
 		if rp.Status.PodIP == master {
 			err = r.setMasterLabelIfNecessary(rf, rp)
-			if err != nil {
-				return err
-			}
 		} else {
 			err = r.setSlaveLabelIfNecessary(rf, rp, rport, password)
-			if err != nil {
-				return err
-			}
+		}
+		if err != nil {
+			logWrongMasters(logger, wrong, -1)
+			return err
 		}
 
 		if rp.DeletionTimestamp != nil {
@@ -232,7 +230,7 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 			wrong = append(wrong, wrongMaster{
 				pod:   rp.Name,
 				local: slave == "127.0.0.1",
-				err:   fmt.Errorf("slave %s don't have the master %s, has %s", rp.Status.PodIP, master, slave),
+				err:   fmt.Errorf("slave %s (pod %s) don't have the master %s, has %s", rp.Status.PodIP, rp.Name, master, slave),
 			})
 		}
 	}
@@ -241,10 +239,17 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 	}
 	// The caller logs the returned error at Warning, so each other replica
 	// gets its own line. A different master can be a second master, so it
-	// comes first. A replica with 127.0.0.1 started a short time ago.
+	// comes first.
 	returned := max(slices.IndexFunc(wrong, func(w wrongMaster) bool { return !w.local }), 0)
+	logWrongMasters(logger, wrong, returned)
+	return wrong[returned].err
+}
+
+// logWrongMasters logs each replica in wrong, except the one at index skip.
+// A replica with 127.0.0.1 as master started a short time ago.
+func logWrongMasters(logger log.Logger, wrong []wrongMaster, skip int) {
 	for i, w := range wrong {
-		if i == returned {
+		if i == skip {
 			continue
 		}
 		podLogger := logger.WithField("pod", w.pod)
@@ -254,7 +259,6 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 			podLogger.Warningf("%v", w.err)
 		}
 	}
-	return wrong[returned].err
 }
 
 type wrongMaster struct {
@@ -504,7 +508,7 @@ func (r *RedisFailoverChecker) CheckSentinelMonitor(sentinel string, monitor ...
 
 // GetMasterIP connects to all redis and returns the master of the redis failover
 func (r *RedisFailoverChecker) GetMasterIP(rf *redisfailoverv1.RedisFailover) (string, error) {
-	rips, err := r.GetRedisesIPs(rf)
+	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
 		return "", err
 	}
@@ -516,14 +520,18 @@ func (r *RedisFailoverChecker) GetMasterIP(rf *redisfailoverv1.RedisFailover) (s
 
 	var masters []string
 	rport := getRedisPort(rf.Spec.Redis.Port)
-	for _, rip := range rips {
-		master, err := r.redisClient.IsMaster(rip, rport, password)
+	for i := range rps.Items {
+		rp := &rps.Items[i]
+		if rp.Status.Phase != corev1.PodRunning || rp.DeletionTimestamp != nil {
+			continue
+		}
+		master, err := r.redisClient.IsMaster(rp.Status.PodIP, rport, password)
 		if err != nil {
-			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Warningf("Get redis info failed, maybe this node is not ready, pod ip: %s: %v", rip, err)
+			podErrorLogf(r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace), rp)("Get redis info failed, maybe this node is not ready, pod ip: %s: %v", rp.Status.PodIP, err)
 			continue
 		}
 		if master {
-			masters = append(masters, rip)
+			masters = append(masters, rp.Status.PodIP)
 		}
 	}
 

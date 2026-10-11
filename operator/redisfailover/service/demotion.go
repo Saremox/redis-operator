@@ -172,7 +172,7 @@ func (d *endpointAwareDisconnector) podGone(namespace string, pod corev1.Pod) bo
 	if err != nil {
 		return apierrors.IsNotFound(err)
 	}
-	return current.UID != pod.UID || current.DeletionTimestamp != nil
+	return (pod.UID != "" && current.UID != pod.UID) || current.DeletionTimestamp != nil
 }
 
 func (d *endpointAwareDisconnector) waitForEndpointRemoval(namespace, service, ip string) error {
