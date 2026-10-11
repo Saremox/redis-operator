@@ -8,6 +8,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -24,6 +25,8 @@ import (
 )
 
 const controllerName = "redisfailover"
+
+const conflictRetryDelay = time.Second
 
 // Controller runs the operator until its context is done.
 type Controller interface {
@@ -297,7 +300,16 @@ func (c *rfController) processNext(ctx context.Context) bool {
 	err := c.process(ctx, key)
 	c.metrics.ObserveResourceProcessingDuration(ctx, controllerName, err == nil, start)
 	if err != nil {
-		c.logger.WithField("object-key", key).Errorf("error on object processing: %v", err)
+		namespace, name, _ := cache.SplitMetaNamespaceKey(key)
+		logger := c.logger.WithField("object-key", key).WithField("redisfailover", name).WithField("namespace", namespace)
+		if apierrors.IsConflict(err) {
+			// The write used an old copy of the object. A reconcile with the
+			// new copy fixes that, so it is not a fault.
+			logger.Infof("the object changed before the write, the reconcile runs again: %v", err)
+			c.enqueueAfter(key, conflictRetryDelay)
+			return true
+		}
+		logger.Errorf("error on object processing: %v", err)
 	}
 	return true
 }

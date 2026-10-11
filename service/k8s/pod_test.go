@@ -166,6 +166,43 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 	})
 }
 
+// levelLogger records the level of each Debug and Error line.
+type levelLogger struct {
+	log.DummyLogger
+	levels *[]string
+}
+
+func (l levelLogger) With(string, interface{}) log.Logger { return l }
+func (l levelLogger) Debugf(string, ...interface{})       { *l.levels = append(*l.levels, "debug") }
+func (l levelLogger) Errorf(string, ...interface{})       { *l.levels = append(*l.levels, "error") }
+
+// A reconcile can read a pod just before its deletion, so a missing pod is
+// not a fault.
+func TestPodServiceUpdatePodLabelsLogLevel(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expLevel string
+	}{
+		{name: "the pod is gone", err: kubeerrors.NewNotFound(podsGroup.GroupResource(), "testpod"), expLevel: "debug"},
+		{name: "the patch fails", err: errors.New("forbidden"), expLevel: "error"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mcli := kubernetes.NewClientset()
+			mcli.PrependReactor("patch", "pods", func(kubetesting.Action) (bool, runtime.Object, error) {
+				return true, nil, test.err
+			})
+			var levels []string
+			service := k8s.NewPodService(mcli, levelLogger{levels: &levels}, metrics.Dummy)
+
+			err := service.UpdatePodLabels("testns", "testpod", map[string]string{"role": "master"})
+			assert.Error(t, err)
+			assert.Equal(t, []string{test.expLevel}, levels)
+		})
+	}
+}
+
 func TestPodServiceDelete(t *testing.T) {
 	testns := "testns"
 

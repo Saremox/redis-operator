@@ -17,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	clientfeatures "k8s.io/client-go/features"
 	clientfeaturestesting "k8s.io/client-go/features/testing"
@@ -787,6 +788,57 @@ func (l recordingLogger) WithField(key string, value interface{}) log.Logger {
 
 func (l recordingLogger) Errorf(format string, args ...interface{}) {
 	l.logs.add(l.fields + fmt.Sprintf(format, args...))
+}
+
+func (l recordingLogger) Infof(format string, args ...interface{}) {
+	l.logs.add("info: " + l.fields + fmt.Sprintf(format, args...))
+}
+
+type errorHandler struct{ err error }
+
+func (errorHandler) Forget(string) {}
+
+func (h errorHandler) Handle(context.Context, runtime.Object) error { return h.err }
+
+// A conflict tells that a write used an old copy of the RedisFailover, and a
+// new reconcile fixes it. Other errors wait for the next event or resync.
+func TestRFControllerRetriesAConflict(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		expLog  string
+		requeue bool
+	}{
+		{
+			name:    "a conflict",
+			err:     apierrors.NewConflict(schema.GroupResource{Resource: "redisfailovers"}, "rf", errors.New("the object has been modified")),
+			expLog:  "info: object-key=ns/rf redisfailover=rf namespace=ns the object changed",
+			requeue: true,
+		},
+		{
+			name:   "another error",
+			err:    errors.New("boom"),
+			expLog: "object-key=ns/rf redisfailover=rf namespace=ns error on object processing: boom",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			logs := &recordedLogs{}
+			c, err := newRFController(errorHandler{err: test.err}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, recordingLogger{logs: logs})
+			require.NoError(t, err)
+			require.NoError(t, c.rfInformer.GetIndexer().Add(&redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}))
+
+			c.queue.Add("ns/rf")
+			require.True(t, c.processNext(context.Background()))
+			assert.Len(t, logs.lines, 1)
+			assert.True(t, strings.HasPrefix(logs.text(), test.expLog), logs.text())
+			if test.requeue {
+				assert.Eventually(t, func() bool { return c.queue.Len() == 1 }, 3*time.Second, 10*time.Millisecond)
+			} else {
+				assert.Never(t, func() bool { return c.queue.Len() > 0 }, 1500*time.Millisecond, 50*time.Millisecond)
+			}
+		})
+	}
 }
 
 // panickingHandler panics for the RedisFailover "bad" and records the others.

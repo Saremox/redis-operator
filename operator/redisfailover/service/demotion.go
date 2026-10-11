@@ -10,6 +10,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -139,7 +140,7 @@ func (d *endpointAwareDisconnector) disconnectRecovered(rf *redisfailoverv1.Redi
 }
 
 func (d *endpointAwareDisconnector) disconnect(rf *redisfailoverv1.RedisFailover, pod corev1.Pod, port, password string) error {
-	logger := d.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
+	logger := d.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).WithField("pod", pod.Name)
 	service := GetRedisMasterName(rf)
 	if err := d.waitForEndpointRemoval(rf.Namespace, service, pod.Status.PodIP); err != nil {
 		logger.Warningf("Pod %s may still be behind Service %s: %v", pod.Name, service, err)
@@ -149,9 +150,24 @@ func (d *endpointAwareDisconnector) disconnect(rf *redisfailoverv1.RedisFailover
 	logger.Infof("Pod %s is no longer the master, disconnecting its clients", pod.Name)
 	err := d.redisClient.DisconnectClients(pod.Status.PodIP, port, password)
 	if err != nil {
-		logger.Warningf("Could not disconnect clients of demoted pod %s: %v", pod.Name, err)
+		logf := logger.Warningf
+		if d.podGone(rf.Namespace, pod) {
+			// The clients of a pod that stops lose their connections anyway.
+			logf = logger.Infof
+		}
+		logf("Could not disconnect clients of demoted pod %s: %v", pod.Name, err)
 	}
 	return err
+}
+
+// podGone reports whether the pod is deleted, terminating or replaced by a
+// new pod with the same name.
+func (d *endpointAwareDisconnector) podGone(namespace string, pod corev1.Pod) bool {
+	current, err := d.kubeClient.CoreV1().Pods(namespace).Get(context.Background(), pod.Name, metav1.GetOptions{})
+	if err != nil {
+		return apierrors.IsNotFound(err)
+	}
+	return current.UID != pod.UID || current.DeletionTimestamp != nil
 }
 
 func (d *endpointAwareDisconnector) waitForEndpointRemoval(namespace, service, ip string) error {
