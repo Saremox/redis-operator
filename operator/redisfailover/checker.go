@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/saremox/redis-operator/service/k8s"
@@ -991,6 +993,9 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		return err
 	}
 
+	heal := r.startSentinelHeal(rf)
+	defer r.saveSentinelResets(heal, sentinels)
+
 	port := getRedisPort(rf.Spec.Redis.Port)
 	// master can be stale after applyRedisCustomConfig and UpdateRedisesPods.
 	// Read it again only when a Sentinel needs a fix, and only one time.
@@ -999,6 +1004,9 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	for _, sip := range sentinels {
 		err = r.rfChecker.CheckSentinelMonitor(sip, sentinelMonitorMaster, port)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
+		if heal.skip(sip, err) {
+			continue
+		}
 		if err != nil {
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Fixing sentinel not monitoring expected master: %s", err.Error())
 			if !masterRefreshed {
@@ -1023,7 +1031,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 				}
 			}
 			if err := r.rfHealer.NewSentinelMonitor(sip, sentinelMonitorMaster, rf); err != nil {
-				if r.skipUnreachableSentinel(rf, sip, err) {
+				if heal.skip(sip, err) {
 					continue
 				}
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -1031,9 +1039,10 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 				}
 				return err
 			}
+			heal.resets[sip] = r.now()
 		}
 	}
-	return r.checkAndHealSentinels(rf, sentinels)
+	return r.checkAndHealSentinels(rf, sentinels, heal)
 }
 
 // electMasterForSentinel promotes the best replica when no Sentinel can fail
@@ -1472,13 +1481,18 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 			}
 			return err
 		}
+		heal := r.startSentinelHeal(rf)
+		defer r.saveSentinelResets(heal, sentinels)
 		for _, sip := range sentinels {
 			err = r.rfChecker.CheckSentinelMonitor(sip, bootstrapSettings.Host, bootstrapSettings.Port)
 			setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
+			if heal.skip(sip, err) {
+				continue
+			}
 			if err != nil {
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Fixing sentinel not monitoring expected master: %s", err.Error())
 				if err := r.rfHealer.NewSentinelMonitorWithPort(sip, bootstrapSettings.Host, bootstrapSettings.Port, rf); err != nil {
-					if r.skipUnreachableSentinel(rf, sip, err) {
+					if heal.skip(sip, err) {
 						continue
 					}
 					rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -1487,9 +1501,10 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 					}
 					return err
 				}
+				heal.resets[sip] = r.now()
 			}
 		}
-		return r.checkAndHealSentinels(rf, sentinels)
+		return r.checkAndHealSentinels(rf, sentinels, heal)
 	}
 	return nil
 }
@@ -1573,33 +1588,87 @@ func (r *RedisFailoverHandler) logMaxMemoryOutcome(logger log.Logger, key string
 	}
 }
 
-// skipUnreachableSentinel logs and reports true when err shows that the
-// Sentinel does not answer. A Sentinel pod can stop after GetSentinelsIPs
-// listed it, for example in a rollout. The other Sentinels then still get
-// their heal, and a later reconcile heals the skipped Sentinel.
-func (r *RedisFailoverHandler) skipUnreachableSentinel(rf *redisfailoverv1.RedisFailover, sip string, err error) bool {
+// errSentinelSkipped marks the later checks of a Sentinel that did not answer
+// earlier in the reconcile.
+var errSentinelSkipped = errors.New("sentinel unreachable, check skipped")
+
+// sentinelHeal is the state of the Sentinel heal steps in one reconcile.
+type sentinelHeal struct {
+	key    string
+	logger log.Logger
+	// resets holds the last SENTINEL RESET or SENTINEL MONITOR of each
+	// Sentinel in the hold-off.
+	resets      map[string]time.Time
+	unreachable map[string]bool
+}
+
+// startSentinelHeal loads the reset times that are still in the hold-off.
+func (r *RedisFailoverHandler) startSentinelHeal(rf *redisfailoverv1.RedisFailover) *sentinelHeal {
+	heal := &sentinelHeal{
+		key:         failoverKey(rf),
+		logger:      r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace),
+		resets:      map[string]time.Time{},
+		unreachable: map[string]bool{},
+	}
+	if last, ok := r.sentinelResets.Load(heal.key); ok {
+		now := r.now()
+		for sip, at := range last.(map[string]time.Time) {
+			if now.Sub(at) < sentinelResetHoldOff {
+				heal.resets[sip] = at
+			}
+		}
+	}
+	return heal
+}
+
+// saveSentinelResets keeps the reset times of the listed Sentinels only, so
+// the entry of the old IP of a recreated pod does not stay.
+func (r *RedisFailoverHandler) saveSentinelResets(heal *sentinelHeal, sentinels []string) {
+	maps.DeleteFunc(heal.resets, func(sip string, _ time.Time) bool {
+		return !slices.Contains(sentinels, sip)
+	})
+	if len(heal.resets) == 0 {
+		r.sentinelResets.Delete(heal.key)
+		return
+	}
+	r.sentinelResets.Store(heal.key, heal.resets)
+}
+
+// skip reports whether err shows that the Sentinel does not answer, and
+// records it. A Sentinel pod can stop after GetSentinelsIPs listed it.
+func (h *sentinelHeal) skip(sip string, err error) bool {
 	if !redis.IsUnreachableError(err) {
 		return false
 	}
-	r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Skipping unreachable sentinel %s: %s", sip, err.Error())
+	h.logger.Warningf("Skipping unreachable sentinel %s: %s", sip, err.Error())
+	h.unreachable[sip] = true
 	return true
 }
 
-func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFailover, sentinels []string) error {
-	key := failoverKey(rf)
-	resets := r.sentinelResetsInHoldOff(key, sentinels)
-	defer func() {
-		if len(resets) == 0 {
-			r.sentinelResets.Delete(key)
-		} else {
-			r.sentinelResets.Store(key, resets)
-		}
-	}()
+// skipped reports whether the Sentinel did not answer earlier in the
+// reconcile. It records the check as unhealthy, as a failed check does.
+func (r *RedisFailoverHandler) skipped(rf *redisfailoverv1.RedisFailover, heal *sentinelHeal, sip, property string) bool {
+	if !heal.unreachable[sip] {
+		return false
+	}
+	setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, property, sip, errSentinelSkipped)
+	return true
+}
+
+// checkAndHealSentinels heals each Sentinel that answers. An unreachable
+// Sentinel makes the RedisFailover NotHealthy after the heal of the others.
+func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFailover, sentinels []string, heal *sentinelHeal) error {
 	for _, sip := range sentinels {
+		if r.skipped(rf, heal, sip, metrics.SENTINEL_NUMBER_IN_MEMORY_MISMATCH) {
+			continue
+		}
 		err := r.rfChecker.CheckSentinelNumberInMemory(sip, rf)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_NUMBER_IN_MEMORY_MISMATCH, sip, err)
+		if heal.skip(sip, err) {
+			continue
+		}
 		if err != nil {
-			if err := r.restoreSentinel(rf, sip, "sentinels", resets); err != nil {
+			if err := r.restoreSentinel(sip, "sentinels", heal); err != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
 					Message: "unable to restore sentinel",
@@ -1607,13 +1676,18 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 				return err
 			}
 		}
-
 	}
 	for _, sip := range sentinels {
+		if r.skipped(rf, heal, sip, metrics.REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH) {
+			continue
+		}
 		err := r.rfChecker.CheckSentinelSlavesNumberInMemory(sip, rf)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH, sip, err)
+		if heal.skip(sip, err) {
+			continue
+		}
 		if err != nil {
-			if err := r.restoreSentinel(rf, sip, "expected slaves", resets); err != nil {
+			if err := r.restoreSentinel(sip, "expected slaves", heal); err != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
 					Message: "unable to restore sentinel",
@@ -1623,10 +1697,13 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 		}
 	}
 	for _, sip := range sentinels {
+		if r.skipped(rf, heal, sip, metrics.APPLY_SENTINEL_CONFIG) {
+			continue
+		}
 		err := r.rfHealer.SetSentinelCustomConfig(sip, rf)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.APPLY_SENTINEL_CONFIG, sip, err)
 		if err != nil {
-			if r.skipUnreachableSentinel(rf, sip, err) {
+			if heal.skip(sip, err) {
 				continue
 			}
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -1636,51 +1713,46 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 			return err
 		}
 	}
+	var unreachable []string
+	for _, sip := range sentinels {
+		if heal.unreachable[sip] {
+			unreachable = append(unreachable, sip)
+		}
+	}
+	if len(unreachable) > 0 {
+		// A Sentinel that does not answer cannot vote in a failover.
+		msg := fmt.Sprintf("sentinel(s) %s unreachable", strings.Join(unreachable, ", "))
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: msg,
+		}
+		return errors.New(msg)
+	}
 	return nil
 }
 
-// sentinelResetHoldOff is the minimum time between two SENTINEL RESET of one
-// Sentinel. After a reset, the Sentinel needs some seconds to find the other
-// Sentinels and the replicas again, and it cannot start a failover in that
-// time. In that time the check finds a mismatch again, and a new reset makes
-// that time longer.
-const sentinelResetHoldOff = 30 * time.Second
+// sentinelResetHoldOff is shorter than the default resync interval of 30
+// seconds, so a mismatch that stays gets a reset at the next resync.
+const sentinelResetHoldOff = 25 * time.Second
 
-// sentinelResetsInHoldOff returns the last reset times that are in the
-// hold-off, for the listed Sentinels only. A recreated Sentinel pod gets a new
-// IP, so the entry of the old IP is dropped.
-func (r *RedisFailoverHandler) sentinelResetsInHoldOff(key string, sentinels []string) map[string]time.Time {
-	resets := map[string]time.Time{}
-	last, ok := r.sentinelResets.Load(key)
-	if !ok {
-		return resets
-	}
+// restoreSentinel resets a Sentinel with a mismatch, unless it had a reset or
+// a new monitor in the hold-off. After a reset, the Sentinel needs some seconds
+// to find the other Sentinels and the replicas, and a new reset makes this
+// time longer.
+func (r *RedisFailoverHandler) restoreSentinel(sip, mismatch string, heal *sentinelHeal) error {
 	now := r.now()
-	for sip, at := range last.(map[string]time.Time) {
-		if slices.Contains(sentinels, sip) && now.Sub(at) < sentinelResetHoldOff {
-			resets[sip] = at
-		}
-	}
-	return resets
-}
-
-// restoreSentinel resets a Sentinel with a mismatch, unless resets has a reset
-// of it in the hold-off. It records the time of a successful reset in resets.
-func (r *RedisFailoverHandler) restoreSentinel(rf *redisfailoverv1.RedisFailover, sip, mismatch string, resets map[string]time.Time) error {
-	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
-	now := r.now()
-	if at, ok := resets[sip]; ok {
-		logger.Debugf("Sentinel %s mismatch number of %s in memory. last reset %s ago, waiting", sip, mismatch, now.Sub(at).Round(time.Second))
+	if at, ok := heal.resets[sip]; ok {
+		heal.logger.Debugf("Sentinel %s mismatch number of %s in memory. last reset %s ago, waiting", sip, mismatch, now.Sub(at).Round(time.Second))
 		return nil
 	}
-	logger.Warningf("Sentinel %s mismatch number of %s in memory. resetting", sip, mismatch)
+	heal.logger.Warningf("Sentinel %s mismatch number of %s in memory. resetting", sip, mismatch)
 	if err := r.rfHealer.RestoreSentinel(sip); err != nil {
-		if r.skipUnreachableSentinel(rf, sip, err) {
+		if heal.skip(sip, err) {
 			return nil
 		}
 		return err
 	}
-	resets[sip] = now
+	heal.resets[sip] = now
 	return nil
 }
 

@@ -18,6 +18,7 @@ package redis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -1412,6 +1413,16 @@ func TestIsUnreachableError(t *testing.T) {
 		{
 			name:     "net.OpError is unreachable",
 			err:      &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: host is down")},
+			expected: true,
+		},
+		{
+			name:     "EOF from a closed connection is unreachable",
+			err:      io.EOF,
+			expected: true,
+		},
+		{
+			name:     "unexpected EOF is unreachable",
+			err:      fmt.Errorf("read reply: %w", io.ErrUnexpectedEOF),
 			expected: true,
 		},
 		{

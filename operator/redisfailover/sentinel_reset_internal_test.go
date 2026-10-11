@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -33,6 +34,7 @@ type sentinelResetTest struct {
 	check   *mRFService.RedisFailoverCheck
 	heal    *mRFService.RedisFailoverHeal
 	metrics *sentinelCheckRecorder
+	logger  *warnLogger
 	handler *RedisFailoverHandler
 	clock   time.Time
 }
@@ -43,11 +45,19 @@ func newSentinelResetTest() *sentinelResetTest {
 		check:   &mRFService.RedisFailoverCheck{},
 		heal:    &mRFService.RedisFailoverHeal{},
 		metrics: &sentinelCheckRecorder{Recorder: metrics.Dummy, status: map[string]string{}},
+		logger:  &warnLogger{},
 		clock:   time.Unix(1000, 0),
 	}
-	st.handler = NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, st.check, st.heal, &mK8SService.Services{}, st.metrics, &warnLogger{})
+	st.handler = NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, st.check, st.heal, &mK8SService.Services{}, st.metrics, st.logger)
 	st.handler.now = func() time.Time { return st.clock }
 	return st
+}
+
+// run runs checkAndHealSentinels as the callers do.
+func (st *sentinelResetTest) run(sentinels []string) error {
+	heal := st.handler.startSentinelHeal(st.rf)
+	defer st.handler.saveSentinelResets(heal, sentinels)
+	return st.handler.checkAndHealSentinels(st.rf, sentinels, heal)
 }
 
 // reconcile runs checkAndHealSentinels. Each Sentinel in mismatch has a wrong
@@ -66,7 +76,7 @@ func (st *sentinelResetTest) reconcile(t *testing.T, sentinels []string, mismatc
 		st.heal.On("RestoreSentinel", s).Maybe().Return(nil)
 		st.heal.On("SetSentinelCustomConfig", s, st.rf).Once().Return(nil)
 	}
-	require.NoError(t, st.handler.checkAndHealSentinels(st.rf, sentinels))
+	require.NoError(t, st.run(sentinels))
 	st.check.AssertExpectations(t)
 	var reset []string
 	for _, c := range st.heal.Calls {
@@ -92,7 +102,7 @@ func TestSentinelResetHoldOff(t *testing.T) {
 	assert.Equal(t, metrics.STATUS_UNHEALTHY, st.metrics.status[mismatchMetric])
 
 	// A mismatch that stays after the hold-off gets a reset again.
-	st.clock = st.clock.Add(20 * time.Second)
+	st.clock = st.clock.Add(15 * time.Second)
 	assert.Equal(t, []string{a}, st.reconcile(t, sentinels, a, b))
 }
 
@@ -106,25 +116,58 @@ func TestSentinelResetOnceInAReconcile(t *testing.T) {
 	st.heal.On("RestoreSentinel", s).Once().Return(nil)
 	st.heal.On("SetSentinelCustomConfig", s, st.rf).Once().Return(nil)
 
-	require.NoError(t, st.handler.checkAndHealSentinels(st.rf, []string{s}))
+	require.NoError(t, st.run([]string{s}))
 
 	st.heal.AssertExpectations(t)
 	assert.Equal(t, metrics.STATUS_UNHEALTHY, st.metrics.status[metrics.REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH+" "+s])
 }
 
-// A failed reset starts no hold-off.
-func TestSentinelResetHoldOffNeedsASuccessfulReset(t *testing.T) {
+// A failed reset starts no hold-off, and the hold-off of the other Sentinels
+// stays.
+func TestSentinelResetFailedResetIsNotRecorded(t *testing.T) {
 	st := newSentinelResetTest()
-	s := "10.0.1.1"
-	st.check.On("CheckSentinelNumberInMemory", s, st.rf).Once().Return(errors.New("sentinels in memory mismatch"))
-	st.heal.On("RestoreSentinel", s).Once().Return(errors.New("dial tcp 10.0.1.1:26379: i/o timeout"))
-	st.check.On("CheckSentinelSlavesNumberInMemory", s, st.rf).Once().Return(nil)
-	st.heal.On("SetSentinelCustomConfig", s, st.rf).Once().Return(nil)
+	a, b := "10.0.1.1", "10.0.1.2"
+	st.reconcile(t, []string{a, b}, a)
 
-	require.NoError(t, st.handler.checkAndHealSentinels(st.rf, []string{s}))
+	st.clock = st.clock.Add(5 * time.Second)
+	st.check.ExpectedCalls, st.check.Calls = nil, nil
+	st.heal.ExpectedCalls, st.heal.Calls = nil, nil
+	st.check.On("CheckSentinelNumberInMemory", a, st.rf).Once().Return(nil)
+	st.check.On("CheckSentinelNumberInMemory", b, st.rf).Once().Return(errors.New("sentinels in memory mismatch"))
+	st.heal.On("RestoreSentinel", b).Once().Return(errors.New("ERR unknown subcommand"))
 
-	_, ok := st.handler.sentinelResets.Load(failoverKey(st.rf))
-	assert.False(t, ok)
+	require.Error(t, st.run([]string{a, b}))
+
+	assert.Equal(t, redisfailoverv1.NotHealthyState, st.rf.Status.State)
+	assert.Equal(t, "unable to restore sentinel", st.rf.Status.Message)
+	v, _ := st.handler.sentinelResets.Load(failoverKey(st.rf))
+	assert.Equal(t, map[string]time.Time{a: st.clock.Add(-5 * time.Second)}, v)
+}
+
+// A Sentinel that does not answer gets no reset and no mismatch warning, and
+// the later steps do not dial it. The status names it.
+func TestUnreachableSentinelSkipsTheLaterSteps(t *testing.T) {
+	st := newSentinelResetTest()
+	gone, ok := "10.0.1.1", "10.0.1.2"
+	st.check.On("CheckSentinelNumberInMemory", gone, st.rf).Once().Return(errors.New("dial tcp 10.0.1.1:26379: i/o timeout"))
+	st.check.On("CheckSentinelNumberInMemory", ok, st.rf).Once().Return(nil)
+	st.check.On("CheckSentinelSlavesNumberInMemory", ok, st.rf).Once().Return(nil)
+	st.heal.On("SetSentinelCustomConfig", ok, st.rf).Once().Return(nil)
+
+	err := st.run([]string{gone, ok})
+
+	require.EqualError(t, err, "sentinel(s) 10.0.1.1 unreachable")
+	assert.Equal(t, redisfailoverv1.NotHealthyState, st.rf.Status.State)
+	assert.Equal(t, "sentinel(s) 10.0.1.1 unreachable", st.rf.Status.Message)
+	assert.Equal(t, []string{"Skipping unreachable sentinel 10.0.1.1: dial tcp 10.0.1.1:26379: i/o timeout"}, st.logger.warnings)
+	st.heal.AssertNotCalled(t, "RestoreSentinel", mock.Anything)
+	st.check.AssertExpectations(t)
+	st.heal.AssertExpectations(t)
+	for _, property := range []string{metrics.SENTINEL_NUMBER_IN_MEMORY_MISMATCH, metrics.REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH, metrics.APPLY_SENTINEL_CONFIG} {
+		assert.Equal(t, metrics.STATUS_UNHEALTHY, st.metrics.status[property+" "+gone], property)
+	}
+	_, stored := st.handler.sentinelResets.Load(failoverKey(st.rf))
+	assert.False(t, stored)
 }
 
 func TestSentinelResetHoldOffDropsOldEntries(t *testing.T) {

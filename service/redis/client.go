@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"regexp"
 	"strconv"
@@ -548,7 +549,8 @@ func (c *client) SetCustomSentinelConfig(ip string, configs []string) error {
 	// the read fails, current is nil and all the values are set.
 	current, err := c.getSentinelMasterInfo(rClient)
 	if IsUnreachableError(err) {
-		// SENTINEL SET would wait for the same timeout again.
+		// SENTINEL SET to the same Sentinel would fail too, for a lost pod after
+		// one more timeout.
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.APPLY_SENTINEL_CONFIG, metrics.FAIL, getRedisError(err))
 		return err
 	}
@@ -1082,7 +1084,8 @@ func IsUnreachableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, errNoIP) {
+	// A node that stops closes its connections, which gives EOF.
+	if errors.Is(err, errNoIP) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
 

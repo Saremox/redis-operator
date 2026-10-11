@@ -91,8 +91,9 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
 - Stale Redis pods get the new statefulset revision. The operator deletes the master pod only when every Sentinel knows a quorum of the replicas. Otherwise, Sentinel has no replica to promote.
 - While the master pod stops, the operator does not check or reset the Sentinels. A reset at that time can leave Sentinel with no replica to promote. The status is `NotHealthy` while it waits.
 - All Sentinels monitor the same Redis master.
-- Each Sentinel knows the correct number of Sentinels and replicas. If not, the operator resets that Sentinel. A pod that does not run, for example a Pending pod, is no reason for a reset, because a reset does not add it. The operator resets a Sentinel a maximum of one time in 30 seconds. After a reset, the Sentinel needs some seconds to find the other Sentinels and the replicas again, and a failover cannot start in that time.
+- Each Sentinel knows the correct number of Sentinels and replicas. If not, the operator resets that Sentinel. A pod that does not run, for example a Pending pod, is no reason for a reset, because a reset does not add it. After a reset or a new monitor, the Sentinel needs some seconds to find the other Sentinels and the replicas again. A failover cannot start in that time, so the operator does not reset it again in the next 25 seconds. The operator keeps this time in memory only, so a restart of the operator ends the wait.
 - Sentinel has the custom configuration.
+- A Sentinel that does not answer does not stop the heal of the other Sentinels. The status is then `NotHealthy`.
 
 ### Bootstrap mode
 
