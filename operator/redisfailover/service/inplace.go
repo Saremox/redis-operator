@@ -44,7 +44,21 @@ var inPlaceResizeTimeout = 5 * time.Minute
 // refused container limit.
 const memoryBelowUsage = "below current usage"
 
+// resourceLimitRejections are texts of the errors of the ResourceQuota
+// admission and of the LimitRanger admission. The messages are the same for
+// a pod create and a resize.
+var resourceLimitRejections = []string{"exceeded quota: ", " usage per ", " max limit to request ratio per "}
+
 var resizableResources = []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory}
+
+func rejectedByResourceLimits(err error) bool {
+	for _, s := range resourceLimitRejections {
+		if strings.Contains(err.Error(), s) {
+			return true
+		}
+	}
+	return false
+}
 
 // ResizePodInPlace moves a redis pod to the update revision without
 // recreating it when the revisions differ only in container cpu and memory.
@@ -89,6 +103,11 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 			return ResizeResult{}, err
 		}
 		if err := r.k8sService.ResizePod(rf.Namespace, podName, desired); err != nil {
+			// The same admission rejects the recreated pod, which then stays missing.
+			if apierrors.IsForbidden(err) && rejectedByResourceLimits(err) {
+				logger.Debugf("A ResourceQuota or LimitRange blocks the resize: %v", err)
+				return waiting("resize of pod %s is blocked by a ResourceQuota or LimitRange: %v", podName, err)
+			}
 			// Rejected by the API server, e.g. missing RBAC or a disabled feature gate.
 			if apierrors.IsForbidden(err) || apierrors.IsInvalid(err) || apierrors.IsNotFound(err) || apierrors.IsMethodNotSupported(err) {
 				return recreate("resize rejected: " + err.Error())

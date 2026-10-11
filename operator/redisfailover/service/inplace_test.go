@@ -443,6 +443,33 @@ func TestResizePodInPlaceErrors(t *testing.T) {
 		assert.Equal(t, ResizeRecreate, result.Action)
 	})
 
+	// The messages are those of the Kubernetes authorizer and admission plugins.
+	pods := schema.GroupResource{Resource: "pods"}
+	rejections := map[string]struct {
+		err  error
+		want ResizeAction
+	}{
+		"missing RBAC":       {apierrors.NewForbidden(pods, resizePod, errors.New(`User "system:serviceaccount:default:redisoperator" cannot patch resource "pods/resize" in API group "" in the namespace "testns"`)), ResizeRecreate},
+		"invalid":            {apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, resizePod, nil), ResizeRecreate},
+		"quota":              {apierrors.NewForbidden(pods, resizePod, errors.New("exceeded quota: compute, requested: limits.memory=1Gi, used: limits.memory=3Gi, limited: limits.memory=4Gi")), ResizeWaiting},
+		"LimitRange maximum": {apierrors.NewForbidden(pods, resizePod, errors.New("maximum memory usage per Container is 1536Mi, but limit is 2Gi")), ResizeWaiting},
+		"LimitRange ratio":   {apierrors.NewForbidden(pods, resizePod, errors.New("cpu max limit to request ratio per Container is 2, but provided ratio is 4.000000")), ResizeWaiting},
+	}
+	for name, test := range rejections {
+		t.Run(name, func(t *testing.T) {
+			result, _, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), stalePod(old, old)}, func(ms *mK8SService.Services) {
+				ms.On("ResizePod", "testns", resizePod, mock.Anything).Once().Return(test.err)
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, test.want, result.Action)
+			if test.want == ResizeWaiting {
+				assert.Equal(t, "resize of pod "+resizePod+" is blocked by a ResourceQuota or LimitRange: "+test.err.Error(), result.Message)
+			} else {
+				assert.Equal(t, "resize rejected: "+test.err.Error(), result.Message)
+			}
+		})
+	}
+
 	tests := map[string]func(ms *mK8SService.Services){
 		// Retried, as recreating the master would fail over.
 		"detecting support": func(ms *mK8SService.Services) {
