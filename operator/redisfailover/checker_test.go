@@ -1661,9 +1661,12 @@ func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
 		// sentinel1Err is the result of the check of sentinel1 against the new master.
 		sentinel1Err    error
 		wantNewMonitor1 bool
+		// wantSkip1 is true when sentinel1 does not answer the second check.
+		wantSkip1 bool
 	}{
 		{name: "the first Sentinel monitors the new master"},
 		{name: "the first Sentinel monitors another master", sentinel1Err: errors.New("monitors 0.0.0.2"), wantNewMonitor1: true},
+		{name: "the first Sentinel stops answering", sentinel1Err: errors.New("dial tcp 1.1.1.1:26379: i/o timeout"), wantSkip1: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1700,14 +1703,23 @@ func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
 				mrfh.On("NewSentinelMonitor", sentinel1, newMaster, rf).Once().Return(nil)
 			}
 			mrfc.On("CheckSentinelMonitor", sentinel2, newMaster, port).Once().Return(nil)
-			for _, s := range []string{sentinel1, sentinel2} {
+			healed := []string{sentinel1, sentinel2}
+			if test.wantSkip1 {
+				healed = healed[1:]
+			}
+			for _, s := range healed {
 				mrfc.On("CheckSentinelNumberInMemory", s, rf).Once().Return(nil)
 				mrfc.On("CheckSentinelSlavesNumberInMemory", s, rf).Once().Return(nil)
 				mrfh.On("SetSentinelCustomConfig", s, rf).Once().Return(nil)
 			}
 
 			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
-			assert.NoError(handler.CheckAndHeal(rf))
+			err := handler.CheckAndHeal(rf)
+			if test.wantSkip1 {
+				assert.EqualError(err, "sentinel(s) 1.1.1.1 unreachable")
+			} else {
+				assert.NoError(err)
+			}
 
 			if !test.wantNewMonitor1 {
 				mrfh.AssertNotCalled(t, "NewSentinelMonitor", sentinel1, mock.Anything, mock.Anything)
@@ -1717,6 +1729,169 @@ func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
 			mrfh.AssertExpectations(t)
 		})
 	}
+}
+
+// TestCheckAndHealSkipsUnreachableSentinel covers a Sentinel pod that stops
+// after GetSentinelsIPs listed it. The other Sentinels still get the heal, and
+// the status is NotHealthy.
+func TestCheckAndHealSkipsUnreachableSentinel(t *testing.T) {
+	const (
+		master = "0.0.0.0"
+		port   = "0"
+	)
+	sentinels := []string{"1.1.1.1", "1.1.1.2", "1.1.1.3"}
+	gone := sentinels[1]
+	unreachable := errors.New("dial tcp 1.1.1.2:26379: i/o timeout")
+	steps := []string{"monitor", "sentinels", "replicas", "config"}
+	tests := []struct {
+		name string
+		step string
+		// checkErr is the result of the check of gone in step. Only an error
+		// that is not unreachable leads to the heal call, which returns healErr.
+		checkErr error
+		healErr  error
+		// wantStop is true when healErr stops the reconcile. Only the last
+		// step uses it, so no later step has expectations to drop.
+		wantStop bool
+	}{
+		{name: "monitor check", step: "monitor", checkErr: unreachable},
+		{name: "new monitor", step: "monitor", checkErr: errors.New("monitors 9.9.9.9"), healErr: unreachable},
+		{name: "sentinels check", step: "sentinels", checkErr: unreachable},
+		{name: "sentinels reset", step: "sentinels", checkErr: errors.New("mismatch"), healErr: unreachable},
+		{name: "replicas check", step: "replicas", checkErr: unreachable},
+		{name: "replicas reset", step: "replicas", checkErr: errors.New("mismatch"), healErr: unreachable},
+		{name: "config", step: "config", healErr: unreachable},
+		{name: "config error", step: "config", healErr: errors.New("ERR invalid argument"), wantStop: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF(false, false)
+
+			mk := settledK8sServices()
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
+
+			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+			mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
+			mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+			// The base read, the read in UpdateRedisesPods and, for a wrong
+			// monitor, the read again before NewSentinelMonitor.
+			masterReads := 2
+			if test.step == "monitor" && test.healErr != nil {
+				masterReads++
+			}
+			mrfc.On("GetMasterIP", rf).Times(masterReads).Return(master, nil)
+			mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
+			mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{master}, nil)
+			mrfh.On("SetRedisCustomConfig", master, rf).Once().Return(nil)
+			mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("1", nil)
+			mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
+			mrfc.On("GetRedisesMasterPod", rf).Once().Return(master, nil)
+			mrfc.On("GetRedisRevisionHash", master, rf).Once().Return("1", nil)
+			mrfc.On("GetSentinelsIPs", rf).Once().Return(sentinels, nil)
+
+			skipped := false
+			for _, step := range steps {
+				for i, s := range sentinels {
+					if test.wantStop && step == test.step && i > 1 {
+						continue
+					}
+					if s == gone && skipped {
+						// No call to a Sentinel that did not answer before.
+						continue
+					}
+					var checkErr, healErr error
+					if step == test.step && s == gone {
+						checkErr, healErr = test.checkErr, test.healErr
+						skipped = !test.wantStop
+					}
+					switch step {
+					case "monitor":
+						mrfc.On("CheckSentinelMonitor", s, master, port).Once().Return(checkErr)
+						if healErr != nil {
+							mrfh.On("NewSentinelMonitor", s, master, rf).Once().Return(healErr)
+						}
+					case "sentinels", "replicas":
+						check := "CheckSentinelNumberInMemory"
+						if step == "replicas" {
+							check = "CheckSentinelSlavesNumberInMemory"
+						}
+						mrfc.On(check, s, rf).Once().Return(checkErr)
+						if healErr != nil {
+							mrfh.On("RestoreSentinel", s).Once().Return(healErr)
+						}
+					case "config":
+						mrfh.On("SetSentinelCustomConfig", s, rf).Once().Return(healErr)
+					}
+				}
+			}
+
+			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+			err := handler.CheckAndHeal(rf)
+
+			assert.Error(err)
+			assert.Equal(v1.NotHealthyState, rf.Status.State)
+			if test.wantStop {
+				assert.Equal("unable to set sentinel custom config", rf.Status.Message)
+			} else {
+				assert.Equal("sentinel(s) 1.1.1.2 unreachable", rf.Status.Message)
+			}
+			mrfc.AssertExpectations(t)
+			mrfh.AssertExpectations(t)
+		})
+	}
+}
+
+// TestCheckAndHealNoResetAfterNewMonitor covers a Sentinel that got a new
+// monitor. It knows no Sentinels and no replicas until it finds them again,
+// so a reset in the hold-off adds nothing.
+func TestCheckAndHealNoResetAfterNewMonitor(t *testing.T) {
+	const (
+		master   = "0.0.0.0"
+		sentinel = "1.1.1.1"
+		port     = "0"
+	)
+	rf := generateRF(false, false)
+	mk := settledK8sServices()
+	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+
+	for reconcile, monitorErr := range []error{errors.New("monitors 9.9.9.9"), nil} {
+		mrfc.ExpectedCalls, mrfc.Calls = nil, nil
+		mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+		mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
+		mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+		mrfc.On("GetMasterIP", rf).Return(master, nil)
+		mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
+		mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{master}, nil)
+		mrfh.On("SetRedisCustomConfig", master, rf).Once().Return(nil)
+		mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("1", nil)
+		mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
+		mrfc.On("GetRedisesMasterPod", rf).Once().Return(master, nil)
+		mrfc.On("GetRedisRevisionHash", master, rf).Once().Return("1", nil)
+		mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel}, nil)
+		mrfc.On("CheckSentinelMonitor", sentinel, master, port).Once().Return(monitorErr)
+		if monitorErr != nil {
+			mrfh.On("NewSentinelMonitor", sentinel, master, rf).Once().Return(nil)
+		}
+		mrfc.On("CheckSentinelNumberInMemory", sentinel, rf).Once().Return(errors.New("mismatch"))
+		mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(errors.New("mismatch"))
+		mrfh.On("SetSentinelCustomConfig", sentinel, rf).Once().Return(nil)
+
+		assert.NoError(t, handler.CheckAndHeal(rf), "reconcile %d", reconcile)
+		mrfc.AssertExpectations(t)
+	}
+	mrfh.AssertNotCalled(t, "RestoreSentinel", mock.Anything)
 }
 
 // TestCheckAndHealBootstrapModeErrorBranches exercises early-return error
@@ -1856,6 +2031,46 @@ func TestCheckAndHealBootstrapModeErrorBranches(t *testing.T) {
 			wantErr:     true,
 			wantState:   v1.NotHealthyState,
 			wantMessage: "unable to check sentinel monitor",
+		},
+		{
+			name:           "sentinels allowed - unreachable sentinels are skipped",
+			allowSentinels: true,
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				const other, healthy = "1.1.1.2", "1.1.1.3"
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				setupUpdateAndConfigSuccess(mrfc, mrfh, rf, []string{bootstrapMaster})
+				mrfh.On("SetExternalMasterOnAll", bootstrapMaster, bootstrapMasterPort, rf).Once().Return(nil)
+				mrfc.On("IsSentinelRunning", rf).Once().Return(true)
+				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel, other, healthy}, nil)
+				mrfc.On("CheckSentinelMonitor", sentinel, bootstrapMaster, bootstrapMasterPort).Once().Return(errors.New("mon err"))
+				mrfh.On("NewSentinelMonitorWithPort", sentinel, bootstrapMaster, bootstrapMasterPort, rf).Once().Return(errors.New("dial tcp: i/o timeout"))
+				mrfc.On("CheckSentinelMonitor", other, bootstrapMaster, bootstrapMasterPort).Once().Return(errors.New("dial tcp: i/o timeout"))
+				mrfc.On("CheckSentinelMonitor", healthy, bootstrapMaster, bootstrapMasterPort).Once().Return(nil)
+				mrfc.On("CheckSentinelNumberInMemory", healthy, rf).Once().Return(nil)
+				mrfc.On("CheckSentinelSlavesNumberInMemory", healthy, rf).Once().Return(nil)
+				mrfh.On("SetSentinelCustomConfig", healthy, rf).Once().Return(nil)
+			},
+			wantErr:     true,
+			wantState:   v1.NotHealthyState,
+			wantMessage: "sentinel(s) 1.1.1.1, 1.1.1.2 unreachable",
+		},
+		{
+			// No RestoreSentinel expectation: a reset would panic the mock.
+			name:           "sentinels allowed - no reset after a new monitor",
+			allowSentinels: true,
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				setupUpdateAndConfigSuccess(mrfc, mrfh, rf, []string{bootstrapMaster})
+				mrfh.On("SetExternalMasterOnAll", bootstrapMaster, bootstrapMasterPort, rf).Once().Return(nil)
+				mrfc.On("IsSentinelRunning", rf).Once().Return(true)
+				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel}, nil)
+				mrfc.On("CheckSentinelMonitor", sentinel, bootstrapMaster, bootstrapMasterPort).Once().Return(errors.New("mon err"))
+				mrfh.On("NewSentinelMonitorWithPort", sentinel, bootstrapMaster, bootstrapMasterPort, rf).Once().Return(nil)
+				mrfc.On("CheckSentinelNumberInMemory", sentinel, rf).Once().Return(errors.New("mismatch"))
+				mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(errors.New("mismatch"))
+				mrfh.On("SetSentinelCustomConfig", sentinel, rf).Once().Return(nil)
+			},
+			wantState: v1.HealthyState,
 		},
 	}
 

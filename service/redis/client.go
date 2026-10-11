@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -546,6 +548,12 @@ func (c *client) SetCustomSentinelConfig(ip string, configs []string) error {
 	// client reads the current values and sets only the changed ones. When
 	// the read fails, current is nil and all the values are set.
 	current, err := c.getSentinelMasterInfo(rClient)
+	if IsUnreachableError(err) {
+		// SENTINEL SET to the same Sentinel would fail too, for a lost pod after
+		// one more timeout.
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.APPLY_SENTINEL_CONFIG, metrics.FAIL, getRedisError(err))
+		return err
+	}
 	if err != nil {
 		current = nil
 	}
@@ -1076,7 +1084,15 @@ func IsUnreachableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, errNoIP) {
+	// A failed call to the Kubernetes API gives a *url.Error, also for a
+	// timeout. It does not show that the node is unreachable.
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return false
+	}
+
+	// A node that stops closes its connections, which gives EOF.
+	if errors.Is(err, errNoIP) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
 

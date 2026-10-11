@@ -18,11 +18,14 @@ package redis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1168,6 +1171,57 @@ func TestSetCustomSentinelConfigMalformedConfig(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestSetCustomSentinelConfigUnreachableSendsNoSet covers a Sentinel that
+// resets or closes the connection. The read of the current values fails, and
+// no SENTINEL SET follows.
+func TestSetCustomSentinelConfigUnreachableSendsNoSet(t *testing.T) {
+	const target = "127.0.0.4"
+	for _, reset := range []bool{true, false} {
+		t.Run(fmt.Sprintf("reset %t", reset), func(t *testing.T) {
+			l, err := net.Listen("tcp", net.JoinHostPort(target, sentinelPort))
+			if err != nil {
+				t.Skipf("cannot listen on %s: %v", net.JoinHostPort(target, sentinelPort), err)
+			}
+			defer func() { _ = l.Close() }()
+			var mu sync.Mutex
+			var received []string
+			go func() {
+				for {
+					conn, err := l.Accept()
+					if err != nil {
+						return
+					}
+					buf := make([]byte, 4096)
+					n, _ := conn.Read(buf)
+					mu.Lock()
+					received = append(received, strings.ToLower(string(buf[:n])))
+					mu.Unlock()
+					if reset {
+						_ = conn.(*net.TCPConn).SetLinger(0)
+					}
+					_ = conn.Close()
+				}
+			}()
+			recorder := &countingRecorder{Recorder: metrics.Dummy}
+
+			err = New(recorder).SetCustomSentinelConfig(target, []string{"down-after-milliseconds 1000"})
+
+			require.Error(t, err)
+			assert.True(t, IsUnreachableError(err), err.Error())
+			if !reset {
+				assert.ErrorIs(t, err, io.EOF)
+			}
+			assert.Equal(t, 1, recorder.calls)
+			mu.Lock()
+			defer mu.Unlock()
+			require.NotEmpty(t, received)
+			for _, cmd := range received {
+				assert.NotContains(t, cmd, "down-after-milliseconds")
+			}
+		})
+	}
+}
+
 func TestSentinelConfigsToApplyMalformedConfig(t *testing.T) {
 	c := newTestClientStruct()
 	_, err := c.sentinelConfigsToApply(nil, []string{"not-a-valid-config"})
@@ -1371,6 +1425,21 @@ func TestIsUnreachableError(t *testing.T) {
 			name:     "net.OpError is unreachable",
 			err:      &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: host is down")},
 			expected: true,
+		},
+		{
+			name:     "EOF from a closed connection is unreachable",
+			err:      io.EOF,
+			expected: true,
+		},
+		{
+			name:     "unexpected EOF is unreachable",
+			err:      fmt.Errorf("read reply: %w", io.ErrUnexpectedEOF),
+			expected: true,
+		},
+		{
+			name:     "a failed Kubernetes API call is not unreachable",
+			err:      fmt.Errorf("getting the pods: %w", &url.Error{Op: "Get", URL: "https://10.96.0.1:443/api", Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("i/o timeout")}}),
+			expected: false,
 		},
 		{
 			name:     "redis rejecting the command is not unreachable",
