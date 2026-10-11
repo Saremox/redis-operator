@@ -73,7 +73,10 @@ type RedisFailoverHandler struct {
 	// handoverFallbackLogged holds, per namespace/name, the last logged reason
 	// for a master pod delete instead of a handover, so it does not repeat.
 	handoverFallbackLogged sync.Map
-	now                    func() time.Time
+	// sentinelResets holds, per namespace/name, the time of the last SENTINEL
+	// RESET of each Sentinel IP.
+	sentinelResets sync.Map
+	now            func() time.Time
 	// requeue is nil until New connects the controller.
 	requeue func(key string, after time.Duration)
 }
@@ -105,6 +108,7 @@ func (r *RedisFailoverHandler) Forget(key string) {
 	r.maxMemoryLogged.Delete(key)
 	r.handoverRetries.Delete(key)
 	r.handoverFallbackLogged.Delete(key)
+	r.sentinelResets.Delete(key)
 }
 
 // Handle will ensure the redis failover is in the expected state.

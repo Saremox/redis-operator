@@ -1586,15 +1586,20 @@ func (r *RedisFailoverHandler) skipUnreachableSentinel(rf *redisfailoverv1.Redis
 }
 
 func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFailover, sentinels []string) error {
+	key := failoverKey(rf)
+	resets := r.sentinelResetsInHoldOff(key, sentinels)
+	defer func() {
+		if len(resets) == 0 {
+			r.sentinelResets.Delete(key)
+		} else {
+			r.sentinelResets.Store(key, resets)
+		}
+	}()
 	for _, sip := range sentinels {
 		err := r.rfChecker.CheckSentinelNumberInMemory(sip, rf)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_NUMBER_IN_MEMORY_MISMATCH, sip, err)
 		if err != nil {
-			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Sentinel %s mismatch number of sentinels in memory. resetting", sip)
-			if err := r.rfHealer.RestoreSentinel(sip); err != nil {
-				if r.skipUnreachableSentinel(rf, sip, err) {
-					continue
-				}
+			if err := r.restoreSentinel(rf, sip, "sentinels", resets); err != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
 					Message: "unable to restore sentinel",
@@ -1608,11 +1613,7 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 		err := r.rfChecker.CheckSentinelSlavesNumberInMemory(sip, rf)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH, sip, err)
 		if err != nil {
-			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Sentinel %s mismatch number of expected slaves in memory. resetting", sip)
-			if err := r.rfHealer.RestoreSentinel(sip); err != nil {
-				if r.skipUnreachableSentinel(rf, sip, err) {
-					continue
-				}
+			if err := r.restoreSentinel(rf, sip, "expected slaves", resets); err != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
 					Message: "unable to restore sentinel",
@@ -1635,6 +1636,51 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 			return err
 		}
 	}
+	return nil
+}
+
+// sentinelResetHoldOff is the minimum time between two SENTINEL RESET of one
+// Sentinel. After a reset, the Sentinel needs some seconds to find the other
+// Sentinels and the replicas again, and it cannot start a failover in that
+// time. In that time the check finds a mismatch again, and a new reset makes
+// that time longer.
+const sentinelResetHoldOff = 30 * time.Second
+
+// sentinelResetsInHoldOff returns the last reset times that are in the
+// hold-off, for the listed Sentinels only. A recreated Sentinel pod gets a new
+// IP, so the entry of the old IP is dropped.
+func (r *RedisFailoverHandler) sentinelResetsInHoldOff(key string, sentinels []string) map[string]time.Time {
+	resets := map[string]time.Time{}
+	last, ok := r.sentinelResets.Load(key)
+	if !ok {
+		return resets
+	}
+	now := r.now()
+	for sip, at := range last.(map[string]time.Time) {
+		if slices.Contains(sentinels, sip) && now.Sub(at) < sentinelResetHoldOff {
+			resets[sip] = at
+		}
+	}
+	return resets
+}
+
+// restoreSentinel resets a Sentinel with a mismatch, unless resets has a reset
+// of it in the hold-off. It records the time of a successful reset in resets.
+func (r *RedisFailoverHandler) restoreSentinel(rf *redisfailoverv1.RedisFailover, sip, mismatch string, resets map[string]time.Time) error {
+	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
+	now := r.now()
+	if at, ok := resets[sip]; ok {
+		logger.Debugf("Sentinel %s mismatch number of %s in memory. last reset %s ago, waiting", sip, mismatch, now.Sub(at).Round(time.Second))
+		return nil
+	}
+	logger.Warningf("Sentinel %s mismatch number of %s in memory. resetting", sip, mismatch)
+	if err := r.rfHealer.RestoreSentinel(sip); err != nil {
+		if r.skipUnreachableSentinel(rf, sip, err) {
+			return nil
+		}
+		return err
+	}
+	resets[sip] = now
 	return nil
 }
 
