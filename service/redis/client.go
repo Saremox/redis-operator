@@ -255,7 +255,6 @@ func (c *client) GetSlaveOf(ip, port, password string) (string, error) {
 	info, err := rClient.Info(context.TODO(), "replication").Result()
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_SLAVE_OF, metrics.FAIL, getRedisError(err))
-		log.Errorf("error while getting masterIP : Failed to get info replication while querying redis instance %v", ip)
 		return "", err
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_SLAVE_OF, metrics.SUCCESS, metrics.NOT_APPLICABLE)

@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/service/redis"
@@ -26,6 +27,7 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 	port := getRedisPort(rf.Spec.Redis.Port)
 	complete := true
 	var errs []error
+	var unknown []string
 	for _, rp := range rps.Items {
 		if rp.DeletionTimestamp != nil {
 			continue
@@ -59,7 +61,7 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 			}
 		}
 		if !tried {
-			errs = append(errs, fmt.Errorf("redis pod %s refuses the configured password and the operator doesn't know the one it runs with; put the previous password back in the secret until the RedisFailover is healthy, then change it again", rp.Name))
+			unknown = append(unknown, rp.Name)
 			continue
 		}
 		if err != nil {
@@ -67,6 +69,13 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 			continue
 		}
 		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("Changed the password of redis pod %s", rp.Name)
+	}
+	if len(unknown) > 0 {
+		refuse := "redis pod %s refuses the configured password and the operator doesn't know the one it runs with"
+		if len(unknown) > 1 {
+			refuse = "redis pods %s refuse the configured password and the operator doesn't know the ones they run with"
+		}
+		errs = append(errs, fmt.Errorf(refuse+"; put the previous password back in the secret until the RedisFailover is healthy, then change it again", strings.Join(unknown, ", ")))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return false, err

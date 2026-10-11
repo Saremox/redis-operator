@@ -1,6 +1,7 @@
 package redisfailover
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -827,10 +828,10 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 			return err
 		}
 
-		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("No master avaiable but max pod up time is : %f", maxUptime.Round(time.Second).Seconds())
+		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("No master available, the max pod uptime is %s", maxUptime.Round(time.Second))
 		noqrmCnt, err := r.rfChecker.CheckSentinelQuorum(rf)
 		if err != nil {
-			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Quorum not available for sentinel to choose master,estimated unhealthy sentinels :%d , Operator to step-in", noqrmCnt)
+			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Quorum not available for sentinel to choose master, estimated unhealthy sentinels: %d, operator to step in: %v", noqrmCnt, err)
 			err2 := r.rfHealer.SetOldestAsMaster(rf)
 			setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err2)
 			if err2 != nil {
@@ -849,10 +850,9 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 					State:   redisfailoverv1.NotHealthyState,
 					Message: "unable to check if master localhost",
 				}
-				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Errorf("CheckIfMasterLocalhost failed retry later")
 				return err2
 			} else if status {
-				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Errorf("all available redis is having local loop back as master , operator initiates master selection")
+				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("each available redis has 127.0.0.1 as master, the operator elects a master")
 				err3 := r.rfHealer.SetOldestAsMaster(rf)
 				setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err3)
 				if err3 != nil {
@@ -1283,8 +1283,11 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 					return err
 				}
 			}
-			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
-				Warningf("Master %s is unhealthy, initiating failover", masterIP)
+			logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
+			if pod != nil {
+				logger = logger.WithField("pod", pod.Name)
+			}
+			logger.Warningf("Master %s is unhealthy, initiating failover", cmp.Or(masterIP, "(unknown IP)"))
 
 			bestReplica, err := r.rfChecker.GetBestReplicaForPromotion(rf)
 			if err != nil {

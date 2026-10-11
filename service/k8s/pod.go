@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -107,7 +108,12 @@ func (p *PodService) UpdatePodLabels(namespace, podName string, labels map[strin
 	_, err := p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.MergePatchType, payloadBytes, metav1.PatchOptions{})
 	recordMetrics(namespace, "Pod", podName, "PATCH", err, p.metricsRecorder)
 	if err != nil {
-		p.logger.Errorf("Update pod labels failed, namespace: %s, pod name: %s, error: %v", namespace, podName, err)
+		logf := p.logger.Errorf
+		if errors.IsNotFound(err) {
+			// The reconcile read the pod before it was deleted.
+			logf = p.logger.Debugf
+		}
+		logf("Update pod labels failed, namespace: %s, pod name: %s, error: %v", namespace, podName, err)
 	}
 	return err
 }
