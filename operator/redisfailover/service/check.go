@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -194,10 +195,10 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 	}
 
 	rport := getRedisPort(rf.Spec.Redis.Port)
-	// The loop labels every pod before it returns wrongMasterErr. Otherwise, one
+	// The loop labels every pod before it returns an error. Otherwise, one
 	// bad pod early in the list can stop the label of the new master. Then the
 	// master Service has no endpoint.
-	var wrongMasterErr error
+	var wrong []wrongMaster
 	for _, rp := range rps.Items {
 		if rp.Status.PodIP == master {
 			err = r.setMasterLabelIfNecessary(rf, rp)
@@ -223,28 +224,53 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 		slave, err := r.redisClient.GetSlaveOf(rp.Status.PodIP, rport, password)
 		if err != nil {
 			// The pod does not answer, usually the old master on a lost node.
-			// Skip it, so that the heal of the reachable pods continues. A pod
-			// that is not Ready usually restarts.
-			logf := logger.WithField("pod", rp.Name).Warningf
-			if !util.PodIsReady(&rp) {
-				logf = logger.WithField("pod", rp.Name).Debugf
-			}
-			logf("Get slave of master failed, maybe this node is not ready, pod ip: %s: %v", rp.Status.PodIP, err)
+			// Skip it, so that the heal of the reachable pods continues.
+			podErrorLogf(logger, &rp)("Get slave of master failed, maybe this node is not ready, pod ip: %s: %v", rp.Status.PodIP, err)
 			continue
 		}
 		if slave != "" && slave != master {
-			newErr := fmt.Errorf("slave %s don't have the master %s, has %s", rp.Status.PodIP, master, slave)
-			// The caller logs the returned error. A replica that has
-			// 127.0.0.1 as master started a short time ago.
-			if slave == "127.0.0.1" {
-				logger.WithField("pod", rp.Name).Infof("%v", newErr)
-			}
-			if wrongMasterErr == nil {
-				wrongMasterErr = newErr
-			}
+			wrong = append(wrong, wrongMaster{
+				pod:   rp.Name,
+				local: slave == "127.0.0.1",
+				err:   fmt.Errorf("slave %s don't have the master %s, has %s", rp.Status.PodIP, master, slave),
+			})
 		}
 	}
-	return wrongMasterErr
+	if len(wrong) == 0 {
+		return nil
+	}
+	// The caller logs the returned error at Warning, so each other replica
+	// gets its own line. A different master can be a second master, so it
+	// comes first. A replica with 127.0.0.1 started a short time ago.
+	returned := max(slices.IndexFunc(wrong, func(w wrongMaster) bool { return !w.local }), 0)
+	for i, w := range wrong {
+		if i == returned {
+			continue
+		}
+		podLogger := logger.WithField("pod", w.pod)
+		if w.local {
+			podLogger.Infof("%v", w.err)
+		} else {
+			podLogger.Warningf("%v", w.err)
+		}
+	}
+	return wrong[returned].err
+}
+
+type wrongMaster struct {
+	pod   string
+	local bool
+	err   error
+}
+
+// podErrorLogf logs at Debug for a pod that is not Ready, because such a pod
+// usually restarts.
+func podErrorLogf(logger log.Logger, pod *corev1.Pod) func(string, ...interface{}) {
+	logger = logger.WithField("pod", pod.Name)
+	if util.PodIsReady(pod) {
+		return logger.Warningf
+	}
+	return logger.Debugf
 }
 
 // CheckSentinelNumberInMemory returns an error when the Sentinel does not
@@ -282,7 +308,10 @@ func (r *RedisFailoverChecker) CheckIfMasterLocalhost(rFailover *redisfailoverv1
 
 	var lhmaster = 0
 	redisIps, err := r.GetRedisesIPs(rFailover)
-	if len(redisIps) == 0 || err != nil {
+	if err != nil {
+		return false, err
+	}
+	if len(redisIps) == 0 {
 		return false, errors.New("unable to fetch any redis Ips Currently")
 	}
 	password, err := k8s.GetRedisPassword(r.k8sService, rFailover)
@@ -293,7 +322,7 @@ func (r *RedisFailoverChecker) CheckIfMasterLocalhost(rFailover *redisfailoverv1
 	for _, sip := range redisIps {
 		master, err := r.redisClient.GetSlaveOf(sip, rport, password)
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("redis %s: %w", sip, err)
 		} else if master == "" {
 			return false, fmt.Errorf("unexpected master state: redis %s is a master", sip)
 		} else {
@@ -528,8 +557,7 @@ func (r *RedisFailoverChecker) GetNumberMasters(rf *redisfailoverv1.RedisFailove
 		}
 		master, err := r.redisClient.IsMaster(rp.Status.PodIP, rport, password)
 		if err != nil {
-			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).WithField("pod", rp.Name).
-				Warningf("Get redis info failed, maybe this node is not ready, pod ip: %s: %v", rp.Status.PodIP, err)
+			podErrorLogf(r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace), rp)("Get redis info failed, maybe this node is not ready, pod ip: %s: %v", rp.Status.PodIP, err)
 			if unanswered == nil && util.PodIsReady(rp) {
 				unanswered = fmt.Errorf("%w: %s: %w", ErrRedisNotAnswering, rp.Name, err)
 			}

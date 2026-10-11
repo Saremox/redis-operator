@@ -143,18 +143,72 @@ func TestCheckAllSlavesFromMasterLogContext(t *testing.T) {
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
 	err := checker.CheckAllSlavesFromMaster("10.0.0.1", rf)
 
-	assert.ErrorContains(t, err, "has 127.0.0.1")
+	// The caller logs the returned error. A different master comes first,
+	// because it can be a second master.
+	assert.EqualError(t, err, "slave 10.0.0.5 don't have the master 10.0.0.1, has 10.0.0.9")
 	entries := logs.all()
 	assertRFFields(t, entries)
+	// A pod that is not Ready usually restarts.
+	assert.Equal(t, []string{"debug rfr-1", "warning rfr-2", "debug rfr-5", "info rfr-3"}, levelsAndPods(entries))
+	assert.Contains(t, entries[0].msg, "connection refused")
+	assert.Contains(t, entries[1].msg, "i/o timeout")
+	assert.Contains(t, entries[3].msg, "has 127.0.0.1")
+}
+
+func levelsAndPods(entries []logEntry) []string {
 	var got []string
 	for _, e := range entries {
 		got = append(got, fmt.Sprintf("%s %v", e.level, e.fields["pod"]))
 	}
-	// A pod that is not Ready usually restarts. The caller logs the wrong
-	// master of rfr-4 from the returned error.
-	assert.Equal(t, []string{"debug rfr-1", "warning rfr-2", "info rfr-3", "debug rfr-5"}, got)
-	assert.Contains(t, entries[0].msg, "connection refused")
-	assert.Contains(t, entries[1].msg, "i/o timeout")
+	return got
+}
+
+// Each replica with a wrong master is in the returned error or in one log
+// line, never in both.
+func TestCheckAllSlavesFromMasterLogsEachWrongMasterOnce(t *testing.T) {
+	tests := []struct {
+		name    string
+		masters []string
+		expErr  string
+		expLogs []string
+	}{
+		{
+			name:    "only new replicas",
+			masters: []string{"127.0.0.1", "127.0.0.1"},
+			expErr:  "slave 10.0.0.2 don't have the master 10.0.0.1, has 127.0.0.1",
+			expLogs: []string{"info rfr-2"},
+		},
+		{
+			name:    "two different masters after a new replica",
+			masters: []string{"127.0.0.1", "10.0.0.9", "10.0.0.8"},
+			expErr:  "slave 10.0.0.3 don't have the master 10.0.0.1, has 10.0.0.9",
+			expLogs: []string{"info rfr-1", "warning rfr-3"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			pods := &corev1.PodList{Items: []corev1.Pod{readyPod("rfr-0", "10.0.0.1")}}
+			mr := &mRedisService.Client{}
+			mr.On("GetSlaveOf", "10.0.0.1", "0", "").Once().Return("", nil)
+			for i, master := range test.masters {
+				ip := fmt.Sprintf("10.0.0.%d", i+2)
+				pods.Items = append(pods.Items, readyPod(fmt.Sprintf("rfr-%d", i+1), ip))
+				mr.On("GetSlaveOf", ip, "0", "").Once().Return(master, nil)
+			}
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+			ms.On("UpdatePodLabels", namespace, mock.Anything, mock.Anything).Return(nil)
+			logger, logs := newRecordingLogger()
+
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
+			err := checker.CheckAllSlavesFromMaster("10.0.0.1", rf)
+
+			assert.EqualError(t, err, test.expErr)
+			assert.Equal(t, test.expLogs, levelsAndPods(logs.all()))
+			assertRFFields(t, logs.all())
+		})
+	}
 }
 
 func TestCheckSentinelQuorumLeavesTheLogToTheCaller(t *testing.T) {
@@ -192,9 +246,11 @@ func TestCheckIfMasterLocalhostLogContext(t *testing.T) {
 	tests := []struct {
 		name   string
 		master string
+		err    error
 		expErr string
 	}{
 		{name: "a pod is a master", master: "", expErr: "unexpected master state: redis 10.0.0.1 is a master"},
+		{name: "a pod refuses the command", err: errors.New("LOADING Redis is loading the dataset in memory"), expErr: "redis 10.0.0.1: LOADING Redis is loading the dataset in memory"},
 		{name: "each pod has localhost as master", master: "127.0.0.1"},
 		{name: "a pod has a different master", master: "10.0.0.9"},
 	}
@@ -203,7 +259,7 @@ func TestCheckIfMasterLocalhostLogContext(t *testing.T) {
 			ms := &mK8SService.Services{}
 			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(pods, nil)
 			mr := &mRedisService.Client{}
-			mr.On("GetSlaveOf", "10.0.0.1", "0", "").Once().Return(test.master, nil)
+			mr.On("GetSlaveOf", "10.0.0.1", "0", "").Once().Return(test.master, test.err)
 			logger, logs := newRecordingLogger()
 
 			checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
@@ -226,7 +282,7 @@ func TestCheckIfMasterLocalhostLogContext(t *testing.T) {
 
 func TestGetMasterIPAndGetNumberMastersLogAWarning(t *testing.T) {
 	rf := generateRF()
-	pods := &corev1.PodList{Items: []corev1.Pod{runningPod("rfr-0", "10.0.0.1")}}
+	pods := &corev1.PodList{Items: []corev1.Pod{readyPod("rfr-0", "10.0.0.1")}}
 	ms := &mK8SService.Services{}
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(pods, nil)
 	mr := &mRedisService.Client{}
@@ -237,7 +293,7 @@ func TestGetMasterIPAndGetNumberMastersLogAWarning(t *testing.T) {
 	_, err := checker.GetMasterIP(rf)
 	assert.ErrorIs(t, err, rfservice.ErrAmbiguousMasterCount)
 	_, err = checker.GetNumberMasters(rf)
-	assert.NoError(t, err)
+	assert.ErrorIs(t, err, rfservice.ErrRedisNotAnswering)
 
 	entries := logs.all()
 	require.Len(t, entries, 2)
@@ -247,6 +303,24 @@ func TestGetMasterIPAndGetNumberMastersLogAWarning(t *testing.T) {
 		assert.Contains(t, e.msg, "connection refused")
 	}
 	assert.Equal(t, "rfr-0", entries[1].fields["pod"])
+}
+
+// A pod that is not Ready usually restarts, so each reconcile finds it.
+func TestGetNumberMastersLogsAPodThatIsNotReadyAtDebug(t *testing.T) {
+	rf := generateRF()
+	pods := &corev1.PodList{Items: []corev1.Pod{runningPod("rfr-0", "10.0.0.1")}}
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(pods, nil)
+	mr := &mRedisService.Client{}
+	mr.On("IsMaster", "10.0.0.1", "0", "").Return(false, errors.New("connection refused"))
+	logger, logs := newRecordingLogger()
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
+	_, err := checker.GetNumberMasters(rf)
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"debug rfr-0"}, levelsAndPods(logs.all()))
+	assertRFFields(t, logs.all())
 }
 
 func TestSetOldestAsMasterLogLevels(t *testing.T) {
@@ -385,17 +459,36 @@ func TestClientDisconnectorLogLevel(t *testing.T) {
 }
 
 func TestApplyPasswordNamesEachRefusingPodOnce(t *testing.T) {
-	rf := generateRF()
-	pods := &corev1.PodList{Items: []corev1.Pod{runningPod("rfr-0", "10.0.0.1"), runningPod("rfr-1", "10.0.0.2")}}
-	ms := &mK8SService.Services{}
-	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(pods, nil)
-	mr := &mRedisService.Client{}
-	mr.On("IsMaster", mock.Anything, "0", "new").Return(false, errors.New("WRONGPASS invalid username-password pair or user is disabled."))
+	tests := []struct {
+		name   string
+		pods   []corev1.Pod
+		expErr string
+	}{
+		{
+			name:   "one pod",
+			pods:   []corev1.Pod{runningPod("rfr-0", "10.0.0.1")},
+			expErr: "redis pod rfr-0 refuses the configured password and the operator doesn't know the one it runs with; put",
+		},
+		{
+			name:   "two pods",
+			pods:   []corev1.Pod{runningPod("rfr-0", "10.0.0.1"), runningPod("rfr-1", "10.0.0.2")},
+			expErr: "redis pods rfr-0, rfr-1 refuse the configured password and the operator doesn't know the ones they run with; put",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(&corev1.PodList{Items: test.pods}, nil)
+			mr := &mRedisService.Client{}
+			mr.On("IsMaster", mock.Anything, "0", "new").Return(false, errors.New("WRONGPASS invalid username-password pair or user is disabled."))
 
-	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
-	_, err := healer.ApplyPassword(rf, "new", []string{"new"})
+			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+			_, err := healer.ApplyPassword(rf, "new", []string{"new"})
 
-	require.Error(t, err)
-	assert.Equal(t, 1, strings.Count(err.Error(), "put the previous password back in the secret"))
-	assert.Contains(t, err.Error(), "redis pods rfr-0, rfr-1 refuse the configured password")
+			require.Error(t, err)
+			assert.Equal(t, 1, strings.Count(err.Error(), "put the previous password back in the secret"))
+			assert.True(t, strings.HasPrefix(err.Error(), test.expErr), err.Error())
+		})
+	}
 }

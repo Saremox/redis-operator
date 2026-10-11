@@ -23,6 +23,9 @@ import (
 
 const endpointPollInterval = 200 * time.Millisecond
 
+// podGoneTimeout limits the pod read that only selects a log level.
+const podGoneTimeout = 5 * time.Second
+
 // Option configures optional behaviour shared by RedisFailoverChecker and
 // RedisFailoverHealer.
 type Option func(*options)
@@ -163,7 +166,9 @@ func (d *endpointAwareDisconnector) disconnect(rf *redisfailoverv1.RedisFailover
 // podGone reports whether the pod is deleted, terminating or replaced by a
 // new pod with the same name.
 func (d *endpointAwareDisconnector) podGone(namespace string, pod corev1.Pod) bool {
-	current, err := d.kubeClient.CoreV1().Pods(namespace).Get(context.Background(), pod.Name, metav1.GetOptions{})
+	ctx, cancel := context.WithTimeout(context.Background(), podGoneTimeout)
+	defer cancel()
+	current, err := d.kubeClient.CoreV1().Pods(namespace).Get(ctx, pod.Name, metav1.GetOptions{})
 	if err != nil {
 		return apierrors.IsNotFound(err)
 	}

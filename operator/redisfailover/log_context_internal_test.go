@@ -2,6 +2,7 @@ package redisfailover
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,10 +11,29 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 
+	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
 	mRFService "github.com/saremox/redis-operator/mocks/operator/redisfailover/service"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 )
+
+// podFieldLogger records the Warning lines with the pod field in front.
+type podFieldLogger struct {
+	log.DummyLogger
+	pod      string
+	warnings *[]string
+}
+
+func (l podFieldLogger) WithField(key string, value interface{}) log.Logger {
+	if key == "pod" {
+		l.pod = fmt.Sprintf("pod=%v ", value)
+	}
+	return l
+}
+
+func (l podFieldLogger) Warningf(format string, args ...interface{}) {
+	*l.warnings = append(*l.warnings, l.pod+fmt.Sprintf(format, args...))
+}
 
 // CheckSentinelQuorum leaves the log to its caller, so the caller line
 // carries the error.

@@ -194,8 +194,8 @@ func TestOperatorManagedModeFailsOverAfterTheFailoverTimeout(t *testing.T) {
 	}
 }
 
-// The failover line names the master pod, so that it does not show an empty
-// IP.
+// The failover line gives the master IP and, when known, the master pod, so
+// that it does not show an empty IP.
 func TestOperatorManagedModeNamesTheUnhealthyMaster(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -203,9 +203,9 @@ func TestOperatorManagedModeNamesTheUnhealthyMaster(t *testing.T) {
 		noPod    bool
 		want     string
 	}{
-		{name: "the master pod is known", masterIP: timeoutMaster, want: "Master rfr-test-0 is unhealthy, initiating failover"},
+		{name: "the master pod is known", masterIP: timeoutMaster, want: "pod=rfr-test-0 Master 10.0.0.1 is unhealthy, initiating failover"},
 		{name: "no pod has the master IP", masterIP: timeoutMaster, noPod: true, want: "Master 10.0.0.1 is unhealthy, initiating failover"},
-		{name: "the health check found no master", want: "Master (unknown) is unhealthy, initiating failover"},
+		{name: "the health check found no master", want: "Master (unknown IP) is unhealthy, initiating failover"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -213,15 +213,15 @@ func TestOperatorManagedModeNamesTheUnhealthyMaster(t *testing.T) {
 			if test.noPod {
 				ft.pods = ft.pods[1:]
 			}
-			logger := &warnLogger{}
-			ft.handler.logger = logger
+			var warnings []string
+			ft.handler.logger = podFieldLogger{warnings: &warnings}
 			ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
 			ft.checker.On("GetNumberMasters", ft.rf).Once().Return(1, nil)
 			ft.checker.On("CheckMasterHealth", ft.rf).Once().Return(false, test.masterIP, nil)
 			ft.expectPromotion()
 
 			assert.NoError(t, ft.handler.CheckAndHeal(ft.rf))
-			assert.Contains(t, logger.warnings, test.want)
+			assert.Contains(t, warnings, test.want)
 			ft.assertExpectations(t)
 		})
 	}

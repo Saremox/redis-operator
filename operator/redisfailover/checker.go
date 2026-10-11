@@ -1283,12 +1283,11 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 					return err
 				}
 			}
-			unhealthy := cmp.Or(masterIP, "(unknown)")
+			logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
 			if pod != nil {
-				unhealthy = pod.Name
+				logger = logger.WithField("pod", pod.Name)
 			}
-			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
-				Warningf("Master %s is unhealthy, initiating failover", unhealthy)
+			logger.Warningf("Master %s is unhealthy, initiating failover", cmp.Or(masterIP, "(unknown IP)"))
 
 			bestReplica, err := r.rfChecker.GetBestReplicaForPromotion(rf)
 			if err != nil {

@@ -71,7 +71,11 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("Changed the password of redis pod %s", rp.Name)
 	}
 	if len(unknown) > 0 {
-		errs = append(errs, fmt.Errorf("redis pods %s refuse the configured password and the operator doesn't know the one they run with; put the previous password back in the secret until the RedisFailover is healthy, then change it again", strings.Join(unknown, ", ")))
+		refuse := "redis pod %s refuses the configured password and the operator doesn't know the one it runs with"
+		if len(unknown) > 1 {
+			refuse = "redis pods %s refuse the configured password and the operator doesn't know the ones they run with"
+		}
+		errs = append(errs, fmt.Errorf(refuse+"; put the previous password back in the secret until the RedisFailover is healthy, then change it again", strings.Join(unknown, ", ")))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return false, err
