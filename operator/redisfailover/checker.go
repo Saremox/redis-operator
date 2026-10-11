@@ -1,6 +1,7 @@
 package redisfailover
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -1025,7 +1026,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 					// monitor then only resets its state.
 					err = r.rfChecker.CheckSentinelMonitor(sip, sentinelMonitorMaster, port)
 					setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
-					if err == nil {
+					if err == nil || heal.skip(sip, err) {
 						continue
 					}
 				}
@@ -1716,7 +1717,7 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 	var unreachable []string
 	for _, sip := range sentinels {
 		if heal.unreachable[sip] {
-			unreachable = append(unreachable, sip)
+			unreachable = append(unreachable, cmp.Or(sip, "(no IP)"))
 		}
 	}
 	if len(unreachable) > 0 {
@@ -1743,6 +1744,10 @@ func (r *RedisFailoverHandler) restoreSentinel(sip, mismatch string, heal *senti
 	now := r.now()
 	if at, ok := heal.resets[sip]; ok {
 		heal.logger.Debugf("Sentinel %s mismatch number of %s in memory. last reset %s ago, waiting", sip, mismatch, now.Sub(at).Round(time.Second))
+		// Without a pod event, the next resync can come long after the hold-off.
+		if r.requeue != nil {
+			r.requeue(heal.key, sentinelResetHoldOff-now.Sub(at))
+		}
 		return nil
 	}
 	heal.logger.Warningf("Sentinel %s mismatch number of %s in memory. resetting", sip, mismatch)

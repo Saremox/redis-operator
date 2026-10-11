@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1084,6 +1085,13 @@ func IsUnreachableError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// A failed call to the Kubernetes API gives a *url.Error, also for a
+	// timeout. It does not show that the node is unreachable.
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return false
+	}
+
 	// A node that stops closes its connections, which gives EOF.
 	if errors.Is(err, errNoIP) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true

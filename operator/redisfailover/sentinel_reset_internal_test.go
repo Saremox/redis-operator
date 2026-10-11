@@ -2,6 +2,7 @@ package redisfailover
 
 import (
 	"errors"
+	"net/url"
 	"slices"
 	"testing"
 	"time"
@@ -98,16 +99,23 @@ func TestSentinelResetHoldOff(t *testing.T) {
 	// The hold-off of a does not stop the reset of b.
 	st.clock = st.clock.Add(10 * time.Second)
 	st.metrics.status = map[string]string{}
+	var requeues []time.Duration
+	st.handler.requeue = func(key string, after time.Duration) {
+		assert.Equal(t, "testns/test", key)
+		requeues = append(requeues, after)
+	}
 	assert.Equal(t, []string{b}, st.reconcile(t, sentinels, a, b))
 	assert.Equal(t, metrics.STATUS_UNHEALTHY, st.metrics.status[mismatchMetric])
+	// The reconcile at the end of the hold-off resets a.
+	assert.Equal(t, []time.Duration{15 * time.Second}, requeues)
 
 	// A mismatch that stays after the hold-off gets a reset again.
 	st.clock = st.clock.Add(15 * time.Second)
 	assert.Equal(t, []string{a}, st.reconcile(t, sentinels, a, b))
 }
 
-// A reset clears the replicas that the Sentinel knows. The replica check
-// after it in the same reconcile does not reset the Sentinel again.
+// TestSentinelResetOnceInAReconcile covers the replica check after a reset,
+// which clears the replicas. It does not reset the Sentinel again.
 func TestSentinelResetOnceInAReconcile(t *testing.T) {
 	st := newSentinelResetTest()
 	s := "10.0.1.1"
@@ -122,8 +130,8 @@ func TestSentinelResetOnceInAReconcile(t *testing.T) {
 	assert.Equal(t, metrics.STATUS_UNHEALTHY, st.metrics.status[metrics.REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH+" "+s])
 }
 
-// A failed reset starts no hold-off, and the hold-off of the other Sentinels
-// stays.
+// TestSentinelResetFailedResetIsNotRecorded checks that a failed reset starts
+// no hold-off, and that the hold-off of the other Sentinels stays.
 func TestSentinelResetFailedResetIsNotRecorded(t *testing.T) {
 	st := newSentinelResetTest()
 	a, b := "10.0.1.1", "10.0.1.2"
@@ -144,8 +152,8 @@ func TestSentinelResetFailedResetIsNotRecorded(t *testing.T) {
 	assert.Equal(t, map[string]time.Time{a: st.clock.Add(-5 * time.Second)}, v)
 }
 
-// A Sentinel that does not answer gets no reset and no mismatch warning, and
-// the later steps do not dial it. The status names it.
+// TestUnreachableSentinelSkipsTheLaterSteps checks that a Sentinel that does
+// not answer gets no reset, and that the later steps do not dial it.
 func TestUnreachableSentinelSkipsTheLaterSteps(t *testing.T) {
 	st := newSentinelResetTest()
 	gone, ok := "10.0.1.1", "10.0.1.2"
@@ -168,6 +176,32 @@ func TestUnreachableSentinelSkipsTheLaterSteps(t *testing.T) {
 	}
 	_, stored := st.handler.sentinelResets.Load(failoverKey(st.rf))
 	assert.False(t, stored)
+}
+
+// TestSentinelCheckKubernetesErrorIsNotUnreachable covers a check that fails
+// in the Kubernetes API. The Sentinel answered, so the status does not name it.
+func TestSentinelCheckKubernetesErrorIsNotUnreachable(t *testing.T) {
+	st := newSentinelResetTest()
+	s := "10.0.1.1"
+	apiErr := &url.Error{Op: "Get", URL: "https://10.96.0.1:443/api/v1/pods", Err: errors.New("i/o timeout")}
+	st.check.On("CheckSentinelNumberInMemory", s, st.rf).Once().Return(nil)
+	st.check.On("CheckSentinelSlavesNumberInMemory", s, st.rf).Once().Return(apiErr)
+	st.heal.On("RestoreSentinel", s).Once().Return(nil)
+	st.heal.On("SetSentinelCustomConfig", s, st.rf).Once().Return(nil)
+
+	require.NoError(t, st.run([]string{s}))
+
+	st.heal.AssertExpectations(t)
+	assert.Empty(t, st.rf.Status.Message)
+}
+
+// TestUnreachableSentinelWithoutIP checks the status of a Running Sentinel pod
+// that has no IP.
+func TestUnreachableSentinelWithoutIP(t *testing.T) {
+	st := newSentinelResetTest()
+	st.check.On("CheckSentinelNumberInMemory", "", st.rf).Once().Return(errors.New("dial tcp: i/o timeout"))
+
+	require.EqualError(t, st.run([]string{""}), "sentinel(s) (no IP) unreachable")
 }
 
 func TestSentinelResetHoldOffDropsOldEntries(t *testing.T) {

@@ -1661,9 +1661,12 @@ func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
 		// sentinel1Err is the result of the check of sentinel1 against the new master.
 		sentinel1Err    error
 		wantNewMonitor1 bool
+		// wantSkip1 is true when sentinel1 does not answer the second check.
+		wantSkip1 bool
 	}{
 		{name: "the first Sentinel monitors the new master"},
 		{name: "the first Sentinel monitors another master", sentinel1Err: errors.New("monitors 0.0.0.2"), wantNewMonitor1: true},
+		{name: "the first Sentinel stops answering", sentinel1Err: errors.New("dial tcp 1.1.1.1:26379: i/o timeout"), wantSkip1: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1700,14 +1703,23 @@ func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
 				mrfh.On("NewSentinelMonitor", sentinel1, newMaster, rf).Once().Return(nil)
 			}
 			mrfc.On("CheckSentinelMonitor", sentinel2, newMaster, port).Once().Return(nil)
-			for _, s := range []string{sentinel1, sentinel2} {
+			healed := []string{sentinel1, sentinel2}
+			if test.wantSkip1 {
+				healed = healed[1:]
+			}
+			for _, s := range healed {
 				mrfc.On("CheckSentinelNumberInMemory", s, rf).Once().Return(nil)
 				mrfc.On("CheckSentinelSlavesNumberInMemory", s, rf).Once().Return(nil)
 				mrfh.On("SetSentinelCustomConfig", s, rf).Once().Return(nil)
 			}
 
 			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
-			assert.NoError(handler.CheckAndHeal(rf))
+			err := handler.CheckAndHeal(rf)
+			if test.wantSkip1 {
+				assert.EqualError(err, "sentinel(s) 1.1.1.1 unreachable")
+			} else {
+				assert.NoError(err)
+			}
 
 			if !test.wantNewMonitor1 {
 				mrfh.AssertNotCalled(t, "NewSentinelMonitor", sentinel1, mock.Anything, mock.Anything)
@@ -1720,9 +1732,8 @@ func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
 }
 
 // TestCheckAndHealSkipsUnreachableSentinel covers a Sentinel pod that stops
-// after GetSentinelsIPs listed it. The later heal steps skip it, the other
-// Sentinels still get the heal, and the status is NotHealthy. Other errors
-// stop the reconcile.
+// after GetSentinelsIPs listed it. The other Sentinels still get the heal, and
+// the status is NotHealthy.
 func TestCheckAndHealSkipsUnreachableSentinel(t *testing.T) {
 	const (
 		master = "0.0.0.0"

@@ -74,7 +74,7 @@ type RedisFailoverHandler struct {
 	// for a master pod delete instead of a handover, so it does not repeat.
 	handoverFallbackLogged sync.Map
 	// sentinelResets holds, per namespace/name, the time of the last SENTINEL
-	// RESET of each Sentinel IP.
+	// RESET or SENTINEL MONITOR of each Sentinel IP.
 	sentinelResets sync.Map
 	now            func() time.Time
 	// requeue is nil until New connects the controller.

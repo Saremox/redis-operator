@@ -91,12 +91,13 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
 - Stale Redis pods get the new statefulset revision. The operator deletes the master pod only when every Sentinel knows a quorum of the replicas. Otherwise, Sentinel has no replica to promote.
 - While the master pod stops, the operator does not check or reset the Sentinels. A reset at that time can leave Sentinel with no replica to promote. The status is `NotHealthy` while it waits.
 - All Sentinels monitor the same Redis master.
-- Each Sentinel knows the correct number of Sentinels and replicas. If not, the operator resets that Sentinel. A pod that does not run, for example a Pending pod, is no reason for a reset, because a reset does not add it. After a reset or a new monitor, the Sentinel needs some seconds to find the other Sentinels and the replicas again. A failover cannot start in that time, so the operator does not reset it again in the next 25 seconds. The operator keeps this time in memory only, so a restart of the operator ends the wait.
+- Each Sentinel knows the correct number of Sentinels and replicas. If not, the operator resets that Sentinel. A pod that does not run, for example a Pending pod, is no reason for a reset, because a reset does not add it.
+- After a reset or a new monitor, the Sentinel needs some seconds to find the other Sentinels and the replicas again. A failover cannot start in that time, so the operator does not reset it again in the next 25 seconds. The operator keeps this time in memory only, so a restart of the operator ends the wait.
 - Sentinel has the custom configuration.
 - A Sentinel that does not answer does not stop the heal of the other Sentinels. The status is then `NotHealthy`.
 
 ### Bootstrap mode
 
-This mode is on when `bootstrapNode` is set, in either of the modes above. It waits until all Redis pods run. All Redis pods replicate from the external bootstrap node. If Sentinel is on and `bootstrapNode.allowSentinels` is true, the Sentinels monitor that node.
+This mode is on when `bootstrapNode` is set, in either of the modes above. It waits until all Redis pods run. All Redis pods replicate from the external bootstrap node. If Sentinel is on and `bootstrapNode.allowSentinels` is true, the Sentinels monitor that node. The operator heals these Sentinels as in Sentinel mode. The reset hold-off and the rule for a Sentinel that does not answer also apply.
 
 The controller tries to repair most problems. A [split-brain](<https://en.wikipedia.org/wiki/Split-brain_(computing)>) needs a manual fix, except in operator-managed mode when exactly one master has the master label. **For a split-brain that it cannot repair, the controller logs an error and waits for a manual fix**.
