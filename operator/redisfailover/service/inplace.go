@@ -47,7 +47,7 @@ const memoryBelowUsage = "below current usage"
 // resourceLimitRejections are texts of the errors of the ResourceQuota
 // admission and of the LimitRanger admission. The messages are the same for
 // a pod create and a resize.
-var resourceLimitRejections = []string{"exceeded quota: ", "failed quota: ", "insufficient quota to consume: ", " usage per ", " max limit to request ratio per "}
+var resourceLimitRejections = []string{"exceeded quota: ", "insufficient quota to consume: ", " usage per ", " max limit to request ratio per "}
 
 var resizableResources = []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory}
 

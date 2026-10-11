@@ -450,12 +450,13 @@ func TestResizePodInPlaceErrors(t *testing.T) {
 		err  error
 		want ResizeAction
 	}{
-		"missing RBAC":                 {apierrors.NewForbidden(pods, resizePod, errors.New(`User "system:serviceaccount:default:redisoperator" cannot patch resource "pods/resize" in API group "" in the namespace "testns"`)), ResizeRecreate},
-		"invalid":                      {apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, resizePod, nil), ResizeRecreate},
-		"quota":                        {apierrors.NewForbidden(pods, resizePod, errors.New("exceeded quota: compute, requested: limits.memory=1Gi, used: limits.memory=3Gi, limited: limits.memory=4Gi")), ResizeWaiting},
-		"LimitRange maximum":           {apierrors.NewForbidden(pods, resizePod, errors.New("maximum memory usage per Container is 1536Mi, but limit is 2Gi")), ResizeWaiting},
-		"LimitRange ratio":             {apierrors.NewForbidden(pods, resizePod, errors.New("cpu max limit to request ratio per Container is 2, but provided ratio is 4.000000")), ResizeWaiting},
-		"quota without limit":          {apierrors.NewForbidden(pods, resizePod, errors.New("failed quota: compute: must specify limits.cpu for: exporter")), ResizeWaiting},
+		"missing RBAC":       {apierrors.NewForbidden(pods, resizePod, errors.New(`User "system:serviceaccount:default:redisoperator" cannot patch resource "pods/resize" in API group "" in the namespace "testns"`)), ResizeRecreate},
+		"invalid":            {apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, resizePod, nil), ResizeRecreate},
+		"quota":              {apierrors.NewForbidden(pods, resizePod, errors.New("exceeded quota: compute, requested: limits.memory=1Gi, used: limits.memory=3Gi, limited: limits.memory=4Gi")), ResizeWaiting},
+		"LimitRange maximum": {apierrors.NewForbidden(pods, resizePod, errors.New("maximum memory usage per Container is 1536Mi, but limit is 2Gi")), ResizeWaiting},
+		"LimitRange ratio":   {apierrors.NewForbidden(pods, resizePod, errors.New("cpu max limit to request ratio per Container is 2, but provided ratio is 4.000000")), ResizeWaiting},
+		// A LimitRange default can fill the missing limit of a recreated pod, so the recreate can work.
+		"quota without limit":          {apierrors.NewForbidden(pods, resizePod, errors.New("failed quota: compute: must specify limits.cpu for: exporter")), ResizeRecreate},
 		"quota for a limited resource": {apierrors.NewForbidden(pods, resizePod, errors.New("insufficient quota to consume: requests.example.com/gpu")), ResizeWaiting},
 		// Only a 403 holds the rollout: another rejection recreates the pod.
 		"invalid with a quota text": {apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, resizePod, field.ErrorList{field.Invalid(field.NewPath("spec"), "x", "exceeded quota: compute")}), ResizeRecreate},
