@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -449,19 +450,25 @@ func TestResizePodInPlaceErrors(t *testing.T) {
 		err  error
 		want ResizeAction
 	}{
-		"missing RBAC":       {apierrors.NewForbidden(pods, resizePod, errors.New(`User "system:serviceaccount:default:redisoperator" cannot patch resource "pods/resize" in API group "" in the namespace "testns"`)), ResizeRecreate},
-		"invalid":            {apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, resizePod, nil), ResizeRecreate},
-		"quota":              {apierrors.NewForbidden(pods, resizePod, errors.New("exceeded quota: compute, requested: limits.memory=1Gi, used: limits.memory=3Gi, limited: limits.memory=4Gi")), ResizeWaiting},
-		"LimitRange maximum": {apierrors.NewForbidden(pods, resizePod, errors.New("maximum memory usage per Container is 1536Mi, but limit is 2Gi")), ResizeWaiting},
-		"LimitRange ratio":   {apierrors.NewForbidden(pods, resizePod, errors.New("cpu max limit to request ratio per Container is 2, but provided ratio is 4.000000")), ResizeWaiting},
+		"missing RBAC":                 {apierrors.NewForbidden(pods, resizePod, errors.New(`User "system:serviceaccount:default:redisoperator" cannot patch resource "pods/resize" in API group "" in the namespace "testns"`)), ResizeRecreate},
+		"invalid":                      {apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, resizePod, nil), ResizeRecreate},
+		"quota":                        {apierrors.NewForbidden(pods, resizePod, errors.New("exceeded quota: compute, requested: limits.memory=1Gi, used: limits.memory=3Gi, limited: limits.memory=4Gi")), ResizeWaiting},
+		"LimitRange maximum":           {apierrors.NewForbidden(pods, resizePod, errors.New("maximum memory usage per Container is 1536Mi, but limit is 2Gi")), ResizeWaiting},
+		"LimitRange ratio":             {apierrors.NewForbidden(pods, resizePod, errors.New("cpu max limit to request ratio per Container is 2, but provided ratio is 4.000000")), ResizeWaiting},
+		"quota without limit":          {apierrors.NewForbidden(pods, resizePod, errors.New("failed quota: compute: must specify limits.cpu for: exporter")), ResizeWaiting},
+		"quota for a limited resource": {apierrors.NewForbidden(pods, resizePod, errors.New("insufficient quota to consume: requests.example.com/gpu")), ResizeWaiting},
+		// Only a 403 holds the rollout: another rejection recreates the pod.
+		"invalid with a quota text": {apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, resizePod, field.ErrorList{field.Invalid(field.NewPath("spec"), "x", "exceeded quota: compute")}), ResizeRecreate},
 	}
 	for name, test := range rejections {
 		t.Run(name, func(t *testing.T) {
-			result, _, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), stalePod(old, old)}, func(ms *mK8SService.Services) {
+			result, ms, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), stalePod(old, old)}, func(ms *mK8SService.Services) {
 				ms.On("ResizePod", "testns", resizePod, mock.Anything).Once().Return(test.err)
 			})
 			assert.NoError(t, err)
 			assert.Equal(t, test.want, result.Action)
+			// A pod annotation change queues the next reconcile at once.
+			ms.AssertNotCalled(t, "UpdatePodAnnotations", mock.Anything, mock.Anything, mock.Anything)
 			if test.want == ResizeWaiting {
 				assert.Equal(t, "resize of pod "+resizePod+" is blocked by a ResourceQuota or LimitRange: "+test.err.Error(), result.Message)
 			} else {
@@ -512,6 +519,7 @@ func TestResizePodInPlaceErrors(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, _, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), pod}, func(ms *mK8SService.Services) {
 				ms.ExpectedCalls = ms.ExpectedCalls[:len(ms.ExpectedCalls)-1]
+				ms.On("ResizePod", "testns", resizePod, mock.Anything).Maybe().Return(nil)
 				ms.On("UpdatePodAnnotations", "testns", resizePod, mock.Anything).Return(fail)
 			})
 			assert.ErrorIs(t, err, fail)
