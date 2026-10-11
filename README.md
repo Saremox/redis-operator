@@ -323,7 +323,7 @@ spec:
 
 Until the operator makes the new pod master, the probe fails. After the promotion, the next probe reports the pod Ready. Kubernetes runs the probe every `periodSeconds` (default 10 seconds).
 
-Do not remove `ready.sh` from the probe. `rfrs-<NAME>` uses the Ready state to send reads only to synced replicas. An election also prefers Ready pods.
+Do not remove `ready.sh` from the probe. `rfrs-<NAME>` uses the Ready state to send reads only to synced replicas. An election also uses the Ready state to rank the candidates.
 
 With `redis.startupConfigMap` or `redis.customStartupProbe`, the readiness probe starts only after the startup probe succeeds. Then a smaller `initialDelaySeconds` can have no effect.
 
