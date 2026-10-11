@@ -302,7 +302,9 @@ A spec change replaces the Redis pods one at a time: the replicas first and the 
 
 ### Pod updates with one Redis pod
 
-With two or more Redis pods and Redis 6.2 or later, the master role moves to a replica before the master pod stops. In operator-managed mode, the operator sends `FAILOVER`. With Sentinel, the default shutdown script asks Sentinel for a failover. With `redis.replicas: 1`, no other pod can take the role. Thus a pod replacement, for example after a change of `redis.image`, stops the writes until the new pod is master and Ready. An in-place resize does not replace the pod.
+With two or more Redis pods, the master role moves to a replica before the master pod stops, except in the cases below. In operator-managed mode, the operator sends `FAILOVER`. With Sentinel, the default shutdown script asks Sentinel for a failover. With `redis.replicas: 1`, no other pod can take the role. Thus a pod replacement, for example after a change of `redis.image`, stops the writes until the new pod is master and Ready. An in-place resize does not replace the pod.
+
+In operator-managed mode, the operator deletes the master pod without a handover when `FAILOVER` is missing. `FAILOVER` is missing in Redis before 6.2 and after a rename of the command. The operator also deletes the master pod without a handover after 3 refusals of `FAILOVER` in a row, for example from an ACL. With Sentinel, the shutdown script asks for no failover when the pause of the writes fails (see [Custom shutdown script](#custom-shutdown-script)). The pause fails on Redis before 6.2 and after a password change. In these cases, the writes fail until a new master takes the role.
 
 The master service `rfrm-<NAME>` sends traffic only to a Ready pod. The default readiness probe of Redis starts 30 seconds after the container starts. Thus, with one pod, the probe delay can make the write outage up to 30 seconds longer. The delay does not protect the data. The probe script `ready.sh` reports a master Ready at once, and a replica only after its first sync with the master.
 
