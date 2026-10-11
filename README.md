@@ -302,9 +302,9 @@ A spec change replaces the Redis pods one at a time: the replicas first and the 
 
 ### Pod updates with one Redis pod
 
-With two or more Redis pods, the master role usually moves to a replica before the master pod stops. In operator-managed mode, the operator sends `FAILOVER`. With Sentinel, the default shutdown script asks Sentinel for a failover. With `redis.replicas: 1`, no other pod can take the role. Thus a pod replacement, for example after a change of `redis.image`, stops the writes until the new pod is master and Ready. An in-place resize does not replace the pod.
+With two or more Redis pods and Redis 6.2 or later, the master role moves to a replica before the master pod stops. In operator-managed mode, the operator sends `FAILOVER`. With Sentinel, the default shutdown script asks Sentinel for a failover. With `redis.replicas: 1`, no other pod can take the role. Thus a pod replacement, for example after a change of `redis.image`, stops the writes until the new pod is master and Ready. An in-place resize does not replace the pod.
 
-The master service `rfrm-<NAME>` sends traffic only to a Ready pod. The default readiness probe of Redis starts 30 seconds after the container starts. Thus, with one pod, the probe delay adds to the write outage. The delay does not protect the data. The probe script `ready.sh` reports a master Ready at once, and a replica only after its first sync with the master.
+The master service `rfrm-<NAME>` sends traffic only to a Ready pod. The default readiness probe of Redis starts 30 seconds after the container starts. Thus, with one pod, the probe delay can make the write outage up to 30 seconds longer. The delay does not protect the data. The probe script `ready.sh` reports a master Ready at once, and a replica only after its first sync with the master.
 
 To shorten the outage, set `redis.customReadinessProbe` with a smaller `initialDelaySeconds`. Keep the command and the other values of the default probe:
 
@@ -321,9 +321,13 @@ spec:
           - /redis-readiness/ready.sh
 ```
 
-Before the operator makes the new pod master, the probe fails. Kubernetes runs it again after `periodSeconds` (default 10 seconds). Do not remove `ready.sh` from the probe. The rollout and `rfrs-<NAME>` use the Ready state to find the synced replicas.
+Until the operator makes the new pod master, the probe fails. After the promotion, the next probe reports the pod Ready. Kubernetes runs the probe every `periodSeconds` (default 10 seconds).
 
-The probe is part of the pod template. When you set or change `redis.customReadinessProbe`, the operator replaces each Redis pod one time. With one pod, this replacement also stops the writes.
+Do not remove `ready.sh` from the probe. `rfrs-<NAME>` uses the Ready state to send reads only to synced replicas. An election also prefers Ready pods.
+
+With `redis.startupConfigMap` or `redis.customStartupProbe`, the readiness probe starts only after the startup probe succeeds. Then a smaller `initialDelaySeconds` can have no effect.
+
+The probe is part of the pod template. When you set or change `redis.customReadinessProbe`, the operator replaces each Redis pod one time. With one pod, this replacement also stops the writes. Set the probe in the same update as the next image change, so the pod restarts only one time. Without `redis.storage.persistentVolumeClaim`, the new pod starts with no data. See [Persistence](#persistence).
 
 ### In-place resize
 
