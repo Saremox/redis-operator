@@ -300,6 +300,37 @@ For small instances, the default `client-output-buffer-limit` for `pubsub` (32mb
 
 A spec change replaces the Redis pods one at a time: the replicas first and the master last. The operator replaces a pod when the previous pod is ready and all replicas are in sync with the master. The operator first replaces an unsynced replica that does not have the current spec, because that replica has no data to lose. A rollout can wait on one pod for more than 10 minutes, for example when a new image cannot load the data of the master. The status message then gives the pod and the reason, for example `rollout waiting on pod rfr-<NAME>-1 for more than 10m: not synced with the master`. The state stays `Healthy`, because the master still serves clients, and the message clears when the rollout continues.
 
+### Pod updates with one Redis pod
+
+With two or more Redis pods, the master role moves to a replica before the master pod stops, except in the cases below. In operator-managed mode, the operator sends `FAILOVER`. With Sentinel, the default shutdown script asks Sentinel for a failover. With `redis.replicas: 1`, no other pod can take the role. Thus a pod replacement, for example after a change of `redis.image`, stops the writes until the new pod is master and Ready. An in-place resize does not replace the pod.
+
+In operator-managed mode, the operator deletes the master pod without a handover when `FAILOVER` is missing. `FAILOVER` is missing in Redis before 6.2 and after a rename of the command. The operator also deletes the master pod without a handover after 3 refusals of `FAILOVER` in a row, for example from an ACL. With Sentinel, the shutdown script asks for no failover when the pause of the writes fails (see [Custom shutdown script](#custom-shutdown-script)). The pause fails on Redis before 6.2 and after a password change. In these cases, the writes fail until a new master takes the role.
+
+The master service `rfrm-<NAME>` sends traffic only to a Ready pod. The default readiness probe of Redis starts 30 seconds after the container starts. Thus, with one pod, the probe delay can make the write outage up to 30 seconds longer. The delay does not protect the data. The probe script `ready.sh` reports a master Ready at once, and a replica only after its first sync with the master.
+
+To shorten the outage, set `redis.customReadinessProbe` with a smaller `initialDelaySeconds`. Keep the command and the other values of the default probe:
+
+```yaml
+spec:
+  redis:
+    replicas: 1
+    customReadinessProbe:
+      initialDelaySeconds: 5
+      timeoutSeconds: 5
+      exec:
+        command:
+          - /bin/sh
+          - /redis-readiness/ready.sh
+```
+
+Until the operator makes the new pod master, the probe fails. After the promotion, the next probe reports the pod Ready. Kubernetes runs the probe every `periodSeconds` (default 10 seconds).
+
+Do not remove `ready.sh` from the probe. `rfrs-<NAME>` uses the Ready state to send reads only to synced replicas. An election also uses the Ready state to rank the candidates.
+
+With `redis.startupConfigMap` or `redis.customStartupProbe`, the readiness probe starts only after the startup probe succeeds. Then a smaller `initialDelaySeconds` can have no effect.
+
+The probe is part of the pod template. When you set or change `redis.customReadinessProbe`, the operator replaces each Redis pod one time. With one pod, this replacement also stops the writes. Set the probe in the same update as the next image change, so the pod restarts only one time. Without `redis.storage.persistentVolumeClaim`, the new pod starts with no data. See [Persistence](#persistence).
+
 ### In-place resize
 
 On Kubernetes 1.33 or later, an update that changes only the container CPU or memory resizes the Redis pods in place. The operator does not recreate them, so Redis does not reload data and the master does not fail over. The operator resizes one pod at a time, replicas first. To lower a memory limit in place, Kubernetes 1.35 is necessary. Set `redis.inPlaceResize: Disabled` to always recreate the pods.
