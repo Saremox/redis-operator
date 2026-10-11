@@ -1719,6 +1719,114 @@ func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
 	}
 }
 
+// TestCheckAndHealSkipsUnreachableSentinel covers a Sentinel pod that stops
+// after GetSentinelsIPs listed it. Each heal step skips it, and the other
+// Sentinels still get the heal. Other errors stop the reconcile.
+func TestCheckAndHealSkipsUnreachableSentinel(t *testing.T) {
+	const (
+		master = "0.0.0.0"
+		port   = "0"
+	)
+	sentinels := []string{"1.1.1.1", "1.1.1.2", "1.1.1.3"}
+	gone := sentinels[1]
+	unreachable := errors.New("dial tcp 1.1.1.2:26379: i/o timeout")
+	steps := []string{"monitor", "sentinels", "replicas", "config"}
+	tests := []struct {
+		step string
+		err  error
+		// wantStop is true when the error stops the reconcile at gone. Only
+		// the last step uses it, so no later step has expectations to drop.
+		wantStop bool
+	}{
+		{step: "monitor", err: unreachable},
+		{step: "sentinels", err: unreachable},
+		{step: "replicas", err: unreachable},
+		{step: "config", err: unreachable},
+		{step: "config", err: errors.New("ERR invalid argument"), wantStop: true},
+	}
+	for _, test := range tests {
+		t.Run(test.step+" "+test.err.Error(), func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF(false, false)
+
+			mk := settledK8sServices()
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
+
+			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+			mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
+			mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+			// The base read, the read in UpdateRedisesPods and, for a wrong
+			// monitor, the read again before NewSentinelMonitor.
+			masterReads := 2
+			if test.step == "monitor" {
+				masterReads++
+			}
+			mrfc.On("GetMasterIP", rf).Times(masterReads).Return(master, nil)
+			mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
+			mrfc.On("GetRedisesIPs", rf).Twice().Return([]string{master}, nil)
+			mrfh.On("SetRedisCustomConfig", master, rf).Once().Return(nil)
+			mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("1", nil)
+			mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
+			mrfc.On("GetRedisesMasterPod", rf).Once().Return(master, nil)
+			mrfc.On("GetRedisRevisionHash", master, rf).Once().Return("1", nil)
+			mrfc.On("GetSentinelsIPs", rf).Once().Return(sentinels, nil)
+
+			for _, step := range steps {
+				for i, s := range sentinels {
+					if test.wantStop && step == test.step && i > 1 {
+						continue
+					}
+					var err error
+					if step == test.step && s == gone {
+						err = test.err
+					}
+					switch step {
+					case "monitor":
+						if err != nil {
+							mrfc.On("CheckSentinelMonitor", s, master, port).Once().Return(errors.New("dial tcp: i/o timeout"))
+							mrfh.On("NewSentinelMonitor", s, master, rf).Once().Return(err)
+						} else {
+							mrfc.On("CheckSentinelMonitor", s, master, port).Once().Return(nil)
+						}
+					case "sentinels", "replicas":
+						check := "CheckSentinelNumberInMemory"
+						if step == "replicas" {
+							check = "CheckSentinelSlavesNumberInMemory"
+						}
+						if err != nil {
+							mrfc.On(check, s, rf).Once().Return(errors.New("mismatch"))
+							mrfh.On("RestoreSentinel", s).Once().Return(err)
+						} else {
+							mrfc.On(check, s, rf).Once().Return(nil)
+						}
+					case "config":
+						mrfh.On("SetSentinelCustomConfig", s, rf).Once().Return(err)
+					}
+				}
+			}
+
+			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+			err := handler.CheckAndHeal(rf)
+
+			if test.wantStop {
+				assert.Error(err)
+				assert.Equal(v1.NotHealthyState, rf.Status.State)
+				assert.Equal("unable to set sentinel custom config", rf.Status.Message)
+			} else {
+				assert.NoError(err)
+				assert.Equal(v1.HealthyState, rf.Status.State)
+			}
+			mrfc.AssertExpectations(t)
+			mrfh.AssertExpectations(t)
+		})
+	}
+}
+
 // TestCheckAndHealBootstrapModeErrorBranches exercises early-return error
 // branches of checkAndHealBootstrapMode (operator/redisfailover/checker.go)
 // not already covered by the "Bootstrapping Mode..." cases in the
@@ -1856,6 +1964,29 @@ func TestCheckAndHealBootstrapModeErrorBranches(t *testing.T) {
 			wantErr:     true,
 			wantState:   v1.NotHealthyState,
 			wantMessage: "unable to check sentinel monitor",
+		},
+		{
+			name:           "sentinels allowed - an unreachable sentinel is skipped",
+			allowSentinels: true,
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				const other = "1.1.1.2"
+				mrfc.On("IsRedisRunning", rf).Once().Return(true)
+				setupUpdateAndConfigSuccess(mrfc, mrfh, rf, []string{bootstrapMaster})
+				mrfh.On("SetExternalMasterOnAll", bootstrapMaster, bootstrapMasterPort, rf).Once().Return(nil)
+				mrfc.On("IsSentinelRunning", rf).Once().Return(true)
+				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel, other}, nil)
+				mrfc.On("CheckSentinelMonitor", sentinel, bootstrapMaster, bootstrapMasterPort).Once().Return(errors.New("dial tcp: i/o timeout"))
+				mrfh.On("NewSentinelMonitorWithPort", sentinel, bootstrapMaster, bootstrapMasterPort, rf).Once().Return(errors.New("dial tcp: i/o timeout"))
+				mrfc.On("CheckSentinelMonitor", other, bootstrapMaster, bootstrapMasterPort).Once().Return(errors.New("mon err"))
+				mrfh.On("NewSentinelMonitorWithPort", other, bootstrapMaster, bootstrapMasterPort, rf).Once().Return(nil)
+				for _, s := range []string{sentinel, other} {
+					mrfc.On("CheckSentinelNumberInMemory", s, rf).Once().Return(nil)
+					mrfc.On("CheckSentinelSlavesNumberInMemory", s, rf).Once().Return(nil)
+					mrfh.On("SetSentinelCustomConfig", s, rf).Once().Return(nil)
+				}
+			},
+			wantErr:   false,
+			wantState: v1.HealthyState,
 		},
 	}
 

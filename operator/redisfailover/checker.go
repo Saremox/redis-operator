@@ -1023,6 +1023,9 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 				}
 			}
 			if err := r.rfHealer.NewSentinelMonitor(sip, sentinelMonitorMaster, rf); err != nil {
+				if r.skipUnreachableSentinel(rf, sip, err) {
+					continue
+				}
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State: redisfailoverv1.NotHealthyState,
 				}
@@ -1475,6 +1478,9 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 			if err != nil {
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Fixing sentinel not monitoring expected master: %s", err.Error())
 				if err := r.rfHealer.NewSentinelMonitorWithPort(sip, bootstrapSettings.Host, bootstrapSettings.Port, rf); err != nil {
+					if r.skipUnreachableSentinel(rf, sip, err) {
+						continue
+					}
 					rf.Status = redisfailoverv1.RedisFailoverStatus{
 						State:   redisfailoverv1.NotHealthyState,
 						Message: "unable to check sentinel monitor",
@@ -1567,6 +1573,18 @@ func (r *RedisFailoverHandler) logMaxMemoryOutcome(logger log.Logger, key string
 	}
 }
 
+// skipUnreachableSentinel logs and reports true when err shows that the
+// Sentinel does not answer. A Sentinel pod can stop after GetSentinelsIPs
+// listed it, for example in a rollout. The other Sentinels then still get
+// their heal, and a later reconcile heals the skipped Sentinel.
+func (r *RedisFailoverHandler) skipUnreachableSentinel(rf *redisfailoverv1.RedisFailover, sip string, err error) bool {
+	if !redis.IsUnreachableError(err) {
+		return false
+	}
+	r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Skipping unreachable sentinel %s: %s", sip, err.Error())
+	return true
+}
+
 func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFailover, sentinels []string) error {
 	for _, sip := range sentinels {
 		err := r.rfChecker.CheckSentinelNumberInMemory(sip, rf)
@@ -1574,6 +1592,9 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 		if err != nil {
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Sentinel %s mismatch number of sentinels in memory. resetting", sip)
 			if err := r.rfHealer.RestoreSentinel(sip); err != nil {
+				if r.skipUnreachableSentinel(rf, sip, err) {
+					continue
+				}
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
 					Message: "unable to restore sentinel",
@@ -1589,6 +1610,9 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 		if err != nil {
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Sentinel %s mismatch number of expected slaves in memory. resetting", sip)
 			if err := r.rfHealer.RestoreSentinel(sip); err != nil {
+				if r.skipUnreachableSentinel(rf, sip, err) {
+					continue
+				}
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
 					Message: "unable to restore sentinel",
@@ -1601,6 +1625,9 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 		err := r.rfHealer.SetSentinelCustomConfig(sip, rf)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.APPLY_SENTINEL_CONFIG, sip, err)
 		if err != nil {
+			if r.skipUnreachableSentinel(rf, sip, err) {
+				continue
+			}
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
 				State:   redisfailoverv1.NotHealthyState,
 				Message: "unable to set sentinel custom config",

@@ -547,6 +547,11 @@ func (c *client) SetCustomSentinelConfig(ip string, configs []string) error {
 	// client reads the current values and sets only the changed ones. When
 	// the read fails, current is nil and all the values are set.
 	current, err := c.getSentinelMasterInfo(rClient)
+	if IsUnreachableError(err) {
+		// SENTINEL SET would wait for the same timeout again.
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.APPLY_SENTINEL_CONFIG, metrics.FAIL, getRedisError(err))
+		return err
+	}
 	if err != nil {
 		current = nil
 	}

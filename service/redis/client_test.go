@@ -23,6 +23,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1166,6 +1167,47 @@ func TestSetCustomSentinelConfigMalformedConfig(t *testing.T) {
 
 	err := c.SetCustomSentinelConfig(env.sentinel.IP, []string{"not-a-valid-config"})
 	assert.Error(t, err)
+}
+
+// A Sentinel that resets the connection fails the read of the current values.
+// SetCustomSentinelConfig then returns without a SENTINEL SET.
+func TestSetCustomSentinelConfigUnreachableSendsNoSet(t *testing.T) {
+	const target = "127.0.0.4"
+	l, err := net.Listen("tcp", net.JoinHostPort(target, sentinelPort))
+	if err != nil {
+		t.Skipf("cannot listen on %s: %v", net.JoinHostPort(target, sentinelPort), err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	var mu sync.Mutex
+	var received []string
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			buf := make([]byte, 4096)
+			n, _ := conn.Read(buf)
+			mu.Lock()
+			received = append(received, strings.ToLower(string(buf[:n])))
+			mu.Unlock()
+			_ = conn.(*net.TCPConn).SetLinger(0)
+			_ = conn.Close()
+		}
+	}()
+	recorder := &countingRecorder{Recorder: metrics.Dummy}
+
+	err = New(recorder).SetCustomSentinelConfig(target, []string{"down-after-milliseconds 1000"})
+
+	require.Error(t, err)
+	assert.True(t, IsUnreachableError(err), err.Error())
+	assert.Equal(t, 1, recorder.calls)
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, received)
+	for _, cmd := range received {
+		assert.NotContains(t, cmd, "down-after-milliseconds")
+	}
 }
 
 func TestSentinelConfigsToApplyMalformedConfig(t *testing.T) {
