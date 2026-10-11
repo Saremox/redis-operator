@@ -29,6 +29,7 @@ type rolloutTest struct {
 	synced  bool
 	revErr  error
 	podsErr error
+	check   *mRFService.RedisFailoverCheck
 	heal    *mRFService.RedisFailoverHeal
 	handler *RedisFailoverHandler
 }
@@ -58,6 +59,7 @@ func newRolloutTest(t *testing.T) *rolloutTest {
 	}
 	rf := rt.rf
 	mrfc := &mRFService.RedisFailoverCheck{}
+	rt.check = mrfc
 	mrfc.On("GetRedisesIPs", rf).Return([]string{"10.0.0.1", "10.0.0.2"}, nil)
 	mrfc.On("GetMasterIP", rf).Return("10.0.0.1", nil)
 	mrfc.On("CheckRedisSlavesReady", "10.0.0.2", rf).Return(func(string, *redisfailoverv1.RedisFailover) (bool, error) {
@@ -111,7 +113,9 @@ func TestUpdateRedisesPodsReportsAStalledRollout(t *testing.T) {
 	rt.synced = true
 	rt.pods[1].Status.Conditions = podReady
 	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-0", "new").Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
-	rt.heal.On("DeletePod", "rfr-test-0", rt.rf).Once().Return(nil)
+	rt.check.On("GetBestReplicaForPromotion", rt.rf).Once().Return(&rfservice.ReplicaInfo{IP: "10.0.0.2", PodName: "rfr-test-1", Synced: true}, nil)
+	rt.heal.On("HandOverMaster", "10.0.0.1", "10.0.0.2", rt.rf).Once().Return(rfservice.HandoverDone, nil)
+	rt.heal.On("PromoteBestReplica", "10.0.0.2", rt.rf).Once().Return(nil)
 	assert.Empty(t, rt.update(""))
 	rt.synced = false
 	assert.Empty(t, rt.update(""))

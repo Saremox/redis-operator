@@ -67,7 +67,13 @@ type RedisFailoverHandler struct {
 	// that was logged at Warning, so that an unchanged outcome does not repeat
 	// at each reconcile.
 	maxMemoryLogged sync.Map
-	now             func() time.Time
+	// handoverRetries holds, per namespace/name, the handoverRetry after a
+	// handover of the master role that did not move the role.
+	handoverRetries sync.Map
+	// handoverFallbackLogged holds, per namespace/name, the last logged reason
+	// for a master pod delete instead of a handover, so it does not repeat.
+	handoverFallbackLogged sync.Map
+	now                    func() time.Time
 	// requeue is nil until New connects the controller.
 	requeue func(key string, after time.Duration)
 }
@@ -97,6 +103,8 @@ func (r *RedisFailoverHandler) Forget(key string) {
 	r.rolloutWaits.Delete(key)
 	r.unreachableCleared.Delete(key)
 	r.maxMemoryLogged.Delete(key)
+	r.handoverRetries.Delete(key)
+	r.handoverFallbackLogged.Delete(key)
 }
 
 // Handle will ensure the redis failover is in the expected state.

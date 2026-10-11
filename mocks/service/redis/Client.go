@@ -3,6 +3,8 @@
 package mocks
 
 import (
+	time "time"
+
 	redis "github.com/saremox/redis-operator/service/redis"
 	mock "github.com/stretchr/testify/mock"
 )
@@ -28,6 +30,70 @@ func (_m *Client) DisconnectClients(ip string, port string, password string) err
 	}
 
 	return r0
+}
+
+// FailoverAbort provides a mock function with given fields: ip, port, password
+func (_m *Client) FailoverAbort(ip string, port string, password string) error {
+	ret := _m.Called(ip, port, password)
+
+	if len(ret) == 0 {
+		panic("no return value specified for FailoverAbort")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string, string) error); ok {
+		r0 = rf(ip, port, password)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// FailoverTo provides a mock function with given fields: ip, port, password, targetIP, timeout
+func (_m *Client) FailoverTo(ip string, port string, password string, targetIP string, timeout time.Duration) error {
+	ret := _m.Called(ip, port, password, targetIP, timeout)
+
+	if len(ret) == 0 {
+		panic("no return value specified for FailoverTo")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string, string, string, time.Duration) error); ok {
+		r0 = rf(ip, port, password, targetIP, timeout)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// GetFailoverState provides a mock function with given fields: ip, port, password
+func (_m *Client) GetFailoverState(ip string, port string, password string) (string, error) {
+	ret := _m.Called(ip, port, password)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetFailoverState")
+	}
+
+	var r0 string
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, string, string) (string, error)); ok {
+		return rf(ip, port, password)
+	}
+	if rf, ok := ret.Get(0).(func(string, string, string) string); ok {
+		r0 = rf(ip, port, password)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+
+	if rf, ok := ret.Get(1).(func(string, string, string) error); ok {
+		r1 = rf(ip, port, password)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
 }
 
 // GetMemoryInfo provides a mock function with given fields: ip, port, password
@@ -135,6 +201,34 @@ func (_m *Client) GetReplicationInfo(ip string, port string, password string) (*
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(*redis.ReplicationInfo)
 		}
+	}
+
+	if rf, ok := ret.Get(1).(func(string, string, string) error); ok {
+		r1 = rf(ip, port, password)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// GetRunID provides a mock function with given fields: ip, port, password
+func (_m *Client) GetRunID(ip string, port string, password string) (string, error) {
+	ret := _m.Called(ip, port, password)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetRunID")
+	}
+
+	var r0 string
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, string, string) (string, error)); ok {
+		return rf(ip, port, password)
+	}
+	if rf, ok := ret.Get(0).(func(string, string, string) string); ok {
+		r0 = rf(ip, port, password)
+	} else {
+		r0 = ret.Get(0).(string)
 	}
 
 	if rf, ok := ret.Get(1).(func(string, string, string) error); ok {

@@ -31,6 +31,7 @@ func newPasswordTestHandler(password *string) (*RedisFailoverHandler, *redisfail
 	})
 	ms.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, mrfh, ms, metrics.Dummy, log.Dummy)
 	return handler, rf, mrfh
 }
@@ -212,6 +213,7 @@ func TestCheckAndHealMarksTheClusterFailedWhenAReconcilePanics(t *testing.T) {
 			written = append(written, args.Get(2).(*redisfailoverv1.RedisFailover).Status)
 		}).Return()
 	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(false, nil).
 		Run(func(mock.Arguments) { panic("boom") })
 	rec := &mmetrics.Recorder{}

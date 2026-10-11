@@ -845,6 +845,11 @@ func (r *RedisFailoverChecker) GetReplicaReplicationOffsets(rf *redisfailoverv1.
 		if replInfo.Role == "master" {
 			continue
 		}
+		// A master in a FAILOVER is a replica already, but it refuses
+		// REPLICAOF NO ONE until the failover ends.
+		if replInfo.FailoverState != "" && replInfo.FailoverState != "no-failover" {
+			continue
+		}
 
 		replicas = append(replicas, ReplicaInfo{
 			IP:                rp.Status.PodIP,

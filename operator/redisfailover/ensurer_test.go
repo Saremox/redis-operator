@@ -109,6 +109,7 @@ func TestEnsure(t *testing.T) {
 			mk := &mK8SService.Services{}
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 			mrfs := &mRFService.RedisFailoverClient{}
 			if test.exporter {
 				mrfs.On("EnsureRedisService", rf, mock.Anything, mock.Anything).Once().Return(nil)
@@ -229,6 +230,7 @@ func TestEnsureErrorBranches(t *testing.T) {
 			mk := &mK8SService.Services{}
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 			mrfs := &mRFService.RedisFailoverClient{}
 
 			wantErr := errors.New(test.steps[test.failAt] + " failed")

@@ -13,6 +13,34 @@ type RedisFailoverHeal struct {
 	mock.Mock
 }
 
+// AbortOrphanedFailover provides a mock function with given fields: masterIP, rFailover
+func (_m *RedisFailoverHeal) AbortOrphanedFailover(masterIP string, rFailover *v1.RedisFailover) (bool, error) {
+	ret := _m.Called(masterIP, rFailover)
+
+	if len(ret) == 0 {
+		panic("no return value specified for AbortOrphanedFailover")
+	}
+
+	var r0 bool
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, *v1.RedisFailover) (bool, error)); ok {
+		return rf(masterIP, rFailover)
+	}
+	if rf, ok := ret.Get(0).(func(string, *v1.RedisFailover) bool); ok {
+		r0 = rf(masterIP, rFailover)
+	} else {
+		r0 = ret.Get(0).(bool)
+	}
+
+	if rf, ok := ret.Get(1).(func(string, *v1.RedisFailover) error); ok {
+		r1 = rf(masterIP, rFailover)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // ApplyPassword provides a mock function with given fields: rFailover, password, previous
 func (_m *RedisFailoverHeal) ApplyPassword(rFailover *v1.RedisFailover, password string, previous []string) (bool, error) {
 	ret := _m.Called(rFailover, password, previous)
@@ -108,6 +136,34 @@ func (_m *RedisFailoverHeal) EnsureRedisMaxMemory(rFailover *v1.RedisFailover, m
 
 	if rf, ok := ret.Get(1).(func(*v1.RedisFailover, string, []string) error); ok {
 		r1 = rf(rFailover, master, redises)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// HandOverMaster provides a mock function with given fields: masterIP, targetIP, rFailover
+func (_m *RedisFailoverHeal) HandOverMaster(masterIP string, targetIP string, rFailover *v1.RedisFailover) (service.HandoverResult, error) {
+	ret := _m.Called(masterIP, targetIP, rFailover)
+
+	if len(ret) == 0 {
+		panic("no return value specified for HandOverMaster")
+	}
+
+	var r0 service.HandoverResult
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, string, *v1.RedisFailover) (service.HandoverResult, error)); ok {
+		return rf(masterIP, targetIP, rFailover)
+	}
+	if rf, ok := ret.Get(0).(func(string, string, *v1.RedisFailover) service.HandoverResult); ok {
+		r0 = rf(masterIP, targetIP, rFailover)
+	} else {
+		r0 = ret.Get(0).(service.HandoverResult)
+	}
+
+	if rf, ok := ret.Get(1).(func(string, string, *v1.RedisFailover) error); ok {
+		r1 = rf(masterIP, targetIP, rFailover)
 	} else {
 		r1 = ret.Error(1)
 	}
