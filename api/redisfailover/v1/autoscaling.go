@@ -81,8 +81,9 @@ func (r *RedisFailover) validateAutoscaling() error {
 	if a.MemoryMax == nil {
 		return fmt.Errorf("redis.autoscaling.memoryMax is required for mode %s", a.Mode)
 	}
-	if a.MemoryMax.Cmp(limit) <= 0 {
-		return fmt.Errorf("redis.autoscaling.memoryMax %s must be greater than redis.resources.limits.memory %s", a.MemoryMax.String(), limit.String())
+	// Equal is valid: the user can apply a recommendation of memoryMax.
+	if a.MemoryMax.Cmp(limit) < 0 {
+		return fmt.Errorf("redis.autoscaling.memoryMax %s must not be less than redis.resources.limits.memory %s", a.MemoryMax.String(), limit.String())
 	}
 	// A request below the limit lets the node run out of memory before the
 	// pod reaches its limit, and a store then loses its data.

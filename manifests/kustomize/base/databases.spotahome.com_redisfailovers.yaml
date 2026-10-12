@@ -1009,8 +1009,9 @@ spec:
                         - type: string
                         description: |-
                           MemoryMax is the largest memory limit that the autoscaler recommends.
-                          It must be greater than redis.resources.limits.memory. The modes
-                          Recommend and Auto need it.
+                          It must not be less than redis.resources.limits.memory. When it is
+                          equal, the autoscaler recommends no step. The modes Recommend and Auto
+                          need it.
                         pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                         x-kubernetes-int-or-string: true
                       mode:
@@ -17099,13 +17100,14 @@ spec:
                   the mode is Off.
                 properties:
                   evaluatedAt:
-                    description: EvaluatedAt is the RFC3339 time of the last evaluation,
-                      in full minutes.
+                    description: |-
+                      EvaluatedAt is the RFC3339 time, in full minutes, of the last change of
+                      the recommendation or of highWindows.
                     type: string
                   highWindows:
                     description: |-
                       HighWindows is the number of consecutive 5-minute windows with high
-                      memory use.
+                      memory use, 3 at most.
                     format: int32
                     type: integer
                   reason:

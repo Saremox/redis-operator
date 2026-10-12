@@ -15,6 +15,10 @@ import (
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
+// errForeignState is the error for a state ConfigMap that another object
+// controls. The autoscaler does not change or delete that ConfigMap.
+var errForeignState = errors.New("the state ConfigMap is not controlled by the RedisFailover")
+
 // autoscaleSample is the last sample of a RedisFailover in memory. The
 // persisted LastSample is written only together with other changes.
 type autoscaleSample struct {
@@ -39,11 +43,28 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 
 	limit := rf.Spec.Redis.Resources.Limits.Memory().Value()
 	stored, cm, err := r.readAutoscaleState(rf)
+	// The autoscaler cannot use a state of another owner or of a newer
+	// operator, and it does not overwrite it. No metric value is known.
+	blocked := ""
+	switch {
+	case errors.Is(err, errForeignState):
+		blocked = autoscale.ReasonForeignState
+	case err == nil && stored.Version > autoscale.StateVersion:
+		blocked = autoscale.ReasonNewerState
+		err = fmt.Errorf("the state ConfigMap has version %d, this operator reads version %d", stored.Version, autoscale.StateVersion)
+	}
+	if blocked != "" {
+		rf.Status.Autoscaling = redisfailoverv1.AutoscalingStatus{Reason: blocked}
+		r.mClient.DeleteAutoscaler(rf.Namespace, rf.Name)
+		r.logAutoscale(rf, err)
+		return
+	}
 	if err != nil {
 		rf.Status.Autoscaling = observed
 		r.logAutoscale(rf, err)
 		return
 	}
+	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
 	state := stored
 	now := r.now()
 	var last autoscaleSample
@@ -53,12 +74,14 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 		last.ratio = stored.Window.PeakRatio
 	}
 	var errs []error
+	// The persisted time limits the samples after an operator restart. It is
+	// written only with other changes, so the time in memory is necessary too.
 	if now.Sub(time.Unix(stored.LastSample, 0)) >= autoscale.SampleInterval && now.Sub(last.at) >= autoscale.SampleInterval {
 		in := autoscale.Input{
 			Now:      now,
 			Healthy:  rf.Status.State == redisfailoverv1.HealthyState,
 			Limit:    limit,
-			Max:      rf.Spec.Redis.Autoscaling.MemoryMax.Value(),
+			Max:      maxLimit,
 			Workload: rf.Spec.Redis.Autoscaling.Workload,
 			Policy:   rf.MaxMemoryPolicy(),
 		}
@@ -75,15 +98,15 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 			last.ratio = autoscale.UsedRatio(in.Info, limit)
 		}
 		r.autoscaleSamples.Store(key, last)
-		if cm == nil || !state.Equal(stored) {
+		if cm == nil || state.NeedsWrite(stored) {
 			errs = append(errs, r.writeAutoscaleState(rf, cm, state))
 		}
 	}
 
-	rf.Status.Autoscaling = autoscale.Report(state, limit)
+	rf.Status.Autoscaling = autoscale.Report(state, limit, maxLimit)
 	var recommended int64
 	if rf.Status.Autoscaling.RecommendedMemory != "" {
-		recommended = state.Recommended
+		recommended = min(state.Recommended, maxLimit)
 	}
 	r.mClient.SetAutoscaler(rf.Namespace, rf.Name, recommended, last.ratio, state.HighWindows)
 	r.logAutoscale(rf, errors.Join(errs...))
@@ -116,7 +139,7 @@ func (r *RedisFailoverHandler) getAutoscaleConfigMap(rf *redisfailoverv1.RedisFa
 		return nil, err
 	}
 	if !metav1.IsControlledBy(cm, rf) {
-		return nil, fmt.Errorf("configmap %s is not controlled by the RedisFailover", name)
+		return nil, errForeignState
 	}
 	return cm, nil
 }
@@ -139,6 +162,10 @@ func (r *RedisFailoverHandler) writeAutoscaleState(rf *redisfailoverv1.RedisFail
 // tries again.
 func (r *RedisFailoverHandler) stopAutoscaler(rf *redisfailoverv1.RedisFailover, observed redisfailoverv1.AutoscalingStatus) {
 	cm, err := r.getAutoscaleConfigMap(rf)
+	if errors.Is(err, errForeignState) {
+		// Not a state of this RedisFailover, so there is nothing to delete.
+		err = nil
+	}
 	if err == nil && cm != nil {
 		err = r.k8sservice.DeleteConfigMap(rf.Namespace, cm.Name)
 		if apierrors.IsNotFound(err) {

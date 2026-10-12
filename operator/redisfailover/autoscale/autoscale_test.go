@@ -119,7 +119,7 @@ func TestObserveGuards(t *testing.T) {
 		// The OOM count of the new run is the baseline, not a growth.
 		info.UsedMemory = 100 * mi
 		got = Observe(got, input(3*time.Minute, info))
-		assert.Equal(t, ReasonLow, Report(got, gi).Reason)
+		assert.Equal(t, ReasonLow, Report(got, gi, 4*gi).Reason)
 	})
 }
 
@@ -127,7 +127,7 @@ func TestObserveWindows(t *testing.T) {
 	// Three windows of 5 samples at 90 percent of maxmemory; the third ends at
 	// the first sample after 15 minutes.
 	s := observeAll(known(), 0, 900, 900, 900, 900, 900)
-	assert.Equal(t, ReasonLow, s.Reason, "the first window has not ended")
+	assert.Equal(t, ReasonHigh, s.Reason, "the open window is high before it ends")
 	assert.Zero(t, s.HighWindows)
 	assert.Equal(t, 0.9, s.Window.PeakRatio)
 	assert.Equal(t, 900*mi, s.Window.PeakUsed)
@@ -144,7 +144,7 @@ func TestObserveWindows(t *testing.T) {
 	assert.Equal(t, 1280*mi, s.Recommended)
 	assert.Equal(t, ReasonSustained, s.Reason)
 
-	st := Report(s, gi)
+	st := Report(s, gi, 4*gi)
 	assert.Equal(t, redisfailoverv1.AutoscalingStatus{
 		Workload:          redisfailoverv1.AutoscalingWorkloadStore,
 		RecommendedMemory: "1280Mi",
@@ -156,7 +156,7 @@ func TestObserveWindows(t *testing.T) {
 	// The recommendation stays while the windows stay high, and a low
 	// window removes it. The sample at 15m is in the fourth window.
 	s = observeAll(s, 16*time.Minute, 500, 500, 500, 500, 500)
-	assert.Equal(t, int32(4), s.HighWindows)
+	assert.Equal(t, int32(3), s.HighWindows, "the count stops at 3")
 	assert.Equal(t, 1280*mi, s.Recommended)
 	assert.Equal(t, ReasonSustained, s.Reason)
 	s = observeAll(s, 21*time.Minute, 500, 500, 500, 500, 500)
@@ -231,7 +231,7 @@ func TestObserveStep(t *testing.T) {
 			s := Observe(known(), in)
 			assert.Equal(t, test.want, s.Recommended)
 			assert.Equal(t, test.reason, s.Reason)
-			assert.Equal(t, test.reason, Report(s, test.limit).Reason)
+			assert.Equal(t, test.reason, Report(s, test.limit, test.max).Reason)
 		})
 	}
 }
@@ -251,15 +251,15 @@ func TestObserveNextStepWaitsForAWindow(t *testing.T) {
 		Reason:      ReasonStepIsActive,
 		EvaluatedAt: t0.Add(15 * time.Minute).UTC().Format(time.RFC3339),
 		HighWindows: 3,
-	}, Report(s, in.Limit))
+	}, Report(s, in.Limit, in.Max))
 
 	for i := 17; i <= 21; i++ {
 		in.Now = t0.Add(time.Duration(i) * time.Minute)
 		s = Observe(s, in)
 	}
-	assert.Equal(t, int32(4), s.HighWindows)
+	assert.Equal(t, int32(3), s.HighWindows)
 	assert.Equal(t, 1600*mi, s.Recommended)
-	assert.Equal(t, "1600Mi", Report(s, in.Limit).RecommendedMemory)
+	assert.Equal(t, "1600Mi", Report(s, in.Limit, in.Max).RecommendedMemory)
 }
 
 func TestObserveWorkload(t *testing.T) {
@@ -297,7 +297,7 @@ func TestObserveWorkload(t *testing.T) {
 }
 
 func TestReport(t *testing.T) {
-	assert.Equal(t, redisfailoverv1.AutoscalingStatus{Reason: ReasonNoSample}, Report(State{}, gi))
+	assert.Equal(t, redisfailoverv1.AutoscalingStatus{Reason: ReasonNoSample}, Report(State{}, gi, 4*gi))
 	s := State{Workload: "Store", Recommended: 1280 * mi, Reason: ReasonOOM, EvaluatedAt: t0.Add(59 * time.Second).Unix(), HighWindows: 2}
 	assert.Equal(t, redisfailoverv1.AutoscalingStatus{
 		Workload:          "Store",
@@ -305,14 +305,108 @@ func TestReport(t *testing.T) {
 		Reason:            ReasonOOM,
 		EvaluatedAt:       t0.UTC().Format(time.RFC3339),
 		HighWindows:       2,
-	}, Report(s, gi))
+	}, Report(s, gi, 4*gi))
 }
 
-func TestStateEqualIgnoresLastSample(t *testing.T) {
+// The user can lower memoryMax or raise the limit after a recommendation.
+// The status never shows a value above memoryMax or at the limit.
+func TestReportClampsToTheCurrentSpec(t *testing.T) {
+	s := State{Workload: "Store", Recommended: 1280 * mi, Reason: ReasonUrgent}
+	assert.Equal(t, "1100Mi", Report(s, gi, 1100*mi).RecommendedMemory, "memoryMax lowered below the recommendation")
+	st := Report(s, gi, gi)
+	assert.Empty(t, st.RecommendedMemory, "memoryMax lowered to the limit")
+	assert.Equal(t, ReasonMaximum, st.Reason)
+	st = Report(s, 1280*mi, 4*gi)
+	assert.Empty(t, st.RecommendedMemory)
+	assert.Equal(t, ReasonStepIsActive, st.Reason)
+}
+
+// At the next trigger, the recommendation follows a lowered memoryMax.
+func TestObserveRecomputesTheRecommendation(t *testing.T) {
+	s := Observe(known(), input(0, master(990)))
+	assert.Equal(t, 1280*mi, s.Recommended)
+	in := input(time.Minute, master(990))
+	in.Max = 1100 * mi
+	s = Observe(s, in)
+	assert.Equal(t, 1100*mi, s.Recommended)
+	assert.Equal(t, "1100Mi", Report(s, in.Limit, in.Max).RecommendedMemory)
+}
+
+// With the limit at memoryMax, the reason must not change between the window
+// ends, or each change writes the status.
+func TestObserveAtTheMaximumIsStable(t *testing.T) {
+	sample := func(s State, at time.Duration) State {
+		in := input(at, master(900))
+		in.Limit, in.Max = 2*gi, 2*gi
+		return Observe(s, in)
+	}
 	s := known()
+	var statuses []redisfailoverv1.AutoscalingStatus
+	for i := 0; i <= 30; i++ {
+		s = sample(s, time.Duration(i)*time.Minute)
+		if i >= 15 {
+			statuses = append(statuses, Report(s, 2*gi, 2*gi))
+		}
+	}
+	assert.Equal(t, ReasonMaximum, statuses[0].Reason)
+	assert.Empty(t, statuses[0].RecommendedMemory)
+	for _, st := range statuses {
+		assert.Equal(t, statuses[0], st)
+	}
+}
+
+// A steady low use also gives a stable status.
+func TestObserveLowIsStable(t *testing.T) {
+	s := observeAll(known(), 0, 500)
+	first := Report(s, gi, 4*gi)
+	for i := 1; i <= 20; i++ {
+		s = observeAll(s, time.Duration(i)*time.Minute, 500)
+		assert.Equal(t, first, Report(s, gi, 4*gi))
+	}
+}
+
+// CONFIG RESETSTAT sets errorstat_OOM to 0 without a restart.
+func TestObserveOOMCounterReset(t *testing.T) {
+	s := known()
+	s.OOMErrors = 5
+	info := master(500)
+	s = Observe(s, input(0, info))
+	assert.Zero(t, s.Recommended)
+	assert.Zero(t, s.OOMErrors)
+	info.OOMErrors = 1
+	s = Observe(s, input(time.Minute, info))
+	assert.Equal(t, ReasonOOM, s.Reason)
+}
+
+// The 3-window rule needs a sample in each window. With samples 10 minutes
+// apart, for example --sync-interval 600 without pod events, each window end
+// is also a gap.
+func TestObserveSampleSpacing(t *testing.T) {
+	for _, tc := range []struct {
+		every time.Duration
+		want  int64
+	}{{9 * time.Minute, 1280 * mi}, {10 * time.Minute, 0}} {
+		s := known()
+		for i := 0; i <= 6; i++ {
+			s = observeAll(s, time.Duration(i)*tc.every, 900)
+		}
+		assert.Equal(t, tc.want, s.Recommended, tc.every.String())
+	}
+}
+
+func TestStateNeedsWrite(t *testing.T) {
+	s := known()
+	s.Window = Window{Start: t0.Unix(), PeakRatio: 0.5, PeakUsed: 500 * mi}
 	other := s
 	other.LastSample++
-	assert.True(t, s.Equal(other))
-	other.Window.PeakUsed++
-	assert.False(t, s.Equal(other))
+	other.Window.PeakRatio, other.Window.PeakUsed = 0.84, 840*mi
+	assert.False(t, other.NeedsWrite(s), "a growth below the threshold")
+	other.Window.PeakRatio = 0.85
+	assert.True(t, other.NeedsWrite(s), "the open window becomes high")
+	other = s
+	other.Window.Start++
+	assert.True(t, other.NeedsWrite(s), "a new window")
+	other = s
+	other.OOMErrors++
+	assert.True(t, other.NeedsWrite(s))
 }

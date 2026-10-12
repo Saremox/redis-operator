@@ -43,7 +43,7 @@ const (
 	StateVersion = 1
 )
 
-// The reasons in the status. They are fixed texts, so that the status changes
+// The reasons in the status. They are constant texts, so that the status changes
 // only when the outcome changes.
 const (
 	ReasonNoSample     = "no sample yet"
@@ -62,6 +62,8 @@ const (
 	ReasonOOM          = "Redis refused commands with OOM"
 	ReasonMaximum      = "the limit is at memoryMax"
 	ReasonStepIsActive = "the limit has the recommended value"
+	ReasonNewerState   = "the state ConfigMap has a newer version"
+	ReasonForeignState = "the state ConfigMap has another owner"
 )
 
 // Window is the peak memory use in one evaluation window.
@@ -75,7 +77,7 @@ type Window struct {
 }
 
 // State is the content of the state ConfigMap. It holds only scalar fields,
-// so that Equal can compare it with ==.
+// so that NeedsWrite can compare it with ==.
 type State struct {
 	Version     int    `json:"version"`
 	Workload    string `json:"workload,omitempty"`
@@ -91,11 +93,21 @@ type State struct {
 	LastSample  int64 `json:"lastSample,omitempty"`
 }
 
-// Equal compares two states without LastSample. A write of LastSample only
-// would cost one API call for each sample.
-func (s State) Equal(o State) bool {
-	s.LastSample, o.LastSample = 0, 0
-	return s == o
+// NeedsWrite reports whether s has a change that a decision uses. The sample
+// time and the exact peaks of the open window change at most samples, and a
+// write for each sample costs one API call. Of the open window, only its start
+// and whether its peak is high are decisions.
+func (s State) NeedsWrite(stored State) bool {
+	return s.decisionView() != stored.decisionView()
+}
+
+func (s State) decisionView() State {
+	high := s.Window.PeakRatio >= HighRatio
+	s.LastSample, s.Window.PeakRatio, s.Window.PeakUsed = 0, 0, 0
+	if high {
+		s.Window.PeakRatio = HighRatio
+	}
+	return s
 }
 
 // Input is what the handler knows at a sample.
@@ -126,8 +138,8 @@ func Observe(s State, in Input) State {
 	}
 	if info.RunID != s.RunID {
 		// A restart loses the data or loads it again, so the earlier windows
-		// tell nothing about the memory use from now on. The first sample
-		// only sets the baseline of the OOM count.
+		// do not show the memory use after the restart. The first sample only
+		// sets the baseline of the OOM count.
 		restarted := s.RunID != ""
 		s.RunID, s.OOMErrors = info.RunID, info.OOMErrors
 		s.HighWindows, s.Window = 0, Window{}
@@ -145,6 +157,8 @@ func Observe(s State, in Input) State {
 		return s.withReason(ReasonSyncing)
 	}
 
+	// CONFIG RESETSTAT sets the counter to 0 without a restart. Only a growth
+	// is a refused command.
 	oom := info.OOMErrors > s.OOMErrors
 	s.OOMErrors = info.OOMErrors
 	s.Workload = workload(in.Workload, in.Policy, info)
@@ -176,17 +190,22 @@ func Observe(s State, in Input) State {
 		s.recommend(in.Limit, in.Max, now, ReasonSustained)
 	case s.Recommended != 0:
 		// Keep the recommendation and its reason until a low window.
-	case s.HighWindows > 0:
-		s.Reason = ReasonHigh
-	default:
+	case s.HighWindows == 0 && s.Window.PeakRatio < HighRatio:
 		s.Reason = ReasonLow
+	case in.Limit >= in.Max:
+		// The same reason as at the end of a window, so that the status
+		// does not change between the windows.
+		s.Reason = ReasonMaximum
+	default:
+		s.Reason = ReasonHigh
 	}
 	return s
 }
 
-// Report returns the status view of the state for the current limit. A
-// recommendation that the limit already has is no longer a recommendation.
-func Report(s State, limit int64) redisfailoverv1.AutoscalingStatus {
+// Report returns the status view of the state for the current limit and
+// memoryMax. The user can change both after the recommendation. The status
+// never shows a value above memoryMax, or a value that the limit has.
+func Report(s State, limit, maxLimit int64) redisfailoverv1.AutoscalingStatus {
 	st := redisfailoverv1.AutoscalingStatus{
 		Workload:    s.Workload,
 		Reason:      s.Reason,
@@ -198,9 +217,12 @@ func Report(s State, limit int64) redisfailoverv1.AutoscalingStatus {
 	if s.EvaluatedAt != 0 {
 		st.EvaluatedAt = time.Unix(s.EvaluatedAt, 0).UTC().Truncate(time.Minute).Format(time.RFC3339)
 	}
+	shown := min(s.Recommended, maxLimit)
 	switch {
-	case s.Recommended > limit:
-		st.RecommendedMemory = formatQuantity(s.Recommended)
+	case shown > limit:
+		st.RecommendedMemory = formatQuantity(shown)
+	case s.Recommended != 0 && limit >= maxLimit:
+		st.Reason = ReasonMaximum
 	case s.Recommended != 0:
 		st.Reason = ReasonStepIsActive
 	}
@@ -242,19 +264,24 @@ func workload(spec, policy string, info *redis.AutoscalerInfo) string {
 
 // closeWindow counts the window that ended. A window without a sample, for
 // example while the RedisFailover was not Healthy, ends the sequence of
-// consecutive high windows.
+// consecutive high windows. The count stops at HighWindowsForStep, so that
+// the status does not change at each window while the use stays high.
 func (s *State) closeWindow(now int64) {
+	count := s.HighWindows
 	if s.Window.PeakRatio >= HighRatio {
-		s.HighWindows++
+		count = min(count+1, HighWindowsForStep)
 	} else {
-		s.HighWindows = 0
+		count = 0
 		s.setRecommended(0, now)
 	}
 	if now >= s.Window.Start+2*int64(WindowLength/time.Second) {
-		s.HighWindows = 0
+		count = 0
+	}
+	if count != s.HighWindows {
+		s.HighWindows = count
+		s.EvaluatedAt = now
 	}
 	s.Window = Window{}
-	s.EvaluatedAt = now
 }
 
 func (s *State) recommend(limit, maxLimit, now int64, reason string) {
@@ -264,7 +291,7 @@ func (s *State) recommend(limit, maxLimit, now int64, reason string) {
 		s.Reason = ReasonMaximum
 		return
 	}
-	if s.Recommended < target {
+	if s.Recommended != target {
 		s.setRecommended(target, now)
 		s.Reason = reason
 	}

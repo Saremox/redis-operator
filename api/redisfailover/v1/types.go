@@ -124,8 +124,9 @@ type AutoscalingSettings struct {
 	// +kubebuilder:validation:Enum=Off;Recommend;Auto
 	Mode string `json:"mode,omitempty"`
 	// MemoryMax is the largest memory limit that the autoscaler recommends.
-	// It must be greater than redis.resources.limits.memory. The modes
-	// Recommend and Auto need it.
+	// It must not be less than redis.resources.limits.memory. When it is
+	// equal, the autoscaler recommends no step. The modes Recommend and Auto
+	// need it.
 	MemoryMax *resource.Quantity `json:"memoryMax,omitempty"`
 	// RecreateAfter is the time after which Auto recreates a pod that it
 	// cannot resize in place. 0s recreates at once, other values must be at
@@ -322,9 +323,10 @@ type AutoscalingStatus struct {
 	RecommendedMemory string `json:"recommendedMemory,omitempty"`
 	// Reason tells why the autoscaler recommends a change or no change.
 	Reason string `json:"reason,omitempty"`
-	// EvaluatedAt is the RFC3339 time of the last evaluation, in full minutes.
+	// EvaluatedAt is the RFC3339 time, in full minutes, of the last change of
+	// the recommendation or of highWindows.
 	EvaluatedAt string `json:"evaluatedAt,omitempty"`
 	// HighWindows is the number of consecutive 5-minute windows with high
-	// memory use.
+	// memory use, 3 at most.
 	HighWindows int32 `json:"highWindows,omitempty"`
 }

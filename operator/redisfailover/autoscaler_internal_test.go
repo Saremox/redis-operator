@@ -96,40 +96,50 @@ func decodeState(t *testing.T, cm *corev1.ConfigMap) autoscale.State {
 	return s
 }
 
-func TestAutoscaleWritesTheStateOnlyOnAChange(t *testing.T) {
-	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
-	var stored *corev1.ConfigMap
+// fakeStateStore keeps the state ConfigMap of an autoscaleTest.
+type fakeStateStore struct {
+	stored           *corev1.ConfigMap
+	creates, updates int
+}
+
+func (at *autoscaleTest) fakeStateStore(t *testing.T) *fakeStateStore {
+	f := &fakeStateStore{}
 	at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(func(string, string) (*corev1.ConfigMap, error) {
-		if stored == nil {
+		if f.stored == nil {
 			return nil, notFound()
 		}
-		return stored.DeepCopy(), nil
+		return f.stored.DeepCopy(), nil
 	})
-	creates, updates := 0, 0
 	at.mk.On("CreateConfigMap", "testns", mock.Anything).Run(func(args mock.Arguments) {
-		creates++
-		stored = args.Get(1).(*corev1.ConfigMap).DeepCopy()
-		stored.ResourceVersion = "1"
+		f.creates++
+		f.stored = args.Get(1).(*corev1.ConfigMap).DeepCopy()
+		f.stored.ResourceVersion = "1"
 	}).Return(nil)
 	at.mk.On("UpdateConfigMap", "testns", mock.Anything).Run(func(args mock.Arguments) {
-		updates++
+		f.updates++
 		cm := args.Get(1).(*corev1.ConfigMap)
-		assert.Equal(t, stored.ResourceVersion, cm.ResourceVersion)
-		stored = cm.DeepCopy()
-		stored.ResourceVersion = "2"
+		assert.Equal(t, f.stored.ResourceVersion, cm.ResourceVersion)
+		f.stored = cm.DeepCopy()
+		f.stored.ResourceVersion += "1"
 	}).Return(nil)
+	return f
+}
+
+func TestAutoscaleWritesTheStateOnlyOnAChange(t *testing.T) {
+	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
+	f := at.fakeStateStore(t)
 	info := masterInfo(990)
 	at.mrfc.On("GetAutoscalerInfo", at.rf, autoscaleMaster).Return(func(*redisfailoverv1.RedisFailover, string) (*redis.AutoscalerInfo, error) {
 		return info, nil
 	})
-	at.mrec.On("SetAutoscaler", "testns", "test", 1280*mib, 0.99, int32(0)).Times(3)
+	at.mrec.On("SetAutoscaler", "testns", "test", 1280*mib, 0.99, int32(0)).Times(4)
 
 	at.run(redisfailoverv1.AutoscalingStatus{})
-	require.Equal(t, 1, creates)
-	assert.Equal(t, autoscaleCM, stored.Name)
-	assert.Equal(t, "autoscaler", stored.Labels["app.kubernetes.io/component"])
-	assert.True(t, metav1.IsControlledBy(stored, at.rf))
-	assert.Equal(t, autoscaleT0.Unix(), decodeState(t, stored).LastSample)
+	require.Equal(t, 1, f.creates)
+	assert.Equal(t, autoscaleCM, f.stored.Name)
+	assert.Equal(t, "autoscaler", f.stored.Labels["app.kubernetes.io/component"])
+	assert.True(t, metav1.IsControlledBy(f.stored, at.rf))
+	assert.Equal(t, autoscaleT0.Unix(), decodeState(t, f.stored).LastSample)
 	want := redisfailoverv1.AutoscalingStatus{
 		Workload:          redisfailoverv1.AutoscalingWorkloadStore,
 		RecommendedMemory: "1280Mi",
@@ -148,18 +158,63 @@ func TestAutoscaleWritesTheStateOnlyOnAChange(t *testing.T) {
 	at.now = autoscaleT0.Add(time.Minute)
 	at.run(want)
 	at.mrfc.AssertNumberOfCalls(t, "GetAutoscalerInfo", 2)
-	assert.Equal(t, 0, updates)
+	assert.Equal(t, 0, f.updates)
 	assert.Equal(t, want, at.rf.Status.Autoscaling)
 
-	// A higher peak is a change.
-	info = masterInfo(995)
-	at.mrec.On("SetAutoscaler", "testns", "test", 1280*mib, 0.995, int32(0)).Once()
-	at.now = autoscaleT0.Add(2 * time.Minute)
+	// The persisted sample time is older than a minute, but the time in
+	// memory is not: no INFO.
+	at.now = autoscaleT0.Add(90 * time.Second)
 	at.run(want)
-	assert.Equal(t, 1, updates)
-	assert.Equal(t, 0.995, decodeState(t, stored).Window.PeakRatio)
-	assert.Equal(t, 1, creates)
+	at.mrfc.AssertNumberOfCalls(t, "GetAutoscalerInfo", 2)
+
+	// The end of a window is a change.
+	at.mrec.On("SetAutoscaler", "testns", "test", 1280*mib, 0.99, int32(1)).Once()
+	at.now = autoscaleT0.Add(5 * time.Minute)
+	at.run(want)
+	assert.Equal(t, 1, f.updates)
+	assert.Equal(t, int32(1), decodeState(t, f.stored).HighWindows)
+	assert.Equal(t, 1, f.creates)
 	at.mk.AssertExpectations(t)
+	at.mrec.AssertExpectations(t)
+}
+
+// A store that grows below the threshold writes the state at most one time
+// in each window.
+func TestAutoscaleWritesAGrowingStoreOncePerWindow(t *testing.T) {
+	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
+	f := at.fakeStateStore(t)
+	used := int64(400)
+	at.mrfc.On("GetAutoscalerInfo", at.rf, autoscaleMaster).Return(func(*redisfailoverv1.RedisFailover, string) (*redis.AutoscalerInfo, error) {
+		used += 7
+		return masterInfo(used), nil
+	})
+	at.mrec.On("SetAutoscaler", "testns", "test", int64(0), mock.Anything, int32(0))
+
+	for i := 0; i < 15; i++ {
+		at.now = autoscaleT0.Add(time.Duration(i) * time.Minute)
+		at.run(at.rf.Status.Autoscaling)
+	}
+
+	at.mrfc.AssertNumberOfCalls(t, "GetAutoscalerInfo", 15)
+	assert.Equal(t, 1, f.creates)
+	// The windows end at 5m and 10m.
+	assert.Equal(t, 2, f.updates)
+}
+
+// memoryMax equal to the limit passes the validation, and is the ceiling: the
+// status gives the reason and no value that the validation would reject.
+func TestAutoscaleAtMemoryMax(t *testing.T) {
+	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
+	max := resource.MustParse("1Gi")
+	at.rf.Spec.Redis.Autoscaling.MemoryMax = &max
+	require.NoError(t, at.rf.Validate())
+	at.fakeStateStore(t)
+	at.mrfc.On("GetAutoscalerInfo", at.rf, autoscaleMaster).Return(masterInfo(990), nil)
+	at.mrec.On("SetAutoscaler", "testns", "test", int64(0), 0.99, int32(0)).Once()
+
+	at.run(redisfailoverv1.AutoscalingStatus{})
+
+	assert.Equal(t, redisfailoverv1.AutoscalingStatus{Workload: redisfailoverv1.AutoscalingWorkloadStore, Reason: autoscale.ReasonMaximum}, at.rf.Status.Autoscaling)
 	at.mrec.AssertExpectations(t)
 }
 
@@ -217,11 +272,36 @@ func TestAutoscaleErrorsOnlyLog(t *testing.T) {
 	t.Run("configmap of another owner", func(t *testing.T) {
 		at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
 		at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: autoscaleCM}}, nil)
+		at.mrec.On("DeleteAutoscaler", "testns", "test").Twice()
 
 		at.run(observed)
+		at.run(observed)
 
-		assert.Equal(t, observed, at.rf.Status.Autoscaling)
-		assert.Equal(t, []string{"Autoscaler: configmap rfa-test is not controlled by the RedisFailover"}, at.logger.warnings)
+		assert.Equal(t, redisfailoverv1.AutoscalingStatus{Reason: autoscale.ReasonForeignState}, at.rf.Status.Autoscaling)
+		assert.Equal(t, []string{"Autoscaler: the state ConfigMap is not controlled by the RedisFailover"}, at.logger.warnings)
+		at.mrfc.AssertNotCalled(t, "GetAutoscalerInfo", mock.Anything, mock.Anything)
+		at.mrec.AssertExpectations(t)
+	})
+
+	t.Run("state of a newer operator", func(t *testing.T) {
+		at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
+		at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: autoscaleCM, OwnerReferences: at.h.createOwnerReferences(at.rf)},
+			Data:       map[string]string{"state": `{"version":2}`},
+		}, nil)
+		at.mrec.On("DeleteAutoscaler", "testns", "test").Twice()
+
+		at.run(observed)
+		at.now = at.now.Add(time.Hour)
+		at.run(observed)
+
+		assert.Equal(t, redisfailoverv1.AutoscalingStatus{Reason: autoscale.ReasonNewerState}, at.rf.Status.Autoscaling)
+		assert.Equal(t, []string{"Autoscaler: the state ConfigMap has version 2, this operator reads version 1"}, at.logger.warnings)
+		assert.Len(t, at.logger.debugs, 1)
+		// No write, no sample.
+		at.mk.AssertExpectations(t)
+		assert.Len(t, at.mk.Calls, 2)
+		at.mrfc.AssertNotCalled(t, "GetAutoscalerInfo", mock.Anything, mock.Anything)
 	})
 
 	t.Run("INFO and write", func(t *testing.T) {
@@ -302,6 +382,18 @@ func TestAutoscaleOffRemovesTheState(t *testing.T) {
 		at.run(observed)
 
 		assert.Zero(t, at.rf.Status.Autoscaling)
+	})
+
+	t.Run("configmap of another owner is not deleted", func(t *testing.T) {
+		at := newAutoscaleTest(t, "")
+		at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: autoscaleCM}}, nil).Once()
+		at.mrec.On("DeleteAutoscaler", "testns", "test").Once()
+
+		at.run(redisfailoverv1.AutoscalingStatus{Reason: autoscale.ReasonForeignState})
+
+		assert.Zero(t, at.rf.Status.Autoscaling)
+		at.mk.AssertNotCalled(t, "DeleteConfigMap", mock.Anything, mock.Anything)
+		at.mrec.AssertExpectations(t)
 	})
 
 	t.Run("delete error keeps the status for a retry", func(t *testing.T) {
