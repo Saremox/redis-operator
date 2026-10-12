@@ -48,7 +48,7 @@ func newFailoverTimeoutTest(timeout *metav1.Duration) *failoverTimeoutTest {
 		},
 		checker: &mRFService.RedisFailoverCheck{},
 		healer:  &mRFService.RedisFailoverHeal{},
-		k8s:     &mK8SService.Services{},
+		k8s:     noAppliedSecret(&mK8SService.Services{}),
 		pods: []corev1.Pod{
 			timeoutRedisPod(timeoutMasterPod, timeoutMaster, true, true),
 			timeoutRedisPod("rfr-test-1", timeoutReplica, false, true),
@@ -411,7 +411,7 @@ func TestOperatorManagedModeFailoverTimeoutErrors(t *testing.T) {
 		ft := newFailoverTimeoutTest(nil)
 		// The first listings are for the FAILOVER check and masterPodStopping.
 		// The third listing fails.
-		ft.k8s = &mK8SService.Services{}
+		ft.k8s = noAppliedSecret(&mK8SService.Services{})
 		ft.k8s.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 		ft.k8s.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(ft.rf)).Twice().Return(&corev1.PodList{}, nil)
 		ft.k8s.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(ft.rf)).Once().Return(nil, apiErr)

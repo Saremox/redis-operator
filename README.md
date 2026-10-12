@@ -571,7 +571,7 @@ To enable authentication:
        secretPath: redis-auth
    ```
 
-It is safe to change the `password` key of that Secret in place, to add `auth.secretPath`, or to remove it. The operator first sets the new password on each Redis with `CONFIG SET` and on each Sentinel with `SENTINEL SET`, so replication continues. Then it restarts the Redis pods one at a time. New connections must use the new password immediately.
+It is safe to change the `password` key of that Secret in place, to add `auth.secretPath`, or to remove it. An operator restart during the change is also safe when the operator can write the Secret `rfr-auth-applied-<NAME>` (see below). The operator first sets the new password on each Redis with `CONFIG SET` and on each Sentinel with `SENTINEL SET`, so replication continues. Then it restarts the Redis pods one at a time. New connections must use the new password immediately.
 
 By default, the operator finds a change at its next sync (`--sync-interval`, 30s by default). The chart value `watchAuthSecrets: true` (flag `--watch-auth-secrets`) applies a change immediately. It is off by default because it needs `list` and `watch` on secrets in all namespaces, which can read every Secret. With `watchAuthSecrets: true`, the chart grants these verbs. With kustomize, the kubectl manifests or your own ClusterRole, add `list` and `watch` on `secrets` yourself. If the operator cannot list the Secrets, it only logs the error and finds a change at its next sync.
 
@@ -579,7 +579,7 @@ Until a pod restarts, each program that reads the password from the environment 
 
 Until a pod restarts, the default readiness probe also reports the pod Ready without a replication check. The probe uses the old password, which Redis refuses. A refused password says nothing about replication, so the probe does not fail the pod for it. During this time, `rfrs-<NAME>` can send reads to a replica that is not synced.
 
-The operator keeps the passwords that the Redis pods run with in the Secret `rfr-auth-applied-<NAME>`. After a restart, it reads them from this Secret and can switch the pods. After a complete change, the Secret contains only the new password, or no password after you remove `auth.secretPath`. The RedisFailover owns the Secret, so Kubernetes deletes it with the RedisFailover. Do not change this Secret. The operator does not read or change a Secret with this name that the RedisFailover does not control.
+The operator keeps the passwords that the Redis pods run with in the Secret `rfr-auth-applied-<NAME>`. After its start, the operator reads this Secret at the first check of each RedisFailover, also without `auth.secretPath`. Thus it can switch the pods after a restart, also after you remove `auth.secretPath`. After a complete change, the Secret contains only the new password, or empty values after you remove `auth.secretPath`. The RedisFailover owns the Secret, so Kubernetes deletes it with the RedisFailover. Do not change this Secret. The operator does not read or change a Secret with this name that the RedisFailover does not control.
 
 The operator needs `create` and `update` on `secrets` for this Secret. The Helm chart, `manifests/kustomize` and `example/operator` grant these verbs. With these verbs, the operator can change every Secret in the cluster. Without them, the operator logs a warning and keeps the passwords only in memory.
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	v1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -24,6 +26,14 @@ import (
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 	"github.com/saremox/redis-operator/service/redis"
 )
+
+// noAppliedSecret makes ms answer that the applied passwords Secret is
+// missing.
+func noAppliedSecret(ms *mK8SService.Services) *mK8SService.Services {
+	ms.On("GetSecret", mock.Anything, mock.MatchedBy(func(name string) bool { return strings.HasPrefix(name, "rfr-auth-applied-") })).Maybe().
+		Return(nil, apierrors.NewNotFound(corev1.Resource("secrets"), "rfr-auth-applied"))
+	return ms
+}
 
 func TestCheckAndHeal(t *testing.T) {
 	tests := []struct {
@@ -803,7 +813,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 			mk := settledK8sServices()
 			if test.masterPod {
 				pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfr-0"}, Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: master}}
-				mk = &mK8SService.Services{}
+				mk = noAppliedSecret(&mK8SService.Services{})
 				mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{Items: []corev1.Pod{pod}}, nil)
 				mk.On("UpdatePodAnnotations", rf.Namespace, "rfr-0", mock.Anything).Once().Return(nil)
 			}
@@ -1601,7 +1611,7 @@ func TestSentinelModeElectsWhenSentinelKnowsNoReplica(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			rf := generateRF(false, false)
-			mk := &mK8SService.Services{}
+			mk := noAppliedSecret(&mK8SService.Services{})
 			lists := 0
 			mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(func(string, string) (*corev1.PodList, error) {
 				lists++
@@ -2638,7 +2648,7 @@ func TestUpdate(t *testing.T) {
 						mrfc.On("GetRedisRevisionHash", pod.pod.Name, rf).Once().Return(pod.pod.Labels[appsv1.ControllerRevisionHashLabelKey], nil)
 					}
 					mrfc.On("GetStatefulSetUpdateRevision", rf).Times(reads).Return(test.ssVersion, nil)
-					mk = &mK8SService.Services{}
+					mk = noAppliedSecret(&mK8SService.Services{})
 					mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Times(reads).Return(&corev1.PodList{Items: []corev1.Pod{pod.pod}}, nil)
 					next = false
 					break
@@ -2986,7 +2996,7 @@ func TestUpdateRedisesPodsErrorBranches(t *testing.T) {
 // settledK8sServices returns a k8s service mock whose redis pods are all up,
 // so the pod-replacement and master-election waits don't hold anything back.
 func settledK8sServices() *mK8SService.Services {
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Maybe().Return(&corev1.PodList{Items: make([]corev1.Pod, 5)}, nil)
 	return mk
 }
@@ -3052,7 +3062,7 @@ func TestUpdateRedisesPodsWaitsForTheLastReplacement(t *testing.T) {
 				mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 				mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 				mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
-				mk := &mK8SService.Services{}
+				mk := noAppliedSecret(&mK8SService.Services{})
 				mrfc.On("GetRedisesIPs", rf).Once().Return([]string{"10.0.0.1"}, nil)
 				mrfc.On("GetMasterIP", rf).Once().Return("10.0.0.1", nil)
 				mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("new", nil)
@@ -3127,7 +3137,7 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) 
 			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
-			mk := &mK8SService.Services{}
+			mk := noAppliedSecret(&mK8SService.Services{})
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 			mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
@@ -3204,7 +3214,7 @@ func TestOperatorManagedModeWaitsForAStoppingMasterBeforeFailover(t *testing.T) 
 			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
-			mk := &mK8SService.Services{}
+			mk := noAppliedSecret(&mK8SService.Services{})
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 			mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
@@ -3302,7 +3312,7 @@ func TestSentinelModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) {
 			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
-			mk := &mK8SService.Services{}
+			mk := noAppliedSecret(&mK8SService.Services{})
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 			mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
@@ -3520,7 +3530,7 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
-			mk := &mK8SService.Services{}
+			mk := noAppliedSecret(&mK8SService.Services{})
 			masterIP := master.ip
 			if test.noMaster {
 				masterIP = ""
@@ -3619,7 +3629,7 @@ func TestOperatorManagedModeDoesNotReplaceAStalledMaster(t *testing.T) {
 			replica := redisPod("1", true, false)
 			replica.Name, replica.Status.Phase, replica.Status.PodIP = "rfr-1", corev1.PodRunning, replicaIP
 
-			mk := &mK8SService.Services{}
+			mk := noAppliedSecret(&mK8SService.Services{})
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Return(&corev1.PodList{Items: []corev1.Pod{master, replica}}, nil)
 			mk.On("UpdatePodAnnotations", rf.Namespace, "rfr-0", mock.MatchedBy(func(a map[string]string) bool {
@@ -3663,7 +3673,7 @@ func TestOperatorManagedModeDoesNotReplaceAStalledMasterWhenThePodLookupFails(t 
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 	mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
@@ -3770,7 +3780,7 @@ func TestOperatorManagedModeDemotesTheMastersThatAreNotLabelledMaster(t *testing
 			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
 			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
-			mk := &mK8SService.Services{}
+			mk := noAppliedSecret(&mK8SService.Services{})
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			// The FAILOVER check also lists the pods.
 			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Twice().Return(&corev1.PodList{Items: test.pods}, test.podsErr)
@@ -3847,7 +3857,7 @@ func TestSentinelModeDoesNotHealSentinelsWhileTheMasterStops(t *testing.T) {
 			// The rollout is done; the next pod list is the check of the guard.
 			rolloutDone := false
 
-			mk := &mK8SService.Services{}
+			mk := noAppliedSecret(&mK8SService.Services{})
 			mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(func(string, string) (*corev1.PodList, error) {
 				if rolloutDone && test.listErr != nil {
 					return nil, test.listErr

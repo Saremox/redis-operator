@@ -22,12 +22,13 @@ import (
 )
 
 // appliedSecretEnv is a RedisFailover whose Redis pods run with the passwords
-// in running, one for each pod IP. A pod with an empty IP is yet to start.
+// in running, one for each pod IP. With pending, one more pod is yet to start.
 type appliedSecretEnv struct {
 	rf       *redisfailoverv1.RedisFailover
 	ms       *mK8SService.Services
 	password string
 	running  map[string]string
+	pending  bool
 	stored   map[string]*corev1.Secret
 	tried    []string
 }
@@ -42,18 +43,21 @@ func newAppliedSecretEnv(t *testing.T, password string, running map[string]strin
 		ms:       &mK8SService.Services{},
 		password: password,
 		running:  running,
-	}
-	pods := &corev1.PodList{}
-	for ip := range running {
-		pods.Items = append(pods.Items, corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-" + ip}, Status: corev1.PodStatus{PodIP: ip, Phase: corev1.PodRunning}})
-	}
-	if pending {
-		pods.Items = append(pods.Items, corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-pending"}, Status: corev1.PodStatus{Phase: corev1.PodPending}})
+		pending:  pending,
 	}
 	e.ms.On("GetSecret", "testns", "redis-auth").Return(func(string, string) (*corev1.Secret, error) {
 		return &corev1.Secret{Data: map[string][]byte{"password": []byte(e.password)}}, nil
 	})
-	e.ms.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(e.rf)).Return(pods, nil)
+	e.ms.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(e.rf)).Return(func(string, string) (*corev1.PodList, error) {
+		pods := &corev1.PodList{}
+		for ip := range e.running {
+			pods.Items = append(pods.Items, corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-" + ip}, Status: corev1.PodStatus{PodIP: ip, Phase: corev1.PodRunning}})
+		}
+		if e.pending {
+			pods.Items = append(pods.Items, corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-pending"}, Status: corev1.PodStatus{Phase: corev1.PodPending}})
+		}
+		return pods, nil
+	})
 	e.ms.On("GetDeploymentPods", "testns", rfservice.GetSentinelName(e.rf)).Return(&corev1.PodList{}, nil)
 	e.stored = mockAppliedSecret(e.ms)
 	return e
@@ -284,7 +288,7 @@ func TestApplyPasswordRetriesAFailedSave(t *testing.T) {
 	assert.Equal(t, 3, e.writes())
 	assert.Len(t, logger.warnings, 1)
 	v, _ := handler.passwords.Load(passwordKey(e.rf))
-	assert.False(t, v.(passwordState).unsaved)
+	assert.False(t, v.(passwordState).retrySecret)
 }
 
 // TestApplyPasswordKeepsAForeignSecret covers a Secret with the name of the
@@ -366,20 +370,89 @@ func TestApplyPasswordGoesOnWhenTheReadFails(t *testing.T) {
 	assert.True(t, cached)
 }
 
-// TestApplyPasswordWithoutAuthUsesNoAppliedSecret covers a RedisFailover
-// without a password: there is nothing to keep.
+// TestApplyPasswordWithoutAuthUsesNoAppliedSecret covers a RedisFailover that
+// never had a password: one read at the operator start, and nothing more.
 func TestApplyPasswordWithoutAuthUsesNoAppliedSecret(t *testing.T) {
 	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"}}
-	ms := &mK8SService.Services{}
+	ms := noAppliedSecret(&mK8SService.Services{})
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("ApplyPassword", rf, "", []string{""}).Return(true, nil)
 	mrfh.On("ApplySentinelPassword", rf, "").Return(true, nil)
-	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, mrfh, ms, metrics.Dummy, log.Dummy)
+	logger := &warnLogger{}
+	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, mrfh, ms, metrics.Dummy, logger)
 
 	for range 3 {
 		require.NoError(t, handler.applyPassword(rf))
 	}
 	mrfh.AssertNumberOfCalls(t, "ApplyPassword", 1)
-	ms.AssertNotCalled(t, "GetSecret", mock.Anything, mock.Anything)
+	ms.AssertNumberOfCalls(t, "GetSecret", 1)
 	ms.AssertNotCalled(t, "CreateOrUpdateSecret", mock.Anything, mock.Anything)
+	assert.Empty(t, logger.warnings)
+}
+
+// TestApplyPasswordRestartDuringARemoval covers an operator restart after the
+// removal of auth.secretPath reached the running pods but not a pod yet to
+// start. That pod comes up with the old password, and the operator must
+// still know it.
+func TestApplyPasswordRestartDuringARemoval(t *testing.T) {
+	e := newAppliedSecretEnv(t, "", map[string]string{"10.0.0.1": "v1"}, true)
+	e.rf.Spec.Auth.SecretPath = ""
+	e.storeApplied("v1", "v1")
+
+	require.NoError(t, e.handler(log.Dummy).applyPassword(e.rf))
+	assert.Equal(t, "", e.running["10.0.0.1"])
+	redis, applied := e.applied()
+	assert.Equal(t, []string{"v1", ""}, []string{redis, applied})
+
+	// After a second restart, the pod starts with the old password.
+	handler := e.handler(log.Dummy)
+	require.NoError(t, handler.applyPassword(e.rf))
+	e.pending = false
+	e.running["10.0.0.2"] = "v1"
+	require.NoError(t, handler.applyPassword(e.rf))
+	assert.Equal(t, map[string]string{"10.0.0.1": "", "10.0.0.2": ""}, e.running)
+	redis, applied = e.applied()
+	assert.Equal(t, []string{"", ""}, []string{redis, applied})
+}
+
+// TestApplyPasswordRetriesAFailedRead covers a read error that goes away while
+// every pod accepts the password: the next reconcile reads and writes the
+// Secret, and then the operator makes no more calls.
+func TestApplyPasswordRetriesAFailedRead(t *testing.T) {
+	e := newAppliedSecretEnv(t, "v2", map[string]string{"10.0.0.1": "v2"}, false)
+	e.storeApplied("v1", "v1")
+	e.ms.On("GetSecret", "testns", "rfr-auth-applied-test").Once().Return(nil, errors.New("etcdserver: request timed out"))
+	e.ms.ExpectedCalls = append(e.ms.ExpectedCalls[len(e.ms.ExpectedCalls)-1:], e.ms.ExpectedCalls[:len(e.ms.ExpectedCalls)-1]...)
+	logger := &warnLogger{}
+	handler := e.handler(logger)
+
+	for range 4 {
+		require.NoError(t, handler.applyPassword(e.rf))
+	}
+	redis, applied := e.applied()
+	assert.Equal(t, []string{"v2", "v2"}, []string{redis, applied})
+	assert.Equal(t, 1, e.writes())
+	reads := 0
+	for _, c := range e.ms.Calls {
+		if c.Method == "GetSecret" && c.Arguments[1] == "rfr-auth-applied-test" {
+			reads++
+		}
+	}
+	assert.Equal(t, 2, reads)
+	assert.Len(t, logger.warnings, 1)
+}
+
+// TestApplyPasswordDoesNotRetryAForbiddenSave covers an operator without the
+// right to write Secrets: a retry at each reconcile cannot succeed.
+func TestApplyPasswordDoesNotRetryAForbiddenSave(t *testing.T) {
+	e := newAppliedSecretEnv(t, "v1", map[string]string{"10.0.0.1": "v1"}, false)
+	forbidden := apierrors.NewForbidden(corev1.Resource("secrets"), "rfr-auth-applied-test", errors.New("no create"))
+	e.ms.ExpectedCalls = slices.DeleteFunc(e.ms.ExpectedCalls, func(c *mock.Call) bool { return c.Method == "CreateOrUpdateSecret" })
+	e.ms.On("CreateOrUpdateSecret", "testns", mock.Anything).Return(forbidden)
+	handler := e.handler(log.Dummy)
+
+	for range 3 {
+		require.NoError(t, handler.applyPassword(e.rf))
+	}
+	assert.Equal(t, 1, e.writes())
 }

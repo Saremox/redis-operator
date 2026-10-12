@@ -636,9 +636,9 @@ type passwordState struct {
 	// It is not redis while a pod yet to start keeps redis in use.
 	applied  string
 	sentinel string
-	// unsaved makes the next reconcile write the Secret again after an error
-	// that can go away.
-	unsaved bool
+	// retrySecret makes the next reconcile read and write the Secret again
+	// after an error that can go away.
+	retrySecret bool
 }
 
 func passwordKey(rf *redisfailoverv1.RedisFailover) string {
@@ -653,26 +653,33 @@ const (
 )
 
 // loadAppliedPasswords reads the passwords that saveAppliedPasswords kept
-// before an operator restart. It returns false when the Secret must not be
-// written in this reconcile: an unknown content must not be replaced, and
-// another owner keeps its Secret.
-func (r *RedisFailoverHandler) loadAppliedPasswords(rf *redisfailoverv1.RedisFailover) (passwordState, bool) {
+// before an operator restart. ok is false when the Secret must not be written
+// in this reconcile: an unknown content must not be replaced, and another
+// owner keeps its Secret. retry is true for an error that can go away.
+func (r *RedisFailoverHandler) loadAppliedPasswords(rf *redisfailoverv1.RedisFailover) (saved passwordState, ok, retry bool) {
 	name := rfservice.GetRedisAuthAppliedName(rf)
 	secret, err := r.k8sservice.GetSecret(rf.Namespace, name)
 	if apierrors.IsNotFound(err) {
-		return passwordState{}, true
+		return passwordState{}, true, false
 	}
 	if err == nil {
 		err = k8s.CheckSameController("Secret", secret, &metav1.ObjectMeta{OwnerReferences: r.createOwnerReferences(rf)})
 	}
 	if err != nil {
 		r.logAppliedSecretError(rf, "unable to read the applied passwords from Secret "+name, err)
-		return passwordState{}, false
+		return passwordState{}, false, retryableSecretError(err)
 	}
 	return passwordState{
 		redis:   string(secret.Data[appliedSecretRedisKey]),
 		applied: string(secret.Data[appliedSecretAppliedKey]),
-	}, true
+	}, true, false
+}
+
+// retryableSecretError is false for a missing RBAC verb and for another
+// owner: a retry at each reconcile cannot change them.
+func retryableSecretError(err error) bool {
+	var other *k8s.ControlledByOtherError
+	return !apierrors.IsForbidden(err) && !errors.As(err, &other)
 }
 
 // saveAppliedPasswords keeps the passwords of state in a Secret, so that an
@@ -693,14 +700,10 @@ func (r *RedisFailoverHandler) saveAppliedPasswords(rf *redisfailoverv1.RedisFai
 	}
 	err := r.k8sservice.CreateOrUpdateSecret(rf.Namespace, secret)
 	if err == nil {
-		state.unsaved = false
 		r.appliedSecretLogged.Delete(passwordKey(rf))
 		return
 	}
-	// A retry at each reconcile cannot get a missing RBAC verb or remove
-	// another owner.
-	var other *k8s.ControlledByOtherError
-	state.unsaved = !apierrors.IsForbidden(err) && !errors.As(err, &other)
+	state.retrySecret = retryableSecretError(err)
 	r.logAppliedSecretError(rf, "unable to save the applied passwords in Secret "+secret.Name+", an operator restart forgets them", err)
 }
 
@@ -723,11 +726,14 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 	key := passwordKey(rf)
 	v, known := r.passwords.Load(key)
 	state, _ := v.(passwordState)
-	if known && state.redis == password && state.applied == password && state.sentinel == password && !state.unsaved {
+	if known && state.redis == password && state.applied == password && state.sentinel == password && !state.retrySecret {
 		return nil
 	}
 
 	saved, save := state, true
+	if !known || state.retrySecret {
+		saved, save, state.retrySecret = r.loadAppliedPasswords(rf)
+	}
 	if !known || state.redis != password || state.applied != password {
 		previous := []string{password}
 		if known {
@@ -735,8 +741,7 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 			if state.applied != state.redis {
 				previous = append(previous, state.applied)
 			}
-		} else if password != "" {
-			saved, save = r.loadAppliedPasswords(rf)
+		} else {
 			for _, p := range []string{saved.redis, saved.applied} {
 				if p != "" && !slices.Contains(previous, p) {
 					previous = append(previous, p)
@@ -757,7 +762,7 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 			state.redis = cmp.Or(saved.redis, password)
 		}
 	}
-	if save && (state.unsaved || state.redis != saved.redis || state.applied != saved.applied) {
+	if save && (state.redis != saved.redis || state.applied != saved.applied) {
 		r.saveAppliedPasswords(rf, &state)
 	}
 

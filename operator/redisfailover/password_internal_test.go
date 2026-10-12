@@ -40,11 +40,21 @@ func newPasswordTestHandler(password *string) (*RedisFailoverHandler, *redisfail
 	return handler, rf, mrfh
 }
 
+func isAppliedSecretName(name string) bool { return strings.HasPrefix(name, "rfr-auth-applied-") }
+
+// noAppliedSecret makes ms answer that the applied passwords Secret is
+// missing.
+func noAppliedSecret(ms *mK8SService.Services) *mK8SService.Services {
+	ms.On("GetSecret", mock.Anything, mock.MatchedBy(isAppliedSecretName)).Maybe().
+		Return(nil, apierrors.NewNotFound(corev1.Resource("secrets"), "rfr-auth-applied"))
+	return ms
+}
+
 // mockAppliedSecret makes ms keep the applied passwords Secret in memory. It
 // starts without one.
 func mockAppliedSecret(ms *mK8SService.Services) map[string]*corev1.Secret {
 	stored := map[string]*corev1.Secret{}
-	ms.On("GetSecret", mock.Anything, mock.MatchedBy(func(name string) bool { return strings.HasPrefix(name, "rfr-auth-applied-") })).
+	ms.On("GetSecret", mock.Anything, mock.MatchedBy(isAppliedSecretName)).
 		Maybe().Return(func(_, name string) (*corev1.Secret, error) {
 		if s, ok := stored[name]; ok {
 			return s, nil
