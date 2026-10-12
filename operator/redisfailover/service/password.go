@@ -60,7 +60,7 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 				break
 			}
 		}
-		if !tried {
+		if !tried || redis.IsAuthError(err) {
 			unknown = append(unknown, rp.Name)
 			continue
 		}

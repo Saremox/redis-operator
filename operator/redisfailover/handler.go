@@ -57,6 +57,9 @@ type RedisFailoverHandler struct {
 	// passwords holds a passwordState per namespace/name, so a changed secret
 	// can be applied with the old password.
 	passwords sync.Map
+	// appliedSecretLogged holds, per namespace/name, the last error with the
+	// applied passwords Secret that was logged at Warning.
+	appliedSecretLogged sync.Map
 	// rolloutWaits holds, per namespace/name, the rolloutWait the redis pod
 	// rollout waits on and since when.
 	rolloutWaits sync.Map
@@ -103,6 +106,7 @@ func (r *RedisFailoverHandler) Forget(key string) {
 	namespace, name, _ := strings.Cut(key, "/")
 	r.mClient.DeleteCluster(namespace, name)
 	r.passwords.Delete(key)
+	r.appliedSecretLogged.Delete(key)
 	r.rolloutWaits.Delete(key)
 	r.unreachableCleared.Delete(key)
 	r.maxMemoryLogged.Delete(key)

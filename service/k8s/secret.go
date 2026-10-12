@@ -46,16 +46,23 @@ func (s *SecretService) GetSecret(namespace, name string) (*corev1.Secret, error
 	return secret, err
 }
 
-// CreateOrUpdateSecret replaces the Secret without a read first: a Secret
-// accepts an update without a resource version, and the Secret exists after
-// the first call. A missing Secret is not an UPDATE failure in the metrics.
+// CreateOrUpdateSecret creates the Secret, or updates a stored Secret with the
+// same controller. It returns a ControlledByOtherError for any other Secret.
 func (s *SecretService) CreateOrUpdateSecret(namespace string, secret *corev1.Secret) error {
-	_, err := s.kubeClient.CoreV1().Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
-	if !errors.IsNotFound(err) {
-		recordMetrics(namespace, "Secret", secret.Name, "UPDATE", err, s.metricsRecorder)
+	stored, err := s.GetSecret(namespace, secret.Name)
+	if errors.IsNotFound(err) {
+		_, err = s.kubeClient.CoreV1().Secrets(namespace).Create(context.TODO(), secret, metav1.CreateOptions{})
+		recordMetrics(namespace, "Secret", secret.Name, "CREATE", err, s.metricsRecorder)
 		return err
 	}
-	_, err = s.kubeClient.CoreV1().Secrets(namespace).Create(context.TODO(), secret, metav1.CreateOptions{})
-	recordMetrics(namespace, "Secret", secret.Name, "CREATE", err, s.metricsRecorder)
+	if err != nil {
+		return err
+	}
+	if err := CheckSameController("Secret", stored, secret); err != nil {
+		return err
+	}
+	secret.ResourceVersion = stored.ResourceVersion
+	_, err = s.kubeClient.CoreV1().Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
+	recordMetrics(namespace, "Secret", secret.Name, "UPDATE", err, s.metricsRecorder)
 	return err
 }

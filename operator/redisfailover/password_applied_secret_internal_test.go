@@ -2,6 +2,7 @@ package redisfailover
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -82,7 +83,10 @@ func (e *appliedSecretEnv) handler(logger log.Logger) *RedisFailoverHandler {
 
 func (e *appliedSecretEnv) storeApplied(redis, applied string) {
 	name := rfservice.GetRedisAuthAppliedName(e.rf)
-	e.stored[name] = &corev1.Secret{Data: map[string][]byte{"redis": []byte(redis), "applied": []byte(applied)}}
+	e.stored[name] = &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(e.rf, redisfailoverv1.VersionKind(redisfailoverv1.RFKind))}},
+		Data:       map[string][]byte{"redis": []byte(redis), "applied": []byte(applied)},
+	}
 }
 
 func (e *appliedSecretEnv) applied() (redis, applied string) {
@@ -255,8 +259,89 @@ func TestApplyPasswordGoesOnWhenTheSaveFails(t *testing.T) {
 	assert.Len(t, logger.debugs, 2)
 }
 
+// TestApplyPasswordRetriesAFailedSave covers an API error that can go away:
+// the next reconcile writes the Secret again, and the error logs one Warning.
+func TestApplyPasswordRetriesAFailedSave(t *testing.T) {
+	e := newAppliedSecretEnv(t, "v1", map[string]string{"10.0.0.1": "v1"}, false)
+	boom := errors.New("etcdserver: request timed out")
+	fails := 2
+	e.ms.On("CreateOrUpdateSecret", "testns", mock.Anything).Return(func(string, *corev1.Secret) error {
+		if fails > 0 {
+			fails--
+			return boom
+		}
+		return nil
+	})
+	e.ms.ExpectedCalls = slices.DeleteFunc(e.ms.ExpectedCalls, func(c *mock.Call) bool {
+		return c.Method == "CreateOrUpdateSecret" && c.Arguments[0] == mock.Anything
+	})
+	logger := &warnLogger{}
+	handler := e.handler(logger)
+
+	for range 5 {
+		require.NoError(t, handler.applyPassword(e.rf))
+	}
+	assert.Equal(t, 3, e.writes())
+	assert.Len(t, logger.warnings, 1)
+	v, _ := handler.passwords.Load(passwordKey(e.rf))
+	assert.False(t, v.(passwordState).unsaved)
+}
+
+// TestApplyPasswordKeepsAForeignSecret covers a Secret with the name of the
+// applied Secret that the RedisFailover does not control: the operator neither
+// reads nor changes it.
+func TestApplyPasswordKeepsAForeignSecret(t *testing.T) {
+	tests := map[string][]metav1.OwnerReference{
+		"no controller": nil,
+		"another controller": {*metav1.NewControllerRef(&redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "other"}},
+			redisfailoverv1.VersionKind(redisfailoverv1.RFKind))},
+	}
+	for name, owners := range tests {
+		t.Run(name, func(t *testing.T) {
+			e := newAppliedSecretEnv(t, "v2", map[string]string{"10.0.0.1": "v1"}, false)
+			foreign := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "rfr-auth-applied-test", OwnerReferences: owners},
+				Data:       map[string][]byte{"redis": []byte("v1"), "applied": []byte("v1")},
+			}
+			e.stored[foreign.Name] = foreign
+			logger := &warnLogger{}
+			handler := e.handler(logger)
+
+			// The behavior without the Secret: the pod stays on its password.
+			assert.ErrorContains(t, handler.applyPassword(e.rf), "put the previous password back")
+			assert.Equal(t, "v1", e.running["10.0.0.1"])
+			assert.Equal(t, 0, e.writes())
+
+			e.password = "v1"
+			require.NoError(t, handler.applyPassword(e.rf))
+			e.password = "v3"
+			require.NoError(t, handler.applyPassword(e.rf))
+			assert.Same(t, foreign, e.stored[foreign.Name])
+			assert.Len(t, logger.warnings, 1)
+		})
+	}
+}
+
+// TestApplyPasswordSavesARemovedPassword covers the removal of
+// auth.secretPath: the Secret must not keep the old password.
+func TestApplyPasswordSavesARemovedPassword(t *testing.T) {
+	e := newAppliedSecretEnv(t, "v1", map[string]string{"10.0.0.1": "v1"}, false)
+	handler := e.handler(log.Dummy)
+	require.NoError(t, handler.applyPassword(e.rf))
+
+	e.rf.Spec.Auth.SecretPath = ""
+	for range 3 {
+		require.NoError(t, handler.applyPassword(e.rf))
+	}
+	assert.Equal(t, "", e.running["10.0.0.1"])
+	redis, applied := e.applied()
+	assert.Equal(t, []string{"", ""}, []string{redis, applied})
+	assert.Equal(t, 2, e.writes())
+}
+
 // TestApplyPasswordGoesOnWhenTheReadFails covers a read error other than
-// NotFound: the operator logs it and tries only the configured password.
+// NotFound: the operator logs it, tries only the configured password, and
+// does not replace the Secret that it could not read.
 func TestApplyPasswordGoesOnWhenTheReadFails(t *testing.T) {
 	password := "v1"
 	rf := &redisfailoverv1.RedisFailover{
@@ -276,7 +361,9 @@ func TestApplyPasswordGoesOnWhenTheReadFails(t *testing.T) {
 	require.NoError(t, handler.applyPassword(rf))
 	mrfh.AssertExpectations(t)
 	assert.Len(t, logger.warnings, 1)
-	ms.AssertNumberOfCalls(t, "CreateOrUpdateSecret", 1)
+	ms.AssertNotCalled(t, "CreateOrUpdateSecret", mock.Anything, mock.Anything)
+	_, cached := handler.passwords.Load(passwordKey(rf))
+	assert.True(t, cached)
 }
 
 // TestApplyPasswordWithoutAuthUsesNoAppliedSecret covers a RedisFailover
@@ -289,7 +376,10 @@ func TestApplyPasswordWithoutAuthUsesNoAppliedSecret(t *testing.T) {
 	mrfh.On("ApplySentinelPassword", rf, "").Return(true, nil)
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, mrfh, ms, metrics.Dummy, log.Dummy)
 
-	require.NoError(t, handler.applyPassword(rf))
+	for range 3 {
+		require.NoError(t, handler.applyPassword(rf))
+	}
+	mrfh.AssertNumberOfCalls(t, "ApplyPassword", 1)
 	ms.AssertNotCalled(t, "GetSecret", mock.Anything, mock.Anything)
 	ms.AssertNotCalled(t, "CreateOrUpdateSecret", mock.Anything, mock.Anything)
 }

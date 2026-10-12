@@ -78,44 +78,73 @@ func TestSecretServiceGetMetricLabel(t *testing.T) {
 	}
 }
 
-func TestSecretServiceCreateOrUpdate(t *testing.T) {
-	secret := func(value string) *corev1.Secret {
-		return &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "rfr-auth-applied-test", Namespace: "ns"},
-			Data:       map[string][]byte{"redis": []byte(value)},
-		}
+func appliedSecret(owner, value string) *corev1.Secret {
+	s := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "rfr-auth-applied-test", Namespace: "ns"},
+		Data:       map[string][]byte{"redis": []byte(value)},
 	}
+	if owner != "" {
+		controller := true
+		s.OwnerReferences = []metav1.OwnerReference{{APIVersion: "databases.spotahome.com/v1", Kind: "RedisFailover", Name: owner, Controller: &controller}}
+	}
+	return s
+}
+
+func TestSecretServiceCreateOrUpdate(t *testing.T) {
 	cli := kubernetes.NewSimpleClientset()
 	rec := &mmetrics.Recorder{}
+	rec.On("RecordK8sOperation", "ns", "Secret", metrics.NOT_APPLICABLE, "GET", metrics.FAIL, metrics.K8S_NOT_FOUND).Once()
+	rec.On("RecordK8sOperation", "ns", "Secret", metrics.NOT_APPLICABLE, "GET", metrics.SUCCESS, metrics.NOT_APPLICABLE).Once()
 	rec.On("RecordK8sOperation", "ns", "Secret", "rfr-auth-applied-test", "CREATE", metrics.SUCCESS, metrics.NOT_APPLICABLE).Once()
 	rec.On("RecordK8sOperation", "ns", "Secret", "rfr-auth-applied-test", "UPDATE", metrics.SUCCESS, metrics.NOT_APPLICABLE).Once()
 	service := NewSecretService(cli, log.Dummy, rec)
 
-	assert.NoError(t, service.CreateOrUpdateSecret("ns", secret("v1")))
-	assert.NoError(t, service.CreateOrUpdateSecret("ns", secret("v2")))
-	// The missing Secret of the first update is not a failure.
+	assert.NoError(t, service.CreateOrUpdateSecret("ns", appliedSecret("test", "v1")))
+	stored, err := cli.CoreV1().Secrets("ns").Get(context.TODO(), "rfr-auth-applied-test", metav1.GetOptions{})
+	assert.NoError(t, err)
+	stored.ResourceVersion = "7"
+	_, err = cli.CoreV1().Secrets("ns").Update(context.TODO(), stored, metav1.UpdateOptions{})
+	assert.NoError(t, err)
+
+	update := appliedSecret("test", "v2")
+	assert.NoError(t, service.CreateOrUpdateSecret("ns", update))
 	rec.AssertExpectations(t)
 
 	got, err := cli.CoreV1().Secrets("ns").Get(context.TODO(), "rfr-auth-applied-test", metav1.GetOptions{})
 	assert.NoError(t, err)
 	assert.Equal(t, "v2", string(got.Data["redis"]))
-	var verbs []string
-	for _, a := range cli.Actions() {
-		if a.GetVerb() != "get" {
-			verbs = append(verbs, a.GetVerb())
-		}
-	}
-	// The first call creates the Secret, and the second updates it without a read.
-	assert.Equal(t, []string{"update", "create", "update"}, verbs)
+	assert.Equal(t, "7", update.ResourceVersion)
 }
 
-func TestSecretServiceCreateOrUpdateReturnsAnUpdateError(t *testing.T) {
+func TestSecretServiceCreateOrUpdateKeepsAForeignSecret(t *testing.T) {
+	for _, owner := range []string{"", "other"} {
+		t.Run("owner "+owner, func(t *testing.T) {
+			foreign := appliedSecret(owner, "v1")
+			cli := kubernetes.NewSimpleClientset(foreign)
+
+			err := NewSecretService(cli, log.Dummy, metrics.Dummy).CreateOrUpdateSecret("ns", appliedSecret("test", "v2"))
+
+			var other *ControlledByOtherError
+			assert.ErrorAs(t, err, &other)
+			if owner == "" {
+				assert.EqualError(t, err, `cannot manage Secret "rfr-auth-applied-test": it has no controller`)
+			}
+			got, _ := cli.CoreV1().Secrets("ns").Get(context.TODO(), "rfr-auth-applied-test", metav1.GetOptions{})
+			assert.Equal(t, "v1", string(got.Data["redis"]))
+			for _, a := range cli.Actions() {
+				assert.Equal(t, "get", a.GetVerb())
+			}
+		})
+	}
+}
+
+func TestSecretServiceCreateOrUpdateReturnsAReadError(t *testing.T) {
 	cli := kubernetes.NewSimpleClientset()
 	forbidden := errors.NewForbidden(corev1.Resource("secrets"), "s", nil)
-	cli.PrependReactor("update", "secrets", func(kubetesting.Action) (bool, runtime.Object, error) {
+	cli.PrependReactor("get", "secrets", func(kubetesting.Action) (bool, runtime.Object, error) {
 		return true, nil, forbidden
 	})
-	err := NewSecretService(cli, log.Dummy, metrics.Dummy).CreateOrUpdateSecret("ns", &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s"}})
+	err := NewSecretService(cli, log.Dummy, metrics.Dummy).CreateOrUpdateSecret("ns", appliedSecret("test", "v1"))
 	assert.True(t, errors.IsForbidden(err))
 	assert.Len(t, cli.Actions(), 1)
 }

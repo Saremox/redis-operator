@@ -20,6 +20,7 @@ import (
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
+	"github.com/saremox/redis-operator/service/k8s"
 )
 
 func newPasswordTestHandler(password *string) (*RedisFailoverHandler, *redisfailoverv1.RedisFailover, *mRFService.RedisFailoverHeal) {
@@ -51,6 +52,11 @@ func mockAppliedSecret(ms *mK8SService.Services) map[string]*corev1.Secret {
 		return nil, apierrors.NewNotFound(corev1.Resource("secrets"), name)
 	})
 	ms.On("CreateOrUpdateSecret", mock.Anything, mock.Anything).Maybe().Return(func(_ string, s *corev1.Secret) error {
+		if old, ok := stored[s.Name]; ok {
+			if err := k8s.CheckSameController("Secret", old, s); err != nil {
+				return err
+			}
+		}
 		stored[s.Name] = s
 		return nil
 	})

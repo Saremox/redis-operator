@@ -579,13 +579,13 @@ Until a pod restarts, each program that reads the password from the environment 
 
 Until a pod restarts, the default readiness probe also reports the pod Ready without a replication check. The probe uses the old password, which Redis refuses. A refused password says nothing about replication, so the probe does not fail the pod for it. During this time, `rfrs-<NAME>` can send reads to a replica that is not synced.
 
-The operator keeps the passwords that the Redis pods run with in the Secret `rfr-auth-applied-<NAME>`. After a restart, it reads them from this Secret and can switch the pods. After a complete change, the Secret contains only the new password. The RedisFailover owns the Secret, so Kubernetes deletes it with the RedisFailover. Do not change this Secret.
+The operator keeps the passwords that the Redis pods run with in the Secret `rfr-auth-applied-<NAME>`. After a restart, it reads them from this Secret and can switch the pods. After a complete change, the Secret contains only the new password, or no password after you remove `auth.secretPath`. The RedisFailover owns the Secret, so Kubernetes deletes it with the RedisFailover. Do not change this Secret. The operator does not read or change a Secret with this name that the RedisFailover does not control.
 
-The operator needs `create` and `update` on `secrets` for this Secret. The Helm chart, `manifests/kustomize` and `example/operator` grant these verbs. Without them, the operator logs a warning and keeps the passwords only in memory.
+The operator needs `create` and `update` on `secrets` for this Secret. The Helm chart, `manifests/kustomize` and `example/operator` grant these verbs. With these verbs, the operator can change every Secret in the cluster. Without them, the operator logs a warning and keeps the passwords only in memory.
 
-If the operator cannot read or write the Secret and restarts between a change and its next check, it cannot switch the pods. The RedisFailover then reports `unable to apply the configured password`. To recover:
+If a Redis pod runs with a password that the operator does not know, the operator cannot switch the pod. This occurs, for example, when the operator cannot read or write `rfr-auth-applied-<NAME>` and restarts between a change and its next check. The RedisFailover then reports `unable to apply the configured password`. To recover:
 
-1. Put the previous password back in the Secret.
+1. Put the previous password back in the auth Secret (`auth.secretPath`).
 2. Wait until the RedisFailover is healthy.
 3. Change the password again.
 
