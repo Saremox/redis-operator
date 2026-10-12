@@ -38,6 +38,11 @@ const (
 	// StepAlignment rounds the recommended limit up, so that small limits get
 	// a useful step.
 	StepAlignment = 64 << 20
+	// MaxStateAge is the age of the last sample after which a state is
+	// discarded. NeedsWrite writes the sample time at least one time in each
+	// window, and a sample can come one SampleInterval late. An older state,
+	// for example of a mode change to Off and back, shows an earlier memory use.
+	MaxStateAge = 2*WindowLength + SampleInterval
 	// StateVersion changes when State changes in a way that an older
 	// operator cannot read.
 	StateVersion = 1
@@ -93,12 +98,29 @@ type State struct {
 	LastSample  int64 `json:"lastSample,omitempty"`
 }
 
+// Expire discards the decision values of a state with a last sample older than
+// MaxStateAge. Without a run_id, the next sample sets the OOM baseline again
+// and is not a restart.
+func Expire(s State, now time.Time) State {
+	if s.LastSample == 0 || now.Unix()-s.LastSample <= int64(MaxStateAge/time.Second) {
+		return s
+	}
+	at := now.Unix()
+	s.RunID, s.OOMErrors, s.Window = "", 0, Window{}
+	s.setHighWindows(0, at)
+	s.setRecommended(0, at)
+	s.Reason = ReasonNoSample
+	return s
+}
+
 // NeedsWrite reports whether s has a change that a decision uses. The sample
 // time and the exact peaks of the open window change at most samples, and a
 // write for each sample costs one API call. Of the open window, only its start
-// and whether its peak is high are decisions.
+// and whether its peak is high are decisions. The sample time is written at
+// least one time in each window, so that Expire finds only a state that no
+// operator samples.
 func (s State) NeedsWrite(stored State) bool {
-	return s.decisionView() != stored.decisionView()
+	return s.decisionView() != stored.decisionView() || s.LastSample-stored.LastSample >= int64(WindowLength/time.Second)
 }
 
 func (s State) decisionView() State {
@@ -142,7 +164,8 @@ func Observe(s State, in Input) State {
 		// sets the baseline of the OOM count.
 		restarted := s.RunID != ""
 		s.RunID, s.OOMErrors = info.RunID, info.OOMErrors
-		s.HighWindows, s.Window = 0, Window{}
+		s.Window = Window{}
+		s.setHighWindows(0, now)
 		s.setRecommended(0, now)
 		if restarted {
 			return s.withReason(ReasonRestarted)
@@ -163,7 +186,8 @@ func Observe(s State, in Input) State {
 	s.OOMErrors = info.OOMErrors
 	s.Workload = workload(in.Workload, in.Policy, info)
 	if s.Workload == redisfailoverv1.AutoscalingWorkloadCache {
-		s.HighWindows, s.Window = 0, Window{}
+		s.Window = Window{}
+		s.setHighWindows(0, now)
 		s.setRecommended(0, now)
 		return s.withReason(ReasonCache)
 	}
@@ -277,11 +301,16 @@ func (s *State) closeWindow(now int64) {
 	if now >= s.Window.Start+2*int64(WindowLength/time.Second) {
 		count = 0
 	}
-	if count != s.HighWindows {
+	s.setHighWindows(count, now)
+	s.Window = Window{}
+}
+
+// setHighWindows stamps EvaluatedAt only on a change, as setRecommended.
+func (s *State) setHighWindows(count int32, now int64) {
+	if s.HighWindows != count {
 		s.HighWindows = count
 		s.EvaluatedAt = now
 	}
-	s.Window = Window{}
 }
 
 func (s *State) recommend(limit, maxLimit, now int64, reason string) {

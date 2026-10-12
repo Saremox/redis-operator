@@ -218,6 +218,38 @@ func TestAutoscaleAtMemoryMax(t *testing.T) {
 	at.mrec.AssertExpectations(t)
 }
 
+// A state ConfigMap that stayed after a mode change to Off, for example after
+// a lost status patch, must not show its recommendation again.
+func TestAutoscaleDiscardsAnOldState(t *testing.T) {
+	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
+	at.rf.Status.State = redisfailoverv1.NotHealthyState
+	f := at.fakeStateStore(t)
+	state, err := json.Marshal(autoscale.State{
+		Version: 1, Workload: "Store", RunID: "run1", OOMErrors: 3, HighWindows: 3,
+		Recommended: 1280 * mib, Reason: autoscale.ReasonSustained,
+		EvaluatedAt: autoscaleT0.Unix(), LastSample: autoscaleT0.Unix(),
+	})
+	require.NoError(t, err)
+	f.stored = &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: autoscaleCM, OwnerReferences: at.h.createOwnerReferences(at.rf), ResourceVersion: "1"},
+		Data:       map[string]string{"state": string(state)},
+	}
+	at.mrec.On("SetAutoscaler", "testns", "test", int64(0), 0.0, int32(0)).Once()
+	at.now = autoscaleT0.Add(time.Hour)
+
+	at.run(redisfailoverv1.AutoscalingStatus{})
+
+	assert.Equal(t, redisfailoverv1.AutoscalingStatus{
+		Workload:    "Store",
+		Reason:      autoscale.ReasonNotHealthy,
+		EvaluatedAt: at.now.UTC().Format(time.RFC3339),
+	}, at.rf.Status.Autoscaling)
+	written := decodeState(t, f.stored)
+	assert.Zero(t, written.Recommended)
+	assert.Empty(t, written.RunID)
+	at.mrec.AssertExpectations(t)
+}
+
 // The persisted sample time also limits the INFO calls after an operator
 // restart, which loses the in-memory sample time.
 func TestAutoscaleUsesThePersistedSampleTime(t *testing.T) {

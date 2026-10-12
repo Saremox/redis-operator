@@ -74,6 +74,9 @@ func (r *RedisFailover) validateAutoscaling() error {
 	if a.Mode == AutoscalingModeOff {
 		return nil
 	}
+	if r.Bootstrapping() {
+		return fmt.Errorf("redis.autoscaling.mode %s is not available with bootstrapNode, because the RedisFailover has no master to sample", a.Mode)
+	}
 	limit, ok := r.Spec.Redis.Resources.Limits[corev1.ResourceMemory]
 	if !ok {
 		return errors.New("redis.autoscaling requires redis.resources.limits.memory")

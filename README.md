@@ -353,7 +353,7 @@ With `redis.autoscaling.mode: Recommend`, the operator recommends a memory limit
 
 The fields of `redis.autoscaling`:
 
-- `mode`: `Off` (default), `Recommend` or `Auto`. Validation rejects `Auto`, because the operator cannot apply a recommendation.
+- `mode`: `Off` (default), `Recommend` or `Auto`. Validation rejects `Auto`, because the operator cannot apply a recommendation. With `bootstrapNode`, validation accepts only `Off`, because the RedisFailover has no master to sample.
 - `memoryMax`: the largest limit that the operator recommends. It must not be less than `redis.resources.limits.memory`, which is the lower bound. When the limit is equal to `memoryMax`, the operator recommends no step, and the reason says that the limit is at `memoryMax`.
 - `workload`: `Auto` (default), `Store` or `Cache`. `Auto` uses the `maxmemory-policy` of the spec. `allkeys-*` is a cache, and `noeviction` is a store. `volatile-*` is a store until Redis evicts a key.
 - `recreateAfter`: only `Auto` uses it. Validation accepts `0s`, or `5m` and more.
@@ -364,9 +364,9 @@ The operator reads `INFO` from the master one time in each minute at most. It co
 
 A window of 5 minutes is high when its peak is 85 percent or more. The operator recommends a step after 3 consecutive high windows. It recommends a step at once when the use is 95 percent or more, or when Redis refuses a command with an OOM error. A window below 85 percent removes the recommendation. A step is 25 percent of the current limit, rounded up to a multiple of 64Mi, and `memoryMax` at most. For a cache, the operator gives no recommendation.
 
-The rule of 3 windows needs a sample in each window. A window without a sample ends the sequence of high windows. With a `--sync-interval` of 600 seconds or more, a window can end without a sample. Then only the rules for 95 percent and for OOM errors can give a step. Pod events also start a reconcile, but do not come at regular times.
+The rule of 3 windows needs a sample in each window. A window without a sample ends the sequence of high windows. With a `--sync-interval` of 600 seconds or more, a window can end without a sample. Then only the rules for 95 percent and for OOM errors can give a step. With samples more than 11 minutes apart, the operator also discards the state at each sample, and the OOM rule cannot apply. Pod events also start a reconcile, but do not come at regular times.
 
-`status.autoscaling` shows the result. `recommendedMemory` is empty when the operator recommends no change. `highWindows` stops at 3. `evaluatedAt` is the time of the last change of the recommendation or of `highWindows`, so a steady instance does not write its status at each window:
+`status.autoscaling` shows the result. `recommendedMemory` is empty when the operator recommends no change. `highWindows` stops at 3. `evaluatedAt` is the time of the last change of the recommendation or of `highWindows`. Thus a steady instance does not write its status at each window:
 
 ```yaml
 status:
@@ -380,7 +380,11 @@ status:
 
 To apply a recommendation, set the memory request and limit in `redis.resources` to the recommended value. The operator then resizes the pods as for each other change of the resources.
 
-The operator keeps its state in the ConfigMap `rfa-<NAME>`, and deletes it when the mode changes to `Off`. It writes the ConfigMap at most about one time in each window. The operator does not change a ConfigMap `rfa-<NAME>` that another object controls, or a state that a newer operator version wrote. The reason in the status then tells this. These gauges have the labels `namespace` and `name`:
+The operator keeps its state in the ConfigMap `rfa-<NAME>`. In a steady state, it writes the ConfigMap about one time in each window. When the mode changes to `Off`, the operator deletes the ConfigMap, also when a newer operator version wrote the state. The operator discards a state when its last sample is more than 11 minutes before the current time. Thus a state that stays after `Off` gives no recommendation from an earlier time. Kubernetes deletes the ConfigMap together with the RedisFailover.
+
+The operator does not change a ConfigMap `rfa-<NAME>` that another object controls. In Recommend, it also does not change a state that a newer operator version wrote. The reason in the status then tells this.
+
+These gauges have the labels `namespace` and `name`:
 
 - `redis_operator_controller_autoscaler_recommended_memory_bytes`: the recommended limit, or `0`.
 - `redis_operator_controller_autoscaler_memory_used_ratio`: the use of the last sample.

@@ -49,6 +49,7 @@ func TestValidateAutoscaling(t *testing.T) {
 		request       string
 		customConfig  []string
 		maxMemory     *MaxMemorySettings
+		bootstrap     bool
 		expectedError string
 	}{
 		{name: "defaults to Off without other fields"},
@@ -71,12 +72,17 @@ func TestValidateAutoscaling(t *testing.T) {
 		{name: "explicit store with allkeys policy", settings: withWorkload(recommend("2Gi"), AutoscalingWorkloadStore), limit: "1Gi", request: "512Mi", maxMemory: &MaxMemorySettings{Policy: "allkeys-lru"}, expectedError: "for a store"},
 		{name: "cache workload with a smaller request", settings: withWorkload(recommend("2Gi"), AutoscalingWorkloadCache), limit: "1Gi", request: "512Mi"},
 		{name: "allkeys policy with a smaller request", settings: recommend("2Gi"), limit: "1Gi", request: "512Mi", maxMemory: &MaxMemorySettings{Policy: "allkeys-lfu"}},
+		{name: "Recommend with bootstrapNode", settings: recommend("2Gi"), limit: "1Gi", bootstrap: true, expectedError: "redis.autoscaling.mode Recommend is not available with bootstrapNode, because the RedisFailover has no master to sample"},
+		{name: "Off with bootstrapNode", settings: AutoscalingSettings{Mode: AutoscalingModeOff}, bootstrap: true},
 		{name: "allkeys policy in customConfig", settings: recommend("2Gi"), limit: "1Gi", request: "512Mi", customConfig: []string{"maxmemory-policy ALLKEYS-LRU"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			settings := test.settings
 			rf := rfWithAutoscaling(test.limit, test.request, &settings)
+			if test.bootstrap {
+				rf.Spec.BootstrapNode = &BootstrapSettings{Host: "10.0.0.9"}
+			}
 			rf.Spec.Redis.MaxMemory = test.maxMemory
 			rf.Spec.Redis.CustomConfig = test.customConfig
 			err := rf.Validate()

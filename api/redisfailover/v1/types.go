@@ -119,8 +119,8 @@ type RedisSettings struct {
 // redis.resources is the lower bound, and memoryMax is the upper bound.
 type AutoscalingSettings struct {
 	// Mode is Off, Recommend or Auto. Recommend shows a memory limit in
-	// status.autoscaling and changes no pod. Auto is not available. Defaults
-	// to Off.
+	// status.autoscaling and changes no pod. Auto is not available. With
+	// bootstrapNode, only Off is valid. Defaults to Off.
 	// +kubebuilder:validation:Enum=Off;Recommend;Auto
 	Mode string `json:"mode,omitempty"`
 	// MemoryMax is the largest memory limit that the autoscaler recommends.

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/service/redis"
@@ -409,4 +410,64 @@ func TestStateNeedsWrite(t *testing.T) {
 	other = s
 	other.OOMErrors++
 	assert.True(t, other.NeedsWrite(s))
+}
+
+// A restart or a change to a cache resets highWindows, and the status then
+// shows the time of that change.
+func TestObserveStampsAResetOfHighWindows(t *testing.T) {
+	high := func() State {
+		// highWindows is 2 at 10m.
+		return observeAll(known(), 0, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900)
+	}
+	s := high()
+	assert.Equal(t, int32(2), s.HighWindows)
+	assert.Equal(t, t0.Add(10*time.Minute).Unix(), s.EvaluatedAt)
+
+	restarted := master(900)
+	restarted.RunID = "run2"
+	got := Observe(s, input(12*time.Minute, restarted))
+	assert.Zero(t, got.HighWindows)
+	assert.Equal(t, t0.Add(12*time.Minute).UTC().Format(time.RFC3339), Report(got, gi, 4*gi).EvaluatedAt)
+
+	cache := input(12*time.Minute, master(900))
+	cache.Workload = redisfailoverv1.AutoscalingWorkloadCache
+	got = Observe(high(), cache)
+	assert.Zero(t, got.HighWindows)
+	assert.Equal(t, t0.Add(12*time.Minute).Unix(), got.EvaluatedAt)
+}
+
+func TestExpire(t *testing.T) {
+	s := observeAll(known(), 0, 990)
+	s.OOMErrors, s.HighWindows = 4, 2
+	require.NotZero(t, s.Recommended)
+
+	assert.Equal(t, s, Expire(s, t0.Add(MaxStateAge)), "a state of the bound age continues")
+	assert.Equal(t, State{}, Expire(State{}, t0.Add(time.Hour)), "no state")
+
+	got := Expire(s, t0.Add(MaxStateAge+time.Second))
+	assert.Equal(t, State{
+		Version:     StateVersion,
+		Workload:    s.Workload,
+		Reason:      ReasonNoSample,
+		EvaluatedAt: t0.Add(MaxStateAge + time.Second).Unix(),
+		LastSample:  s.LastSample,
+	}, got)
+	assert.Empty(t, Report(got, gi, 4*gi).RecommendedMemory)
+
+	// The next sample sets the OOM baseline: no restart and no OOM step.
+	info := master(500)
+	info.OOMErrors = 9
+	got = Observe(got, input(MaxStateAge+time.Minute, info))
+	assert.Equal(t, ReasonLow, got.Reason)
+	assert.Equal(t, int64(9), got.OOMErrors)
+}
+
+func TestStateNeedsWriteRefreshesTheSampleTime(t *testing.T) {
+	s := known()
+	s.LastSample = t0.Unix()
+	later := s
+	later.LastSample += int64(WindowLength/time.Second) - 1
+	assert.False(t, later.NeedsWrite(s))
+	later.LastSample++
+	assert.True(t, later.NeedsWrite(s))
 }

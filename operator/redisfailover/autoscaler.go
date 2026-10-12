@@ -65,8 +65,10 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 		return
 	}
 	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
-	state := stored
 	now := r.now()
+	// A leftover state, for example of a mode change to Off that the status
+	// did not show, must not give a recommendation of an earlier time.
+	state := autoscale.Expire(stored, now)
 	var last autoscaleSample
 	if v, ok := r.autoscaleSamples.Load(key); ok {
 		last = v.(autoscaleSample)

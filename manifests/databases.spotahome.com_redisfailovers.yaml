@@ -1017,8 +1017,8 @@ spec:
                       mode:
                         description: |-
                           Mode is Off, Recommend or Auto. Recommend shows a memory limit in
-                          status.autoscaling and changes no pod. Auto is not available. Defaults
-                          to Off.
+                          status.autoscaling and changes no pod. Auto is not available. With
+                          bootstrapNode, only Off is valid. Defaults to Off.
                         enum:
                         - "Off"
                         - Recommend
