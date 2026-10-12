@@ -14,6 +14,7 @@ import (
 	"github.com/saremox/redis-operator/service/k8s"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -635,10 +636,68 @@ type passwordState struct {
 	// It is not redis while a pod yet to start keeps redis in use.
 	applied  string
 	sentinel string
+	// saveErr is the last error of saveAppliedPasswords, so that the same
+	// error logs one Warning only.
+	saveErr string
 }
 
 func passwordKey(rf *redisfailoverv1.RedisFailover) string {
 	return rf.Namespace + "/" + rf.Name
+}
+
+// Keys of the Secret that keeps redis and applied of passwordState. The
+// Sentinel password needs no key: it is set without the one it replaces.
+const (
+	appliedSecretRedisKey   = "redis"
+	appliedSecretAppliedKey = "applied"
+)
+
+// loadAppliedPasswords reads the passwords that saveAppliedPasswords kept
+// before an operator restart. An empty result means that none are known.
+func (r *RedisFailoverHandler) loadAppliedPasswords(rf *redisfailoverv1.RedisFailover) passwordState {
+	name := rfservice.GetRedisAuthAppliedName(rf)
+	secret, err := r.k8sservice.GetSecret(rf.Namespace, name)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).
+				Warningf("unable to read the applied passwords from Secret %s: %v", name, err)
+		}
+		return passwordState{}
+	}
+	return passwordState{
+		redis:   string(secret.Data[appliedSecretRedisKey]),
+		applied: string(secret.Data[appliedSecretAppliedKey]),
+	}
+}
+
+// saveAppliedPasswords keeps the passwords of state in a Secret, so that an
+// operator restart does not forget them. A failure costs only that memory, so
+// it does not stop the reconcile.
+func (r *RedisFailoverHandler) saveAppliedPasswords(rf *redisfailoverv1.RedisFailover, state *passwordState) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            rfservice.GetRedisAuthAppliedName(rf),
+			Namespace:       rf.Namespace,
+			Labels:          r.getLabels(rf),
+			OwnerReferences: r.createOwnerReferences(rf),
+		},
+		Data: map[string][]byte{
+			appliedSecretRedisKey:   []byte(state.redis),
+			appliedSecretAppliedKey: []byte(state.applied),
+		},
+	}
+	err := r.k8sservice.CreateOrUpdateSecret(rf.Namespace, secret)
+	if err == nil {
+		state.saveErr = ""
+		return
+	}
+	logger := r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name)
+	if err.Error() == state.saveErr {
+		logger.Debugf("unable to save the applied passwords in Secret %s: %v", secret.Name, err)
+		return
+	}
+	state.saveErr = err.Error()
+	logger.Warningf("unable to save the applied passwords in Secret %s, an operator restart forgets them: %v", secret.Name, err)
 }
 
 // applyPassword applies a changed auth secret to the running Redis and the
@@ -656,11 +715,19 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 	}
 
 	if !known || state.redis != password || state.applied != password {
+		saved := state
 		previous := []string{password}
 		if known {
 			previous = []string{state.redis}
 			if state.applied != state.redis {
 				previous = append(previous, state.applied)
+			}
+		} else if password != "" {
+			saved = r.loadAppliedPasswords(rf)
+			for _, p := range []string{saved.redis, saved.applied} {
+				if p != "" && !slices.Contains(previous, p) {
+					previous = append(previous, p)
+				}
 			}
 		}
 		complete, err := r.rfHealer.ApplyPassword(rf, password, previous)
@@ -669,9 +736,15 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 		}
 		state.applied = password
 		// A pod yet to start keeps the old password in play. With none known,
-		// the one every running pod accepts is the best there is.
-		if complete || !known {
+		// not even in the Secret, the one every running pod accepts is the
+		// best there is.
+		if complete {
 			state.redis = password
+		} else if !known {
+			state.redis = cmp.Or(saved.redis, password)
+		}
+		if password != "" && (state.redis != saved.redis || state.applied != saved.applied) {
+			r.saveAppliedPasswords(rf, &state)
 		}
 	}
 

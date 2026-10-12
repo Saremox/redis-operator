@@ -6,6 +6,7 @@ import (
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -13,6 +14,7 @@ import (
 // Secret interacts with k8s to get secrets
 type Secret interface {
 	GetSecret(namespace, name string) (*corev1.Secret, error)
+	CreateOrUpdateSecret(namespace string, secret *corev1.Secret) error
 }
 
 // SecretService is the secret service implementation using API calls to kubernetes.
@@ -42,4 +44,18 @@ func (s *SecretService) GetSecret(namespace, name string) (*corev1.Secret, error
 	}
 
 	return secret, err
+}
+
+// CreateOrUpdateSecret replaces the Secret without a read first: a Secret
+// accepts an update without a resource version, and the Secret exists after
+// the first call. A missing Secret is not an UPDATE failure in the metrics.
+func (s *SecretService) CreateOrUpdateSecret(namespace string, secret *corev1.Secret) error {
+	_, err := s.kubeClient.CoreV1().Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
+	if !errors.IsNotFound(err) {
+		recordMetrics(namespace, "Secret", secret.Name, "UPDATE", err, s.metricsRecorder)
+		return err
+	}
+	_, err = s.kubeClient.CoreV1().Secrets(namespace).Create(context.TODO(), secret, metav1.CreateOptions{})
+	recordMetrics(namespace, "Secret", secret.Name, "CREATE", err, s.metricsRecorder)
+	return err
 }

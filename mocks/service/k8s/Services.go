@@ -117,6 +117,24 @@ func (_m *Services) CreateOrUpdatePodDisruptionBudget(namespace string, podDisru
 	return r0
 }
 
+// CreateOrUpdateSecret provides a mock function with given fields: namespace, secret
+func (_m *Services) CreateOrUpdateSecret(namespace string, secret *v1.Secret) error {
+	ret := _m.Called(namespace, secret)
+
+	if len(ret) == 0 {
+		panic("no return value specified for CreateOrUpdateSecret")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, *v1.Secret) error); ok {
+		r0 = rf(namespace, secret)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // CreateOrUpdateService provides a mock function with given fields: namespace, service
 func (_m *Services) CreateOrUpdateService(namespace string, service *v1.Service) error {
 	ret := _m.Called(namespace, service)

@@ -24,6 +24,7 @@ const (
 	redisSlaveName             = "rs"
 	redisShutdownName          = "r-s"
 	redisReadinessName         = "r-readiness"
+	redisAuthAppliedName       = "r-auth-applied"
 	redisRoleName              = "redis"
 	redisContainerName         = "redis"
 	sentinelServiceAccountName = "s-sa"
