@@ -32,6 +32,12 @@ func GetRedisReadinessName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(redisReadinessName, rf.Name)
 }
 
+// GetRedisAuthAppliedName returns the name of the Secret that keeps the
+// passwords the Redis pods run with across operator restarts.
+func GetRedisAuthAppliedName(rf *redisfailoverv1.RedisFailover) string {
+	return generateName(redisAuthAppliedName, rf.Name)
+}
+
 // GetSentinelName returns the name for sentinel resources
 func GetSentinelName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(sentinelName, rf.Name)

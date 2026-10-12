@@ -78,6 +78,14 @@ func TestApplyPassword(t *testing.T) {
 			expErr:   "put the previous password back in the secret",
 		},
 		{
+			name:     "a pod that refuses each previous password is unknown",
+			previous: []string{"old"},
+			refuse:   map[string]error{"10.0.0.2": wrongpass},
+			setErr:   wrongpass,
+			expSet:   map[string]string{"10.0.0.2": "old"},
+			expErr:   "redis pod rfr-1 refuses the configured password and the operator doesn't know the one it runs with; put the previous password back in the secret",
+		},
+		{
 			name:     "a failed change is returned",
 			previous: []string{"old"},
 			refuse:   map[string]error{"10.0.0.2": wrongpass},

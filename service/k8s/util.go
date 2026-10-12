@@ -21,6 +21,9 @@ type ControlledByOtherError struct {
 }
 
 func (e *ControlledByOtherError) Error() string {
+	if e.OwnerKind == "" {
+		return fmt.Sprintf("cannot manage %s %q: it has no controller", e.Kind, e.Name)
+	}
 	return fmt.Sprintf("cannot manage %s %q: %s %q controls it", e.Kind, e.Name, e.OwnerKind, e.OwnerName)
 }
 
@@ -35,6 +38,16 @@ func checkNotControlledByOther(kind string, stored, desired metav1.Object) error
 		return nil
 	}
 	return &ControlledByOtherError{Kind: kind, Name: stored.GetName(), OwnerKind: have.Kind, OwnerName: have.Name}
+}
+
+// CheckSameController is checkNotControlledByOther that also refuses a stored
+// object without a controller. A user can create an object with the name of an
+// object that the operator only writes, and the operator must keep it.
+func CheckSameController(kind string, stored, desired metav1.Object) error {
+	if metav1.GetControllerOf(stored) == nil {
+		return &ControlledByOtherError{Kind: kind, Name: stored.GetName()}
+	}
+	return checkNotControlledByOther(kind, stored, desired)
 }
 
 func controllerGroup(ref *metav1.OwnerReference) string {
