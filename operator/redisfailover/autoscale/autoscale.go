@@ -96,6 +96,9 @@ type State struct {
 	// EvaluatedAt and LastSample are Unix times in seconds.
 	EvaluatedAt int64 `json:"evaluatedAt,omitempty"`
 	LastSample  int64 `json:"lastSample,omitempty"`
+	// Limit is the memory limit of the last sample in bytes. An operator
+	// that does not know the field ignores it, so StateVersion stays.
+	Limit int64 `json:"limit,omitempty"`
 }
 
 // Expire discards the decision values of a state with a last sample older than
@@ -192,6 +195,13 @@ func Observe(s State, in Input) State {
 		return s.withReason(ReasonCache)
 	}
 
+	if s.Limit != in.Limit {
+		// The peaks of the earlier limit do not show the use with this one.
+		// Without the reset, the window open at a step ends high, and a
+		// second step follows at once.
+		s.Limit, s.Window = in.Limit, Window{}
+		s.setHighWindows(0, now)
+	}
 	closed := s.Window.Start != 0 && now >= s.Window.Start+int64(WindowLength/time.Second)
 	if closed {
 		s.closeWindow(now)
@@ -209,8 +219,8 @@ func Observe(s State, in Input) State {
 	case r >= UrgentRatio:
 		s.recommend(in.Limit, in.Max, now, ReasonUrgent)
 	case closed && s.HighWindows >= HighWindowsForStep:
-		// Only at the end of a window, so that the windows after a step
-		// show the effect of the step first.
+		// Only at the end of a window. A change of the limit resets the
+		// count, so 3 windows with the changed limit decide on a next step.
 		s.recommend(in.Limit, in.Max, now, ReasonSustained)
 	case s.Recommended != 0:
 		// Keep the recommendation and its reason until a low window.

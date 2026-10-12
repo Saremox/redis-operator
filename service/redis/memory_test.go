@@ -137,6 +137,25 @@ func TestGetAutoscalerInfo(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond)
 }
 
+// maxmemory does not count the replica output buffers and the AOF buffer, so
+// the ratio must not count them either.
+func TestParseAutoscalerInfo(t *testing.T) {
+	info := "# Server\r\nrun_id:abc\r\nuptime_in_seconds:700\r\n\r\n# Memory\r\nused_memory:5000000\r\nmaxmemory:8000000\r\n" +
+		"maxmemory_policy:volatile-lru\r\nmem_not_counted_for_evict:1000000\r\n\r\n# Persistence\r\nloading:0\r\n\r\n" +
+		"# Stats\r\nevicted_keys:4\r\n\r\n# Replication\r\nrole:slave\r\nmaster_sync_in_progress:1\r\n\r\n# Errorstats\r\nerrorstat_OOM:count=3\r\n"
+	assert.Equal(t, &AutoscalerInfo{
+		UsedMemory:      4000000,
+		MaxMemory:       8000000,
+		MaxMemoryPolicy: "volatile-lru",
+		EvictedKeys:     4,
+		UptimeSeconds:   700,
+		SyncInProgress:  true,
+		RunID:           "abc",
+		Role:            "slave",
+		OOMErrors:       3,
+	}, parseAutoscalerInfo(info))
+}
+
 func TestGetAutoscalerInfoErrors(t *testing.T) {
 	port, err := findFreePort()
 	require.NoError(t, err)

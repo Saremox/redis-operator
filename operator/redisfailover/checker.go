@@ -944,7 +944,9 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		}
 	}
 
-	r.autoscaleMasters.Store(failoverKey(rf), master)
+	if rf.AutoscalingEnabled() {
+		r.autoscaleMasters.Store(failoverKey(rf), master)
+	}
 	err = r.applyRedisCustomConfig(rf)
 	var holdRollout bool
 	if err == nil {
@@ -1387,7 +1389,9 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		return errors.New(errorMsg)
 	}
 
-	r.autoscaleMasters.Store(failoverKey(rf), master)
+	if rf.AutoscalingEnabled() {
+		r.autoscaleMasters.Store(failoverKey(rf), master)
+	}
 	err = r.applyRedisCustomConfig(rf)
 	var holdRollout bool
 	if err == nil {

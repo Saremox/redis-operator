@@ -3,6 +3,7 @@ package redisfailover
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -14,8 +15,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/metrics"
 	mMetrics "github.com/saremox/redis-operator/mocks/metrics"
 	mRFService "github.com/saremox/redis-operator/mocks/operator/redisfailover/service"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
@@ -369,8 +372,6 @@ func TestAutoscaleOffMakesNoCall(t *testing.T) {
 			at.run(redisfailoverv1.AutoscalingStatus{})
 			assert.Zero(t, at.rf.Status.Autoscaling)
 			at.assertNoCalls(t)
-			_, ok := at.h.autoscaleMasters.Load(failoverKey(at.rf))
-			assert.False(t, ok, "the master of the reconcile is not kept")
 		})
 	}
 }
@@ -503,4 +504,52 @@ func TestAutoscalingStatusCarryOver(t *testing.T) {
 		updateStatus(at.mk, at.rf, observedStatus)
 		at.mk.AssertExpectations(t)
 	})
+}
+
+// An instance without autoscaling keeps no master of the reconcile in memory.
+func TestCheckAndHealKeepsNoMasterWithoutAutoscaling(t *testing.T) {
+	const sentinel = "10.0.0.9"
+	for _, sentinelMode := range []bool{false, true} {
+		for _, mode := range []string{"", redisfailoverv1.AutoscalingModeOff} {
+			t.Run(fmt.Sprintf("sentinel %v, mode %q", sentinelMode, mode), func(t *testing.T) {
+				at := newAutoscaleTest(t, mode)
+				at.rf.Spec.Sentinel.Enabled = ptr.To(sentinelMode)
+				at.h.mClient = metrics.Dummy
+				at.mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Maybe().Return(&corev1.PodList{Items: make([]corev1.Pod, 5)}, nil)
+				at.mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+				mrfh := &mRFService.RedisFailoverHeal{}
+				mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
+				mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+				mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
+				mrfh.On("SetRedisCustomConfig", autoscaleMaster, at.rf).Return(nil)
+				at.h.rfHealer = mrfh
+				at.mrfc.On("IsRedisRunningQuorum", at.rf).Return(true)
+				at.mrfc.On("GetNumberMasters", at.rf).Return(1, nil)
+				at.mrfc.On("CheckAllSlavesFromMaster", autoscaleMaster, at.rf).Return(nil)
+				at.mrfc.On("GetRedisesIPs", at.rf).Return([]string{autoscaleMaster}, nil)
+				at.mrfc.On("GetMasterIP", at.rf).Return(autoscaleMaster, nil)
+				at.mrfc.On("GetStatefulSetUpdateRevision", at.rf).Return("1", nil)
+				at.mrfc.On("GetRedisesSlavesPods", at.rf).Return([]string{}, nil)
+				at.mrfc.On("GetRedisesMasterPod", at.rf).Return(autoscaleMaster, nil)
+				at.mrfc.On("GetRedisRevisionHash", autoscaleMaster, at.rf).Return("1", nil)
+				if sentinelMode {
+					at.mrfc.On("IsSentinelRunningQuorum", at.rf).Return(true)
+					at.mrfc.On("GetSentinelsIPs", at.rf).Return([]string{sentinel}, nil)
+					at.mrfc.On("CheckSentinelMonitor", sentinel, autoscaleMaster, "6379").Return(nil)
+					at.mrfc.On("CheckSentinelNumberInMemory", sentinel, at.rf).Return(nil)
+					at.mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, at.rf).Return(nil)
+					mrfh.On("SetSentinelCustomConfig", sentinel, at.rf).Return(nil)
+				} else {
+					at.mrfc.On("CheckMasterHealth", at.rf).Return(true, autoscaleMaster, nil)
+				}
+
+				require.NoError(t, at.h.CheckAndHeal(at.rf))
+
+				assert.Equal(t, redisfailoverv1.HealthyState, at.rf.Status.State)
+				_, kept := at.h.autoscaleMasters.Load(failoverKey(at.rf))
+				assert.False(t, kept)
+				at.mrfc.AssertExpectations(t)
+			})
+		}
+	}
 }

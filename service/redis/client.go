@@ -1073,6 +1073,10 @@ func (c *client) GetAutoscalerInfo(ip, port, password string) (*AutoscalerInfo, 
 		return nil, err
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_AUTOSCALER_INFO, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return parseAutoscalerInfo(info), nil
+}
+
+func parseAutoscalerInfo(info string) *AutoscalerInfo {
 	ai := &AutoscalerInfo{}
 	var notCounted int64
 	for _, line := range strings.Split(info, "\n") {
@@ -1108,7 +1112,7 @@ func (c *client) GetAutoscalerInfo(ip, port, password string) (*AutoscalerInfo, 
 		}
 	}
 	ai.UsedMemory -= notCounted
-	return ai, nil
+	return ai
 }
 
 func getRedisError(err error) string {

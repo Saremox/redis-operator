@@ -2,6 +2,8 @@ package v1
 
 import (
 	"encoding/json"
+	"os"
+	"regexp"
 	"testing"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/yaml"
 )
 
 func rfWithAutoscaling(limit, request string, a *AutoscalingSettings) *RedisFailover {
@@ -144,4 +147,34 @@ func TestStatusWithoutAutoscaling(t *testing.T) {
 	var back RedisFailoverStatus
 	require.NoError(t, json.Unmarshal(got, &back))
 	assert.Equal(t, other, back)
+}
+
+// The API server checks recreateAfter with the pattern of the CRD. The
+// pattern must accept each value that Validate accepts, and refuse a value
+// that metav1.Duration cannot parse.
+func TestRecreateAfterPattern(t *testing.T) {
+	data, err := os.ReadFile("../../../manifests/databases.spotahome.com_redisfailovers.yaml")
+	require.NoError(t, err)
+	var crd map[string]any
+	require.NoError(t, yaml.Unmarshal(data, &crd))
+	node := crd["spec"].(map[string]any)["versions"].([]any)[0].(map[string]any)["schema"].(map[string]any)["openAPIV3Schema"]
+	for _, key := range []string{"spec", "redis", "autoscaling", "recreateAfter"} {
+		node = node.(map[string]any)["properties"].(map[string]any)[key]
+	}
+	pattern, _ := node.(map[string]any)["pattern"].(string)
+	require.NotEmpty(t, pattern)
+	re := regexp.MustCompile(pattern)
+
+	for _, value := range []string{"0", "0s", "5m", "600s", "1h30m", "1.5h", "300000ms"} {
+		d, err := time.ParseDuration(value)
+		require.NoError(t, err, value)
+		assert.True(t, re.MatchString(value), value)
+		rf := rfWithAutoscaling("", "", &AutoscalingSettings{RecreateAfter: &metav1.Duration{Duration: d}})
+		assert.NoError(t, rf.Validate(), value)
+	}
+	// The pattern checks only the format. Validate refuses a short wait.
+	assert.True(t, re.MatchString("90s"))
+	for _, value := range []string{"5min", "5", "-5m", "5 m", "m", ""} {
+		assert.False(t, re.MatchString(value), value)
+	}
 }

@@ -30,8 +30,6 @@ type autoscaleSample struct {
 // rf.Status.Autoscaling. The Recommend mode only reports, so an error is
 // logged and never fails the reconcile or makes the RedisFailover NotHealthy.
 func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, observed redisfailoverv1.AutoscalingStatus) {
-	key := failoverKey(rf)
-	master, _ := r.autoscaleMasters.LoadAndDelete(key)
 	if !rf.AutoscalingEnabled() {
 		// Without an earlier status, there is no state to remove. This keeps
 		// the API calls of an instance without autoscaling unchanged.
@@ -41,6 +39,8 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 		return
 	}
 
+	key := failoverKey(rf)
+	master, _ := r.autoscaleMasters.LoadAndDelete(key)
 	limit := rf.Spec.Redis.Resources.Limits.Memory().Value()
 	stored, cm, err := r.readAutoscaleState(rf)
 	// The autoscaler cannot use a state of another owner or of a newer

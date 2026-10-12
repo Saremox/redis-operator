@@ -69,6 +69,7 @@ func TestObserveFirstSample(t *testing.T) {
 		Reason:      ReasonUrgent,
 		EvaluatedAt: t0.Unix(),
 		LastSample:  t0.Unix(),
+		Limit:       gi,
 	}, s)
 	// The OOM count before the first sample is no growth.
 	s = Observe(State{}, input(0, func() *redis.AutoscalerInfo { i := master(100); i.OOMErrors = 3; return i }()))
@@ -173,6 +174,12 @@ func TestObserveOnlyAPeakMakesAWindowHigh(t *testing.T) {
 	assert.Zero(t, s.HighWindows, "a window below 0.85 resets the count")
 }
 
+// A peak of exactly 85 percent is high.
+func TestObserveAPeakAtTheThresholdIsHigh(t *testing.T) {
+	s := observeAll(known(), 0, 850, 100, 100, 100, 100, 100)
+	assert.Equal(t, int32(1), s.HighWindows)
+}
+
 func TestObserveAGapEndsTheSequence(t *testing.T) {
 	s := observeAll(known(), 0, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900)
 	assert.Equal(t, int32(1), s.HighWindows)
@@ -237,29 +244,49 @@ func TestObserveStep(t *testing.T) {
 	}
 }
 
-// After the user applies a step, the count stays until the next window ends,
-// so the windows after the step decide on the next step.
-func TestObserveNextStepWaitsForAWindow(t *testing.T) {
+// A changed limit resets the windows. Thus a step that the user applies does
+// not give a second step at the end of the window that was open at the step.
+// Here maxmemory follows the limit, as with redis.maxMemory.
+func TestObserveAppliedStepGivesNoSecondStep(t *testing.T) {
 	s := observeAll(known(), 0, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900)
-	assert.Equal(t, 1280*mi, s.Recommended)
+	require.Equal(t, 1280*mi, s.Recommended)
 
-	in := input(16*time.Minute, master(900))
-	in.Limit = 1280 * mi
-	s = Observe(s, in)
-	assert.Equal(t, 1280*mi, s.Recommended)
+	applied := func(at time.Duration) Input {
+		info := master(900)
+		info.MaxMemory = 1250 * mi
+		in := input(at, info)
+		in.Limit = 1280 * mi
+		return in
+	}
+	s = Observe(s, applied(17*time.Minute))
 	assert.Equal(t, redisfailoverv1.AutoscalingStatus{
 		Workload:    redisfailoverv1.AutoscalingWorkloadStore,
 		Reason:      ReasonStepIsActive,
-		EvaluatedAt: t0.Add(15 * time.Minute).UTC().Format(time.RFC3339),
-		HighWindows: 3,
-	}, Report(s, in.Limit, in.Max))
+		EvaluatedAt: t0.Add(17 * time.Minute).UTC().Format(time.RFC3339),
+	}, Report(s, 1280*mi, 4*gi))
+	for i := 18; i <= 40; i++ {
+		s = Observe(s, applied(time.Duration(i)*time.Minute))
+		assert.Empty(t, Report(s, 1280*mi, 4*gi).RecommendedMemory, "minute %d", i)
+	}
+	assert.Zero(t, s.Recommended, "the low windows remove the applied recommendation")
+}
 
-	for i := 17; i <= 21; i++ {
+// With the use still high after a step, 3 windows with the changed limit
+// give the next step.
+func TestObserveNextStepNeedsThreeWindows(t *testing.T) {
+	s := observeAll(known(), 0, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900, 900)
+	require.Equal(t, 1280*mi, s.Recommended)
+
+	in := input(16*time.Minute, master(900))
+	in.Limit = 1280 * mi
+	for i := 16; i < 31; i++ {
 		in.Now = t0.Add(time.Duration(i) * time.Minute)
 		s = Observe(s, in)
+		assert.Equal(t, 1280*mi, s.Recommended, "minute %d", i)
 	}
+	in.Now = t0.Add(31 * time.Minute)
+	s = Observe(s, in)
 	assert.Equal(t, int32(3), s.HighWindows)
-	assert.Equal(t, 1600*mi, s.Recommended)
 	assert.Equal(t, "1600Mi", Report(s, in.Limit, in.Max).RecommendedMemory)
 }
 
@@ -451,6 +478,7 @@ func TestExpire(t *testing.T) {
 		Reason:      ReasonNoSample,
 		EvaluatedAt: t0.Add(MaxStateAge + time.Second).Unix(),
 		LastSample:  s.LastSample,
+		Limit:       s.Limit,
 	}, got)
 	assert.Empty(t, Report(got, gi, 4*gi).RecommendedMemory)
 
