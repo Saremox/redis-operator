@@ -637,7 +637,7 @@ type passwordState struct {
 	applied  string
 	sentinel string
 	// retrySecret makes the next reconcile read and write the Secret again
-	// after an error that can go away.
+	// after a temporary error.
 	retrySecret bool
 }
 
@@ -655,20 +655,22 @@ const (
 // loadAppliedPasswords reads the passwords that saveAppliedPasswords kept
 // before an operator restart. ok is false when the Secret must not be written
 // in this reconcile: an unknown content must not be replaced, and another
-// owner keeps its Secret. retry is true for an error that can go away.
+// owner keeps its Secret. retry is true for a temporary error.
 func (r *RedisFailoverHandler) loadAppliedPasswords(rf *redisfailoverv1.RedisFailover) (saved passwordState, ok, retry bool) {
 	name := rfservice.GetRedisAuthAppliedName(rf)
 	secret, err := r.k8sservice.GetSecret(rf.Namespace, name)
 	if apierrors.IsNotFound(err) {
+		r.forgetAppliedSecretLog(rf, true)
 		return passwordState{}, true, false
 	}
 	if err == nil {
 		err = k8s.CheckSameController("Secret", secret, &metav1.ObjectMeta{OwnerReferences: r.createOwnerReferences(rf)})
 	}
 	if err != nil {
-		r.logAppliedSecretError(rf, "unable to read the applied passwords from Secret "+name, err)
+		r.logAppliedSecretError(rf, true, "unable to read the applied passwords from Secret "+name, err)
 		return passwordState{}, false, retryableSecretError(err)
 	}
+	r.forgetAppliedSecretLog(rf, true)
 	return passwordState{
 		redis:   string(secret.Data[appliedSecretRedisKey]),
 		applied: string(secret.Data[appliedSecretAppliedKey]),
@@ -700,20 +702,37 @@ func (r *RedisFailoverHandler) saveAppliedPasswords(rf *redisfailoverv1.RedisFai
 	}
 	err := r.k8sservice.CreateOrUpdateSecret(rf.Namespace, secret)
 	if err == nil {
-		r.appliedSecretLogged.Delete(passwordKey(rf))
+		r.forgetAppliedSecretLog(rf, false)
 		return
 	}
 	state.retrySecret = retryableSecretError(err)
-	r.logAppliedSecretError(rf, "unable to save the applied passwords in Secret "+secret.Name+", an operator restart forgets them", err)
+	r.logAppliedSecretError(rf, false, "unable to save the applied passwords in Secret "+secret.Name+", an operator restart forgets them", err)
 }
 
-func (r *RedisFailoverHandler) logAppliedSecretError(rf *redisfailoverv1.RedisFailover, msg string, err error) {
+// appliedSecretLog is the last error with the applied passwords Secret. read
+// is true for an error of a read.
+type appliedSecretLog struct {
+	read bool
+	err  string
+}
+
+func (r *RedisFailoverHandler) logAppliedSecretError(rf *redisfailoverv1.RedisFailover, read bool, msg string, err error) {
 	logger := r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name)
-	if last, _ := r.appliedSecretLogged.Swap(passwordKey(rf), err.Error()); last == err.Error() {
+	logged := appliedSecretLog{read: read, err: err.Error()}
+	if last, ok := r.appliedSecretLogged.Swap(passwordKey(rf), logged); ok && last.(appliedSecretLog).err == logged.err {
 		logger.Debugf("%s: %v", msg, err)
 		return
 	}
 	logger.Warningf("%s: %v", msg, err)
+}
+
+// forgetAppliedSecretLog drops the logged error after a success, so that the
+// same error logs a Warning again. A read does not show that a write works.
+func (r *RedisFailoverHandler) forgetAppliedSecretLog(rf *redisfailoverv1.RedisFailover, read bool) {
+	key := passwordKey(rf)
+	if v, ok := r.appliedSecretLogged.Load(key); ok && (!read || v.(appliedSecretLog).read) {
+		r.appliedSecretLogged.CompareAndDelete(key, v)
+	}
 }
 
 // applyPassword applies a changed auth secret to the running Redis and the
@@ -776,6 +795,11 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 		if complete {
 			state.sentinel = password
 		}
+	}
+	// Without the Secret, state.redis can miss the password of a pod yet to
+	// start, so the next reconcile starts again without a state.
+	if !known && !save && state.retrySecret {
+		return nil
 	}
 	r.passwords.Store(key, state)
 	return nil

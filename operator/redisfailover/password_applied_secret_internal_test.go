@@ -2,6 +2,7 @@ package redisfailover
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -263,7 +264,7 @@ func TestApplyPasswordGoesOnWhenTheSaveFails(t *testing.T) {
 	assert.Len(t, logger.debugs, 2)
 }
 
-// TestApplyPasswordRetriesAFailedSave covers an API error that can go away:
+// TestApplyPasswordRetriesAFailedSave covers a temporary API error:
 // the next reconcile writes the Secret again, and the error logs one Warning.
 func TestApplyPasswordRetriesAFailedSave(t *testing.T) {
 	e := newAppliedSecretEnv(t, "v1", map[string]string{"10.0.0.1": "v1"}, false)
@@ -345,29 +346,130 @@ func TestApplyPasswordSavesARemovedPassword(t *testing.T) {
 
 // TestApplyPasswordGoesOnWhenTheReadFails covers a read error other than
 // NotFound: the operator logs it, tries only the configured password, and
-// does not replace the Secret that it could not read.
+// does not replace the Secret that it could not read. After a temporary error,
+// it keeps no state, so that the next reconcile reads the Secret again. After
+// Forbidden, a read at each reconcile cannot succeed.
 func TestApplyPasswordGoesOnWhenTheReadFails(t *testing.T) {
-	password := "v1"
-	rf := &redisfailoverv1.RedisFailover{
-		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"},
-		Spec:       redisfailoverv1.RedisFailoverSpec{Auth: redisfailoverv1.AuthSettings{SecretPath: "redis-auth"}},
+	tests := []struct {
+		name    string
+		err     error
+		cached  bool
+		applies int
+	}{
+		{name: "temporary error", err: errors.New("boom"), applies: 2},
+		{name: "forbidden", err: apierrors.NewForbidden(corev1.Resource("secrets"), "rfr-auth-applied-test", errors.New("no get")), cached: true, applies: 1},
 	}
-	ms := &mK8SService.Services{}
-	ms.On("GetSecret", "testns", "redis-auth").Return(&corev1.Secret{Data: map[string][]byte{"password": []byte(password)}}, nil)
-	ms.On("GetSecret", "testns", "rfr-auth-applied-test").Return(nil, errors.New("boom"))
-	ms.On("CreateOrUpdateSecret", "testns", mock.Anything).Return(nil)
-	mrfh := &mRFService.RedisFailoverHeal{}
-	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Once().Return(true, nil)
-	mrfh.On("ApplySentinelPassword", rf, "v1").Return(true, nil)
-	logger := &warnLogger{}
-	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, mrfh, ms, metrics.Dummy, logger)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := &redisfailoverv1.RedisFailover{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"},
+				Spec:       redisfailoverv1.RedisFailoverSpec{Auth: redisfailoverv1.AuthSettings{SecretPath: "redis-auth"}},
+			}
+			ms := &mK8SService.Services{}
+			ms.On("GetSecret", "testns", "redis-auth").Return(&corev1.Secret{Data: map[string][]byte{"password": []byte("v1")}}, nil)
+			ms.On("GetSecret", "testns", "rfr-auth-applied-test").Return(nil, test.err)
+			ms.On("CreateOrUpdateSecret", "testns", mock.Anything).Return(nil)
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(true, nil)
+			mrfh.On("ApplySentinelPassword", rf, "v1").Return(true, nil)
+			logger := &warnLogger{}
+			handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, mrfh, ms, metrics.Dummy, logger)
 
-	require.NoError(t, handler.applyPassword(rf))
-	mrfh.AssertExpectations(t)
-	assert.Len(t, logger.warnings, 1)
-	ms.AssertNotCalled(t, "CreateOrUpdateSecret", mock.Anything, mock.Anything)
-	_, cached := handler.passwords.Load(passwordKey(rf))
-	assert.True(t, cached)
+			require.NoError(t, handler.applyPassword(rf))
+			_, cached := handler.passwords.Load(passwordKey(rf))
+			assert.Equal(t, test.cached, cached)
+			require.NoError(t, handler.applyPassword(rf))
+
+			mrfh.AssertNumberOfCalls(t, "ApplyPassword", test.applies)
+			ms.AssertNumberOfCalls(t, "GetSecret", 2+test.applies)
+			ms.AssertNotCalled(t, "CreateOrUpdateSecret", mock.Anything, mock.Anything)
+			assert.Len(t, logger.warnings, 1)
+		})
+	}
+}
+
+// TestApplyPasswordReadErrorWithAPendingPod covers a read error at the first
+// reconcile after a restart, while a pod yet to start keeps the saved redis
+// password. The next reconcile must not replace that password in the Secret,
+// and the pod must change when it starts with it.
+func TestApplyPasswordReadErrorWithAPendingPod(t *testing.T) {
+	e := newAppliedSecretEnv(t, "v2", map[string]string{"10.0.0.1": "v2"}, true)
+	e.storeApplied("v1", "v2")
+	e.ms.On("GetSecret", "testns", "rfr-auth-applied-test").Once().Return(nil, errors.New("etcdserver: request timed out"))
+	e.ms.ExpectedCalls = append(e.ms.ExpectedCalls[len(e.ms.ExpectedCalls)-1:], e.ms.ExpectedCalls[:len(e.ms.ExpectedCalls)-1]...)
+	handler := e.handler(log.Dummy)
+
+	require.NoError(t, handler.applyPassword(e.rf))
+	require.NoError(t, handler.applyPassword(e.rf))
+	redis, applied := e.applied()
+	assert.Equal(t, []string{"v1", "v2"}, []string{redis, applied})
+
+	e.pending = false
+	e.running["10.0.0.2"] = "v1"
+	require.NoError(t, handler.applyPassword(e.rf))
+	assert.Equal(t, "v2", e.running["10.0.0.2"])
+}
+
+// TestApplyPasswordLogsAnErrorAgainAfterASuccess covers the log of the same
+// error after a successful read or write between them: it is a new Warning.
+func TestApplyPasswordLogsAnErrorAgainAfterASuccess(t *testing.T) {
+	boom := errors.New("etcdserver: request timed out")
+	for _, found := range []bool{true, false} {
+		t.Run(fmt.Sprintf("read, found %t", found), func(t *testing.T) {
+			e := newAppliedSecretEnv(t, "v1", map[string]string{"10.0.0.1": "v1"}, false)
+			if found {
+				e.storeApplied("v1", "v1")
+			} else {
+				// Without a password, a missing Secret needs no write.
+				e.rf.Spec.Auth.SecretPath = ""
+				e.running["10.0.0.1"] = ""
+			}
+			failRead := true
+			e.ms.On("GetSecret", "testns", "rfr-auth-applied-test").Return(func(_, name string) (*corev1.Secret, error) {
+				if failRead {
+					return nil, boom
+				}
+				if s, ok := e.stored[name]; ok {
+					return s, nil
+				}
+				return nil, apierrors.NewNotFound(corev1.Resource("secrets"), name)
+			})
+			e.ms.ExpectedCalls = append(e.ms.ExpectedCalls[len(e.ms.ExpectedCalls)-1:], e.ms.ExpectedCalls[:len(e.ms.ExpectedCalls)-1]...)
+			logger := &warnLogger{}
+			handler := e.handler(logger)
+
+			require.NoError(t, handler.applyPassword(e.rf))
+			failRead = false
+			require.NoError(t, handler.applyPassword(e.rf))
+			assert.Equal(t, 0, e.writes())
+			failRead = true
+			handler.passwords.Delete(passwordKey(e.rf))
+			require.NoError(t, handler.applyPassword(e.rf))
+			assert.Len(t, logger.warnings, 2)
+		})
+	}
+	t.Run("write", func(t *testing.T) {
+		e := newAppliedSecretEnv(t, "v1", map[string]string{"10.0.0.1": "v1"}, false)
+		failWrite := true
+		e.ms.ExpectedCalls = slices.DeleteFunc(e.ms.ExpectedCalls, func(c *mock.Call) bool { return c.Method == "CreateOrUpdateSecret" })
+		e.ms.On("CreateOrUpdateSecret", "testns", mock.Anything).Return(func(string, *corev1.Secret) error {
+			if failWrite {
+				return boom
+			}
+			return nil
+		})
+		logger := &warnLogger{}
+		handler := e.handler(logger)
+
+		require.NoError(t, handler.applyPassword(e.rf))
+		failWrite = false
+		require.NoError(t, handler.applyPassword(e.rf))
+		failWrite = true
+		e.password = "v2"
+		require.NoError(t, handler.applyPassword(e.rf))
+		assert.Equal(t, 3, e.writes())
+		assert.Len(t, logger.warnings, 2)
+	})
 }
 
 // TestApplyPasswordWithoutAuthUsesNoAppliedSecret covers a RedisFailover that

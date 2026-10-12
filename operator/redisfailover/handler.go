@@ -57,8 +57,8 @@ type RedisFailoverHandler struct {
 	// passwords holds a passwordState per namespace/name, so a changed secret
 	// can be applied with the old password.
 	passwords sync.Map
-	// appliedSecretLogged holds, per namespace/name, the last error with the
-	// applied passwords Secret that was logged at Warning.
+	// appliedSecretLogged holds, per namespace/name, the appliedSecretLog of
+	// the last error with the applied passwords Secret.
 	appliedSecretLogged sync.Map
 	// rolloutWaits holds, per namespace/name, the rolloutWait the redis pod
 	// rollout waits on and since when.

@@ -16,7 +16,7 @@ func trackState(t *testing.T, h *RedisFailoverHandler, rf *redisfailoverv1.Redis
 	h.reportRolloutWait(rf, &rolloutWait{uid: "u", pod: "rfr-test-0", reason: "not synced with the master"})
 	h.unreachableCleared.Store(failoverKey(rf), true)
 	h.maxMemoryLogged.Store(failoverKey(rf), maxMemoryOutcome{message: "kept", hold: true})
-	h.appliedSecretLogged.Store(failoverKey(rf), "forbidden")
+	h.appliedSecretLogged.Store(failoverKey(rf), appliedSecretLog{err: "forbidden"})
 }
 
 func assertTracked(t *testing.T, h *RedisFailoverHandler, key string, want bool) {
