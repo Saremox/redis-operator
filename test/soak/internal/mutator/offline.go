@@ -96,12 +96,7 @@ func (m *Mutator) rotateOffline(ctx context.Context, o *offline, log *slog.Logge
 		return err
 	}
 	if err := phase("expect Healthy", func() error {
-		return m.waitConverged(ctx, fetchOpts{password: &o.previous}, func(s state) error {
-			if err := passwordAccepted(s); err != nil {
-				return err
-			}
-			return healthy(s.rf)
-		})
+		return m.waitConverged(ctx, fetchOpts{password: &o.previous}, acceptedAndHealthy)
 	}); err != nil && failed == nil {
 		failed = expectation{err}
 	}
@@ -109,6 +104,39 @@ func (m *Mutator) rotateOffline(ctx context.Context, o *offline, log *slog.Logge
 		return err
 	}
 	return failed
+}
+
+// restorePassword sets the previous password again after a rotation that
+// timed out with passwordNotApplied, as the operator error asks. A stuck
+// instance hides every other signal of the run. It waits for timeout in a
+// window of its own, and reports whether the instance converged.
+func (m *Mutator) restorePassword(ctx context.Context, previous *secretChange, timeout time.Duration, log *slog.Logger) (restored, ok bool) {
+	rf, err := m.rfs.DatabasesV1().RedisFailovers(m.in.Namespace).Get(ctx, m.in.Name, metav1.GetOptions{})
+	if err != nil || previous.password == "" || rf.Status.State != redisfailoverv1.NotHealthyState || rf.Status.Message != passwordNotApplied {
+		return false, ctx.Err() == nil
+	}
+	log.Warn("rotation timed out, the tester sets the previous password again", "first_result", resultTimeout, "status_message", rf.Status.Message)
+	h := m.hold(timeout, func(ctx context.Context) error {
+		s, err := m.fetch(ctx, fetchOpts{password: &previous.password})
+		if err != nil {
+			return err
+		}
+		return acceptedAndHealthy(s)
+	})
+	if err := m.setPassword(ctx, previous.name, previous.password); err != nil {
+		log.Warn("previous password not set", "error", err.Error())
+	}
+	h.Applied()
+	return m.await(ctx, h, 0, nil)
+}
+
+// acceptedAndHealthy holds once every redis pod accepts the password fetched
+// for and the RedisFailover is Healthy.
+func acceptedAndHealthy(s state) error {
+	if err := passwordAccepted(s); err != nil {
+		return err
+	}
+	return healthy(s.rf)
 }
 
 // scaleOperator scales the operator Deployment through its scale

@@ -53,7 +53,7 @@ func (l podFieldLogger) Errorf(format string, args ...interface{}) {
 func TestNoMasterWithLocalhostMastersLogsAtInfo(t *testing.T) {
 	rf := newCustomConfigTestRF()
 	rf.Spec.Sentinel.Enabled = ptr.To(true)
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{}, nil)
 	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mrfc := &mRFService.RedisFailoverCheck{}
@@ -82,7 +82,7 @@ func TestNoMasterWithLocalhostMastersLogsAtInfo(t *testing.T) {
 func TestNoMasterWithoutSentinelQuorumLogsTheError(t *testing.T) {
 	rf := newCustomConfigTestRF()
 	rf.Spec.Sentinel.Enabled = ptr.To(true)
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{}, nil)
 	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mrfc := &mRFService.RedisFailoverCheck{}

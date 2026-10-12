@@ -93,7 +93,7 @@ func TestHandleSkipReconcileAnnotation(t *testing.T) {
 			}
 
 			config := generateConfig()
-			mk := &mK8SService.Services{}
+			mk := noAppliedSecret(&mK8SService.Services{})
 			// CheckAndHeal always defers updateStatus, on every return path;
 			// only reached when reconciliation isn't skipped, hence Maybe().
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe().Return()
@@ -153,7 +153,7 @@ func TestHandleNotARedisFailover(t *testing.T) {
 	assert := assert.New(t)
 
 	config := generateConfig()
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
@@ -177,7 +177,7 @@ func TestHandleValidateError(t *testing.T) {
 	rf.Name = "this-name-is-far-too-long-to-pass-the-forty-eight-character-limit"
 
 	config := generateConfig()
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
@@ -219,7 +219,7 @@ func TestHandleEnsureError(t *testing.T) {
 	ensureErr := errors.New("ensure boom")
 
 	config := generateConfig()
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
@@ -250,7 +250,7 @@ func TestHandleEnsureNameConflict(t *testing.T) {
 	rf := generateRF(false, true)
 	conflict := fmt.Errorf("ensure: %w", &k8s.ControlledByOtherError{Kind: "ConfigMap", Name: "rfr-s-foo", OwnerKind: "RedisFailover", OwnerName: "foo"})
 
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
@@ -286,7 +286,7 @@ func TestHandleCheckAndHealError(t *testing.T) {
 	checkErr := errors.New("get number masters boom")
 
 	config := generateConfig()
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	// CheckAndHeal always defers updateStatus, on every return path.
 	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mrfc := &mRFService.RedisFailoverCheck{}
@@ -385,7 +385,7 @@ func TestHandleGetLabelsWhitelistFiltering(t *testing.T) {
 			rf.Spec.LabelWhitelist = test.whitelist
 
 			config := generateConfig()
-			mk := &mK8SService.Services{}
+			mk := noAppliedSecret(&mK8SService.Services{})
 			// CheckAndHeal always defers updateStatus, on every return path.
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
@@ -446,7 +446,7 @@ func TestHandleAddsFinalizerOnFreshRF(t *testing.T) {
 	rf.Finalizers = []string{"some.other/finalizer"}
 
 	config := generateConfig()
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
@@ -492,7 +492,7 @@ func TestHandleDeletionCleansUpMetricsAndRemovesFinalizer(t *testing.T) {
 	rf.Finalizers = []string{"some.other/finalizer", redisFailoverFinalizerMirror}
 
 	config := generateConfig()
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
@@ -527,7 +527,7 @@ func TestHandleDeletionWithoutFinalizerIsNoop(t *testing.T) {
 	rf.Finalizers = []string{"some.other/finalizer"}
 
 	config := generateConfig()
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
@@ -556,7 +556,7 @@ func TestHandleFinalizerRegistrationErrorPropagates(t *testing.T) {
 	patchErr := errors.New("patch boom")
 
 	config := generateConfig()
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
@@ -589,7 +589,7 @@ func TestHandleDeletionFinalizerRemovalErrorPropagates(t *testing.T) {
 	patchErr := errors.New("patch boom")
 
 	config := generateConfig()
-	mk := &mK8SService.Services{}
+	mk := noAppliedSecret(&mK8SService.Services{})
 	mrfc := &mRFService.RedisFailoverCheck{}
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
@@ -659,7 +659,7 @@ func TestHandleRecordsClusterMetrics(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			rf := generateRF(false, true)
 			config := generateConfig()
-			mk := &mK8SService.Services{}
+			mk := noAppliedSecret(&mK8SService.Services{})
 			// Reached only by the successful-reconcile case (CheckAndHeal always
 			// defers updateStatus), but harmless to configure unconditionally.
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()

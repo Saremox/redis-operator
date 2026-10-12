@@ -515,6 +515,7 @@ func TestCheckAndHealKeepsNoMasterWithoutAutoscaling(t *testing.T) {
 				at := newAutoscaleTest(t, mode)
 				at.rf.Spec.Sentinel.Enabled = ptr.To(sentinelMode)
 				at.h.mClient = metrics.Dummy
+				noAppliedSecret(at.mk)
 				at.mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Maybe().Return(&corev1.PodList{Items: make([]corev1.Pod, 5)}, nil)
 				at.mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 				mrfh := &mRFService.RedisFailoverHeal{}

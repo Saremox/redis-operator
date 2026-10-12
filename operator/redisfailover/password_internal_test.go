@@ -3,11 +3,13 @@ package redisfailover
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -18,6 +20,7 @@ import (
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
+	"github.com/saremox/redis-operator/service/k8s"
 )
 
 func newPasswordTestHandler(password *string) (*RedisFailoverHandler, *redisfailoverv1.RedisFailover, *mRFService.RedisFailoverHeal) {
@@ -30,10 +33,44 @@ func newPasswordTestHandler(password *string) (*RedisFailoverHandler, *redisfail
 		return &corev1.Secret{Data: map[string][]byte{"password": []byte(*password)}}, nil
 	})
 	ms.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mockAppliedSecret(ms)
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, mrfh, ms, metrics.Dummy, log.Dummy)
 	return handler, rf, mrfh
+}
+
+func isAppliedSecretName(name string) bool { return strings.HasPrefix(name, "rfr-auth-applied-") }
+
+// noAppliedSecret makes ms answer that the applied passwords Secret is
+// missing.
+func noAppliedSecret(ms *mK8SService.Services) *mK8SService.Services {
+	ms.On("GetSecret", mock.Anything, mock.MatchedBy(isAppliedSecretName)).Maybe().
+		Return(nil, apierrors.NewNotFound(corev1.Resource("secrets"), "rfr-auth-applied"))
+	return ms
+}
+
+// mockAppliedSecret makes ms keep the applied passwords Secret in memory. It
+// starts without one.
+func mockAppliedSecret(ms *mK8SService.Services) map[string]*corev1.Secret {
+	stored := map[string]*corev1.Secret{}
+	ms.On("GetSecret", mock.Anything, mock.MatchedBy(isAppliedSecretName)).
+		Maybe().Return(func(_, name string) (*corev1.Secret, error) {
+		if s, ok := stored[name]; ok {
+			return s, nil
+		}
+		return nil, apierrors.NewNotFound(corev1.Resource("secrets"), name)
+	})
+	ms.On("CreateOrUpdateSecret", mock.Anything, mock.Anything).Maybe().Return(func(_ string, s *corev1.Secret) error {
+		if old, ok := stored[s.Name]; ok {
+			if err := k8s.CheckSameController("Secret", old, s); err != nil {
+				return err
+			}
+		}
+		stored[s.Name] = s
+		return nil
+	})
+	return stored
 }
 
 func TestApplyPasswordRemembersAcceptedPassword(t *testing.T) {
@@ -87,6 +124,7 @@ func newPendingPodPasswordHandler(password, running *string) (*RedisFailoverHand
 	})
 	ms.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(rf)).Return(pods, nil)
 	ms.On("GetDeploymentPods", "testns", rfservice.GetSentinelName(rf)).Return(&corev1.PodList{}, nil)
+	mockAppliedSecret(ms)
 
 	wrongpass := errors.New("WRONGPASS invalid username-password pair or user is disabled.")
 	mr := &mRedisService.Client{}
@@ -207,6 +245,7 @@ func TestCheckAndHealMarksTheClusterFailedWhenAReconcilePanics(t *testing.T) {
 	}
 	ms := &mK8SService.Services{}
 	ms.On("GetSecret", "testns", "redis-auth").Return(&corev1.Secret{Data: map[string][]byte{"password": []byte("v1")}}, nil)
+	mockAppliedSecret(ms)
 	var written []redisfailoverv1.RedisFailoverStatus
 	ms.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Run(func(args mock.Arguments) {
