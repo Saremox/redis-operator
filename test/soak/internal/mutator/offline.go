@@ -112,10 +112,10 @@ func (m *Mutator) rotateOffline(ctx context.Context, o *offline, log *slog.Logge
 // window of its own, and reports whether the instance converged.
 func (m *Mutator) restorePassword(ctx context.Context, previous *secretChange, timeout time.Duration, log *slog.Logger) (restored, ok bool) {
 	rf, err := m.rfs.DatabasesV1().RedisFailovers(m.in.Namespace).Get(ctx, m.in.Name, metav1.GetOptions{})
-	if err != nil || rf.Status.State != redisfailoverv1.NotHealthyState || rf.Status.Message != passwordNotApplied {
+	if err != nil || previous.password == "" || rf.Status.State != redisfailoverv1.NotHealthyState || rf.Status.Message != passwordNotApplied {
 		return false, ctx.Err() == nil
 	}
-	log.Warn("rotation timed out, the tester sets the previous password again", "result", resultTimeout, "status_message", rf.Status.Message)
+	log.Warn("rotation timed out, the tester sets the previous password again", "first_result", resultTimeout, "status_message", rf.Status.Message)
 	h := m.hold(timeout, func(ctx context.Context) error {
 		s, err := m.fetch(ctx, fetchOpts{password: &previous.password})
 		if err != nil {

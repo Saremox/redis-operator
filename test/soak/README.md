@@ -264,10 +264,10 @@ explanation:
   creates it again from its template.
 
 A result is `converged`, `timeout`, `stuck_restored` (see
-`password_rotate`), `rejected` (the API refused the change) or `skipped`
-(the mutation cannot apply now, for example a replica kill on an instance
-with one pod). A version change that does not converge gets its judgement
-below, not `timeout`.
+`password_rotate`), `rejected` or `skipped`. `rejected` means that the API
+refused the change. `skipped` means that the mutation cannot apply now, for
+example a replica kill on an instance with one pod. A version change that
+does not converge gets its judgement below, not `timeout`.
 
 The mutator mutates only a quiet instance. `redis_soak_mutation_stalled_seconds`
 shows the seconds that the mutator waits for one. It is 0 while the instance is

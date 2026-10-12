@@ -40,9 +40,9 @@ const (
 	resultTimeout   = "timeout"
 	resultRejected  = "rejected"
 	resultSkipped   = "skipped"
-	// resultStuckRestored is a password rotation that timed out because the
-	// operator could not apply the password, and that converged after the
-	// tester set the previous password again.
+	// resultStuckRestored is a password rotation that timed out, because the
+	// operator could not apply the password. It converged after the tester
+	// set the previous password again.
 	resultStuckRestored = "stuck_restored"
 )
 

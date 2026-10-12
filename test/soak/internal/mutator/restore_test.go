@@ -7,10 +7,12 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
@@ -121,7 +123,7 @@ func (r *rotation) run(t *testing.T, kind config.Kind) {
 func (r *rotation) results(t *testing.T, kind config.Kind) map[string]float64 {
 	t.Helper()
 	got := map[string]float64{}
-	for _, res := range []string{resultConverged, resultTimeout, resultStuckRestored} {
+	for _, res := range []string{resultConverged, resultTimeout, resultStuckRestored, resultRejected} {
 		got[res] = testutil.ToFloat64(r.m.total.WithLabelValues(string(kind), res))
 	}
 	return got
@@ -138,9 +140,10 @@ func (r *rotation) logged(msg string) string {
 
 var stuck = redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.NotHealthyState, Message: passwordNotApplied}
 
-// A rotation that the operator cannot apply puts the previous password back,
-// converges in a second window, and counts as stuck_restored. The timeout
-// stays in the log.
+// After a rotation that the operator cannot apply, the tester sets the
+// previous password again. The mutation converges in a second window and
+// counts as stuck_restored. The first timeout stays in the log, under a key
+// that no count of results reads.
 func TestStuckRotationRestored(t *testing.T) {
 	r := newRotation(t, stuck, false, true)
 	r.run(t, config.PasswordRotate)
@@ -153,12 +156,12 @@ func TestStuckRotationRestored(t *testing.T) {
 	if got := r.password(); got != "old" {
 		t.Errorf("the Secret has %q, want old", got)
 	}
-	want := map[string]float64{resultConverged: 0, resultTimeout: 0, resultStuckRestored: 1}
+	want := map[string]float64{resultConverged: 0, resultTimeout: 0, resultStuckRestored: 1, resultRejected: 0}
 	if got := r.results(t, config.PasswordRotate); !maps.Equal(got, want) {
 		t.Errorf("results %v, want %v", got, want)
 	}
-	if line := r.logged("rotation timed out, the tester sets the previous password again"); !strings.Contains(line, `"result":"timeout"`) ||
-		!strings.Contains(line, `"status_message":"`+passwordNotApplied+`"`) {
+	if line := r.logged("rotation timed out, the tester sets the previous password again"); !strings.Contains(line, `"first_result":"timeout"`) ||
+		strings.Contains(line, `"result":`) || !strings.Contains(line, `"status_message":"`+passwordNotApplied+`"`) {
 		t.Errorf("the timeout log line is %q", line)
 	}
 	if line := r.logged("mutation done"); !strings.Contains(line, `"result":"stuck_restored"`) || !strings.Contains(line, `"level":"WARN"`) {
@@ -200,7 +203,7 @@ func TestStuckRotationNotRestored(t *testing.T) {
 	if got := r.password(); got != "old" {
 		t.Errorf("the Secret has %q, want old", got)
 	}
-	want := map[string]float64{resultConverged: 0, resultTimeout: 1, resultStuckRestored: 0}
+	want := map[string]float64{resultConverged: 0, resultTimeout: 1, resultStuckRestored: 0, resultRejected: 0}
 	if got := r.results(t, config.PasswordRotate); !maps.Equal(got, want) {
 		t.Errorf("results %v, want %v", got, want)
 	}
@@ -214,9 +217,10 @@ func TestRotationNotStuck(t *testing.T) {
 		converged bool
 		result    string
 	}{
-		"another message": {redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.NotHealthyState, Message: "unable to check the pods"}, false, resultTimeout},
-		"Healthy":         {redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.HealthyState}, false, resultTimeout},
-		"converged":       {stuck, true, resultConverged},
+		"another message":          {redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.NotHealthyState, Message: "unable to check the pods"}, false, resultTimeout},
+		"Healthy":                  {redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.HealthyState}, false, resultTimeout},
+		"Healthy with the message": {redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.HealthyState, Message: passwordNotApplied}, false, resultTimeout},
+		"converged":                {stuck, true, resultConverged},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := newRotation(t, c.status, c.converged)
@@ -234,7 +238,7 @@ func TestRotationNotStuck(t *testing.T) {
 	}
 }
 
-// Only password_rotate puts the previous password back. Scenario C does so
+// Only password_rotate sets the previous password again. Scenario C does so
 // itself, and the other auth kinds change more than the password.
 func TestRestoreOnlyForRotation(t *testing.T) {
 	m := mutations()
@@ -301,7 +305,7 @@ func TestStuckRotationCanceled(t *testing.T) {
 	if len(r.windows) != 2 {
 		t.Fatalf("%d windows, want 2", len(r.windows))
 	}
-	want := map[string]float64{resultConverged: 0, resultTimeout: 0, resultStuckRestored: 0}
+	want := map[string]float64{resultConverged: 0, resultTimeout: 0, resultStuckRestored: 0, resultRejected: 0}
 	if got := r.results(t, config.PasswordRotate); !maps.Equal(got, want) {
 		t.Errorf("results %v, want %v", got, want)
 	}
@@ -327,5 +331,89 @@ func TestStuckRotationSecretNotUpdated(t *testing.T) {
 	}
 	if line := r.logged("previous password not set"); !strings.Contains(line, "denied") {
 		t.Errorf("the log line is %q", line)
+	}
+}
+
+// The restore window holds only once every redis pod accepts the previous
+// password.
+func TestRestoreWindowChecksPreviousPassword(t *testing.T) {
+	srv := miniredis.RunT(t)
+	port, err := strconv.Atoi(srv.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newRotation(t, stuck, false, true)
+	r.m.timeout = time.Second
+	r.run(t, config.PasswordRotate)
+	if len(r.windows) != 2 {
+		t.Fatalf("%d windows, want 2", len(r.windows))
+	}
+	ctx := context.Background()
+	rf, err := r.rfs.DatabasesV1().RedisFailovers("ns").Get(ctx, "x", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rf.Spec.Redis.Port = int32(port)
+	rf.Status = redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.HealthyState}
+	if _, err := r.rfs.DatabasesV1().RedisFailovers("ns").Update(ctx, rf, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	pod := readyPod("rfr-x-0", "u0", roleMaster)
+	pod.Namespace = "ns"
+	pod.Labels["app.kubernetes.io/part-of"] = "redis-failover"
+	pod.Labels["app.kubernetes.io/name"] = "x"
+	pod.Labels["app.kubernetes.io/component"] = "redis"
+	pod.Status.PodIP = "127.0.0.1"
+	if _, err := r.kube.CoreV1().Pods("ns").Create(ctx, &pod, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	check := r.windows[1].check
+	srv.RequireAuth("other")
+	if err := check(ctx); err == nil {
+		t.Error("the restore converged while the pod refuses the previous password")
+	}
+	srv.RequireAuth("old")
+	if err := check(ctx); err != nil {
+		t.Errorf("the restore did not converge when the pod accepts the previous password: %v", err)
+	}
+}
+
+// A rotation whose Secret update the API refuses changed nothing, so the
+// tester has nothing to restore.
+func TestRejectedRotationNotRestored(t *testing.T) {
+	r := newRotation(t, stuck, false, true)
+	r.kube.PrependReactor("update", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("denied")
+	})
+	r.run(t, config.PasswordRotate)
+	if len(r.windows) != 1 {
+		t.Errorf("%d windows, want 1", len(r.windows))
+	}
+	want := map[string]float64{resultConverged: 0, resultTimeout: 0, resultStuckRestored: 0, resultRejected: 1}
+	if got := r.results(t, config.PasswordRotate); !maps.Equal(got, want) {
+		t.Errorf("results %v, want %v", got, want)
+	}
+}
+
+// An empty password is a Secret that the tester could not read. The tester
+// never writes it as the previous password.
+func TestNoRestoreWithoutPreviousPassword(t *testing.T) {
+	m := mutations()
+	unknown := authState()
+	unknown.password = ""
+	if p := planFor(t, config.PasswordRotate, m, unknown, "rfr-x-0"); p.skip != "" || p.secret == nil || p.restore != nil {
+		t.Errorf("password_rotate: %+v", p)
+	}
+	if p := planFor(t, config.PasswordRotateOffline, m, unknown, "rfr-x-0"); p.skip == "" || p.offline != nil {
+		t.Errorf("password_rotate_offline not skipped: %+v", p)
+	}
+
+	r := newRotation(t, stuck)
+	restored, ok := r.m.restorePassword(r.ctx, &secretChange{name: "x-auth"}, time.Minute, r.m.log)
+	if restored || !ok || len(r.windows) != 0 {
+		t.Errorf("restored %t, ok %t, %d windows, want no restore", restored, ok, len(r.windows))
+	}
+	if got := r.password(); got != "old" {
+		t.Errorf("the Secret has %q, want old", got)
 	}
 }
