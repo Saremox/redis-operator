@@ -62,6 +62,8 @@ tests:
         values: '0 0 1x8'
       - series: 'redis_soak_mutation_total{rf="a",namespace="a",mode="operator",kind="kill_master",result="converged"}'
         values: '0+1x10'
+      - series: 'redis_soak_mutation_total{rf="a",namespace="a",mode="operator",kind="password_rotate",result="stuck_restored"}'
+        values: '0 0 1x8'
       - series: 'redis_soak_chaos_total{kind="node_drain",result="timeout"}'
         values: '0 0 1x8'
       - series: 'redis_soak_chaos_total{kind="operator_restart",result="converged"}'
@@ -93,6 +95,9 @@ tests:
           - exp_labels: {severity: warning, rf: a, namespace: a, mode: operator, kind: kill_master, result: timeout}
             exp_annotations:
               summary: "A kill_master mutation of a/a didn't converge in time."
+          - exp_labels: {severity: warning, rf: a, namespace: a, mode: operator, kind: password_rotate, result: stuck_restored}
+            exp_annotations:
+              summary: "A password_rotate mutation of a/a didn't converge in time."
       - eval_time: 2m
         alertname: RedisSoakChaosTimeout
         exp_alerts:

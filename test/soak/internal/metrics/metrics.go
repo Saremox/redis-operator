@@ -144,7 +144,7 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 		MutationTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "mutation_total",
-			Help:      "Mutations by kind and result: converged, timeout, rejected or skipped.",
+			Help:      "Mutations by kind and result: converged, timeout, stuck_restored, rejected or skipped.",
 		}, labels("kind", "result")),
 		MutationConverge: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: namespace,

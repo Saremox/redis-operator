@@ -270,7 +270,7 @@ expect "every kind converged, none timed out or was rejected" -v judged="^(${jud
       if (!(l("rf") ~ judged && l("kind") == "sentinel_image_upgrade")) n[k] += 0
       if ($NF > 0) ok[k] = 1
     }
-    if (l("result") ~ /^(timeout|rejected)$/ && $NF > 0) print
+    if (l("result") ~ /^(timeout|stuck_restored|rejected)$/ && $NF > 0) print
   }
   END { for (k in n) if (!(k in ok)) print k, "never converged" }'
 expect "a master kill failed over" '/^redis_soak_mutation_total\{/ && l("kind") == "kill_master" && l("result") == "converged" && $NF > 0 { killed[l("rf")] = 1 }

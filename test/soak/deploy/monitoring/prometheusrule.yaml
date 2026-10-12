@@ -40,7 +40,7 @@ spec:
           annotations:
             summary: "{{ $labels.namespace }}/{{ $labels.rf }} violated {{ $labels.invariant }} outside a convergence window, or past its timeout."
         - alert: RedisSoakMutationTimeout
-          expr: increase(redis_soak_mutation_total{result="timeout"}[15m]) > 0
+          expr: increase(redis_soak_mutation_total{result=~"timeout|stuck_restored"}[15m]) > 0
           labels:
             severity: warning
           annotations:
