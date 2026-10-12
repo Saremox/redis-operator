@@ -3,6 +3,7 @@ package v1
 import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -109,6 +110,32 @@ type RedisSettings struct {
 	// 1.35 to lower a memory limit. Defaults to Enabled.
 	// +kubebuilder:validation:Enum=Enabled;Disabled
 	InPlaceResize string `json:"inPlaceResize,omitempty"`
+	// Autoscaling lets the operator compute the memory limit of the redis
+	// container from the memory use. Unset means Off.
+	Autoscaling *AutoscalingSettings `json:"autoscaling,omitempty"`
+}
+
+// AutoscalingSettings configures the memory autoscaler. The memory limit in
+// redis.resources is the lower bound, and memoryMax is the upper bound.
+type AutoscalingSettings struct {
+	// Mode is Off, Recommend or Auto. Recommend shows a memory limit in
+	// status.autoscaling and changes no pod. Auto is not available. Defaults
+	// to Off.
+	// +kubebuilder:validation:Enum=Off;Recommend;Auto
+	Mode string `json:"mode,omitempty"`
+	// MemoryMax is the largest memory limit that the autoscaler recommends.
+	// It must be greater than redis.resources.limits.memory. The modes
+	// Recommend and Auto need it.
+	MemoryMax *resource.Quantity `json:"memoryMax,omitempty"`
+	// RecreateAfter is the time after which Auto recreates a pod that it
+	// cannot resize in place. 0s recreates at once, other values must be at
+	// least 5m. Unset means that Auto never recreates a pod. Only Auto uses it.
+	RecreateAfter *metav1.Duration `json:"recreateAfter,omitempty"`
+	// Workload is Auto, Store or Cache. Auto uses the maxmemory-policy:
+	// allkeys-* is a cache, noeviction a store, and volatile-* a store until
+	// Redis evicts a key. Defaults to Auto.
+	// +kubebuilder:validation:Enum=Auto;Store;Cache
+	Workload string `json:"workload,omitempty"`
 }
 
 // MaxMemorySettings configures the operator-managed maxmemory.
@@ -279,4 +306,25 @@ type RedisFailoverStatus struct {
 	State       string `json:"state,omitempty"`
 	LastChanged string `json:"lastChanged,omitempty"`
 	Message     string `json:"message,omitempty"`
+	// Autoscaling is the last result of redis.autoscaling. It is empty when
+	// the mode is Off.
+	// +optional
+	Autoscaling AutoscalingStatus `json:"autoscaling,omitzero"`
+}
+
+// AutoscalingStatus holds only scalar fields, because the operator compares
+// the status with == to skip a write that changes nothing.
+type AutoscalingStatus struct {
+	// Workload is Store or Cache.
+	Workload string `json:"workload,omitempty"`
+	// RecommendedMemory is the memory limit that the autoscaler recommends.
+	// It is empty when the autoscaler recommends no change.
+	RecommendedMemory string `json:"recommendedMemory,omitempty"`
+	// Reason tells why the autoscaler recommends a change or no change.
+	Reason string `json:"reason,omitempty"`
+	// EvaluatedAt is the RFC3339 time of the last evaluation, in full minutes.
+	EvaluatedAt string `json:"evaluatedAt,omitempty"`
+	// HighWindows is the number of consecutive 5-minute windows with high
+	// memory use.
+	HighWindows int32 `json:"highWindows,omitempty"`
 }

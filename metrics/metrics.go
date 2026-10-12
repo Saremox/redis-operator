@@ -81,6 +81,7 @@ const (
 	FAILOVER_ABORT              = "FAILOVER_ABORT"
 	GET_RUN_ID                  = "GET_RUN_ID"
 	GET_FAILOVER_STATE          = "GET_FAILOVER_STATE"
+	GET_AUTOSCALER_INFO         = "GET_AUTOSCALER_INFO"
 )
 
 var ( // used for garbage collection of metrics
@@ -113,6 +114,12 @@ type Recorder interface {
 	SetClusterError(namespace string, name string)
 	DeleteCluster(namespace string, name string)
 
+	// SetAutoscaler sets the gauges of the memory autoscaler.
+	SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32)
+	// DeleteAutoscaler deletes the series of SetAutoscaler, for example when
+	// the autoscaler mode changes to Off.
+	DeleteAutoscaler(namespace string, name string)
+
 	RecordEnsureOperation(objectNamespace string, objectName string, objectKind string, resourceName string, status string)
 
 	RecordRedisCheck(namespace string, resource string, indicator /* aspect of redis that is unhealthy */ string, instance string, status string)
@@ -126,6 +133,9 @@ type Recorder interface {
 type recorder struct {
 	// Metrics fields.
 	clusterOK            *prometheus.GaugeVec
+	recommendedMemory    *prometheus.GaugeVec
+	memoryUsedRatio      *prometheus.GaugeVec
+	highWindows          *prometheus.GaugeVec
 	ensureResource       *prometheus.CounterVec
 	redisCheck           *prometheus.CounterVec
 	sentinelCheck        *prometheus.CounterVec
@@ -142,6 +152,27 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		Subsystem: promControllerSubsystem,
 		Name:      "cluster_ok",
 		Help:      "1 when the last reconcile of the RedisFailover had no error, 0 when it failed.",
+	}, []string{"namespace", "name"})
+
+	recommendedMemory := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: promControllerSubsystem,
+		Name:      "autoscaler_recommended_memory_bytes",
+		Help:      "Memory limit that the autoscaler recommends for the redis container, or 0 for no change.",
+	}, []string{"namespace", "name"})
+
+	memoryUsedRatio := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: promControllerSubsystem,
+		Name:      "autoscaler_memory_used_ratio",
+		Help:      "used_memory of the master divided by maxmemory, or by the memory limit without maxmemory, at the last sample.",
+	}, []string{"namespace", "name"})
+
+	highWindows := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: promControllerSubsystem,
+		Name:      "autoscaler_high_windows",
+		Help:      "Number of consecutive 5-minute windows with high memory use.",
 	}, []string{"namespace", "name"})
 
 	ensureResource := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -184,6 +215,9 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 	// Create the instance.
 	r := recorder{
 		clusterOK:            clusterOK,
+		recommendedMemory:    recommendedMemory,
+		memoryUsedRatio:      memoryUsedRatio,
+		highWindows:          highWindows,
 		ensureResource:       ensureResource,
 		redisCheck:           redisCheck,
 		sentinelCheck:        sentinelCheck,
@@ -195,6 +229,9 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 	// Register metrics.
 	reg.MustRegister(
 		r.clusterOK,
+		r.recommendedMemory,
+		r.memoryUsedRatio,
+		r.highWindows,
 		r.ensureResource,
 		r.redisCheck,
 		r.sentinelCheck,
@@ -221,6 +258,20 @@ func (r recorder) SetClusterError(namespace string, name string) {
 // the metric does not report a cluster that no longer exists.
 func (r recorder) DeleteCluster(namespace string, name string) {
 	r.clusterOK.DeleteLabelValues(namespace, name)
+	r.DeleteAutoscaler(namespace, name)
+}
+
+func (r recorder) SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32) {
+	r.recommendedMemory.WithLabelValues(namespace, name).Set(float64(recommendedBytes))
+	r.memoryUsedRatio.WithLabelValues(namespace, name).Set(usedRatio)
+	r.highWindows.WithLabelValues(namespace, name).Set(float64(highWindows))
+	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", name)
+}
+
+func (r recorder) DeleteAutoscaler(namespace string, name string) {
+	r.recommendedMemory.DeleteLabelValues(namespace, name)
+	r.memoryUsedRatio.DeleteLabelValues(namespace, name)
+	r.highWindows.DeleteLabelValues(namespace, name)
 }
 
 func (r recorder) RecordEnsureOperation(objectNamespace string, objectName string, objectKind string, resourceName string, status string) {
@@ -298,6 +349,9 @@ func removeStaleMetrics() {
 				// A new map, because label is used again for the next recorder.
 				labelWithName := prometheus.Labels{"namespace": label["namespace"], "name": label["resource"]}
 				metricsDeletedCount += recorder.clusterOK.DeletePartialMatch(labelWithName)
+				metricsDeletedCount += recorder.recommendedMemory.DeletePartialMatch(labelWithName)
+				metricsDeletedCount += recorder.memoryUsedRatio.DeletePartialMatch(labelWithName)
+				metricsDeletedCount += recorder.highWindows.DeletePartialMatch(labelWithName)
 			}
 			for _, label := range ipBasedLabels {
 				metricsDeletedCount += recorder.redisOperations.DeletePartialMatch(label)

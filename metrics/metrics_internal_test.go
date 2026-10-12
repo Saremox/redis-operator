@@ -173,6 +173,7 @@ func TestRemoveStaleMetricsDeletesStaleResourceInEachRecorder(t *testing.T) {
 		rec.RecordRedisCheck(namespace, resource, REDIS_REPLICA_MISMATCH, "10.0.0.50", STATUS_UNHEALTHY)
 		rec.RecordSentinelCheck(namespace, resource, SENTINEL_NOT_READY, "10.0.0.51", STATUS_UNHEALTHY)
 		rec.SetClusterError(namespace, resource)
+		rec.SetAutoscaler(namespace, resource, 1, 0.5, 1)
 	}
 
 	mutex.Lock()
@@ -183,7 +184,8 @@ func TestRemoveStaleMetricsDeletesStaleResourceInEachRecorder(t *testing.T) {
 
 	assert.Eventually(t, func() bool {
 		for _, rec := range recs {
-			if testutil.CollectAndCount(rec.redisCheck)+testutil.CollectAndCount(rec.sentinelCheck)+testutil.CollectAndCount(rec.clusterOK) != 0 {
+			if testutil.CollectAndCount(rec.redisCheck)+testutil.CollectAndCount(rec.sentinelCheck)+testutil.CollectAndCount(rec.clusterOK)+
+				testutil.CollectAndCount(rec.recommendedMemory)+testutil.CollectAndCount(rec.memoryUsedRatio)+testutil.CollectAndCount(rec.highWindows) != 0 {
 				return false
 			}
 		}

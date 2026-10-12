@@ -998,6 +998,48 @@ spec:
                             x-kubernetes-list-type: atomic
                         type: object
                     type: object
+                  autoscaling:
+                    description: |-
+                      Autoscaling lets the operator compute the memory limit of the redis
+                      container from the memory use. Unset means Off.
+                    properties:
+                      memoryMax:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: |-
+                          MemoryMax is the largest memory limit that the autoscaler recommends.
+                          It must be greater than redis.resources.limits.memory. The modes
+                          Recommend and Auto need it.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      mode:
+                        description: |-
+                          Mode is Off, Recommend or Auto. Recommend shows a memory limit in
+                          status.autoscaling and changes no pod. Auto is not available. Defaults
+                          to Off.
+                        enum:
+                        - "Off"
+                        - Recommend
+                        - Auto
+                        type: string
+                      recreateAfter:
+                        description: |-
+                          RecreateAfter is the time after which Auto recreates a pod that it
+                          cannot resize in place. 0s recreates at once, other values must be at
+                          least 5m. Unset means that Auto never recreates a pod. Only Auto uses it.
+                        type: string
+                      workload:
+                        description: |-
+                          Workload is Auto, Store or Cache. Auto uses the maxmemory-policy:
+                          allkeys-* is a cache, noeviction a store, and volatile-* a store until
+                          Redis evicts a key. Defaults to Auto.
+                        enum:
+                        - Auto
+                        - Store
+                        - Cache
+                        type: string
+                    type: object
                   command:
                     description: |-
                       Command replaces the default redis command. With auth.secretPath, the
@@ -17051,6 +17093,34 @@ spec:
               RedisFailoverStatus is the result of the last reconcile. State is Healthy or
               NotHealthy, and Message gives the reason.
             properties:
+              autoscaling:
+                description: |-
+                  Autoscaling is the last result of redis.autoscaling. It is empty when
+                  the mode is Off.
+                properties:
+                  evaluatedAt:
+                    description: EvaluatedAt is the RFC3339 time of the last evaluation,
+                      in full minutes.
+                    type: string
+                  highWindows:
+                    description: |-
+                      HighWindows is the number of consecutive 5-minute windows with high
+                      memory use.
+                    format: int32
+                    type: integer
+                  reason:
+                    description: Reason tells why the autoscaler recommends a change
+                      or no change.
+                    type: string
+                  recommendedMemory:
+                    description: |-
+                      RecommendedMemory is the memory limit that the autoscaler recommends.
+                      It is empty when the autoscaler recommends no change.
+                    type: string
+                  workload:
+                    description: Workload is Store or Cache.
+                    type: string
+                type: object
               lastChanged:
                 type: string
               message:

@@ -155,6 +155,43 @@ func TestRedisFailoverServiceUpdateRedisFailoverStatus(t *testing.T) {
 	})
 }
 
+// A merge patch keeps each field that it leaves out, so the patch must remove
+// an empty autoscaling field and each empty field inside it.
+func TestRedisFailoverServiceUpdateRedisFailoverStatusAutoscaling(t *testing.T) {
+	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf1", Namespace: "testns"}}
+	crdcli := redisfailoverfake.NewSimpleClientset(rf)
+	service := k8s.NewRedisFailoverService(crdcli, log.Dummy, metrics.Dummy)
+	patch := func(status redisfailoverv1.AutoscalingStatus) (redisfailoverv1.AutoscalingStatus, string) {
+		t.Helper()
+		crdcli.ClearActions()
+		rf.Status = redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.HealthyState, Autoscaling: status}
+		service.UpdateRedisFailoverStatus(context.TODO(), "testns", rf, metav1.PatchOptions{})
+		got, err := crdcli.DatabasesV1().RedisFailovers("testns").Get(context.TODO(), "rf1", metav1.GetOptions{})
+		assert.NoError(t, err)
+		var body string
+		for _, action := range crdcli.Actions() {
+			if p, ok := action.(kubetesting.PatchAction); ok {
+				body = string(p.GetPatch())
+			}
+		}
+		return got.Status.Autoscaling, body
+	}
+
+	full := redisfailoverv1.AutoscalingStatus{Workload: "Store", RecommendedMemory: "1280Mi", Reason: "r", EvaluatedAt: "2026-01-01T00:05:00Z", HighWindows: 3}
+	got, body := patch(full)
+	assert.Equal(t, full, got)
+	assert.Contains(t, body, `"autoscaling":{"evaluatedAt":"2026-01-01T00:05:00Z","highWindows":3,"reason":"r","recommendedMemory":"1280Mi","workload":"Store"}`)
+
+	partial := redisfailoverv1.AutoscalingStatus{Workload: "Store", Reason: "low"}
+	got, body = patch(partial)
+	assert.Equal(t, partial, got)
+	assert.Contains(t, body, `"autoscaling":{"evaluatedAt":null,"highWindows":null,"reason":"low","recommendedMemory":null,"workload":"Store"}`)
+
+	got, body = patch(redisfailoverv1.AutoscalingStatus{})
+	assert.Zero(t, got)
+	assert.Contains(t, body, `"autoscaling":null`)
+}
+
 func TestRedisFailoverServicePatchRedisFailoverFinalizers(t *testing.T) {
 	testns := "testns"
 

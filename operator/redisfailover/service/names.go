@@ -32,6 +32,12 @@ func GetRedisReadinessName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(redisReadinessName, rf.Name)
 }
 
+// GetAutoscalerStateName returns the name of the ConfigMap with the state of
+// the memory autoscaler.
+func GetAutoscalerStateName(rf *redisfailoverv1.RedisFailover) string {
+	return generateName(autoscalerStateName, rf.Name)
+}
+
 // GetSentinelName returns the name for sentinel resources
 func GetSentinelName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(sentinelName, rf.Name)

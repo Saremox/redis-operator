@@ -347,6 +347,43 @@ The operator needs `patch` on `pods/resize` and `get` on `controllerrevisions`, 
 
 A ResourceQuota or a LimitRange can reject a resize. The operator then does not recreate the pod, because the same rejection applies to the new pod. The rollout holds, and the status message gives the reason. The rollout continues when the quota or the LimitRange allows the new resources.
 
+### Autoscaling (Recommend)
+
+With `redis.autoscaling.mode: Recommend`, the operator recommends a memory limit for the Redis container. It does not change a pod, the StatefulSet, the resources or `maxmemory`. See the [autoscaling example file](example/redisfailover/autoscaling.yaml).
+
+The fields of `redis.autoscaling`:
+
+- `mode`: `Off` (default), `Recommend` or `Auto`. Validation rejects `Auto`, because the operator cannot apply a recommendation.
+- `memoryMax`: the largest limit that the operator recommends. It must be greater than `redis.resources.limits.memory`, which is the lower bound.
+- `workload`: `Auto` (default), `Store` or `Cache`. `Auto` uses the `maxmemory-policy` of the spec. `allkeys-*` is a cache, and `noeviction` is a store. `volatile-*` is a store until Redis evicts a key.
+- `recreateAfter`: only `Auto` uses it. Validation accepts `0s`, or `5m` and more.
+
+For a store, the memory request must be equal to the memory limit, or not set. When the request is lower, the node can run out of memory before the pod reaches its limit.
+
+The operator reads `INFO` from the master one time in each minute at most. It compares `used_memory` with `maxmemory`, or with the memory limit when `maxmemory` is `0`. It ignores a sample while the RedisFailover is not `Healthy` and while Redis loads or syncs data. It also ignores the first 10 minutes after a restart. A restart, which changes the `run_id`, starts the count of windows again.
+
+A window of 5 minutes is high when its peak is 85 percent or more. The operator recommends a step after 3 consecutive high windows. It recommends a step at once when the use is 95 percent or more, or when Redis refuses a command with an OOM error. A window below 85 percent removes the recommendation. A step is 25 percent of the current limit, rounded up to a multiple of 64Mi, and `memoryMax` at most. For a cache, the operator gives no recommendation.
+
+`status.autoscaling` shows the result. `recommendedMemory` is empty when the operator recommends no change:
+
+```yaml
+status:
+  autoscaling:
+    workload: Store
+    recommendedMemory: 1280Mi
+    reason: memory use is high in 3 consecutive windows
+    evaluatedAt: "2026-10-12T08:15:00Z"
+    highWindows: 3
+```
+
+To apply a recommendation, set the memory request and limit in `redis.resources` to the recommended value. The operator then resizes the pods as for each other change of the resources.
+
+The operator keeps its state in the ConfigMap `rfa-<NAME>`, and deletes it when the mode changes to `Off`. These gauges have the labels `namespace` and `name`:
+
+- `redis_operator_controller_autoscaler_recommended_memory_bytes`: the recommended limit, or `0`.
+- `redis_operator_controller_autoscaler_memory_used_ratio`: the use of the last sample.
+- `redis_operator_controller_autoscaler_high_windows`: the number of consecutive high windows.
+
 ### Custom shutdown script
 
 By default, the operator gives each Redis pod a shutdown script. The script makes Redis `SAVE` its data before it stops. When Sentinel runs and the pod is the master, the script first pauses the writes and asks Sentinel to fail over. Thus Sentinel moves the master immediately and does not wait for `down-after-milliseconds`. The Redis pods have no service links, so the script finds Sentinel through the Service name `rfs-<NAME>` on port 26379.

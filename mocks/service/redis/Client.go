@@ -68,6 +68,36 @@ func (_m *Client) FailoverTo(ip string, port string, password string, targetIP s
 	return r0
 }
 
+// GetAutoscalerInfo provides a mock function with given fields: ip, port, password
+func (_m *Client) GetAutoscalerInfo(ip string, port string, password string) (*redis.AutoscalerInfo, error) {
+	ret := _m.Called(ip, port, password)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetAutoscalerInfo")
+	}
+
+	var r0 *redis.AutoscalerInfo
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, string, string) (*redis.AutoscalerInfo, error)); ok {
+		return rf(ip, port, password)
+	}
+	if rf, ok := ret.Get(0).(func(string, string, string) *redis.AutoscalerInfo); ok {
+		r0 = rf(ip, port, password)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*redis.AutoscalerInfo)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(string, string, string) error); ok {
+		r1 = rf(ip, port, password)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetFailoverState provides a mock function with given fields: ip, port, password
 func (_m *Client) GetFailoverState(ip string, port string, password string) (string, error) {
 	ret := _m.Called(ip, port, password)

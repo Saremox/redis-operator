@@ -56,6 +56,10 @@ func (r *RedisFailover) Validate() error {
 		return err
 	}
 
+	if err := r.validateAutoscaling(); err != nil {
+		return err
+	}
+
 	if r.Bootstrapping() {
 		if r.Spec.BootstrapNode.Host == "" {
 			return errors.New("BootstrapNode must include a host when provided")

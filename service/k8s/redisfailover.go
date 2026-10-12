@@ -70,13 +70,14 @@ func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, na
 	//
 	// The marshal error is ignored (matching pod.go's UpdatePodLabels and
 	// UpdatePodAnnotations, which do the same for their merge patches): every
-	// value here is a plain string, and json.Marshal cannot fail on a map of
-	// strings.
+	// value here is a string, an integer, nil or a map of them, and
+	// json.Marshal cannot fail on such a map.
 	patch := map[string]interface{}{
 		"status": map[string]interface{}{
 			"state":       rf.Status.State,
 			"lastChanged": rf.Status.LastChanged,
 			"message":     rf.Status.Message,
+			"autoscaling": autoscalingPatch(rf.Status.Autoscaling),
 		},
 	}
 	patchBytes, _ := json.Marshal(patch)
@@ -87,6 +88,32 @@ func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, na
 	if err != nil {
 		recordMetrics(namespace, "RedisFailover", metrics.NOT_APPLICABLE, "PATCH", err, r.metricsRecorder)
 		r.logger.Errorf("Error while patching RedisFailover status %s/%s : %s", rf.Namespace, rf.Name, err.Error())
+	}
+}
+
+// autoscalingPatch returns null for an empty status, which removes the
+// field. A merge patch keeps each nested field that it omits, so an empty
+// field is null and not left out.
+func autoscalingPatch(a redisfailoverv1.AutoscalingStatus) interface{} {
+	if a == (redisfailoverv1.AutoscalingStatus{}) {
+		return nil
+	}
+	orNil := func(v string) interface{} {
+		if v == "" {
+			return nil
+		}
+		return v
+	}
+	var highWindows interface{}
+	if a.HighWindows != 0 {
+		highWindows = a.HighWindows
+	}
+	return map[string]interface{}{
+		"workload":          orNil(a.Workload),
+		"recommendedMemory": orNil(a.RecommendedMemory),
+		"reason":            orNil(a.Reason),
+		"evaluatedAt":       orNil(a.EvaluatedAt),
+		"highWindows":       highWindows,
 	}
 }
 
