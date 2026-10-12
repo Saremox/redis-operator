@@ -249,6 +249,12 @@ explanation:
 
   The watch can end before the message arrives, for example if the API server
   closes it. Then the tester sees no message.
+- `password_rotate` can time out with the status
+  `unable to apply the configured password`, for example after an operator
+  restart. Then the tester sets the previous password again, because a stuck
+  instance hides all other signals of the run. If the instance becomes
+  `Healthy` within one more convergence timeout, the result is
+  `stuck_restored`, else `timeout`. The findings of the stuck time count.
 - `password_rotate_offline` is scenario C. It stops the operator, changes
   the password, starts the operator with its replicas, expects
   `unable to apply the configured password`, sets the previous password,
@@ -257,10 +263,11 @@ explanation:
 - `reset` deletes the RedisFailover, its volumes and its auth Secret, and
   creates it again from its template.
 
-A result is `converged`, `timeout`, `rejected` (the API refused the
-change) or `skipped` (the mutation cannot apply now, for example a replica
-kill on an instance with one pod). A version change that does not converge
-gets its judgement below, not `timeout`.
+A result is `converged`, `timeout`, `stuck_restored` (see
+`password_rotate`), `rejected` (the API refused the change) or `skipped`
+(the mutation cannot apply now, for example a replica kill on an instance
+with one pod). A version change that does not converge gets its judgement
+below, not `timeout`.
 
 The mutator mutates only a quiet instance. `redis_soak_mutation_stalled_seconds`
 shows the seconds that the mutator waits for one. It is 0 while the instance is

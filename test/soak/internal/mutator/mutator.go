@@ -40,6 +40,10 @@ const (
 	resultTimeout   = "timeout"
 	resultRejected  = "rejected"
 	resultSkipped   = "skipped"
+	// resultStuckRestored is a password rotation that timed out because the
+	// operator could not apply the password, and that converged after the
+	// tester set the previous password again.
+	resultStuckRestored = "stuck_restored"
 )
 
 // holdHandle is what a mutation needs of its window: the observer's Hold.
@@ -166,6 +170,9 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		}
 		for _, r := range []string{resultConverged, resultTimeout, resultRejected, resultSkipped} {
 			mu.total.WithLabelValues(string(k), r)
+		}
+		if k == config.PasswordRotate {
+			mu.total.WithLabelValues(string(k), resultStuckRestored)
 		}
 	}
 	if in.Chain != nil {
@@ -366,6 +373,12 @@ func (m *Mutator) execute(ctx context.Context, step int, s state, p plan, log *s
 	if !ok {
 		return ""
 	}
+	restored := false
+	if !converged && applyErr == nil && p.restore != nil {
+		if restored, ok = m.restorePassword(ctx, p.restore, timeout, log); !ok {
+			return ""
+		}
+	}
 	d := time.Since(start)
 	if kind == config.Reset && !converged && time.Since(appliedAt) >= bound {
 		m.findings.WithLabelValues(invResetIncomplete).Inc()
@@ -387,6 +400,8 @@ func (m *Mutator) execute(ctx context.Context, step int, s state, p plan, log *s
 			log.Info("scenario phase done", "phase", 8, "phase_name", "expect the rotation to converge",
 				"duration_seconds", time.Since(appliedAt).Seconds())
 		}
+	case restored:
+		result = resultStuckRestored
 	}
 	log = m.recordRecovery(ctx, p, result, log)
 	if !judged(p.edge, applyErr, converged) {

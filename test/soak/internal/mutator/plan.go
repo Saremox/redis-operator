@@ -61,8 +61,10 @@ type plan struct {
 	params string
 	// patch is a JSON merge patch of the RedisFailover.
 	patch []byte
-	// secret is a password to set in a Secret, before the patch.
-	secret *secretChange
+	// secret is a password to set in a Secret, before the patch. restore is
+	// the previous password, which a stuck rotation sets again.
+	secret  *secretChange
+	restore *secretChange
 	// pod is the pod to delete, with its UID.
 	pod   string
 	uid   types.UID
@@ -315,6 +317,7 @@ func planAuth(kind config.Kind, s state) plan {
 		}
 		p.params = "rotate the password in secret " + path
 		p.secret = &secretChange{name: path, password: password}
+		p.restore = &secretChange{name: path, password: s.password}
 	case config.PasswordRotateOffline:
 		if path == "" {
 			return skipped(kind, "auth is off")
