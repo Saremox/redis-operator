@@ -1,0 +1,101 @@
+package service
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+
+	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/log"
+	"github.com/saremox/redis-operator/metrics"
+	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
+	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
+	"github.com/saremox/redis-operator/service/redis"
+)
+
+func autoscalerTestRF(t *testing.T, autoscaling *redisfailoverv1.AutoscalingSettings) *redisfailoverv1.RedisFailover {
+	t.Helper()
+	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"}}
+	rf.Spec.Sentinel.Enabled = ptr.To(true)
+	rf.Spec.Redis.Exporter.Enabled = true
+	rf.Spec.Sentinel.Exporter.Enabled = true
+	rf.Spec.Redis.Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+	}
+	rf.Spec.Redis.MaxMemory = &redisfailoverv1.MaxMemorySettings{}
+	rf.Spec.Redis.Autoscaling = autoscaling
+	require.NoError(t, rf.Validate())
+	return rf
+}
+
+// Recommend changes no pod: the generated objects must be the same as
+// without autoscaling, or the operator would roll the pods out.
+func TestGeneratedObjectsIgnoreRecommend(t *testing.T) {
+	max := resource.MustParse("2Gi")
+	plain := autoscalerTestRF(t, nil)
+	recommend := autoscalerTestRF(t, &redisfailoverv1.AutoscalingSettings{Mode: redisfailoverv1.AutoscalingModeRecommend, MemoryMax: &max})
+	labels := map[string]string{"app": "test"}
+	ownerRefs := []metav1.OwnerReference{{Name: "test"}}
+
+	assert.Equal(t, generateRedisStatefulSet(plain, labels, ownerRefs, "pw"), generateRedisStatefulSet(recommend, labels, ownerRefs, "pw"))
+	assert.Equal(t, generateSentinelDeployment(plain, labels, ownerRefs), generateSentinelDeployment(recommend, labels, ownerRefs))
+	assert.Equal(t, generateRedisConfigMap(plain, labels, ownerRefs), generateRedisConfigMap(recommend, labels, ownerRefs))
+	assert.Equal(t, generateRedisShutdownConfigMap(plain, labels, ownerRefs), generateRedisShutdownConfigMap(recommend, labels, ownerRefs))
+	assert.Equal(t, generateRedisReadinessConfigMap(plain, labels, ownerRefs), generateRedisReadinessConfigMap(recommend, labels, ownerRefs))
+	assert.Equal(t, generateSentinelConfigMap(plain, labels, ownerRefs), generateSentinelConfigMap(recommend, labels, ownerRefs))
+	assert.Equal(t, generateRedisService(plain, labels, ownerRefs), generateRedisService(recommend, labels, ownerRefs))
+	assert.Equal(t, generateRedisMasterService(plain, labels, ownerRefs), generateRedisMasterService(recommend, labels, ownerRefs))
+	assert.Equal(t, generateRedisSlaveService(plain, labels, ownerRefs), generateRedisSlaveService(recommend, labels, ownerRefs))
+	assert.Equal(t, generateSentinelService(plain, labels, ownerRefs), generateSentinelService(recommend, labels, ownerRefs))
+}
+
+func TestGenerateAutoscalerStateConfigMap(t *testing.T) {
+	rf := autoscalerTestRF(t, nil)
+	ownerRefs := []metav1.OwnerReference{{Name: "test", Controller: ptr.To(true)}}
+
+	cm := GenerateAutoscalerStateConfigMap(rf, map[string]string{"app.kubernetes.io/managed-by": "redis-operator"}, ownerRefs, `{"version":1}`)
+
+	assert.Equal(t, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rfa-test",
+			Namespace: "testns",
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "redis-operator",
+				"app.kubernetes.io/name":       "test",
+				"app.kubernetes.io/component":  "autoscaler",
+				"app.kubernetes.io/part-of":    "redis-failover",
+			},
+			OwnerReferences: ownerRefs,
+		},
+		Data: map[string]string{"state": `{"version":1}`},
+	}, cm)
+}
+
+func TestCheckerGetAutoscalerInfo(t *testing.T) {
+	rf := autoscalerTestRF(t, nil)
+	rf.Spec.Auth.SecretPath = "auth"
+	ms := &mK8SService.Services{}
+	ms.On("GetSecret", "testns", "auth").Return(&corev1.Secret{Data: map[string][]byte{"password": []byte("pw")}}, nil)
+	mr := &mRedisService.Client{}
+	want := &redis.AutoscalerInfo{RunID: "run1"}
+	mr.On("GetAutoscalerInfo", "10.0.0.1", "6379", "pw").Once().Return(want, nil)
+	checker := NewRedisFailoverChecker(ms, mr, log.Dummy, metrics.Dummy)
+
+	got, err := checker.GetAutoscalerInfo(rf, "10.0.0.1")
+
+	assert.NoError(t, err)
+	assert.Same(t, want, got)
+
+	ms = &mK8SService.Services{}
+	ms.On("GetSecret", "testns", "auth").Return(nil, assert.AnError)
+	checker = NewRedisFailoverChecker(ms, mr, log.Dummy, metrics.Dummy)
+	_, err = checker.GetAutoscalerInfo(rf, "10.0.0.1")
+	assert.ErrorIs(t, err, assert.AnError)
+	mr.AssertExpectations(t)
+}

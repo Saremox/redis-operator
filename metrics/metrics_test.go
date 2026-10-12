@@ -307,5 +307,29 @@ func TestDummyRecorder(t *testing.T) {
 		Dummy.RecordSentinelCheck("ns", "res", SENTINEL_NOT_READY, "inst", FAIL)
 		Dummy.RecordK8sOperation("ns", "Pod", "name", "create", SUCCESS, "")
 		Dummy.RecordRedisOperation("redis", "10.0.0.5", GET_SLAVE_OF, SUCCESS, "")
+		Dummy.SetAutoscaler("ns", "name", 1, 0.5, 2)
+		Dummy.DeleteAutoscaler("ns", "name")
 	})
+}
+
+func TestAutoscalerMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	rec := NewRecorder("autoscaler_test", reg).(recorder)
+	rec.SetAutoscaler("ns", "a", 1342177280, 0.912, 2)
+	rec.SetAutoscaler("ns", "b", 0, 0.5, 0)
+	rec.SetAutoscaler("ns", "c", 0, 0.5, 0)
+
+	assert.Equal(t, 1342177280.0, testutil.ToFloat64(rec.recommendedMemory.WithLabelValues("ns", "a")))
+	assert.Equal(t, 0.912, testutil.ToFloat64(rec.memoryUsedRatio.WithLabelValues("ns", "a")))
+	assert.Equal(t, 2.0, testutil.ToFloat64(rec.highWindows.WithLabelValues("ns", "a")))
+
+	// DeleteAutoscaler is for a mode change to Off, and DeleteCluster for a
+	// deleted RedisFailover.
+	rec.DeleteAutoscaler("ns", "b")
+	rec.SetClusterOK("ns", "c")
+	rec.DeleteCluster("ns", "c")
+	for _, gauge := range []*prometheus.GaugeVec{rec.recommendedMemory, rec.memoryUsedRatio, rec.highWindows} {
+		assert.Equal(t, 1, testutil.CollectAndCount(gauge))
+	}
+	assert.Zero(t, testutil.CollectAndCount(rec.clusterOK))
 }

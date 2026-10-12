@@ -24,6 +24,8 @@ const (
 	redisSlaveName             = "rs"
 	redisShutdownName          = "r-s"
 	redisReadinessName         = "r-readiness"
+	autoscalerStateName        = "a"
+	autoscalerRoleName         = "autoscaler"
 	redisAuthAppliedName       = "r-auth-applied"
 	redisRoleName              = "redis"
 	redisContainerName         = "redis"

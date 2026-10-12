@@ -71,6 +71,7 @@ type RedisFailoverCheck interface {
 	CheckMasterHealth(rFailover *redisfailoverv1.RedisFailover) (bool, string, error)
 	GetBestReplicaForPromotion(rFailover *redisfailoverv1.RedisFailover) (*ReplicaInfo, error)
 	GetReplicaReplicationOffsets(rFailover *redisfailoverv1.RedisFailover) ([]ReplicaInfo, error)
+	GetAutoscalerInfo(rFailover *redisfailoverv1.RedisFailover, ip string) (*redis.AutoscalerInfo, error)
 }
 
 // RedisFailoverChecker implements RedisFailoverCheck.
@@ -740,6 +741,16 @@ func (r *RedisFailoverChecker) CheckRedisSlavesReady(ip string, rFailover *redis
 
 	port := getRedisPort(rFailover.Spec.Redis.Port)
 	return r.redisClient.SlaveIsReady(ip, port, password)
+}
+
+// GetAutoscalerInfo reads the INFO fields of the memory autoscaler from the
+// Redis at ip.
+func (r *RedisFailoverChecker) GetAutoscalerInfo(rFailover *redisfailoverv1.RedisFailover, ip string) (*redis.AutoscalerInfo, error) {
+	password, err := k8s.GetRedisPassword(r.k8sService, rFailover)
+	if err != nil {
+		return nil, err
+	}
+	return r.redisClient.GetAutoscalerInfo(ip, getRedisPort(rFailover.Spec.Redis.Port), password)
 }
 
 // IsRedisRunning returns true if all the pods are Running

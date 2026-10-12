@@ -819,13 +819,17 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	defer func() {
 		if p := recover(); p != nil {
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
-				State:   redisfailoverv1.NotHealthyState,
-				Message: "internal error, see the operator log",
+				State:       redisfailoverv1.NotHealthyState,
+				Message:     "internal error, see the operator log",
+				Autoscaling: observed.Autoscaling,
 			}
 			updateStatus(r.k8sservice, rf, observed)
 			r.mClient.SetClusterError(rf.Namespace, rf.Name)
 			panic(p)
 		}
+		// The checks replace rf.Status as a whole, so the autoscaler sets
+		// its part last.
+		r.autoscale(rf, observed.Autoscaling)
 		updateStatus(r.k8sservice, rf, observed)
 	}()
 
@@ -1055,6 +1059,9 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		}
 	}
 
+	if rf.AutoscalingEnabled() {
+		r.autoscaleMasters.Store(failoverKey(rf), master)
+	}
 	err = r.applyRedisCustomConfig(rf)
 	var holdRollout bool
 	if err == nil {
@@ -1497,6 +1504,9 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		return errors.New(errorMsg)
 	}
 
+	if rf.AutoscalingEnabled() {
+		r.autoscaleMasters.Store(failoverKey(rf), master)
+	}
 	err = r.applyRedisCustomConfig(rf)
 	var holdRollout bool
 	if err == nil {

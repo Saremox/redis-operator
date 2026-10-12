@@ -32,6 +32,12 @@ func GetRedisReadinessName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(redisReadinessName, rf.Name)
 }
 
+// GetAutoscalerStateName returns the name of the ConfigMap with the state of
+// the memory autoscaler.
+func GetAutoscalerStateName(rf *redisfailoverv1.RedisFailover) string {
+	return generateName(autoscalerStateName, rf.Name)
+}
+
 // GetRedisAuthAppliedName returns the name of the Secret that keeps the
 // passwords the Redis pods run with across operator restarts.
 func GetRedisAuthAppliedName(rf *redisfailoverv1.RedisFailover) string {

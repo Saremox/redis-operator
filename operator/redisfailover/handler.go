@@ -79,7 +79,15 @@ type RedisFailoverHandler struct {
 	// sentinelResets holds, per namespace/name, the time of the last SENTINEL
 	// RESET or SENTINEL MONITOR of each Sentinel IP.
 	sentinelResets sync.Map
-	now            func() time.Time
+	// autoscaleMasters holds, per namespace/name, the master that the checks
+	// of the current reconcile found, so the autoscaler needs no extra call.
+	autoscaleMasters sync.Map
+	// autoscaleSamples holds, per namespace/name, the last autoscaleSample.
+	autoscaleSamples sync.Map
+	// autoscaleLogged holds, per namespace/name, the last autoscaler error
+	// that was logged at Warning.
+	autoscaleLogged sync.Map
+	now             func() time.Time
 	// requeue is nil until New connects the controller.
 	requeue func(key string, after time.Duration)
 }
@@ -113,6 +121,7 @@ func (r *RedisFailoverHandler) Forget(key string) {
 	r.handoverRetries.Delete(key)
 	r.handoverFallbackLogged.Delete(key)
 	r.sentinelResets.Delete(key)
+	r.forgetAutoscaler(key)
 }
 
 // Handle will ensure the redis failover is in the expected state.
@@ -217,6 +226,7 @@ func (r *RedisFailoverHandler) reportInvalid(rf *redisfailoverv1.RedisFailover, 
 		State:       redisfailoverv1.NotHealthyState,
 		Message:     err.Error(),
 		LastChanged: rf.Status.LastChanged,
+		Autoscaling: rf.Status.Autoscaling,
 	}
 	if rf.Status == status {
 		return

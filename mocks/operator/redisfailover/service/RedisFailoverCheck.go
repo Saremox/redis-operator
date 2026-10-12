@@ -3,10 +3,11 @@
 package mocks
 
 import (
-	time "time"
-
 	service "github.com/saremox/redis-operator/operator/redisfailover/service"
+	redis "github.com/saremox/redis-operator/service/redis"
 	mock "github.com/stretchr/testify/mock"
+
+	time "time"
 
 	v1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 )
@@ -289,6 +290,36 @@ func (_m *RedisFailoverCheck) CheckSentinelsCannotFailover(rFailover *v1.RedisFa
 
 	if rf, ok := ret.Get(1).(func(*v1.RedisFailover) error); ok {
 		r1 = rf(rFailover)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// GetAutoscalerInfo provides a mock function with given fields: rFailover, ip
+func (_m *RedisFailoverCheck) GetAutoscalerInfo(rFailover *v1.RedisFailover, ip string) (*redis.AutoscalerInfo, error) {
+	ret := _m.Called(rFailover, ip)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetAutoscalerInfo")
+	}
+
+	var r0 *redis.AutoscalerInfo
+	var r1 error
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string) (*redis.AutoscalerInfo, error)); ok {
+		return rf(rFailover, ip)
+	}
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string) *redis.AutoscalerInfo); ok {
+		r0 = rf(rFailover, ip)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*redis.AutoscalerInfo)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(*v1.RedisFailover, string) error); ok {
+		r1 = rf(rFailover, ip)
 	} else {
 		r1 = ret.Error(1)
 	}
