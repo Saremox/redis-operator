@@ -61,11 +61,10 @@ type plan struct {
 	params string
 	// patch is a JSON merge patch of the RedisFailover.
 	patch []byte
-	// secret is a password to set in a Secret, before the patch. restore is
-	// the previous password, which the tester sets again after a stuck
-	// rotation.
+	// secret is a password to set in a Secret, before the patch. restore
+	// puts the previous password back after a stuck mutation.
 	secret  *secretChange
-	restore *secretChange
+	restore *restore
 	// pod is the pod to delete, with its UID.
 	pod   string
 	uid   types.UID
@@ -96,6 +95,14 @@ type plan struct {
 type secretChange struct {
 	name     string
 	password string
+}
+
+// restore is the previous password in the Secret name. patch, if set, is a
+// merge patch of the RedisFailover that uses this Secret again. Without
+// patch, the tester writes password to the Secret.
+type restore struct {
+	secretChange
+	patch []byte
 }
 
 // newPassword returns a random password. Logs never show it, so a replayed
@@ -152,7 +159,7 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 		return planKill(kind, pod, r.Float64() < m.ForceDeleteProbability, func(name string, uid types.UID) func(state) error {
 			return sentinelPodReplaced(uid, want)
 		})
-	case config.PasswordRotate, config.AuthAdd, config.AuthRemove, config.PasswordRotateOffline:
+	case config.PasswordRotate, config.AuthAdd, config.AuthRemove, config.PasswordRotateOffline, config.PasswordRotateOfflineForget:
 		return planAuth(kind, s)
 	case config.SentinelToggle:
 		want := !s.rf.SentinelEnabled()
@@ -312,26 +319,38 @@ func planAuth(kind config.Kind, s state) plan {
 		p.params = "remove auth with secret " + path
 		password = ""
 		p.patch = mergePatch(map[string]any{"auth": map[string]any{"secretPath": nil}})
+		// An empty password is a Secret the tester could not read, not the
+		// previous password.
+		if s.password != "" {
+			p.restore = &restore{
+				secretChange: secretChange{name: path, password: s.password},
+				patch:        mergePatch(map[string]any{"auth": map[string]any{"secretPath": path}}),
+			}
+		}
 	case config.PasswordRotate:
 		if path == "" {
 			return skipped(kind, "auth is off")
 		}
 		p.params = "rotate the password in secret " + path
 		p.secret = &secretChange{name: path, password: password}
-		// An empty password is a Secret the tester could not read, not the
-		// previous password.
 		if s.password != "" {
-			p.restore = &secretChange{name: path, password: s.password}
+			p.restore = &restore{secretChange: secretChange{name: path, password: s.password}}
 		}
-	case config.PasswordRotateOffline:
+	case config.PasswordRotateOffline, config.PasswordRotateOfflineForget:
 		if path == "" {
 			return skipped(kind, "auth is off")
 		}
 		if s.password == "" {
 			return skipped(kind, "the password in secret %s is unknown", path)
 		}
-		p.params = "rotate the password in secret " + path + " while the operator is stopped, put it back, rotate again"
-		p.offline = &offline{secret: path, previous: s.password, first: newPassword(), second: password}
+		p.params = "rotate the password in secret " + path + " while the operator is stopped"
+		p.offline = &offline{secret: path, previous: s.password, first: password}
+		if kind == config.PasswordRotateOfflineForget {
+			p.params += ", delete the applied passwords, put the password back, rotate again"
+			p.offline.first, p.offline.second, p.offline.forget = newPassword(), password, true
+		} else {
+			p.restore = &restore{secretChange: secretChange{name: path, password: s.password}}
+		}
 	}
 	p.fetch = fetchOpts{password: &password, sentinelMaster: s.rf.SentinelEnabled()}
 	p.converged = authConverged(templateChecksum(s), s.rf.Spec.Redis.Replicas)

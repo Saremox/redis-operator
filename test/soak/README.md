@@ -249,17 +249,28 @@ explanation:
 
   The watch can end before the message arrives, for example if the API server
   closes it. Then the tester sees no message.
-- `password_rotate` can time out with the status
-  `unable to apply the configured password`, for example after an operator
-  restart. Then the tester sets the previous password again, because a stuck
-  instance hides all other signals of the run. If the instance becomes
-  `Healthy` within one more convergence timeout, the result is
-  `stuck_restored`, else `timeout`. The findings of the stuck time count.
+- `password_rotate`, `auth_remove` and `password_rotate_offline` can time
+  out with the status `unable to apply the configured password`, for example
+  after an operator restart. Then the tester puts the previous password back,
+  because a stuck instance hides all other signals of the run. After
+  `auth_remove`, it sets `auth.secretPath` again, and the Secret still has
+  the previous password. After the other kinds, it writes the previous
+  password to the Secret. If the instance becomes `Healthy` within one more
+  convergence timeout, the result is `stuck_restored`, else `timeout`. The
+  findings of the stuck time count. Without a known previous password, the
+  tester does not put it back.
 - `password_rotate_offline` is scenario C. It stops the operator, changes
-  the password, starts the operator with its replicas, expects
+  the password, and starts the operator with its replicas. The operator
+  keeps the passwords of the redis pods in the Secret
+  `rfr-auth-applied-<name>`, so it applies the password without help.
+- `password_rotate_offline_forget` is scenario C without this Secret. The
+  tester deletes the Secret while the operator is stopped. It then expects
   `unable to apply the configured password`, sets the previous password,
-  expects `Healthy`, and changes the password again. It stops all other
-  mutations while it runs. It always starts the operator again.
+  expects `Healthy`, and changes the password again. An operator that does
+  not keep this Secret gets stuck in both kinds. Then
+  `password_rotate_offline` ends `stuck_restored`.
+- Both scenario C kinds stop all other mutations while they run. They
+  always start the operator again.
 - `reset` deletes the RedisFailover, its volumes and its auth Secret, and
   creates it again from its template.
 
@@ -356,7 +367,8 @@ covers only the writes since the start.
 Adoption has these limits:
 
 - Adoption can wait for the mutation lock. Another instance can run an
-  exclusive mutation, `password_rotate_offline`, while adoption polls or waits.
+  exclusive mutation, for example `password_rotate_offline`, while adoption
+  polls or waits.
   Later phases of that mutation can outlast the startup window, and findings
   can appear. Adoption still resets the instance afterwards.
 - A tester can start between the spec patch and the first pod deletion by the

@@ -1,5 +1,6 @@
 # Reads the image tag of the operator Deployment for redis_soak_build_info,
-# and scales the Deployment to 0 and back for password_rotate_offline. The
+# and scales the Deployment to 0 and back for password_rotate_offline and
+# password_rotate_offline_forget. The
 # namespace and resourceNames must match `operator` in config.yaml.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -91,7 +92,8 @@ rules:
     resources: ["services", "configmaps"]
     verbs: ["get"]
   # The tester and auth_add create the auth Secrets. A reset deletes and
-  # creates them again.
+  # creates them again. password_rotate_offline_forget deletes the Secret
+  # rfr-auth-applied-<name> of the operator.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
