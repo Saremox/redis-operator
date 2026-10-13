@@ -233,7 +233,7 @@ func (r *RedisFailoverKubeClient) EnsureNotPresentSentinelResources(rf *redisfai
 	// name can also belong to another RedisFailover.
 	// Delete Sentinel Deployment
 	if d, err := r.K8SService.GetDeployment(namespace, name); err == nil && metav1.IsControlledBy(d, rf) {
-		r.logger.WithField("namespace", namespace).WithField("name", name).Info("Deleting Sentinel Deployment")
+		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", namespace).WithField("name", name).Info("Deleting Sentinel Deployment")
 		if err := r.K8SService.DeleteDeployment(namespace, name); err != nil {
 			return err
 		}
@@ -241,7 +241,7 @@ func (r *RedisFailoverKubeClient) EnsureNotPresentSentinelResources(rf *redisfai
 
 	// Delete Sentinel Service
 	if svc, err := r.K8SService.GetService(namespace, name); err == nil && metav1.IsControlledBy(svc, rf) {
-		r.logger.WithField("namespace", namespace).WithField("name", name).Info("Deleting Sentinel Service")
+		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", namespace).WithField("name", name).Info("Deleting Sentinel Service")
 		if err := r.K8SService.DeleteService(namespace, name); err != nil {
 			return err
 		}
@@ -249,7 +249,7 @@ func (r *RedisFailoverKubeClient) EnsureNotPresentSentinelResources(rf *redisfai
 
 	// Delete Sentinel ConfigMap
 	if cm, err := r.K8SService.GetConfigMap(namespace, name); err == nil && metav1.IsControlledBy(cm, rf) {
-		r.logger.WithField("namespace", namespace).WithField("name", name).Info("Deleting Sentinel ConfigMap")
+		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", namespace).WithField("name", name).Info("Deleting Sentinel ConfigMap")
 		if err := r.K8SService.DeleteConfigMap(namespace, name); err != nil {
 			return err
 		}
@@ -258,7 +258,7 @@ func (r *RedisFailoverKubeClient) EnsureNotPresentSentinelResources(rf *redisfai
 	// Delete Sentinel PodDisruptionBudget
 	pdbName := generateName(sentinelName, rf.Name)
 	if pdb, err := r.K8SService.GetPodDisruptionBudget(namespace, pdbName); err == nil && metav1.IsControlledBy(pdb, rf) {
-		r.logger.WithField("namespace", namespace).WithField("name", pdbName).Info("Deleting Sentinel PodDisruptionBudget")
+		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", namespace).WithField("name", pdbName).Info("Deleting Sentinel PodDisruptionBudget")
 		if err := r.K8SService.DeletePodDisruptionBudget(namespace, pdbName); err != nil {
 			return err
 		}
@@ -270,7 +270,7 @@ func (r *RedisFailoverKubeClient) EnsureNotPresentSentinelResources(rf *redisfai
 	if rf.Spec.Sentinel.ServiceAccountName == "" {
 		saName := GetSentinelServiceAccountName(rf)
 		if sa, err := r.K8SService.GetServiceAccount(namespace, saName); err == nil && metav1.IsControlledBy(sa, rf) {
-			r.logger.WithField("namespace", namespace).WithField("name", saName).Info("Deleting Sentinel ServiceAccount")
+			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", namespace).WithField("name", saName).Info("Deleting Sentinel ServiceAccount")
 			if err := r.K8SService.DeleteServiceAccount(namespace, saName); err != nil {
 				return err
 			}

@@ -199,7 +199,7 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 	// The loop labels every pod before it returns an error. Otherwise, one
 	// bad pod early in the list can stop the label of the new master. Then the
 	// master Service has no endpoint.
-	var wrong []wrongMaster
+	var wrong []*WrongMasterError
 	for _, rp := range rps.Items {
 		if rp.Status.PodIP == master {
 			err = r.setMasterLabelIfNecessary(rf, rp)
@@ -228,11 +228,7 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 			continue
 		}
 		if slave != "" && slave != master {
-			wrong = append(wrong, wrongMaster{
-				pod:   rp.Name,
-				local: slave == "127.0.0.1",
-				err:   fmt.Errorf("slave %s (pod %s) don't have the master %s, has %s", rp.Status.PodIP, rp.Name, master, slave),
-			})
+			wrong = append(wrong, &WrongMasterError{Pod: rp.Name, IP: rp.Status.PodIP, Master: master, Has: slave})
 		}
 	}
 	if len(wrong) == 0 {
@@ -241,31 +237,42 @@ func (r *RedisFailoverChecker) CheckAllSlavesFromMaster(master string, rf *redis
 	// The caller logs the returned error at Warning, so each other replica
 	// gets its own line. A different master can be a second master, so it
 	// comes first.
-	returned := max(slices.IndexFunc(wrong, func(w wrongMaster) bool { return !w.local }), 0)
+	returned := max(slices.IndexFunc(wrong, func(w *WrongMasterError) bool { return !w.local() }), 0)
 	logWrongMasters(logger, wrong, returned)
-	return wrong[returned].err
+	return wrong[returned]
 }
 
 // logWrongMasters logs each replica in wrong, except the one at index skip.
 // A replica with 127.0.0.1 as master started a short time ago.
-func logWrongMasters(logger log.Logger, wrong []wrongMaster, skip int) {
+func logWrongMasters(logger log.Logger, wrong []*WrongMasterError, skip int) {
 	for i, w := range wrong {
 		if i == skip {
 			continue
 		}
-		podLogger := logger.WithField("pod", w.pod)
-		if w.local {
-			podLogger.Infof("%v", w.err)
+		podLogger := logger.WithField("pod", w.Pod)
+		if w.local() {
+			podLogger.Infof("%v", w)
 		} else {
-			podLogger.Warningf("%v", w.err)
+			podLogger.Warningf("%v", w)
 		}
 	}
 }
 
-type wrongMaster struct {
-	pod   string
-	local bool
-	err   error
+// WrongMasterError gives the pod of a replica with a wrong master, so that the
+// caller can log the pod as a field.
+type WrongMasterError struct {
+	Pod    string
+	IP     string
+	Master string
+	Has    string
+}
+
+func (e *WrongMasterError) Error() string {
+	return fmt.Sprintf("slave %s (pod %s) don't have the master %s, has %s", e.IP, e.Pod, e.Master, e.Has)
+}
+
+func (e *WrongMasterError) local() bool {
+	return e.Has == "127.0.0.1"
 }
 
 // podErrorLogf logs at Debug for a pod that is not Ready, because such a pod
@@ -348,6 +355,7 @@ func (r *RedisFailoverChecker) CheckIfMasterLocalhost(rFailover *redisfailoverv1
 // that a promotion by the operator cannot give two masters. docs/logic.md
 // gives the conditions.
 func (r *RedisFailoverChecker) CheckSentinelsCannotFailover(rf *redisfailoverv1.RedisFailover) (bool, error) {
+	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
 	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
 		return false, err
@@ -365,43 +373,43 @@ func (r *RedisFailoverChecker) CheckSentinelsCannotFailover(rf *redisfailoverv1.
 		return false, err
 	}
 	if len(sentinels) < int(rf.Spec.Sentinel.Replicas) {
-		r.logger.Warningf("%d of %d Sentinels run, all are necessary to be sure that Sentinel cannot fail over", len(sentinels), rf.Spec.Sentinel.Replicas)
+		logger.Warningf("%d of %d Sentinels run, all are necessary to be sure that Sentinel cannot fail over", len(sentinels), rf.Spec.Sentinel.Replicas)
 		return false, nil
 	}
 	for _, sip := range sentinels {
 		master, _, err := r.redisClient.GetSentinelMonitor(sip)
 		if err != nil {
-			r.logger.Warningf("Sentinel %s did not give its master, so it can know a replica: %v", sip, err)
+			logger.Warningf("Sentinel %s did not give its master, so it can know a replica: %v", sip, err)
 			return false, nil
 		}
 		if pod, ok := pods[master]; ok {
-			r.logger.Infof("Sentinel %s monitors the pod %s (%s), so Sentinel can fail over", sip, pod, master)
+			logger.WithField("pod", pod).Infof("Sentinel %s monitors the pod %s (%s), so Sentinel can fail over", sip, pod, master)
 			return false, nil
 		}
 		// 127.0.0.1 is the address in the configuration of a new Sentinel.
 		if master != "127.0.0.1" {
 			down, err := r.redisClient.SentinelMasterDown(sip)
 			if err != nil {
-				r.logger.Warningf("Sentinel %s did not give the state of its master: %v", sip, err)
+				logger.Warningf("Sentinel %s did not give the state of its master: %v", sip, err)
 				return false, nil
 			}
 			if !down {
-				r.logger.Infof("Sentinel %s does not flag its master %s as down, so the master can still answer", sip, master)
+				logger.Infof("Sentinel %s does not flag its master %s as down, so the master can still answer", sip, master)
 				return false, nil
 			}
 		}
 		replicas, err := r.redisClient.GetSentinelReplicas(sip)
 		if err != nil {
-			r.logger.Warningf("Sentinel %s did not give its replicas, so it can know one: %v", sip, err)
+			logger.Warningf("Sentinel %s did not give its replicas, so it can know one: %v", sip, err)
 			return false, nil
 		}
 		for _, replica := range replicas {
 			if pod, ok := pods[replica]; ok {
-				r.logger.Infof("Sentinel %s knows the replica pod %s (%s), so Sentinel can fail over", sip, pod, replica)
+				logger.WithField("pod", pod).Infof("Sentinel %s knows the replica pod %s (%s), so Sentinel can fail over", sip, pod, replica)
 				return false, nil
 			}
 		}
-		r.logger.Warningf("Sentinel %s monitors %s, which is not a pod, and knows no replica pod of %d replicas", sip, master, len(replicas))
+		logger.Warningf("Sentinel %s monitors %s, which is not a pod, and knows no replica pod of %d replicas", sip, master, len(replicas))
 	}
 	return true, nil
 }
@@ -820,7 +828,7 @@ func (r *RedisFailoverChecker) CheckMasterHealth(rf *redisfailoverv1.RedisFailov
 	// IsMaster reads the role from INFO replication.
 	isMaster, err := r.redisClient.IsMaster(masterIP, port, password)
 	if err != nil {
-		r.logger.WithField("ip", masterIP).Warnf("Master health check failed: %v", err)
+		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).WithField("ip", masterIP).Warnf("Master health check failed: %v", err)
 		return false, masterIP, nil
 	}
 
@@ -851,9 +859,10 @@ func (r *RedisFailoverChecker) GetBestReplicaForPromotion(rf *redisfailoverv1.Re
 			best = replica
 		}
 	}
-	r.logger.Infof("Promotion candidates: %s", strings.Join(candidates, ", "))
+	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
+	logger.Infof("Promotion candidates: %s", strings.Join(candidates, ", "))
 
-	r.logger.Infof("Selected replica %s (pod: %s, pod ready: %t, offset: %d) for promotion", best.IP, best.PodName, best.PodReady, best.ReplicationOffset)
+	logger.WithField("pod", best.PodName).Infof("Selected replica %s (pod: %s, pod ready: %t, offset: %d) for promotion", best.IP, best.PodName, best.PodReady, best.ReplicationOffset)
 	return best, nil
 }
 
@@ -890,7 +899,7 @@ func (r *RedisFailoverChecker) GetReplicaReplicationOffsets(rf *redisfailoverv1.
 
 		replInfo, err := r.redisClient.GetReplicationInfo(rp.Status.PodIP, port, password)
 		if err != nil {
-			r.logger.WithField("ip", rp.Status.PodIP).Warnf("Failed to get replication info: %v", err)
+			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).WithField("pod", rp.Name).WithField("ip", rp.Status.PodIP).Warnf("Failed to get replication info: %v", err)
 			continue
 		}
 

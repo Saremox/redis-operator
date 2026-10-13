@@ -1039,7 +1039,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	err = r.rfChecker.CheckAllSlavesFromMaster(master, rf)
 	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.SLAVE_WRONG_MASTER, metrics.NOT_APPLICABLE, err)
 	if err != nil {
-		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Slave not associated to master: %s", err.Error())
+		r.logWrongMaster(rf, err)
 		// Read the master again just before the change, because the pods can
 		// change after the first read. Then SetMasterOnAll refuses a stale IP
 		// less often.
@@ -1165,6 +1165,17 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		}
 	}
 	return r.checkAndHealSentinels(rf, sentinels, heal)
+}
+
+// logWrongMaster logs the result of CheckAllSlavesFromMaster with the pod of
+// the replica as a field.
+func (r *RedisFailoverHandler) logWrongMaster(rf *redisfailoverv1.RedisFailover, err error) {
+	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
+	var wrong *rfservice.WrongMasterError
+	if errors.As(err, &wrong) {
+		logger = logger.WithField("pod", wrong.Pod)
+	}
+	logger.Warningf("Slave not associated to master: %s", err.Error())
 }
 
 // electMasterForSentinel promotes the best replica when no Sentinel can fail
@@ -1454,8 +1465,7 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		err = r.rfChecker.CheckAllSlavesFromMaster(masterIP, rf)
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.SLAVE_WRONG_MASTER, metrics.NOT_APPLICABLE, err)
 		if err != nil {
-			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
-				Warningf("Slave not associated to master: %s", err.Error())
+			r.logWrongMaster(rf, err)
 			if err = r.rfHealer.SetMasterOnAll(masterIP, rf); err != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
