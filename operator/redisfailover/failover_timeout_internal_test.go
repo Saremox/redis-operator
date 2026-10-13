@@ -56,7 +56,7 @@ func newFailoverTimeoutTest(timeout *metav1.Duration) *failoverTimeoutTest {
 		},
 		now: time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC),
 	}
-	ft.healer.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	ft.healer.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 	ft.healer.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	ft.healer.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	ft.k8s.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()

@@ -42,7 +42,7 @@ func (_m *RedisFailoverHeal) AbortOrphanedFailover(masterIP string, rFailover *v
 }
 
 // ApplyPassword provides a mock function with given fields: rFailover, password, previous
-func (_m *RedisFailoverHeal) ApplyPassword(rFailover *v1.RedisFailover, password string, previous []string) (bool, error) {
+func (_m *RedisFailoverHeal) ApplyPassword(rFailover *v1.RedisFailover, password string, previous []string) (bool, bool, error) {
 	ret := _m.Called(rFailover, password, previous)
 
 	if len(ret) == 0 {
@@ -50,8 +50,9 @@ func (_m *RedisFailoverHeal) ApplyPassword(rFailover *v1.RedisFailover, password
 	}
 
 	var r0 bool
-	var r1 error
-	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, []string) (bool, error)); ok {
+	var r1 bool
+	var r2 error
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, []string) (bool, bool, error)); ok {
 		return rf(rFailover, password, previous)
 	}
 	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, []string) bool); ok {
@@ -60,13 +61,19 @@ func (_m *RedisFailoverHeal) ApplyPassword(rFailover *v1.RedisFailover, password
 		r0 = ret.Get(0).(bool)
 	}
 
-	if rf, ok := ret.Get(1).(func(*v1.RedisFailover, string, []string) error); ok {
+	if rf, ok := ret.Get(1).(func(*v1.RedisFailover, string, []string) bool); ok {
 		r1 = rf(rFailover, password, previous)
 	} else {
-		r1 = ret.Error(1)
+		r1 = ret.Get(1).(bool)
 	}
 
-	return r0, r1
+	if rf, ok := ret.Get(2).(func(*v1.RedisFailover, string, []string) error); ok {
+		r2 = rf(rFailover, password, previous)
+	} else {
+		r2 = ret.Error(2)
+	}
+
+	return r0, r1, r2
 }
 
 // ApplySentinelPassword provides a mock function with given fields: rFailover, password

@@ -520,7 +520,7 @@ func TestCheckAndHealKeepsNoMasterWithoutAutoscaling(t *testing.T) {
 				at.mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 				mrfh := &mRFService.RedisFailoverHeal{}
 				mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
-				mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+				mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 				mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 				mrfh.On("SetRedisCustomConfig", autoscaleMaster, at.rf).Return(nil)
 				at.h.rfHealer = mrfh

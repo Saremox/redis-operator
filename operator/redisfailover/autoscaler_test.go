@@ -80,7 +80,7 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 				mrfc := &mRFService.RedisFailoverCheck{}
 				mrfh := &mRFService.RedisFailoverHeal{}
 				mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
-				mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+				mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 				mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 				setup(mrfc, mrfh, rf)
 				if autoscaling == v1.AutoscalingModeRecommend {
