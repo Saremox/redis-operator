@@ -37,7 +37,7 @@ type RedisFailoverHeal interface {
 	AbortOrphanedFailover(masterIP string, rFailover *redisfailoverv1.RedisFailover) (bool, error)
 	EnsureRedisMaxMemory(rFailover *redisfailoverv1.RedisFailover, master string, redises []string) (MaxMemoryResult, error)
 	ResizePodInPlace(rFailover *redisfailoverv1.RedisFailover, podName, updateRevision string) (ResizeResult, error)
-	ApplyPassword(rFailover *redisfailoverv1.RedisFailover, password string, previous []string) (bool, error)
+	ApplyPassword(rFailover *redisfailoverv1.RedisFailover, password string, previous []string) (complete, stale bool, err error)
 	ApplySentinelPassword(rFailover *redisfailoverv1.RedisFailover, password string) (bool, error)
 }
 

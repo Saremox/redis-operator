@@ -616,7 +616,7 @@ To enable authentication:
        secretPath: redis-auth
    ```
 
-You can change the `password` key of that Secret in place, add `auth.secretPath`, or remove it. An operator restart during the change needs no manual recovery in most cases when the operator can read and write the Secret `rfr-auth-applied-<NAME>` (see below). The operator first sets the new password on each Redis with `CONFIG SET` and on each Sentinel with `SENTINEL SET`, so replication continues. Then it restarts the Redis pods one at a time. New connections must use the new password immediately. After a removal, Redis refuses `AUTH <password>` with `ERR AUTH <password> called without any password configured`, so clients must stop sending the password.
+You can change the `password` key of that Secret in place, add `auth.secretPath`, or remove it. An operator restart during the change needs no manual recovery in most cases when the operator can read and write the Secret `rfr-auth-applied-<NAME>` (see below). The operator first sets the new password on each Redis with `CONFIG SET` and on each Sentinel with `SENTINEL SET`, so replication continues. Then it restarts the Redis pods one at a time. New connections must use the new password immediately. After a removal, Redis refuses `AUTH <password>` with `ERR AUTH <password> called without any password configured`, so clients must not send the password.
 
 After you change or remove `auth.secretPath`, keep the previous Secret until the operator restarts every Redis pod. A pod on the previous pod template reads this Secret when its container restarts. The operator reads it to find the password that such a pod runs with.
 
@@ -630,7 +630,7 @@ The operator keeps the passwords that the Redis pods run with in the Secret `rfr
 
 The operator needs `create` and `update` on `secrets` for this Secret. The Helm chart, `manifests/kustomize` and `example/operator` grant these verbs. With these verbs, the operator can change every Secret in the cluster. Without them, the operator logs a warning and keeps the passwords only in memory. If you create a RedisFailover again with the same name before Kubernetes deletes its old Secret, `OwnerReferencesPermissionEnforcement` can refuse the update of the Secret. The operator then logs a warning and writes the Secret at the next password change.
 
-If a Redis pod runs with a password that the operator does not know, the operator cannot switch the pod. This occurs, for example, when the operator cannot read or write `rfr-auth-applied-<NAME>` and restarts between a change and its next check. The RedisFailover then reports `unable to apply the configured password`. The operator reads the password of a pod on a previous pod template from the Secret that this template names, if that Secret still exists. To recover from a password change:
+If a Redis pod runs with a password that the operator does not know, the operator cannot switch the pod. This occurs, for example, when the operator cannot read or write `rfr-auth-applied-<NAME>` and restarts between a change and its next check. The RedisFailover then reports `unable to apply the configured password`. Until you recover, the operator does not restart Redis pods and does not start an operator-managed failover. The operator reads the password of a pod on a previous pod template from the Secret that this template names, if that Secret still exists. To recover from a password change:
 
 1. Put the previous password back in the auth Secret (`auth.secretPath`).
 2. Wait until the RedisFailover is healthy.
@@ -638,7 +638,7 @@ If a Redis pod runs with a password that the operator does not know, the operato
 
 To recover from a removal of `auth.secretPath`:
 
-1. Set `auth.secretPath` back to a Secret with the previous password.
+1. Set `auth.secretPath` to a Secret with the previous password.
 2. Wait until the RedisFailover is healthy.
 3. Remove `auth.secretPath` again.
 

@@ -78,11 +78,10 @@ func TestApplyPasswordRemembersAcceptedPassword(t *testing.T) {
 	handler, rf, mrfh := newPasswordTestHandler(&password)
 
 	// With none known, the password every running pod accepts is remembered,
-	// and the pods and the Sentinels are checked again until each one has it.
-	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Once().Return(false, nil)
+	// and the Sentinels are retried until every one has it.
+	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Once().Return(false, false, nil)
 	mrfh.On("ApplySentinelPassword", rf, "v1").Once().Return(false, nil)
 	assert.NoError(t, handler.applyPassword(rf))
-	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Once().Return(true, nil)
 	mrfh.On("ApplySentinelPassword", rf, "v1").Once().Return(true, nil)
 	assert.NoError(t, handler.applyPassword(rf))
 
@@ -93,17 +92,17 @@ func TestApplyPasswordRemembersAcceptedPassword(t *testing.T) {
 	// Sentinels get it as soon as the running pods do, while a pod yet to
 	// start keeps the old password in use for the pods.
 	password = "v2"
-	mrfh.On("ApplyPassword", rf, "v2", []string{"v1"}).Once().Return(false, nil)
+	mrfh.On("ApplyPassword", rf, "v2", []string{"v1"}).Once().Return(false, false, nil)
 	mrfh.On("ApplySentinelPassword", rf, "v2").Once().Return(true, nil)
 	assert.NoError(t, handler.applyPassword(rf))
-	mrfh.On("ApplyPassword", rf, "v2", []string{"v1", "v2"}).Once().Return(false, nil)
+	mrfh.On("ApplyPassword", rf, "v2", []string{"v1", "v2"}).Once().Return(false, false, nil)
 	assert.NoError(t, handler.applyPassword(rf))
-	mrfh.On("ApplyPassword", rf, "v2", []string{"v1", "v2"}).Once().Return(true, nil)
+	mrfh.On("ApplyPassword", rf, "v2", []string{"v1", "v2"}).Once().Return(true, false, nil)
 	assert.NoError(t, handler.applyPassword(rf))
 	assert.NoError(t, handler.applyPassword(rf))
 
 	mrfh.AssertExpectations(t)
-	mrfh.AssertNumberOfCalls(t, "ApplyPassword", 5)
+	mrfh.AssertNumberOfCalls(t, "ApplyPassword", 4)
 	mrfh.AssertNumberOfCalls(t, "ApplySentinelPassword", 3)
 }
 
@@ -212,7 +211,7 @@ func TestCheckAndHealReportsAnUnappliedPassword(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			password := "v1"
 			handler, rf, mrfh := newPasswordTestHandler(&password)
-			mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(true, test.applyErr)
+			mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(true, false, test.applyErr)
 			mrfh.On("ApplySentinelPassword", rf, "v1").Return(false, test.sentinelErr)
 
 			assert.ErrorIs(t, handler.CheckAndHeal(rf), boom)
@@ -254,7 +253,7 @@ func TestCheckAndHealMarksTheClusterFailedWhenAReconcilePanics(t *testing.T) {
 		}).Return()
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
-	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(false, nil).
+	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(false, false, nil).
 		Run(func(mock.Arguments) { panic("boom") })
 	rec := &mmetrics.Recorder{}
 	rec.On("SetClusterError", "testns", "test").Once()

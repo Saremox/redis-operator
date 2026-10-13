@@ -18,35 +18,34 @@ import (
 // rolling update then restarts the pods onto the secret.
 //
 // It returns an error if a running Redis refuses password and can't be
-// changed, and true once every Redis pod runs, accepts it and has a pod
-// template with the password Secret of rf.
-func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, password string, previous []string) (bool, error) {
+// changed. complete is true once every Redis pod runs, accepts password and
+// has a template with the password Secret of rf. stale is true while a pod
+// has a template with another password Secret: a container restart gives
+// Redis the password of that Secret again.
+func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, password string, previous []string) (complete, stale bool, err error) {
 	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 
 	port := getRedisPort(rf.Spec.Redis.Port)
 	target := redisPasswordRef(append(slices.Clone(rf.Spec.Redis.Env), getRedisEnv(rf)...))
-	complete := true
+	complete = true
 	var errs []error
 	var unknown []string
 	for _, rp := range rps.Items {
 		if rp.DeletionTimestamp != nil {
 			continue
 		}
+		ref := podRedisPasswordRef(rp.Spec.Containers)
+		podStale := !sameSecretKey(ref, target)
+		stale = stale || podStale
 		// A pod yet to start may still come up on the old pod template.
 		if rp.Status.Phase != v1.PodRunning {
 			complete = false
 			continue
 		}
-		// A container restart on a stale pod template brings back the password
-		// of the Secret that this template names.
-		ref := podRedisPasswordRef(rp.Spec.Containers)
-		stale := !sameSecretKey(ref, target)
-		if stale {
-			complete = false
-		}
+		complete = complete && !podStale
 		_, err := r.redisClient.IsMaster(rp.Status.PodIP, port, password)
 		if err == nil {
 			continue
@@ -60,8 +59,8 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 			candidates = []string{""}
 		}
 		tried, err := r.changePassword(rp.Status.PodIP, port, password, candidates)
-		if (!tried || redis.IsAuthError(err)) && stale {
-			if current := r.secretPassword(rf.Namespace, ref); current != "" && !slices.Contains(candidates, current) {
+		if (!tried || redis.IsAuthError(err)) && podStale {
+			if current := r.secretPassword(rf, ref); current != "" && !slices.Contains(candidates, current) {
 				tried, err = r.changePassword(rp.Status.PodIP, port, password, []string{current})
 			}
 		}
@@ -81,15 +80,15 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 			refuse = "redis pods %s refuse the configured password and the operator doesn't know the ones they run with"
 		}
 		hint := "; put the previous password back in the secret until the RedisFailover is healthy, then change it again"
-		if password == "" {
-			hint = "; set auth.secretPath back to a Secret with the previous password until the RedisFailover is healthy, then remove it again"
+		if rf.Spec.Auth.SecretPath == "" {
+			hint = "; set auth.secretPath to a Secret with the previous password until the RedisFailover is healthy, then remove it again"
 		}
 		errs = append(errs, fmt.Errorf(refuse+hint, strings.Join(unknown, ", ")))
 	}
 	if err := errors.Join(errs...); err != nil {
-		return false, err
+		return false, false, err
 	}
-	return complete, nil
+	return complete, stale, nil
 }
 
 // changePassword logs in to the Redis at ip with each candidate in turn,
@@ -109,12 +108,13 @@ func (r *RedisFailoverHealer) changePassword(ip, port, password string, candidat
 
 // secretPassword returns "" when ref is nil or unreadable: the pod then stays
 // unknown, and the error message tells the user how to recover.
-func (r *RedisFailoverHealer) secretPassword(namespace string, ref *v1.SecretKeySelector) string {
+func (r *RedisFailoverHealer) secretPassword(rf *redisfailoverv1.RedisFailover, ref *v1.SecretKeySelector) string {
 	if ref == nil {
 		return ""
 	}
-	secret, err := r.k8sService.GetSecret(namespace, ref.Name)
+	secret, err := r.k8sService.GetSecret(rf.Namespace, ref.Name)
 	if err != nil {
+		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Debugf("Unable to read Secret %s of a stale redis pod template: %v", ref.Name, err)
 		return ""
 	}
 	return string(secret.Data[ref.Key])

@@ -25,7 +25,8 @@ import (
 // appliedSecretEnv is a RedisFailover whose Redis pods run with the passwords
 // in running, one for each pod IP. With pending, one more pod is yet to start.
 // The template of a pod in stale names the Secret in stale, and the template
-// of every other pod is the one of rf.
+// of every other pod is the one of rf. The key of the pod yet to start is
+// "pending". A pod in down is unreachable.
 type appliedSecretEnv struct {
 	rf       *redisfailoverv1.RedisFailover
 	ms       *mK8SService.Services
@@ -33,8 +34,17 @@ type appliedSecretEnv struct {
 	running  map[string]string
 	pending  bool
 	stale    map[string]string
+	down     map[string]bool
 	stored   map[string]*corev1.Secret
 	tried    []string
+}
+
+func (e *appliedSecretEnv) template(key string) corev1.PodSpec {
+	secretPath, ok := e.stale[key]
+	if !ok {
+		secretPath = e.rf.Spec.Auth.SecretPath
+	}
+	return corev1.PodSpec{Containers: []corev1.Container{redisContainer(secretPath)}}
 }
 
 // redisContainer returns the Redis container of a pod template that gives
@@ -75,6 +85,7 @@ func newAppliedSecretEnv(t *testing.T, password string, running map[string]strin
 		running:  running,
 		pending:  pending,
 		stale:    map[string]string{},
+		down:     map[string]bool{},
 	}
 	e.ms.On("GetSecret", "testns", "redis-auth").Return(func(string, string) (*corev1.Secret, error) {
 		return &corev1.Secret{Data: map[string][]byte{"password": []byte(e.password)}}, nil
@@ -82,18 +93,14 @@ func newAppliedSecretEnv(t *testing.T, password string, running map[string]strin
 	e.ms.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(e.rf)).Return(func(string, string) (*corev1.PodList, error) {
 		pods := &corev1.PodList{}
 		for ip := range e.running {
-			template, ok := e.stale[ip]
-			if !ok {
-				template = e.rf.Spec.Auth.SecretPath
-			}
 			pods.Items = append(pods.Items, corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-" + ip},
-				Spec:       corev1.PodSpec{Containers: []corev1.Container{redisContainer(template)}},
+				Spec:       e.template(ip),
 				Status:     corev1.PodStatus{PodIP: ip, Phase: corev1.PodRunning},
 			})
 		}
 		if e.pending {
-			pods.Items = append(pods.Items, corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-pending"}, Status: corev1.PodStatus{Phase: corev1.PodPending}})
+			pods.Items = append(pods.Items, corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-pending"}, Spec: e.template("pending"), Status: corev1.PodStatus{Phase: corev1.PodPending}})
 		}
 		return pods, nil
 	})
@@ -106,6 +113,9 @@ func newAppliedSecretEnv(t *testing.T, password string, running map[string]strin
 func (e *appliedSecretEnv) handler(logger log.Logger) *RedisFailoverHandler {
 	mr := &mRedisService.Client{}
 	mr.On("IsMaster", mock.Anything, "0", mock.Anything).Return(func(ip, _, pw string) (bool, error) {
+		if e.down[ip] {
+			return false, errors.New("dial tcp " + ip + ":0: i/o timeout")
+		}
 		err := authError(e.running[ip], pw)
 		return err == nil, err
 	})
@@ -206,7 +216,7 @@ func TestAppliedPasswordCandidates(t *testing.T) {
 			rf := e.rf
 			mrfh := &mRFService.RedisFailoverHeal{}
 			handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, mrfh, e.ms, metrics.Dummy, log.Dummy)
-			mrfh.On("ApplyPassword", rf, "v2", test.want).Once().Return(true, nil)
+			mrfh.On("ApplyPassword", rf, "v2", test.want).Once().Return(true, false, nil)
 			mrfh.On("ApplySentinelPassword", rf, "v2").Once().Return(true, nil)
 			require.NoError(t, handler.applyPassword(rf))
 			mrfh.AssertExpectations(t)
@@ -277,7 +287,7 @@ func TestApplyPasswordGoesOnWhenTheSaveFails(t *testing.T) {
 	forbidden := apierrors.NewForbidden(corev1.Resource("secrets"), "rfr-auth-applied-test", errors.New("no create"))
 	ms.On("CreateOrUpdateSecret", "testns", mock.Anything).Return(forbidden)
 	mrfh := &mRFService.RedisFailoverHeal{}
-	mrfh.On("ApplyPassword", rf, mock.Anything, mock.Anything).Return(false, nil)
+	mrfh.On("ApplyPassword", rf, mock.Anything, mock.Anything).Return(false, false, nil)
 	mrfh.On("ApplySentinelPassword", rf, mock.Anything).Return(true, nil)
 	logger := &warnLogger{}
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, mrfh, ms, metrics.Dummy, logger)
@@ -405,7 +415,7 @@ func TestApplyPasswordGoesOnWhenTheReadFails(t *testing.T) {
 			ms.On("GetSecret", "testns", "rfr-auth-applied-test").Return(nil, test.err)
 			ms.On("CreateOrUpdateSecret", "testns", mock.Anything).Return(nil)
 			mrfh := &mRFService.RedisFailoverHeal{}
-			mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(true, nil)
+			mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(true, false, nil)
 			mrfh.On("ApplySentinelPassword", rf, "v1").Return(true, nil)
 			logger := &warnLogger{}
 			handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, mrfh, ms, metrics.Dummy, logger)
@@ -513,7 +523,7 @@ func TestApplyPasswordWithoutAuthUsesNoAppliedSecret(t *testing.T) {
 	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"}}
 	ms := noAppliedSecret(&mK8SService.Services{})
 	mrfh := &mRFService.RedisFailoverHeal{}
-	mrfh.On("ApplyPassword", rf, "", []string{""}).Return(true, nil)
+	mrfh.On("ApplyPassword", rf, "", []string{""}).Return(true, false, nil)
 	mrfh.On("ApplySentinelPassword", rf, "").Return(true, nil)
 	logger := &warnLogger{}
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, mrfh, ms, metrics.Dummy, logger)
@@ -641,7 +651,7 @@ func TestApplyPasswordRemovalWithoutAppliedSecretOrPodSecretFails(t *testing.T) 
 	e.ms.ExpectedCalls = append(e.ms.ExpectedCalls[len(e.ms.ExpectedCalls)-1:], e.ms.ExpectedCalls[:len(e.ms.ExpectedCalls)-1]...)
 
 	err := e.handler(log.Dummy).applyPassword(e.rf)
-	assert.EqualError(t, err, "redis pod rfr-test-10.0.0.1 refuses the configured password and the operator doesn't know the one it runs with; set auth.secretPath back to a Secret with the previous password until the RedisFailover is healthy, then remove it again")
+	assert.EqualError(t, err, "redis pod rfr-test-10.0.0.1 refuses the configured password and the operator doesn't know the one it runs with; set auth.secretPath to a Secret with the previous password until the RedisFailover is healthy, then remove it again")
 	assert.Equal(t, "v1", e.running["10.0.0.1"])
 }
 
@@ -659,7 +669,7 @@ func TestApplyPasswordRemovalForbiddenSave(t *testing.T) {
 }
 
 // TestApplyPasswordKeepsThePreviousPasswordUntilTheRollout covers the state
-// during the rollout after a removal: a pod on the old template can come back
+// during the rollout after a removal: a pod on the old template can restart
 // with the old password, so the operator keeps it, also in the applied Secret.
 // After the rollout, a reconcile lists no pods.
 func TestApplyPasswordKeepsThePreviousPasswordUntilTheRollout(t *testing.T) {
@@ -690,7 +700,7 @@ func TestApplyPasswordKeepsThePreviousPasswordUntilTheRollout(t *testing.T) {
 
 // TestApplyPasswordFixesAStalePodThatRestartedAfterARemoval covers a container
 // restart of a pod on the old template after the removal of auth.secretPath:
-// Redis comes back with the old password, and the operator removes it again.
+// Redis starts again with the old password, and the operator removes it again.
 func TestApplyPasswordFixesAStalePodThatRestartedAfterARemoval(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -725,7 +735,7 @@ func TestApplyPasswordFixesAStalePodThatRestartedAfterARemoval(t *testing.T) {
 
 // TestApplyPasswordFixesAStalePodThatRestartedAfterAnAddition covers a
 // container restart of a pod on the old template after the addition of
-// auth.secretPath: Redis comes back without a password, and the operator sets
+// auth.secretPath: Redis starts again without a password, and the operator sets
 // it again.
 func TestApplyPasswordFixesAStalePodThatRestartedAfterAnAddition(t *testing.T) {
 	for _, restart := range []bool{false, true} {
@@ -748,4 +758,55 @@ func TestApplyPasswordFixesAStalePodThatRestartedAfterAnAddition(t *testing.T) {
 			assert.Equal(t, map[string]string{"10.0.0.1": "v1", "10.0.0.2": "v1"}, e.running)
 		})
 	}
+}
+
+// TestApplyPasswordKeepsTheFastPathWithAPodOnTheCurrentTemplate covers a pod
+// yet to start or an unreachable pod on the current template, without a
+// password change: after the first reconcile, the operator lists no pods.
+func TestApplyPasswordKeepsTheFastPathWithAPodOnTheCurrentTemplate(t *testing.T) {
+	for _, auth := range []bool{true, false} {
+		for _, pending := range []bool{true, false} {
+			t.Run(fmt.Sprintf("auth %t, pending %t", auth, pending), func(t *testing.T) {
+				password := ""
+				if auth {
+					password = "v1"
+				}
+				e := newAppliedSecretEnv(t, password, map[string]string{"10.0.0.1": password, "10.0.0.2": password}, pending)
+				if !auth {
+					e.rf.Spec.Auth.SecretPath = ""
+				}
+				if !pending {
+					e.down["10.0.0.2"] = true
+				}
+				handler := e.handler(log.Dummy)
+				for range 6 {
+					require.NoError(t, handler.applyPassword(e.rf))
+				}
+				assert.Equal(t, 1, e.podLists())
+			})
+		}
+	}
+}
+
+// TestApplyPasswordFixesAStalePodYetToStartAfterARemoval covers a pod on the
+// old template that starts after the removal of auth.secretPath, while the
+// operator knows no old password. The operator checks the pods until this
+// pod runs, and then removes its password.
+func TestApplyPasswordFixesAStalePodYetToStartAfterARemoval(t *testing.T) {
+	e := newAppliedSecretEnv(t, "v1", map[string]string{"10.0.0.1": "v1"}, true)
+	e.forbidSave()
+	require.NoError(t, e.handler(log.Dummy).applyPassword(e.rf))
+
+	e.remove()
+	e.stale["pending"] = "redis-auth"
+	handler := e.handler(log.Dummy)
+	require.NoError(t, handler.applyPassword(e.rf))
+	delete(e.stale, "10.0.0.1")
+	require.NoError(t, handler.applyPassword(e.rf))
+
+	e.pending = false
+	e.running["10.0.0.2"] = "v1"
+	e.stale["10.0.0.2"] = "redis-auth"
+	require.NoError(t, handler.applyPassword(e.rf))
+	assert.Equal(t, map[string]string{"10.0.0.1": "", "10.0.0.2": ""}, e.running)
 }

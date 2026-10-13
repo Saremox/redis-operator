@@ -35,7 +35,7 @@ func TestForgetDropsTheStateOfOneRedisFailover(t *testing.T) {
 	other := rf.DeepCopy()
 	other.Name = "other"
 	for _, r := range []*redisfailoverv1.RedisFailover{rf, other} {
-		mrfh.On("ApplyPassword", r, "v1", []string{"v1"}).Return(true, nil)
+		mrfh.On("ApplyPassword", r, "v1", []string{"v1"}).Return(true, false, nil)
 		mrfh.On("ApplySentinelPassword", r, "v1").Return(true, nil)
 	}
 	mrec := &mmetrics.Recorder{}
@@ -54,7 +54,7 @@ func TestForgetDropsTheStateOfOneRedisFailover(t *testing.T) {
 func TestForgetIgnoresAnUnknownKey(t *testing.T) {
 	password := "v1"
 	h, rf, mrfh := newPasswordTestHandler(&password)
-	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(true, nil)
+	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(true, false, nil)
 	mrfh.On("ApplySentinelPassword", rf, "v1").Return(true, nil)
 	mrec := &mmetrics.Recorder{}
 	mrec.On("DeleteCluster", "testns", "unknown").Once()
@@ -76,7 +76,7 @@ func TestForgetIgnoresAnUnknownKey(t *testing.T) {
 func TestForgetOfALiveRedisFailoverIsRebuiltByTheNextReconcile(t *testing.T) {
 	password := "v1"
 	h, rf, mrfh := newPasswordTestHandler(&password)
-	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Twice().Return(true, nil)
+	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Twice().Return(true, false, nil)
 	mrfh.On("ApplySentinelPassword", rf, "v1").Twice().Return(true, nil)
 	mrec := &mmetrics.Recorder{}
 	mrec.On("DeleteCluster", "testns", "test").Once()

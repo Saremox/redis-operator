@@ -526,13 +526,14 @@ func TestApplyPasswordNamesEachRefusingPodOnce(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			rf := generateRF()
+			withAuth(rf, test.pods)
 			ms := &mK8SService.Services{}
 			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(&corev1.PodList{Items: test.pods}, nil)
 			mr := &mRedisService.Client{}
 			mr.On("IsMaster", mock.Anything, "0", "new").Return(false, errors.New("WRONGPASS invalid username-password pair or user is disabled."))
 
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
-			_, err := healer.ApplyPassword(rf, "new", []string{"new"})
+			_, _, err := healer.ApplyPassword(rf, "new", []string{"new"})
 
 			require.Error(t, err)
 			assert.Equal(t, 1, strings.Count(err.Error(), "put the previous password back in the secret"))

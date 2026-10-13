@@ -66,7 +66,7 @@ func TestNoMasterWithLocalhostMastersLogsAtInfo(t *testing.T) {
 	mrfc.On("CheckIfMasterLocalhost", rf).Once().Return(true, nil)
 	mrfc.On("GetMasterIP", rf).Once().Return("", errors.New("stop here"))
 	mrfh := &mRFService.RedisFailoverHeal{}
-	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 	mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
 	var lines []string
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, podFieldLogger{lines: &lines})
@@ -93,7 +93,7 @@ func TestNoMasterWithoutSentinelQuorumLogsTheError(t *testing.T) {
 	mrfc.On("GetMaxRedisPodTime", rf).Once().Return(time.Hour, nil)
 	mrfc.On("CheckSentinelQuorum", rf).Once().Return(2, errors.New("insufficient sentinels to reach the quorum"))
 	mrfh := &mRFService.RedisFailoverHeal{}
-	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 	mrfh.On("SetOldestAsMaster", rf).Once().Return(errors.New("stop here"))
 	logger := &warnLogger{}
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, logger)
@@ -147,7 +147,7 @@ func TestSlaveNotAssociatedToMasterLogsThePod(t *testing.T) {
 			mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(test.err)
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
-			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 			mrfh.On("SetMasterOnAll", master, rf).Maybe().Return(errors.New("stop here"))
 			logs := &recordedLogs{}
 			handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, recordingLogger{logs: logs})

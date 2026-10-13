@@ -575,7 +575,7 @@ func (h stateHandler) Handle(_ context.Context, obj runtime.Object) error {
 func TestRFControllerForgetsTheStateOfARedisFailoverRemovedWithoutTheFinalizer(t *testing.T) {
 	password := "v1"
 	handler, rf, mrfh := newPasswordTestHandler(&password)
-	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(true, nil)
+	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(true, false, nil)
 	mrfh.On("ApplySentinelPassword", rf, "v1").Return(true, nil)
 	c, err := newRFController(stateHandler{handler}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
 	require.NoError(t, err)

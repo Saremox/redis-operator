@@ -636,9 +636,10 @@ type passwordState struct {
 	// It is not redis while a pod yet to start keeps redis in use.
 	applied  string
 	sentinel string
-	// incomplete makes the next reconcile check the Redis pods again, also
-	// when redis is the password: a pod can still come up with another one.
-	incomplete bool
+	// stale makes the next reconcile check the Redis pods again, also when
+	// redis is the password: a container restart of a pod on a stale template
+	// gives Redis another password.
+	stale bool
 	// retrySecret makes the next reconcile read and write the Secret again
 	// after a temporary error.
 	retrySecret bool
@@ -748,7 +749,7 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 	key := passwordKey(rf)
 	v, known := r.passwords.Load(key)
 	state, _ := v.(passwordState)
-	if known && state.redis == password && state.applied == password && state.sentinel == password && !state.incomplete && !state.retrySecret {
+	if known && state.redis == password && state.applied == password && state.sentinel == password && !state.stale && !state.retrySecret {
 		return nil
 	}
 
@@ -756,7 +757,7 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 	if !known || state.retrySecret {
 		saved, save, state.retrySecret = r.loadAppliedPasswords(rf)
 	}
-	if !known || state.incomplete || state.redis != password || state.applied != password {
+	if !known || state.stale || state.redis != password || state.applied != password {
 		previous := []string{password}
 		if known {
 			previous = []string{state.redis}
@@ -770,12 +771,12 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 				}
 			}
 		}
-		complete, err := r.rfHealer.ApplyPassword(rf, password, previous)
+		complete, stale, err := r.rfHealer.ApplyPassword(rf, password, previous)
 		if err != nil {
 			return err
 		}
 		state.applied = password
-		state.incomplete = !complete
+		state.stale = stale
 		// A pod yet to start keeps the old password in play. With none known,
 		// not even in the Secret, the one every running pod accepts is the
 		// best there is.
