@@ -382,26 +382,72 @@ func TestAutoscaleContinuesWhileTheWritesFail(t *testing.T) {
 	}
 }
 
-// Another operator, for example a later leader, can write a newer state.
-// The state in memory then is out of date.
-func TestAutoscaleUsesANewerStoredState(t *testing.T) {
+// Another operator, for example a later leader, can write the state. The
+// state in memory then is out of date, also when its sample time is later.
+func TestAutoscaleUsesAStateThatAnotherOperatorWrote(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		want    redisfailoverv1.AutoscalingStatus
+	}{
+		{name: "same resourceVersion", version: "1", want: redisfailoverv1.AutoscalingStatus{Workload: "Store", Reason: autoscale.ReasonLow}},
+		{name: "changed resourceVersion", version: "2", want: redisfailoverv1.AutoscalingStatus{Workload: "Store", Reason: autoscale.ReasonHigh, HighWindows: 2}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
+			sampled := autoscaleT0.Add(10 * time.Second)
+			cached := autoscale.State{Version: 1, Workload: "Store", RunID: "run1", Reason: autoscale.ReasonLow, LastSample: sampled.Unix()}
+			at.h.autoscaleSamples.Store(failoverKey(at.rf), autoscaleSample{at: sampled, ratio: 0.5, state: cached, version: "1", sampled: true})
+			state, err := json.Marshal(autoscale.State{Version: 1, Workload: "Store", RunID: "run1", Reason: autoscale.ReasonHigh, HighWindows: 2, LastSample: autoscaleT0.Unix()})
+			require.NoError(t, err)
+			at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: autoscaleCM, OwnerReferences: at.h.createOwnerReferences(at.rf), ResourceVersion: test.version},
+				Data:       map[string]string{"state": string(state)},
+			}, nil)
+			at.mrec.On("SetAutoscaler", "testns", "test", int64(0), 0.5, mock.Anything).Once()
+			at.now = autoscaleT0.Add(30 * time.Second)
+
+			at.run(redisfailoverv1.AutoscalingStatus{})
+
+			assert.Equal(t, test.want, at.rf.Status.Autoscaling)
+			at.mrfc.AssertNotCalled(t, "GetAutoscalerInfo", mock.Anything, mock.Anything)
+			at.mrec.AssertExpectations(t)
+		})
+	}
+}
+
+// The clock goes back behind the stored sample time while the writes fail.
+// The samples must still continue from the state in memory, so that the high
+// windows add up.
+func TestAutoscaleContinuesAfterTheClockWentBackWhileTheWritesFail(t *testing.T) {
 	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
-	older := autoscale.State{Version: 1, Workload: "Store", RunID: "run1", Reason: autoscale.ReasonLow, LastSample: autoscaleT0.Add(-5 * time.Minute).Unix()}
-	at.h.autoscaleSamples.Store(failoverKey(at.rf), autoscaleSample{at: autoscaleT0.Add(-5 * time.Minute), ratio: 0.5, state: older})
-	state, err := json.Marshal(autoscale.State{Version: 1, Workload: "Store", RunID: "run1", Reason: autoscale.ReasonHigh, HighWindows: 2, LastSample: autoscaleT0.Unix()})
+	state, err := json.Marshal(autoscale.State{
+		Version: 1, Workload: "Store", RunID: "run1", Reason: autoscale.ReasonLow,
+		Window:     autoscale.Window{Start: autoscaleT0.Unix(), PeakRatio: 0.5},
+		LastSample: autoscaleT0.Unix(), Limit: 1024 * mib,
+	})
 	require.NoError(t, err)
 	at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(&corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: autoscaleCM, OwnerReferences: at.h.createOwnerReferences(at.rf)},
+		ObjectMeta: metav1.ObjectMeta{Name: autoscaleCM, OwnerReferences: at.h.createOwnerReferences(at.rf), ResourceVersion: "1"},
 		Data:       map[string]string{"state": string(state)},
 	}, nil)
-	at.mrec.On("SetAutoscaler", "testns", "test", int64(0), 0.5, int32(2)).Once()
-	at.now = autoscaleT0.Add(30 * time.Second)
+	at.mk.On("UpdateConfigMap", "testns", mock.Anything).Return(errors.New("forbidden"))
+	at.mrfc.On("GetAutoscalerInfo", at.rf, autoscaleMaster).Return(masterInfo(900), nil)
+	at.mrec.On("SetAutoscaler", "testns", "test", mock.Anything, mock.Anything, mock.Anything)
 
-	at.run(redisfailoverv1.AutoscalingStatus{})
+	back := autoscaleT0.Add(-time.Hour)
+	for at.now = back; at.now.Before(back.Add(16 * time.Minute)); at.now = at.now.Add(20 * time.Second) {
+		at.run(at.rf.Status.Autoscaling)
+	}
 
-	assert.Equal(t, redisfailoverv1.AutoscalingStatus{Workload: "Store", Reason: autoscale.ReasonHigh, HighWindows: 2}, at.rf.Status.Autoscaling)
-	at.mrfc.AssertNotCalled(t, "GetAutoscalerInfo", mock.Anything, mock.Anything)
-	at.mrec.AssertExpectations(t)
+	assert.Equal(t, redisfailoverv1.AutoscalingStatus{
+		Workload:          "Store",
+		RecommendedMemory: "1280Mi",
+		Reason:            autoscale.ReasonSustained,
+		EvaluatedAt:       back.Add(15 * time.Minute).UTC().Format(time.RFC3339),
+		HighWindows:       3,
+	}, at.rf.Status.Autoscaling)
 }
 
 func TestAutoscaleSkipsTheSampleOfAnInstanceThatIsNotHealthy(t *testing.T) {
