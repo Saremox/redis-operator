@@ -720,6 +720,32 @@ Two extra instances, one per mode, ran the chain Redis 6.2, 7.2, 7.4 and 8 and t
 
 All 283 converged, and the ledger found no lost acknowledged write. Only the first step is in the table above. On this chain, an upgrade took 131 s on average (95th percentile 176 s) in operator-managed mode and 166 s (258 s) in Sentinel mode.
 
+In the 3.5-day window, the soak test did not test these in-place changes of the image:
+
+- Downgrades. [In-place downgrades](#in-place-downgrades) gives the results of a separate window.
+- Skipped steps, such as Redis 6.2 to Redis 7.4, Redis 7.2 to Redis 8 or Valkey 7.2 to Valkey 9.
+- Redis 6.2 to Valkey.
+- Redis 7.4 or Redis 8 to Valkey in Sentinel mode.
+- Valkey to Redis.
+
+In Sentinel mode, the Sentinel image changes separately or follows the data image. The soak test ran these cases:
+
+- Data image first, then Sentinel image, from Redis 7.2 through Valkey 7.2, 8 and 9: 447 Sentinel image upgrades, all converged.
+- Sentinels on Valkey 9 with Redis 7.2 data, with the Sentinel image flipped between Valkey 9 and Redis 7.2: 320 flips, all converged.
+- The Sentinel image follows the data image on the chain Redis 7.2, 7.4 and 8: converged.
+
+The durations are relative figures from a test cluster with nested VMs and local volumes. A data image upgrade took 144 s on average (95th percentile 177 s) in operator-managed mode and 162 s (241 s) in Sentinel mode. Pods of two versions ran side by side for about 90 s.
+
+In the 3.5-day window, the soak test does not cover:
+
+- Node loss, network partitions and a full disk during an upgrade.
+- Operator-to-operator upgrades.
+- Data sets larger than 16 MiB on the upgrade instances, and more than 5 Redis pods.
+- TLS, which the operator does not support. See [Security notes](#security-notes).
+- Recovery from a fails-safe Redis-to-Valkey change by a revert of the image. The soak test deletes and recreates the instance instead, which loses the data by design. [Migrate to Valkey](#migrate-to-valkey) describes the revert, and the soak test did not test it.
+
+#### In-place downgrades
+
 An in-place downgrade is a change of `spec.redis.image` to an older server version. The soak test ran downgrades in a separate window of 24 hours, on one instance in operator-managed mode. The instance had 3 Redis pods, a 16 MiB data set and a write ledger.
 
 | From | To | Result | Count (operator-managed mode) |
@@ -731,33 +757,14 @@ An in-place downgrade is a change of `spec.redis.image` to an older server versi
 | Valkey 9 | Valkey 8 | works | 23 |
 | Valkey 9 | Valkey 7.2 | works | 22 |
 
-"Works" and "fails safe" have the meanings above. A Redis downgrade fails safe because the older server cannot read the data format of the newer master. The ledger found no lost acknowledged write in the 206 downgrades.
+"Works" means that the downgrade converged: one master, all pods Ready on the older version, status `Healthy`. A downgrade that fails safe stops the rollout after the first replica. The pod on the older version cannot read the data format of the newer master and stays not Ready. The master and the other replicas keep their version and accept writes. The ledger found no lost acknowledged write in the 206 downgrades.
 
-To stop a downgrade that fails safe, set `redis.image` back to the newer image. The operator then replaces the unsynced replica, as [Migrate to Valkey](#migrate-to-valkey) describes.
+To stop a downgrade that fails safe, restore the previous `redis.image`. The operator then replaces the unsynced replica, as [Migrate to Valkey](#migrate-to-valkey) describes. The soak test resets the instance after a downgrade that fails safe, so it did not test this revert.
 
-The soak test did not test these in-place upgrades and downgrades:
+The soak test did not test these downgrades:
 
 - Downgrades to Redis 6.2.
 - Downgrades in Sentinel mode.
-- Skipped steps in an upgrade, such as Redis 6.2 to Redis 7.4, Redis 7.2 to Redis 8 or Valkey 7.2 to Valkey 9.
-- Redis 6.2 to Valkey.
-- Redis 7.4 or Redis 8 to Valkey in Sentinel mode.
-
-In Sentinel mode, the Sentinel image changes separately or follows the data image. The soak test ran these cases:
-
-- Data image first, then Sentinel image, from Redis 7.2 through Valkey 7.2, 8 and 9: 447 Sentinel image upgrades, all converged.
-- Sentinels on Valkey 9 with Redis 7.2 data, with the Sentinel image flipped between Valkey 9 and Redis 7.2: 320 flips, all converged.
-- The Sentinel image follows the data image on the chain Redis 7.2, 7.4 and 8: converged.
-
-The durations are relative figures from a test cluster with nested VMs and local volumes. A data image upgrade took 144 s on average (95th percentile 177 s) in operator-managed mode and 162 s (241 s) in Sentinel mode. Pods of two versions ran side by side for about 90 s.
-
-The soak test does not cover:
-
-- Node loss, network partitions and a full disk during an upgrade.
-- Operator-to-operator upgrades.
-- Data sets larger than 16 MiB on the upgrade instances, and more than 5 Redis pods.
-- TLS, which the operator does not support. See [Security notes](#security-notes).
-- Recovery by a revert of the image after a Redis-to-Valkey change or a Redis downgrade that fails safe. The soak test deletes and recreates the instance instead, which loses the data by design. [Migrate to Valkey](#migrate-to-valkey) describes the revert, and the soak test did not test it.
 
 ## Cleanup
 
