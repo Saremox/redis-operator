@@ -720,7 +720,7 @@ Two extra instances, one per mode, ran the chain Redis 6.2, 7.2, 7.4 and 8 and t
 
 All 283 converged, and the ledger found no lost acknowledged write. Only the first step is in the table above. On this chain, an upgrade took 131 s on average (95th percentile 176 s) in operator-managed mode and 166 s (258 s) in Sentinel mode.
 
-In the 3.5-day window, the soak test did not test these in-place changes of the image:
+In the 3.5-day window, the soak test did not test these changes of `spec.redis.image`:
 
 - Downgrades. [In-place downgrades](#in-place-downgrades) gives the results of a separate window.
 - Skipped steps, such as Redis 6.2 to Redis 7.4, Redis 7.2 to Redis 8 or Valkey 7.2 to Valkey 9.
@@ -736,7 +736,7 @@ In Sentinel mode, the Sentinel image changes separately or follows the data imag
 
 The durations are relative figures from a test cluster with nested VMs and local volumes. A data image upgrade took 144 s on average (95th percentile 177 s) in operator-managed mode and 162 s (241 s) in Sentinel mode. Pods of two versions ran side by side for about 90 s.
 
-In the 3.5-day window, the soak test does not cover:
+In the 3.5-day window, the soak test did not cover:
 
 - Node loss, network partitions and a full disk during an upgrade.
 - Operator-to-operator upgrades.
