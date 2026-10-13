@@ -199,8 +199,17 @@ func Observe(s State, in Input) State {
 		// The peaks of the earlier limit do not show the use with this one.
 		// Without the reset, the window open at a step ends high, and a
 		// second step follows at once.
+		if in.Limit < s.Limit {
+			// The recommendation is a step from the earlier, higher limit.
+			s.setRecommended(0, now)
+		}
 		s.Limit, s.Window = in.Limit, Window{}
 		s.setHighWindows(0, now)
+	}
+	if s.Window.Start > now {
+		// The clock went back. The window would stay open until the clock
+		// reaches its end.
+		s.Window = Window{}
 	}
 	closed := s.Window.Start != 0 && now >= s.Window.Start+int64(WindowLength/time.Second)
 	if closed {

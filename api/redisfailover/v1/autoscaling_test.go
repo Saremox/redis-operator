@@ -2,6 +2,7 @@ package v1
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"regexp"
 	"testing"
@@ -150,8 +151,8 @@ func TestStatusWithoutAutoscaling(t *testing.T) {
 }
 
 // The API server checks recreateAfter with the pattern of the CRD. The
-// pattern must accept each value that Validate accepts, and refuse a value
-// that metav1.Duration cannot parse.
+// pattern must accept each value that time.ParseDuration accepts and that
+// Duration.String writes, and refuse a value that metav1.Duration cannot parse.
 func TestRecreateAfterPattern(t *testing.T) {
 	data, err := os.ReadFile("../../../manifests/databases.spotahome.com_redisfailovers.yaml")
 	require.NoError(t, err)
@@ -165,16 +166,28 @@ func TestRecreateAfterPattern(t *testing.T) {
 	require.NotEmpty(t, pattern)
 	re := regexp.MustCompile(pattern)
 
-	for _, value := range []string{"0", "0s", "5m", "600s", "1h30m", "1.5h", "300000ms"} {
+	for _, value := range []string{"0", "-0", "0s", "5m", "5m0s", "600s", "1h30m", "1.5h", ".5h", "1.h", "+5m", "300000ms", "300000000µs", "300000000μs", "300000000000ns"} {
 		d, err := time.ParseDuration(value)
 		require.NoError(t, err, value)
 		assert.True(t, re.MatchString(value), value)
 		rf := rfWithAutoscaling("", "", &AutoscalingSettings{RecreateAfter: &metav1.Duration{Duration: d}})
 		assert.NoError(t, rf.Validate(), value)
 	}
-	// The pattern checks only the format. Validate refuses a short wait.
-	assert.True(t, re.MatchString("90s"))
-	for _, value := range []string{"5min", "5", "-5m", "5 m", "m", ""} {
+	// The pattern checks only the format. Validate refuses a short or a
+	// negative wait.
+	for _, value := range []string{"90s", "-5m", "1us"} {
+		d, err := time.ParseDuration(value)
+		require.NoError(t, err, value)
+		assert.True(t, re.MatchString(value), value)
+		rf := rfWithAutoscaling("", "", &AutoscalingSettings{RecreateAfter: &metav1.Duration{Duration: d}})
+		assert.Error(t, rf.Validate(), value)
+	}
+	for _, value := range []string{"5min", "5 m", "", "m", "5", ".", ".s", "00", "5m-1s"} {
+		_, err := time.ParseDuration(value)
+		require.Error(t, err, value)
 		assert.False(t, re.MatchString(value), value)
+	}
+	for _, d := range []time.Duration{0, time.Nanosecond, 1500 * time.Nanosecond, 1500 * time.Millisecond, 5 * time.Minute, 90 * time.Minute, -time.Minute, math.MaxInt64, math.MinInt64} {
+		assert.True(t, re.MatchString(d.String()), d.String())
 	}
 }

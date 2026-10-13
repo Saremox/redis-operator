@@ -66,19 +66,23 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 	}
 	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
 	now := r.now()
-	// A leftover state, for example of a mode change to Off that the status
-	// did not show, must not give a recommendation of an earlier time.
-	state := autoscale.Expire(stored, now)
 	var last autoscaleSample
 	if v, ok := r.autoscaleSamples.Load(key); ok {
 		last = v.(autoscaleSample)
 	} else {
 		last.ratio = stored.Window.PeakRatio
 	}
+	// A leftover state, for example of a mode change to Off that the status
+	// did not show, must not give a recommendation of an earlier time. A
+	// failed write keeps an earlier LastSample, but this operator sampled the
+	// state, so it is not a leftover.
+	seen := stored
+	seen.LastSample = max(seen.LastSample, last.at.Unix())
+	state := autoscale.Expire(seen, now)
 	var errs []error
 	// The persisted time limits the samples after an operator restart. It is
 	// written only with other changes, so the time in memory is necessary too.
-	if now.Sub(time.Unix(stored.LastSample, 0)) >= autoscale.SampleInterval && now.Sub(last.at) >= autoscale.SampleInterval {
+	if sampleDue(now, time.Unix(stored.LastSample, 0)) && sampleDue(now, last.at) {
 		in := autoscale.Input{
 			Now:      now,
 			Healthy:  rf.Status.State == redisfailoverv1.HealthyState,
@@ -112,6 +116,13 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 	}
 	r.mClient.SetAutoscaler(rf.Namespace, rf.Name, recommended, last.ratio, state.HighWindows)
 	r.logAutoscale(rf, errors.Join(errs...))
+}
+
+// sampleDue treats a sample time in the future as elapsed. After the clock
+// went back, the autoscaler must not stop until the clock reaches that time.
+func sampleDue(now, last time.Time) bool {
+	elapsed := now.Sub(last)
+	return elapsed < 0 || elapsed >= autoscale.SampleInterval
 }
 
 // readAutoscaleState returns the state and its ConfigMap, or a nil ConfigMap

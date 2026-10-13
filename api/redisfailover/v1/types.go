@@ -132,7 +132,7 @@ type AutoscalingSettings struct {
 	// cannot resize in place. 0s recreates at once, other values must be at
 	// least 5m. Unset means that Auto never recreates a pod. Only Auto uses it.
 	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Pattern=`^(0|([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+)$`
+	// +kubebuilder:validation:Pattern=`^[-+]?(0|(([0-9]+(\.[0-9]*)?|\.[0-9]+)(ns|us|µs|μs|ms|s|m|h))+)$`
 	RecreateAfter *metav1.Duration `json:"recreateAfter,omitempty"`
 	// Workload is Auto, Store or Cache. Auto uses the maxmemory-policy:
 	// allkeys-* is a cache, noeviction a store, and volatile-* a store until

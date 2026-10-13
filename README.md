@@ -362,7 +362,7 @@ For a store, the memory request must be equal to the memory limit, or not set. W
 
 The operator reads `INFO` from the master one time in each minute at most. It compares `used_memory` with `maxmemory`, or with the memory limit when `maxmemory` is `0`. It ignores a sample while the RedisFailover is not `Healthy` and while Redis loads or syncs data. It also ignores the first 10 minutes after a restart. A restart, which changes the `run_id`, starts the count of windows again.
 
-When `maxmemory` is set, the ratio does not use the memory limit. When `maxmemory` is above the limit, a pod near its limit can show a low ratio. The operator counts an OOM refusal of an ignored sample at the first sample that it does not ignore. A change of the memory limit starts the count of windows again.
+When `maxmemory` is set, the ratio does not use the memory limit. When `maxmemory` is above the limit, a pod near its limit can show a low ratio. The operator counts an OOM refusal of an ignored sample at the first sample that it does not ignore. A change of the memory limit starts the count of windows again. A lower limit also removes the recommendation, because the operator calculated the step from the higher limit. When the clock of the operator goes back, the open window starts again.
 
 A window of 5 minutes is high when its peak is 85 percent or more. The operator recommends a step after 3 consecutive high windows. It recommends a step at once when the use is 95 percent or more, or when Redis refuses a command with an OOM error. A window below 85 percent removes the recommendation. A step is 25 percent of the current limit, rounded up to a multiple of 64Mi, and `memoryMax` at most. For a cache, the operator gives no recommendation.
 
