@@ -78,10 +78,11 @@ func TestApplyPasswordRemembersAcceptedPassword(t *testing.T) {
 	handler, rf, mrfh := newPasswordTestHandler(&password)
 
 	// With none known, the password every running pod accepts is remembered,
-	// and the Sentinels are retried until every one has it.
+	// and the pods and the Sentinels are checked again until each one has it.
 	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Once().Return(false, nil)
 	mrfh.On("ApplySentinelPassword", rf, "v1").Once().Return(false, nil)
 	assert.NoError(t, handler.applyPassword(rf))
+	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Once().Return(true, nil)
 	mrfh.On("ApplySentinelPassword", rf, "v1").Once().Return(true, nil)
 	assert.NoError(t, handler.applyPassword(rf))
 
@@ -102,7 +103,7 @@ func TestApplyPasswordRemembersAcceptedPassword(t *testing.T) {
 	assert.NoError(t, handler.applyPassword(rf))
 
 	mrfh.AssertExpectations(t)
-	mrfh.AssertNumberOfCalls(t, "ApplyPassword", 4)
+	mrfh.AssertNumberOfCalls(t, "ApplyPassword", 5)
 	mrfh.AssertNumberOfCalls(t, "ApplySentinelPassword", 3)
 }
 

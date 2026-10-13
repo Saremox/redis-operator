@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -168,6 +169,188 @@ func TestApplyPasswordTriesEachPreviousPassword(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, complete)
 	mr.AssertExpectations(t)
+}
+
+// TestApplyPasswordRemovalHint covers the recovery that the error tells the
+// user after the removal of auth.secretPath.
+func TestApplyPasswordRemovalHint(t *testing.T) {
+	rf := generateRF()
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(&corev1.PodList{Items: []corev1.Pod{runningPod("rfr-0", "10.0.0.1")}}, nil)
+	mr := &mRedisService.Client{}
+	mr.On("IsMaster", "10.0.0.1", "0", "").Return(false, errors.New("NOAUTH Authentication required."))
+
+	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+	complete, err := healer.ApplyPassword(rf, "", []string{""})
+	assert.ErrorContains(t, err, "redis pod rfr-0 refuses the configured password and the operator doesn't know the one it runs with; set auth.secretPath back to a Secret with the previous password until the RedisFailover is healthy, then remove it again")
+	assert.False(t, complete)
+	mr.AssertNotCalled(t, "SetPassword", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+// passwordEnv is the REDIS_PASSWORD env var from the key password of the
+// Secret secret.
+func passwordEnv(secret string) corev1.EnvVar {
+	return corev1.EnvVar{Name: "REDIS_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: secret}, Key: "password",
+	}}}
+}
+
+// TestApplyPasswordStalePodTemplate covers a running pod whose template gives
+// redis-server the password of another Secret than the RedisFailover. A
+// container restart brings that password back, so the change is not complete,
+// and the Secret of the template is a candidate.
+func TestApplyPasswordStalePodTemplate(t *testing.T) {
+	noauth := errors.New("NOAUTH Authentication required.")
+	wrongpass := errors.New("WRONGPASS invalid username-password pair or user is disabled.")
+	tests := []struct {
+		name       string
+		secretPath string
+		redisEnv   []corev1.EnvVar
+		podEnv     []corev1.EnvVar
+		sidecar    bool
+		password   string
+		previous   []string
+		refuse     error
+		// the value of the Secret old, or an error to read it
+		secret    string
+		secretErr error
+		// the passwords SetPassword logs in with, in order
+		expSet      []string
+		expRead     bool
+		expComplete bool
+		expErr      string
+	}{
+		{
+			name:        "the pod template has the password of the RedisFailover",
+			secretPath:  "auth",
+			podEnv:      []corev1.EnvVar{passwordEnv("auth")},
+			password:    "v1",
+			previous:    []string{"v1"},
+			expComplete: true,
+		},
+		{
+			name:        "a user env var with the same Secret as the pod template",
+			redisEnv:    []corev1.EnvVar{passwordEnv("auth")},
+			podEnv:      []corev1.EnvVar{passwordEnv("auth")},
+			previous:    []string{""},
+			expComplete: true,
+		},
+		{
+			name:        "a later env var without a Secret replaces an earlier one",
+			podEnv:      []corev1.EnvVar{passwordEnv("old"), {Name: "REDIS_PASSWORD", Value: "literal"}},
+			previous:    []string{""},
+			expComplete: true,
+		},
+		{
+			name:        "a pod without a redis container has no password",
+			podEnv:      []corev1.EnvVar{passwordEnv("old")},
+			sidecar:     true,
+			previous:    []string{""},
+			expComplete: true,
+		},
+		{
+			name:     "a stale pod that accepts the password",
+			podEnv:   []corev1.EnvVar{passwordEnv("old")},
+			previous: []string{""},
+		},
+		{
+			name:     "a stale pod on a known password does not read its Secret",
+			podEnv:   []corev1.EnvVar{passwordEnv("old")},
+			previous: []string{"v1"},
+			refuse:   noauth,
+			expSet:   []string{"v1"},
+		},
+		{
+			name:     "a stale pod on the password of its Secret",
+			podEnv:   []corev1.EnvVar{passwordEnv("old")},
+			previous: []string{"v0", ""},
+			refuse:   noauth,
+			secret:   "v1",
+			expSet:   []string{"v0", "v1"},
+			expRead:  true,
+		},
+		{
+			name:       "a stale pod of another Secret after a change of auth.secretPath",
+			secretPath: "auth",
+			podEnv:     []corev1.EnvVar{passwordEnv("old")},
+			password:   "v2",
+			previous:   []string{"v2"},
+			refuse:     wrongpass,
+			secret:     "v1",
+			expSet:     []string{"v1"},
+			expRead:    true,
+		},
+		{
+			name:     "a stale pod whose Secret has a password that it refused",
+			podEnv:   []corev1.EnvVar{passwordEnv("old")},
+			previous: []string{"v1"},
+			refuse:   noauth,
+			secret:   "v1",
+			expSet:   []string{"v1"},
+			expRead:  true,
+			expErr:   "set auth.secretPath back to a Secret with the previous password",
+		},
+		{
+			name:      "a stale pod whose Secret is missing",
+			podEnv:    []corev1.EnvVar{passwordEnv("old")},
+			previous:  []string{""},
+			refuse:    noauth,
+			secretErr: errors.New(`secrets "old" not found`),
+			expRead:   true,
+			expErr:    "set auth.secretPath back to a Secret with the previous password",
+		},
+		{
+			name:       "a stale pod without a Secret has no candidate",
+			secretPath: "auth",
+			password:   "v2",
+			previous:   []string{"v2"},
+			refuse:     wrongpass,
+			expErr:     "put the previous password back in the secret",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			rf.Spec.Auth.SecretPath = test.secretPath
+			rf.Spec.Redis.Env = test.redisEnv
+			pod := runningPod("rfr-0", "10.0.0.1")
+			name := "redis"
+			if test.sidecar {
+				name = "sidecar"
+			}
+			pod.Spec.Containers = []corev1.Container{{Name: name, Env: test.podEnv}}
+
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Return(&corev1.PodList{Items: []corev1.Pod{pod}}, nil)
+			ms.On("GetSecret", namespace, "old").Return(&corev1.Secret{Data: map[string][]byte{"password": []byte(test.secret)}}, test.secretErr)
+			mr := &mRedisService.Client{}
+			mr.On("IsMaster", "10.0.0.1", "0", test.password).Return(false, test.refuse)
+			for i, current := range test.expSet {
+				var err error
+				if i < len(test.expSet)-1 || test.expErr != "" {
+					err = test.refuse
+				}
+				mr.On("SetPassword", "10.0.0.1", "0", current, test.password).Once().Return(err)
+			}
+
+			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
+			complete, err := healer.ApplyPassword(rf, test.password, test.previous)
+			if test.expErr != "" {
+				assert.ErrorContains(t, err, test.expErr)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, test.expComplete, complete)
+			mr.AssertExpectations(t)
+			mr.AssertNumberOfCalls(t, "SetPassword", len(test.expSet))
+			if test.expRead {
+				ms.AssertCalled(t, "GetSecret", namespace, "old")
+			} else {
+				ms.AssertNotCalled(t, "GetSecret", mock.Anything, mock.Anything)
+			}
+		})
+	}
 }
 
 func TestApplySentinelPassword(t *testing.T) {

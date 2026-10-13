@@ -24,14 +24,43 @@ import (
 
 // appliedSecretEnv is a RedisFailover whose Redis pods run with the passwords
 // in running, one for each pod IP. With pending, one more pod is yet to start.
+// The template of a pod in stale names the Secret in stale, and the template
+// of every other pod is the one of rf.
 type appliedSecretEnv struct {
 	rf       *redisfailoverv1.RedisFailover
 	ms       *mK8SService.Services
 	password string
 	running  map[string]string
 	pending  bool
+	stale    map[string]string
 	stored   map[string]*corev1.Secret
 	tried    []string
+}
+
+// redisContainer returns the Redis container of a pod template that gives
+// redis-server the password of the Secret secretPath.
+func redisContainer(secretPath string) corev1.Container {
+	c := corev1.Container{Name: "redis"}
+	if secretPath != "" {
+		c.Env = []corev1.EnvVar{{Name: "REDIS_PASSWORD", ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretPath}, Key: "password"},
+		}}}
+	}
+	return c
+}
+
+// authError returns the error of a Redis that runs with running and gets
+// password, as go-redis gives it.
+func authError(running, password string) error {
+	switch {
+	case running == password:
+		return nil
+	case running == "":
+		return errors.New("ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?")
+	case password == "":
+		return errors.New("NOAUTH Authentication required.")
+	}
+	return errors.New("WRONGPASS invalid username-password pair or user is disabled.")
 }
 
 func newAppliedSecretEnv(t *testing.T, password string, running map[string]string, pending bool) *appliedSecretEnv {
@@ -45,6 +74,7 @@ func newAppliedSecretEnv(t *testing.T, password string, running map[string]strin
 		password: password,
 		running:  running,
 		pending:  pending,
+		stale:    map[string]string{},
 	}
 	e.ms.On("GetSecret", "testns", "redis-auth").Return(func(string, string) (*corev1.Secret, error) {
 		return &corev1.Secret{Data: map[string][]byte{"password": []byte(e.password)}}, nil
@@ -52,7 +82,15 @@ func newAppliedSecretEnv(t *testing.T, password string, running map[string]strin
 	e.ms.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(e.rf)).Return(func(string, string) (*corev1.PodList, error) {
 		pods := &corev1.PodList{}
 		for ip := range e.running {
-			pods.Items = append(pods.Items, corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-" + ip}, Status: corev1.PodStatus{PodIP: ip, Phase: corev1.PodRunning}})
+			template, ok := e.stale[ip]
+			if !ok {
+				template = e.rf.Spec.Auth.SecretPath
+			}
+			pods.Items = append(pods.Items, corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-" + ip},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{redisContainer(template)}},
+				Status:     corev1.PodStatus{PodIP: ip, Phase: corev1.PodRunning},
+			})
 		}
 		if e.pending {
 			pods.Items = append(pods.Items, corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-pending"}, Status: corev1.PodStatus{Phase: corev1.PodPending}})
@@ -66,18 +104,15 @@ func newAppliedSecretEnv(t *testing.T, password string, running map[string]strin
 
 // handler returns a handler with no passwordState, as after an operator start.
 func (e *appliedSecretEnv) handler(logger log.Logger) *RedisFailoverHandler {
-	wrongpass := errors.New("WRONGPASS invalid username-password pair or user is disabled.")
 	mr := &mRedisService.Client{}
 	mr.On("IsMaster", mock.Anything, "0", mock.Anything).Return(func(ip, _, pw string) (bool, error) {
-		if pw != e.running[ip] {
-			return false, wrongpass
-		}
-		return true, nil
+		err := authError(e.running[ip], pw)
+		return err == nil, err
 	})
 	mr.On("SetPassword", mock.Anything, "0", mock.Anything, mock.Anything).Return(func(ip, _, pw, newPw string) error {
 		e.tried = append(e.tried, ip+":"+pw)
-		if pw != e.running[ip] {
-			return wrongpass
+		if err := authError(e.running[ip], pw); err != nil {
+			return err
 		}
 		e.running[ip] = newPw
 		return nil
@@ -557,4 +592,160 @@ func TestApplyPasswordDoesNotRetryAForbiddenSave(t *testing.T) {
 		require.NoError(t, handler.applyPassword(e.rf))
 	}
 	assert.Equal(t, 1, e.writes())
+}
+
+// remove removes auth.secretPath. The pods keep the template that names the
+// Secret redis-auth until the rollout.
+func (e *appliedSecretEnv) remove() {
+	e.rf.Spec.Auth.SecretPath = ""
+	for ip := range e.running {
+		e.stale[ip] = "redis-auth"
+	}
+}
+
+func (e *appliedSecretEnv) podLists() int {
+	n := 0
+	for _, c := range e.ms.Calls {
+		if c.Method == "GetStatefulSetPods" {
+			n++
+		}
+	}
+	return n
+}
+
+// forbidSave makes the operator unable to write the applied Secret.
+func (e *appliedSecretEnv) forbidSave() {
+	e.ms.ExpectedCalls = slices.DeleteFunc(e.ms.ExpectedCalls, func(c *mock.Call) bool { return c.Method == "CreateOrUpdateSecret" })
+	e.ms.On("CreateOrUpdateSecret", "testns", mock.Anything).Return(apierrors.NewForbidden(corev1.Resource("secrets"), "rfr-auth-applied-test", errors.New("no create")))
+}
+
+// TestApplyPasswordRemovalWithoutAppliedSecretUsesThePodSecretRef covers the
+// removal of auth.secretPath at the first reconcile of an operator that has no
+// applied Secret, for example after an upgrade. The pods run with the password
+// of the Secret that their template names.
+func TestApplyPasswordRemovalWithoutAppliedSecretUsesThePodSecretRef(t *testing.T) {
+	e := newAppliedSecretEnv(t, "v1", map[string]string{"10.0.0.1": "v1", "10.0.0.2": "v1"}, false)
+	e.remove()
+
+	require.NoError(t, e.handler(log.Dummy).applyPassword(e.rf))
+	assert.Equal(t, map[string]string{"10.0.0.1": "", "10.0.0.2": ""}, e.running)
+	assert.ElementsMatch(t, []string{"10.0.0.1:v1", "10.0.0.2:v1"}, e.tried)
+}
+
+// TestApplyPasswordRemovalWithoutAppliedSecretOrPodSecretFails covers a
+// removal that no known password can apply: the error tells how to recover.
+func TestApplyPasswordRemovalWithoutAppliedSecretOrPodSecretFails(t *testing.T) {
+	e := newAppliedSecretEnv(t, "v1", map[string]string{"10.0.0.1": "v1"}, false)
+	e.remove()
+	e.ms.On("GetSecret", "testns", "redis-auth").Return(nil, apierrors.NewNotFound(corev1.Resource("secrets"), "redis-auth"))
+	e.ms.ExpectedCalls = append(e.ms.ExpectedCalls[len(e.ms.ExpectedCalls)-1:], e.ms.ExpectedCalls[:len(e.ms.ExpectedCalls)-1]...)
+
+	err := e.handler(log.Dummy).applyPassword(e.rf)
+	assert.EqualError(t, err, "redis pod rfr-test-10.0.0.1 refuses the configured password and the operator doesn't know the one it runs with; set auth.secretPath back to a Secret with the previous password until the RedisFailover is healthy, then remove it again")
+	assert.Equal(t, "v1", e.running["10.0.0.1"])
+}
+
+// TestApplyPasswordRemovalForbiddenSave covers an operator without the right
+// to write Secrets that restarts before the removal of auth.secretPath.
+func TestApplyPasswordRemovalForbiddenSave(t *testing.T) {
+	e := newAppliedSecretEnv(t, "v1", map[string]string{"10.0.0.1": "v1", "10.0.0.2": "v1"}, false)
+	e.forbidSave()
+	require.NoError(t, e.handler(log.Dummy).applyPassword(e.rf))
+
+	e.remove()
+	require.NoError(t, e.handler(log.Dummy).applyPassword(e.rf))
+	assert.Equal(t, map[string]string{"10.0.0.1": "", "10.0.0.2": ""}, e.running)
+	assert.Empty(t, e.stored)
+}
+
+// TestApplyPasswordKeepsThePreviousPasswordUntilTheRollout covers the state
+// during the rollout after a removal: a pod on the old template can come back
+// with the old password, so the operator keeps it, also in the applied Secret.
+// After the rollout, a reconcile lists no pods.
+func TestApplyPasswordKeepsThePreviousPasswordUntilTheRollout(t *testing.T) {
+	e := newAppliedSecretEnv(t, "v1", map[string]string{"10.0.0.1": "v1", "10.0.0.2": "v1"}, false)
+	handler := e.handler(log.Dummy)
+	require.NoError(t, handler.applyPassword(e.rf))
+
+	e.remove()
+	for range 2 {
+		require.NoError(t, handler.applyPassword(e.rf))
+	}
+	redis, applied := e.applied()
+	assert.Equal(t, []string{"v1", ""}, []string{redis, applied})
+
+	delete(e.stale, "10.0.0.1")
+	require.NoError(t, handler.applyPassword(e.rf))
+	redis, _ = e.applied()
+	assert.Equal(t, "v1", redis)
+
+	delete(e.stale, "10.0.0.2")
+	require.NoError(t, handler.applyPassword(e.rf))
+	redis, applied = e.applied()
+	assert.Equal(t, []string{"", ""}, []string{redis, applied})
+	lists := e.podLists()
+	require.NoError(t, handler.applyPassword(e.rf))
+	assert.Equal(t, lists, e.podLists())
+}
+
+// TestApplyPasswordFixesAStalePodThatRestartedAfterARemoval covers a container
+// restart of a pod on the old template after the removal of auth.secretPath:
+// Redis comes back with the old password, and the operator removes it again.
+func TestApplyPasswordFixesAStalePodThatRestartedAfterARemoval(t *testing.T) {
+	tests := []struct {
+		name      string
+		restart   bool
+		forbidden bool
+	}{
+		{name: "same process"},
+		{name: "after an operator restart", restart: true},
+		{name: "after an operator restart without the applied Secret", restart: true, forbidden: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			e := newAppliedSecretEnv(t, "v1", map[string]string{"10.0.0.1": "v1", "10.0.0.2": "v1"}, false)
+			if test.forbidden {
+				e.forbidSave()
+			}
+			handler := e.handler(log.Dummy)
+			require.NoError(t, handler.applyPassword(e.rf))
+			e.remove()
+			require.NoError(t, handler.applyPassword(e.rf))
+			if test.restart {
+				handler = e.handler(log.Dummy)
+				require.NoError(t, handler.applyPassword(e.rf))
+			}
+
+			e.running["10.0.0.2"] = "v1"
+			require.NoError(t, handler.applyPassword(e.rf))
+			assert.Equal(t, map[string]string{"10.0.0.1": "", "10.0.0.2": ""}, e.running)
+		})
+	}
+}
+
+// TestApplyPasswordFixesAStalePodThatRestartedAfterAnAddition covers a
+// container restart of a pod on the old template after the addition of
+// auth.secretPath: Redis comes back without a password, and the operator sets
+// it again.
+func TestApplyPasswordFixesAStalePodThatRestartedAfterAnAddition(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("operator restart %t", restart), func(t *testing.T) {
+			e := newAppliedSecretEnv(t, "v1", map[string]string{"10.0.0.1": "", "10.0.0.2": ""}, false)
+			e.rf.Spec.Auth.SecretPath = ""
+			handler := e.handler(log.Dummy)
+			require.NoError(t, handler.applyPassword(e.rf))
+
+			e.rf.Spec.Auth.SecretPath = "redis-auth"
+			e.stale = map[string]string{"10.0.0.1": "", "10.0.0.2": ""}
+			require.NoError(t, handler.applyPassword(e.rf))
+			if restart {
+				handler = e.handler(log.Dummy)
+				require.NoError(t, handler.applyPassword(e.rf))
+			}
+
+			e.running["10.0.0.2"] = ""
+			require.NoError(t, handler.applyPassword(e.rf))
+			assert.Equal(t, map[string]string{"10.0.0.1": "v1", "10.0.0.2": "v1"}, e.running)
+		})
+	}
 }
