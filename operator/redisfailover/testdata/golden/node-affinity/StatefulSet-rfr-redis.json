@@ -1,0 +1,256 @@
+{
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "redis",
+      "app.kubernetes.io/managed-by": "redis-operator",
+      "app.kubernetes.io/name": "redis",
+      "app.kubernetes.io/part-of": "redis-failover",
+      "redisfailovers-role": "slave",
+      "redisfailovers.databases.spotahome.com/name": "redis"
+    },
+    "name": "rfr-redis",
+    "namespace": "default",
+    "ownerReferences": [
+      {
+        "apiVersion": "databases.spotahome.com/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "RedisFailover",
+        "name": "redis",
+        "uid": ""
+      }
+    ]
+  },
+  "spec": {
+    "podManagementPolicy": "Parallel",
+    "replicas": 3,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "redis",
+        "app.kubernetes.io/name": "redis",
+        "app.kubernetes.io/part-of": "redis-failover"
+      }
+    },
+    "serviceName": "rfr-redis",
+    "template": {
+      "metadata": {
+        "annotations": {
+          "redisfailovers.databases.spotahome.com/secret-checksum": "0c10521a2cb3de1dff76e2e4ac993bd941fd740b5e1dce3fcada998dce48df41"
+        },
+        "labels": {
+          "app.kubernetes.io/component": "redis",
+          "app.kubernetes.io/managed-by": "redis-operator",
+          "app.kubernetes.io/name": "redis",
+          "app.kubernetes.io/part-of": "redis-failover",
+          "redisfailovers-role": "slave",
+          "redisfailovers.databases.spotahome.com/name": "redis"
+        }
+      },
+      "spec": {
+        "affinity": {
+          "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+              "nodeSelectorTerms": [
+                {
+                  "matchExpressions": [
+                    {
+                      "key": "kops.k8s.io/instancegroup",
+                      "operator": "In",
+                      "values": [
+                        "productionnodes"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "automountServiceAccountToken": false,
+        "containers": [
+          {
+            "command": [
+              "redis-server",
+              "/redis/redis.conf"
+            ],
+            "env": [
+              {
+                "name": "REDIS_ADDR",
+                "value": "redis://127.0.0.1:6379"
+              },
+              {
+                "name": "REDIS_PORT",
+                "value": "6379"
+              },
+              {
+                "name": "REDIS_USER",
+                "value": "default"
+              }
+            ],
+            "image": "redis:7.2.12-alpine",
+            "imagePullPolicy": "Always",
+            "lifecycle": {
+              "preStop": {
+                "exec": {
+                  "command": [
+                    "/bin/sh",
+                    "/redis-shutdown/shutdown.sh"
+                  ]
+                }
+              }
+            },
+            "livenessProbe": {
+              "exec": {
+                "command": [
+                  "sh",
+                  "-c",
+                  "t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'"
+                ]
+              },
+              "failureThreshold": 6,
+              "initialDelaySeconds": 30,
+              "periodSeconds": 15,
+              "timeoutSeconds": 5
+            },
+            "name": "redis",
+            "ports": [
+              {
+                "containerPort": 6379,
+                "name": "redis",
+                "protocol": "TCP"
+              }
+            ],
+            "readinessProbe": {
+              "exec": {
+                "command": [
+                  "/bin/sh",
+                  "/redis-readiness/ready.sh"
+                ]
+              },
+              "initialDelaySeconds": 30,
+              "timeoutSeconds": 5
+            },
+            "resources": {},
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "privileged": false,
+              "readOnlyRootFilesystem": true,
+              "runAsGroup": 1000,
+              "runAsNonRoot": true,
+              "runAsUser": 1000
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/redis",
+                "name": "redis-config"
+              },
+              {
+                "mountPath": "/redis-shutdown",
+                "name": "redis-shutdown-config"
+              },
+              {
+                "mountPath": "/redis-readiness",
+                "name": "redis-readiness-config"
+              },
+              {
+                "mountPath": "/data",
+                "name": "redis-data"
+              }
+            ]
+          }
+        ],
+        "dnsPolicy": "ClusterFirst",
+        "enableServiceLinks": false,
+        "initContainers": [
+          {
+            "command": [
+              "sh",
+              "-c",
+              "find /data -maxdepth 1 -type f -name 'temp-*.rdb' -delete"
+            ],
+            "image": "redis:7.2.12-alpine",
+            "imagePullPolicy": "Always",
+            "name": "rdb-tempfile-cleanup",
+            "resources": {
+              "limits": {
+                "cpu": "10m",
+                "memory": "32Mi"
+              },
+              "requests": {
+                "cpu": "10m",
+                "memory": "32Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "privileged": false,
+              "readOnlyRootFilesystem": true,
+              "runAsGroup": 1000,
+              "runAsNonRoot": true,
+              "runAsUser": 1000
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/data",
+                "name": "redis-data"
+              }
+            ]
+          }
+        ],
+        "securityContext": {
+          "fsGroup": 1000,
+          "runAsGroup": 1000,
+          "runAsNonRoot": true,
+          "runAsUser": 1000,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "terminationGracePeriodSeconds": 30,
+        "volumes": [
+          {
+            "configMap": {
+              "name": "rfr-redis"
+            },
+            "name": "redis-config"
+          },
+          {
+            "configMap": {
+              "defaultMode": 484,
+              "name": "rfr-s-redis"
+            },
+            "name": "redis-shutdown-config"
+          },
+          {
+            "configMap": {
+              "defaultMode": 484,
+              "name": "rfr-readiness-redis"
+            },
+            "name": "redis-readiness-config"
+          },
+          {
+            "emptyDir": {},
+            "name": "redis-data"
+          }
+        ]
+      }
+    },
+    "updateStrategy": {
+      "type": "OnDelete"
+    }
+  },
+  "status": {
+    "availableReplicas": 0,
+    "replicas": 0
+  }
+}

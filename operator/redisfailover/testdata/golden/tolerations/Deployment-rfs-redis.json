@@ -1,0 +1,208 @@
+{
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "sentinel",
+      "app.kubernetes.io/managed-by": "redis-operator",
+      "app.kubernetes.io/name": "redis",
+      "app.kubernetes.io/part-of": "redis-failover",
+      "redisfailovers.databases.spotahome.com/name": "redis"
+    },
+    "name": "rfs-redis",
+    "namespace": "default",
+    "ownerReferences": [
+      {
+        "apiVersion": "databases.spotahome.com/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "RedisFailover",
+        "name": "redis",
+        "uid": ""
+      }
+    ]
+  },
+  "spec": {
+    "replicas": 3,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "sentinel",
+        "app.kubernetes.io/name": "redis",
+        "app.kubernetes.io/part-of": "redis-failover"
+      }
+    },
+    "strategy": {},
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "sentinel",
+          "app.kubernetes.io/managed-by": "redis-operator",
+          "app.kubernetes.io/name": "redis",
+          "app.kubernetes.io/part-of": "redis-failover",
+          "redisfailovers.databases.spotahome.com/name": "redis"
+        }
+      },
+      "spec": {
+        "affinity": {
+          "podAntiAffinity": {
+            "preferredDuringSchedulingIgnoredDuringExecution": [
+              {
+                "podAffinityTerm": {
+                  "labelSelector": {
+                    "matchLabels": {
+                      "app.kubernetes.io/component": "sentinel",
+                      "app.kubernetes.io/managed-by": "redis-operator",
+                      "app.kubernetes.io/name": "redis",
+                      "app.kubernetes.io/part-of": "redis-failover",
+                      "redisfailovers.databases.spotahome.com/name": "redis"
+                    }
+                  },
+                  "topologyKey": "kubernetes.io/hostname"
+                },
+                "weight": 100
+              }
+            ]
+          }
+        },
+        "automountServiceAccountToken": false,
+        "containers": [
+          {
+            "command": [
+              "redis-server",
+              "/redis/sentinel.conf",
+              "--sentinel"
+            ],
+            "image": "redis:7.2.12-alpine",
+            "imagePullPolicy": "Always",
+            "livenessProbe": {
+              "exec": {
+                "command": [
+                  "sh",
+                  "-c",
+                  "t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 ping"
+                ]
+              },
+              "initialDelaySeconds": 30,
+              "timeoutSeconds": 5
+            },
+            "name": "sentinel",
+            "ports": [
+              {
+                "containerPort": 26379,
+                "name": "sentinel",
+                "protocol": "TCP"
+              }
+            ],
+            "readinessProbe": {
+              "exec": {
+                "command": [
+                  "sh",
+                  "-c",
+                  "t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1' && $t redis-cli -h $(hostname) -p 26379 sentinel ckquorum mymaster | grep -q '^OK'"
+                ]
+              },
+              "initialDelaySeconds": 30,
+              "timeoutSeconds": 5
+            },
+            "resources": {},
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "privileged": false,
+              "readOnlyRootFilesystem": true,
+              "runAsGroup": 1000,
+              "runAsNonRoot": true,
+              "runAsUser": 1000
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/redis",
+                "name": "sentinel-config-writable"
+              }
+            ]
+          }
+        ],
+        "dnsPolicy": "ClusterFirst",
+        "enableServiceLinks": false,
+        "initContainers": [
+          {
+            "command": [
+              "cp",
+              "/redis/sentinel.conf",
+              "/redis-writable/sentinel.conf"
+            ],
+            "image": "redis:7.2.12-alpine",
+            "imagePullPolicy": "Always",
+            "name": "sentinel-config-copy",
+            "resources": {
+              "limits": {
+                "cpu": "10m",
+                "memory": "32Mi"
+              },
+              "requests": {
+                "cpu": "10m",
+                "memory": "32Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "privileged": false,
+              "readOnlyRootFilesystem": true,
+              "runAsGroup": 1000,
+              "runAsNonRoot": true,
+              "runAsUser": 1000
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/redis",
+                "name": "sentinel-config"
+              },
+              {
+                "mountPath": "/redis-writable",
+                "name": "sentinel-config-writable"
+              }
+            ]
+          }
+        ],
+        "securityContext": {
+          "fsGroup": 1000,
+          "runAsGroup": 1000,
+          "runAsNonRoot": true,
+          "runAsUser": 1000,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "serviceAccountName": "rfs-sa-redis",
+        "tolerations": [
+          {
+            "effect": "NoExecute",
+            "key": "dedicated",
+            "operator": "Equal",
+            "value": "production"
+          }
+        ],
+        "volumes": [
+          {
+            "configMap": {
+              "name": "rfs-redis"
+            },
+            "name": "sentinel-config"
+          },
+          {
+            "emptyDir": {},
+            "name": "sentinel-config-writable"
+          }
+        ]
+      }
+    }
+  },
+  "status": {}
+}

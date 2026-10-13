@@ -1,0 +1,26 @@
+{
+  "data": {
+    "ready.sh": "ROLE=\"role\"\nROLE_MASTER=\"role:master\"\nROLE_SLAVE=\"role:slave\"\nIN_SYNC=\"master_sync_in_progress:1\"\nNO_MASTER=\"master_host:127.0.0.1\"\nLINK_UP=\"master_link_status:up\"\nLINK_DOWN_SINCE=\"master_link_down_since_seconds:\"\n# A replica stays ready this long after losing its master, so it outlasts a\n# failover, during which every replica's link is down.\nMAX_LINK_DOWN_SECONDS=75\n\ncmd=\"redis-cli -p 6379\"\n# A frozen server still accepts connections, and redis-cli would wait for its\n# reply forever, holding the probe open past its timeout on some runtimes.\nif command -v timeout >/dev/null 2>&1; then\n\tcmd=\"timeout 2 ${cmd}\"\nfi\nif [ ! -z \"${REDIS_PASSWORD}\" ]; then\n\texport REDISCLI_AUTH=${REDIS_PASSWORD}\nfi\n\ncmd=\"${cmd} info replication\"\n\n# The operator changes the password of a running Redis in place, and the pod\n# restarts onto it later. Until then a refused password says nothing about\n# replication.\nif echo \"${cmd}\" | xargs -0 sh -c 2>&1 | grep -qE \"NOAUTH|WRONGPASS\"; then\n\t\texit 0\nfi\n\ncheck_master(){\n\t\texit 0\n}\n\ncheck_slave(){\n\t\tin_sync=$(echo \"${cmd} | grep ${IN_SYNC} | tr -d \\\"\\\\r\\\" | tr -d \\\"\\\\n\\\"\" | xargs -0 sh -c)\n\t\tno_master=$(echo \"${cmd} | grep ${NO_MASTER} | tr -d \\\"\\\\r\\\" | tr -d \\\"\\\\n\\\"\" |  xargs -0 sh -c)\n\n\t\tif [ -n \"$in_sync\" ] || [ -n \"$no_master\" ]; then\n\t\t\t\texit 1\n\t\tfi\n\n\t\tlink_up=$(echo \"${cmd} | grep ${LINK_UP} | tr -d \\\"\\\\r\\\" | tr -d \\\"\\\\n\\\"\" | xargs -0 sh -c)\n\t\tif [ -n \"$link_up\" ]; then\n\t\t\t\texit 0\n\t\tfi\n\n\t\t# -1 means the link has not been up since redis started: this replica\n\t\t# has never loaded the master's data, e.g. it can't read its RDB format.\n\t\tdown_since=$(echo \"${cmd} | grep ${LINK_DOWN_SINCE} | cut -d: -f2 | tr -d \\\"\\\\r\\\" | tr -d \\\"\\\\n\\\"\" | xargs -0 sh -c)\n\t\tif [ \"$down_since\" -ge 0 ] 2>/dev/null && [ \"$down_since\" -le \"$MAX_LINK_DOWN_SECONDS\" ]; then\n\t\t\t\texit 0\n\t\tfi\n\n\t\texit 1\n}\n\nrole=$(echo \"${cmd} | grep $ROLE | tr -d \\\"\\\\r\\\" | tr -d \\\"\\\\n\\\"\" | xargs -0 sh -c)\ncase $role in\n\t\t$ROLE_MASTER)\n\t\t\t\tcheck_master\n\t\t\t\t;;\n\t\t$ROLE_SLAVE)\n\t\t\t\tcheck_slave\n\t\t\t\t;;\n\t\t*)\n\t\t\t\techo \"unexpected\"\n\t\t\t\texit 1\nesac"
+  },
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "redis",
+      "app.kubernetes.io/managed-by": "redis-operator",
+      "app.kubernetes.io/name": "redisfailover",
+      "app.kubernetes.io/part-of": "redis-failover",
+      "redisfailovers.databases.spotahome.com/name": "redisfailover"
+    },
+    "name": "rfr-readiness-redisfailover",
+    "namespace": "default",
+    "ownerReferences": [
+      {
+        "apiVersion": "databases.spotahome.com/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "RedisFailover",
+        "name": "redisfailover",
+        "uid": ""
+      }
+    ]
+  }
+}

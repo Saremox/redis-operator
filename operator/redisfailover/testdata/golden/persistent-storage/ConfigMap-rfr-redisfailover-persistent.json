@@ -1,0 +1,26 @@
+{
+  "data": {
+    "redis.conf": "slaveof 127.0.0.1 6379\nport 6379\ntcp-keepalive 60\nsave 900 1\nsave 300 10\nuser pinger -@all +ping on >pingpass\n"
+  },
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "redis",
+      "app.kubernetes.io/managed-by": "redis-operator",
+      "app.kubernetes.io/name": "redisfailover-persistent",
+      "app.kubernetes.io/part-of": "redis-failover",
+      "redisfailovers.databases.spotahome.com/name": "redisfailover-persistent"
+    },
+    "name": "rfr-redisfailover-persistent",
+    "namespace": "default",
+    "ownerReferences": [
+      {
+        "apiVersion": "databases.spotahome.com/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "RedisFailover",
+        "name": "redisfailover-persistent",
+        "uid": ""
+      }
+    ]
+  }
+}

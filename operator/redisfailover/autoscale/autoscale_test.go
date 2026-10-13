@@ -499,3 +499,46 @@ func TestStateNeedsWriteRefreshesTheSampleTime(t *testing.T) {
 	later.LastSample++
 	assert.True(t, later.NeedsWrite(s))
 }
+
+// A recommendation is a step from the limit of its sample. After the user
+// lowers the limit, the status must not show the step from the higher limit.
+func TestObserveALoweredLimitClearsTheRecommendation(t *testing.T) {
+	s := Observe(known(), input(0, master(990)))
+	require.Equal(t, "1280Mi", Report(s, gi, 4*gi).RecommendedMemory)
+
+	in := input(time.Minute, master(100))
+	in.Limit = 512 * mi
+	s = Observe(s, in)
+
+	assert.Zero(t, s.Recommended)
+	assert.Equal(t, redisfailoverv1.AutoscalingStatus{
+		Workload:    redisfailoverv1.AutoscalingWorkloadStore,
+		Reason:      ReasonLow,
+		EvaluatedAt: t0.Add(time.Minute).UTC().Format(time.RFC3339),
+	}, Report(s, in.Limit, in.Max))
+}
+
+// A reconcile without a sample reports the state of the last sample. The
+// status must not show the step from a limit that the user lowered since.
+func TestReportHidesAStepFromAHigherLimit(t *testing.T) {
+	s := Observe(known(), input(0, master(990)))
+	require.Equal(t, gi, s.Limit)
+
+	st := Report(s, 512*mi, 4*gi)
+
+	assert.Empty(t, st.RecommendedMemory)
+	assert.Equal(t, ReasonUrgent, st.Reason)
+	assert.Equal(t, "1280Mi", Report(s, 1100*mi, 4*gi).RecommendedMemory, "a raised limit keeps the step")
+}
+
+// After the clock went back, the open window must end one WindowLength after
+// its first sample on the clock that the operator reads now.
+func TestObserveAfterTheClockWentBack(t *testing.T) {
+	s := observeAll(known(), 0, 900, 900)
+	require.Equal(t, t0.Unix(), s.Window.Start)
+
+	s = observeAll(s, -time.Hour, 900, 900, 900, 900, 900, 900)
+
+	assert.Equal(t, t0.Add(-55*time.Minute).Unix(), s.Window.Start)
+	assert.Equal(t, int32(1), s.HighWindows)
+}

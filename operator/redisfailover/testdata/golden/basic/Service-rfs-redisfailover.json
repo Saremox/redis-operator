@@ -1,0 +1,41 @@
+{
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "sentinel",
+      "app.kubernetes.io/managed-by": "redis-operator",
+      "app.kubernetes.io/name": "redisfailover",
+      "app.kubernetes.io/part-of": "redis-failover",
+      "redisfailovers.databases.spotahome.com/name": "redisfailover"
+    },
+    "name": "rfs-redisfailover",
+    "namespace": "default",
+    "ownerReferences": [
+      {
+        "apiVersion": "databases.spotahome.com/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "RedisFailover",
+        "name": "redisfailover",
+        "uid": ""
+      }
+    ]
+  },
+  "spec": {
+    "ports": [
+      {
+        "name": "sentinel",
+        "port": 26379,
+        "protocol": "TCP",
+        "targetPort": 26379
+      }
+    ],
+    "selector": {
+      "app.kubernetes.io/component": "sentinel",
+      "app.kubernetes.io/name": "redisfailover",
+      "app.kubernetes.io/part-of": "redis-failover"
+    }
+  },
+  "status": {
+    "loadBalancer": {}
+  }
+}

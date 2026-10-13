@@ -1,0 +1,39 @@
+{
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "redis",
+      "app.kubernetes.io/managed-by": "redis-operator",
+      "app.kubernetes.io/name": "redisfailover-persistent-keep",
+      "app.kubernetes.io/part-of": "redis-failover",
+      "redisfailovers.databases.spotahome.com/name": "redisfailover-persistent-keep"
+    },
+    "name": "rfr-redisfailover-persistent-keep",
+    "namespace": "default",
+    "ownerReferences": [
+      {
+        "apiVersion": "databases.spotahome.com/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "RedisFailover",
+        "name": "redisfailover-persistent-keep",
+        "uid": ""
+      }
+    ]
+  },
+  "spec": {
+    "minAvailable": 2,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "redis",
+        "app.kubernetes.io/name": "redisfailover-persistent-keep",
+        "app.kubernetes.io/part-of": "redis-failover"
+      }
+    }
+  },
+  "status": {
+    "currentHealthy": 0,
+    "desiredHealthy": 0,
+    "disruptionsAllowed": 0,
+    "expectedPods": 0
+  }
+}

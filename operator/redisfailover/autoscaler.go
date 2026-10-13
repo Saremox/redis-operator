@@ -24,6 +24,13 @@ var errForeignState = errors.New("the state ConfigMap is not controlled by the R
 type autoscaleSample struct {
 	at    time.Time
 	ratio float64
+	// state is the state after the sample, when sampled is true. It
+	// continues the ConfigMap with the resourceVersion version ("" for no
+	// ConfigMap). It is newer than that ConfigMap when the write failed or was
+	// not necessary.
+	state   autoscale.State
+	version string
+	sampled bool
 }
 
 // autoscale runs the memory autoscaler after the checks and sets
@@ -66,19 +73,32 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 	}
 	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
 	now := r.now()
-	// A leftover state, for example of a mode change to Off that the status
-	// did not show, must not give a recommendation of an earlier time.
-	state := autoscale.Expire(stored, now)
 	var last autoscaleSample
 	if v, ok := r.autoscaleSamples.Load(key); ok {
 		last = v.(autoscaleSample)
 	} else {
 		last.ratio = stored.Window.PeakRatio
 	}
+	// While the writes fail, each sample must continue from the last sample
+	// and not from the stored state, or the status changes at each reconcile.
+	// A write of another operator changes the resourceVersion, and then the
+	// ConfigMap wins. The sample times cannot tell this, because the clock
+	// can go back.
+	version := ""
+	if cm != nil {
+		version = cm.ResourceVersion
+	}
+	state := stored
+	if last.sampled && last.version == version {
+		state = last.state
+	}
+	// A leftover state, for example of a mode change to Off that the status
+	// did not show, must not give a recommendation of an earlier time.
+	state = autoscale.Expire(state, now)
 	var errs []error
 	// The persisted time limits the samples after an operator restart. It is
 	// written only with other changes, so the time in memory is necessary too.
-	if now.Sub(time.Unix(stored.LastSample, 0)) >= autoscale.SampleInterval && now.Sub(last.at) >= autoscale.SampleInterval {
+	if sampleDue(now, time.Unix(stored.LastSample, 0)) && sampleDue(now, last.at) {
 		in := autoscale.Input{
 			Now:      now,
 			Healthy:  rf.Status.State == redisfailoverv1.HealthyState,
@@ -95,12 +115,14 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 			in.Info = info
 		}
 		state = autoscale.Observe(state, in)
-		last.at = now
+		last.at, last.state, last.version, last.sampled = now, state, version, true
 		if in.Info != nil {
 			last.ratio = autoscale.UsedRatio(in.Info, limit)
 		}
 		r.autoscaleSamples.Store(key, last)
 		if cm == nil || state.NeedsWrite(stored) {
+			// A write changes the resourceVersion, so the next reconcile
+			// reads this state from the ConfigMap.
 			errs = append(errs, r.writeAutoscaleState(rf, cm, state))
 		}
 	}
@@ -112,6 +134,13 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 	}
 	r.mClient.SetAutoscaler(rf.Namespace, rf.Name, recommended, last.ratio, state.HighWindows)
 	r.logAutoscale(rf, errors.Join(errs...))
+}
+
+// sampleDue treats a sample time in the future as elapsed. After the clock
+// went back, the autoscaler must not stop until the clock reaches that time.
+func sampleDue(now, last time.Time) bool {
+	elapsed := now.Sub(last)
+	return elapsed < 0 || elapsed >= autoscale.SampleInterval
 }
 
 // readAutoscaleState returns the state and its ConfigMap, or a nil ConfigMap

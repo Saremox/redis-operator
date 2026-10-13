@@ -1,0 +1,28 @@
+{
+  "data": {
+    "sentinel.conf": "sentinel monitor mymaster 127.0.0.1 6379 2\nsentinel down-after-milliseconds mymaster 5000\nsentinel failover-timeout mymaster 10000\nsentinel parallel-syncs mymaster 2"
+  },
+  "metadata": {
+    "labels": {
+      "app.example.com/label1": "value",
+      "app.example.com/label2": "value",
+      "app.kubernetes.io/component": "sentinel",
+      "app.kubernetes.io/managed-by": "redis-operator",
+      "app.kubernetes.io/name": "redisfailover2",
+      "app.kubernetes.io/part-of": "redis-failover",
+      "redisfailovers.databases.spotahome.com/name": "redisfailover2"
+    },
+    "name": "rfs-redisfailover2",
+    "namespace": "default",
+    "ownerReferences": [
+      {
+        "apiVersion": "databases.spotahome.com/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "RedisFailover",
+        "name": "redisfailover2",
+        "uid": ""
+      }
+    ]
+  }
+}
