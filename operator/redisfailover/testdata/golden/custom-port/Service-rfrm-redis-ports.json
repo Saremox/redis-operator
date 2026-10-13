@@ -1,0 +1,44 @@
+{
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "redis",
+      "app.kubernetes.io/managed-by": "redis-operator",
+      "app.kubernetes.io/name": "redis-ports",
+      "app.kubernetes.io/part-of": "redis-failover",
+      "redisfailovers-role": "master",
+      "redisfailovers.databases.spotahome.com/name": "redis-ports"
+    },
+    "name": "rfrm-redis-ports",
+    "namespace": "ports",
+    "ownerReferences": [
+      {
+        "apiVersion": "databases.spotahome.com/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "RedisFailover",
+        "name": "redis-ports",
+        "uid": ""
+      }
+    ]
+  },
+  "spec": {
+    "ports": [
+      {
+        "name": "redis",
+        "port": 12345,
+        "protocol": "TCP",
+        "targetPort": "redis"
+      }
+    ],
+    "selector": {
+      "app.kubernetes.io/component": "redis",
+      "app.kubernetes.io/name": "redis-ports",
+      "app.kubernetes.io/part-of": "redis-failover",
+      "redisfailovers-role": "master"
+    },
+    "type": "ClusterIP"
+  },
+  "status": {
+    "loadBalancer": {}
+  }
+}

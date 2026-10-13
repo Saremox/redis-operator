@@ -1,0 +1,39 @@
+{
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "redis",
+      "app.kubernetes.io/managed-by": "redis-operator",
+      "app.kubernetes.io/name": "redis-tsc",
+      "app.kubernetes.io/part-of": "redis-failover",
+      "redisfailovers.databases.spotahome.com/name": "redis-tsc"
+    },
+    "name": "rfr-redis-tsc",
+    "namespace": "tsc",
+    "ownerReferences": [
+      {
+        "apiVersion": "databases.spotahome.com/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "RedisFailover",
+        "name": "redis-tsc",
+        "uid": ""
+      }
+    ]
+  },
+  "spec": {
+    "minAvailable": 2,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "redis",
+        "app.kubernetes.io/name": "redis-tsc",
+        "app.kubernetes.io/part-of": "redis-failover"
+      }
+    }
+  },
+  "status": {
+    "currentHealthy": 0,
+    "desiredHealthy": 0,
+    "disruptionsAllowed": 0,
+    "expectedPods": 0
+  }
+}
