@@ -794,6 +794,10 @@ func (l recordingLogger) Infof(format string, args ...interface{}) {
 	l.logs.add("info: " + l.fields + fmt.Sprintf(format, args...))
 }
 
+func (l recordingLogger) Warningf(format string, args ...interface{}) {
+	l.logs.add("warning: " + l.fields + fmt.Sprintf(format, args...))
+}
+
 type errorHandler struct{ err error }
 
 func (errorHandler) Forget(string) {}
@@ -862,8 +866,7 @@ func TestRFControllerProcessTurnsAPanicIntoAnError(t *testing.T) {
 	require.NoError(t, c.rfInformer.GetIndexer().Add(&redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "bad", Namespace: "ns"}}))
 
 	assert.Error(t, c.process(context.Background(), "ns/bad"))
-	assert.Contains(t, logs.text(), "object-key=ns/bad")
-	assert.Contains(t, logs.text(), "boom")
+	assert.Contains(t, logs.text(), "object-key=ns/bad redisfailover=bad namespace=ns panic on object processing: boom")
 	assert.Contains(t, logs.text(), "panickingHandler")
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 	mRFService "github.com/saremox/redis-operator/mocks/operator/redisfailover/service"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
+	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
 // podFieldLogger records the Info, Warning and Error lines with the level and
@@ -99,4 +100,71 @@ func TestNoMasterWithoutSentinelQuorumLogsTheError(t *testing.T) {
 
 	assert.EqualError(t, handler.CheckAndHeal(rf), "stop here")
 	assert.Contains(t, logger.warnings, "Quorum not available for sentinel to choose master, estimated unhealthy sentinels: 2, operator to step in: insufficient sentinels to reach the quorum")
+}
+
+// The pod field of a replica with a wrong master comes from the typed error,
+// not from the error text.
+func TestSlaveNotAssociatedToMasterLogsThePod(t *testing.T) {
+	const master = "10.0.0.1"
+	wrong := &rfservice.WrongMasterError{Pod: "rfr-1", IP: "10.0.0.2", Master: master, Has: "10.0.0.9"}
+	tests := []struct {
+		name     string
+		sentinel bool
+		err      error
+		expLine  string
+	}{
+		{
+			name:     "Sentinel mode",
+			sentinel: true,
+			err:      wrong,
+			expLine:  "warning: redisfailover=test namespace=testns pod=rfr-1 Slave not associated to master: slave 10.0.0.2 (pod rfr-1) don't have the master 10.0.0.1, has 10.0.0.9",
+		},
+		{
+			name:    "operator-managed mode",
+			err:     wrong,
+			expLine: "warning: redisfailover=test namespace=testns pod=rfr-1 Slave not associated to master: slave 10.0.0.2 (pod rfr-1) don't have the master 10.0.0.1, has 10.0.0.9",
+		},
+		{
+			name:    "an error without a pod",
+			err:     errors.New("forbidden"),
+			expLine: "warning: redisfailover=test namespace=testns Slave not associated to master: forbidden",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := newCustomConfigTestRF()
+			rf.Spec.Sentinel.Enabled = ptr.To(test.sentinel)
+			mk := noAppliedSecret(&mK8SService.Services{})
+			mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{}, nil)
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+			mrfc.On("IsSentinelRunningQuorum", rf).Maybe().Return(true)
+			mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
+			mrfc.On("CheckMasterHealth", rf).Maybe().Return(true, master, nil)
+			mrfc.On("GetMasterIP", rf).Once().Return(master, nil)
+			mrfc.On("GetMasterIP", rf).Maybe().Return("", errors.New("stop here"))
+			mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(test.err)
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfh.On("SetMasterOnAll", master, rf).Maybe().Return(errors.New("stop here"))
+			logs := &recordedLogs{}
+			handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, recordingLogger{logs: logs})
+
+			assert.EqualError(t, handler.CheckAndHeal(rf), "stop here")
+			assert.Contains(t, logs.lines, test.expLine)
+		})
+	}
+}
+
+func TestGetLabelsLogsTheRedisFailover(t *testing.T) {
+	rf := newCustomConfigTestRF()
+	rf.Spec.LabelWhitelist = []string{"("}
+	logs := &recordedLogs{}
+	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, &mRFService.RedisFailoverHeal{}, &mK8SService.Services{}, metrics.Dummy, recordingLogger{logs: logs})
+
+	handler.getLabels(rf)
+
+	assert.Equal(t, []string{"redisfailover=test namespace=testns Unable to compile label whitelist regex '(', ignoring it."}, logs.lines)
 }

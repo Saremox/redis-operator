@@ -203,7 +203,7 @@ func (r *RedisFailoverHandler) getLabels(rf *redisfailoverv1.RedisFailover) map[
 		for _, regex := range rf.Spec.LabelWhitelist {
 			compiledRegexp, err := regexp.Compile(regex)
 			if err != nil {
-				r.logger.Errorf("Unable to compile label whitelist regex '%s', ignoring it.", regex)
+				r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Errorf("Unable to compile label whitelist regex '%s', ignoring it.", regex)
 				continue
 			}
 			for labelKey, labelValue := range rf.Labels {

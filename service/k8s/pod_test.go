@@ -3,6 +3,7 @@ package k8s_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -172,9 +173,109 @@ type levelLogger struct {
 	levels *[]string
 }
 
-func (l levelLogger) With(string, interface{}) log.Logger { return l }
-func (l levelLogger) Debugf(string, ...interface{})       { *l.levels = append(*l.levels, "debug") }
-func (l levelLogger) Errorf(string, ...interface{})       { *l.levels = append(*l.levels, "error") }
+func (l levelLogger) With(string, interface{}) log.Logger      { return l }
+func (l levelLogger) WithField(string, interface{}) log.Logger { return l }
+func (l levelLogger) Debugf(string, ...interface{})            { *l.levels = append(*l.levels, "debug") }
+func (l levelLogger) Errorf(string, ...interface{})            { *l.levels = append(*l.levels, "error") }
+
+// fieldLogger records each line with the level and the fields in front.
+type fieldLogger struct {
+	log.DummyLogger
+	fields string
+	lines  *[]string
+}
+
+func (l fieldLogger) With(key string, value interface{}) log.Logger { return l.WithField(key, value) }
+
+func (l fieldLogger) WithField(key string, value interface{}) log.Logger {
+	l.fields += fmt.Sprintf("%s=%v ", key, value)
+	return l
+}
+
+func (l fieldLogger) add(level, format string, args ...interface{}) {
+	*l.lines = append(*l.lines, level+": "+l.fields+fmt.Sprintf(format, args...))
+}
+
+func (l fieldLogger) Debugf(format string, args ...interface{}) { l.add("debug", format, args...) }
+func (l fieldLogger) Infof(format string, args ...interface{})  { l.add("info", format, args...) }
+func (l fieldLogger) Errorf(format string, args ...interface{}) { l.add("error", format, args...) }
+
+func TestPodServiceLogsTheNamespaceAndPod(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		call     func(*k8s.PodService) error
+		expLines []string
+	}{
+		{
+			name: "update the labels",
+			call: func(s *k8s.PodService) error {
+				return s.UpdatePodLabels("testns", "testpod", map[string]string{"role": "master"})
+			},
+			expLines: []string{"info: service=k8s.pod namespace=testns pod=testpod Update pod label, labels: map[role:master]"},
+		},
+		{
+			name: "the label update fails",
+			err:  errors.New("forbidden"),
+			call: func(s *k8s.PodService) error {
+				return s.UpdatePodLabels("testns", "testpod", map[string]string{"role": "master"})
+			},
+			expLines: []string{
+				"info: service=k8s.pod namespace=testns pod=testpod Update pod label, labels: map[role:master]",
+				"error: service=k8s.pod namespace=testns pod=testpod Update pod labels failed: forbidden",
+			},
+		},
+		{
+			name: "the pod of the label update is gone",
+			err:  kubeerrors.NewNotFound(podsGroup.GroupResource(), "testpod"),
+			call: func(s *k8s.PodService) error {
+				return s.UpdatePodLabels("testns", "testpod", map[string]string{"role": "master"})
+			},
+			expLines: []string{
+				"info: service=k8s.pod namespace=testns pod=testpod Update pod label, labels: map[role:master]",
+				`debug: service=k8s.pod namespace=testns pod=testpod Update pod labels failed: pods "testpod" not found`,
+			},
+		},
+		{
+			name: "the annotation update fails",
+			err:  errors.New("forbidden"),
+			call: func(s *k8s.PodService) error {
+				return s.UpdatePodAnnotations("testns", "testpod", map[string]string{"a": "b"})
+			},
+			expLines: []string{
+				"info: service=k8s.pod namespace=testns pod=testpod Update pod annotations, annotations: map[a:b]",
+				"error: service=k8s.pod namespace=testns pod=testpod Update pod annotations failed: forbidden",
+			},
+		},
+		{
+			name: "the annotation removal fails",
+			err:  errors.New("forbidden"),
+			call: func(s *k8s.PodService) error {
+				return s.RemovePodAnnotation("testns", "testpod", "a")
+			},
+			expLines: []string{
+				"info: service=k8s.pod namespace=testns pod=testpod Remove pod annotation, annotation: a",
+				"error: service=k8s.pod namespace=testns pod=testpod Remove pod annotation failed: forbidden",
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mcli := kubernetes.NewClientset(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "testpod", Namespace: "testns"}})
+			if test.err != nil {
+				mcli.PrependReactor("patch", "pods", func(kubetesting.Action) (bool, runtime.Object, error) {
+					return true, nil, test.err
+				})
+			}
+			var lines []string
+			service := k8s.NewPodService(mcli, fieldLogger{lines: &lines}, metrics.Dummy)
+
+			err := test.call(service)
+			assert.Equal(t, test.err, err)
+			assert.Equal(t, test.expLines, lines)
+		})
+	}
+}
 
 // A reconcile can read a pod just before its deletion, so a missing pod is
 // not a fault.

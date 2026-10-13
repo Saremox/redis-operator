@@ -320,7 +320,8 @@ func (c *rfController) processNext(ctx context.Context) bool {
 func (c *rfController) process(ctx context.Context, key string) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			c.logger.WithField("object-key", key).Errorf("panic on object processing: %v\n%s", r, debug.Stack())
+			namespace, name, _ := cache.SplitMetaNamespaceKey(key)
+			c.logger.WithField("object-key", key).WithField("redisfailover", name).WithField("namespace", namespace).Errorf("panic on object processing: %v\n%s", r, debug.Stack())
 			err = errors.New("panic on object processing")
 		}
 	}()
