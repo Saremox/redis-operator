@@ -261,7 +261,7 @@ func TestInvalidData(t *testing.T) {
 func TestBootstrap(t *testing.T) {
 	c, err := Parse([]byte(`
 instances:
-  - {name: src, namespace: src, data: {fill: {}, ledger: {}}, mutations: {kinds: {kill_master_force: 1, password_rotate: 1, auth_add: 1, auth_remove: 1, password_rotate_offline: 1, sentinel_toggle: 1}}}
+  - {name: src, namespace: src, data: {fill: {}, ledger: {}}, mutations: {kinds: {kill_master_force: 1, password_rotate: 1, auth_add: 1, auth_remove: 1, password_rotate_offline: 1, password_rotate_offline_forget: 1, sentinel_toggle: 1}}}
   - name: boot
     bootstrap: {source: src}
     mutations: {kinds: {redis_replicas: 1, kill_replica: 1}, redisReplicas: {min: 1, max: 3}}
@@ -272,7 +272,7 @@ instances:
 	if src := c.Instances[0]; src.AuthSecret() != "src-auth" || src.Namespace != "src" || c.Instances[1].Namespace != DefaultNamespace {
 		t.Errorf("instance defaults: %+v", c.Instances)
 	}
-	if !Exclusive(PasswordRotateOffline) || Exclusive(PasswordRotate) {
+	if !Exclusive(PasswordRotateOffline) || !Exclusive(PasswordRotateOfflineForget) || Exclusive(PasswordRotate) {
 		t.Error("exclusive kinds")
 	}
 

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -22,27 +23,34 @@ const passwordNotApplied = "unable to apply the configured password"
 // stops the operator.
 const operatorStopped = "operator stopped"
 
-// offline is scenario C: the password changes while the operator is stopped,
-// so the restarted operator cannot apply it. The documented recovery is to set
-// the previous password again, wait for Healthy, and change the password
-// again.
+// appliedPrefix is the name prefix of the Secret in which the operator keeps
+// the passwords of the redis pods across restarts.
+const appliedPrefix = "rfr-auth-applied-"
+
+// offline is scenario C: the password changes while the operator is stopped.
+// The restarted operator applies it with the password it kept in the Secret
+// appliedPrefix+name. With forget, the tester deletes this Secret, so the
+// operator cannot apply the password. The documented recovery is to set the
+// previous password again, wait for Healthy, and change the password again.
 type offline struct {
 	secret string
 	// previous is the password before; first is the one the stopped
 	// operator misses, second the one changed to after the recovery.
 	previous, first, second string
+	forget                  bool
+	// phases counts the phases that ran.
+	phases int
 }
 
-// rotateOffline runs scenario C up to the second change, whose convergence is
+// rotateOffline runs scenario C up to the last change, whose convergence is
 // the convergence of the mutation. The mutations of all other instances wait,
 // and all instances are in a window while the operator is stopped.
 func (m *Mutator) rotateOffline(ctx context.Context, o *offline, log *slog.Logger) (err error) {
-	n := 0
 	phase := func(name string, f func() error) error {
-		n++
+		o.phases++
 		start := time.Now()
 		err := f()
-		l := log.With("phase", n, "phase_name", name, "duration_seconds", time.Since(start).Seconds())
+		l := log.With("phase", o.phases, "phase_name", name, "duration_seconds", time.Since(start).Seconds())
 		if err != nil {
 			l.Warn("scenario phase failed", "error", err.Error())
 		} else {
@@ -75,11 +83,19 @@ func (m *Mutator) rotateOffline(ctx context.Context, o *offline, log *slog.Logge
 	if err := phase("rotate the password", func() error { return m.setPassword(ctx, o.secret, o.first) }); err != nil {
 		return err
 	}
+	if o.forget {
+		if err := phase("delete the applied passwords", func() error { return m.deleteApplied(ctx) }); err != nil {
+			return err
+		}
+	}
 	if err := phase("start the operator", func() error { return m.scaleOperator(ctx, replicas) }); err != nil {
 		return err
 	}
 	running = true
 	m.lock.Disturb("")
+	if !o.forget {
+		return nil
+	}
 
 	var failed error
 	if err := phase("expect "+passwordNotApplied, func() error {
@@ -106,16 +122,26 @@ func (m *Mutator) rotateOffline(ctx context.Context, o *offline, log *slog.Logge
 	return failed
 }
 
-// restorePassword sets the previous password again after a rotation that
+// deleteApplied deletes the Secret with the applied passwords. An operator
+// without this Secret does not create it, so a missing Secret is the goal.
+func (m *Mutator) deleteApplied(ctx context.Context) error {
+	err := m.kube.CoreV1().Secrets(m.in.Namespace).Delete(ctx, appliedPrefix+m.in.Name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// restorePassword puts the previous password back after a mutation that
 // timed out with passwordNotApplied, as the operator error asks. A stuck
 // instance hides every other signal of the run. It waits for timeout in a
 // window of its own, and reports whether the instance converged.
-func (m *Mutator) restorePassword(ctx context.Context, previous *secretChange, timeout time.Duration, log *slog.Logger) (restored, ok bool) {
+func (m *Mutator) restorePassword(ctx context.Context, previous *restore, timeout time.Duration, log *slog.Logger) (restored, ok bool) {
 	rf, err := m.rfs.DatabasesV1().RedisFailovers(m.in.Namespace).Get(ctx, m.in.Name, metav1.GetOptions{})
 	if err != nil || previous.password == "" || rf.Status.State != redisfailoverv1.NotHealthyState || rf.Status.Message != passwordNotApplied {
 		return false, ctx.Err() == nil
 	}
-	log.Warn("rotation timed out, the tester sets the previous password again", "first_result", resultTimeout, "status_message", rf.Status.Message)
+	log.Warn("mutation timed out, the tester sets the previous password again", "first_result", resultTimeout, "status_message", rf.Status.Message)
 	h := m.hold(timeout, func(ctx context.Context) error {
 		s, err := m.fetch(ctx, fetchOpts{password: &previous.password})
 		if err != nil {
@@ -123,7 +149,12 @@ func (m *Mutator) restorePassword(ctx context.Context, previous *secretChange, t
 		}
 		return acceptedAndHealthy(s)
 	})
-	if err := m.setPassword(ctx, previous.name, previous.password); err != nil {
+	if previous.patch != nil {
+		err = m.patch(ctx, previous.patch)
+	} else {
+		err = m.setPassword(ctx, previous.name, previous.password)
+	}
+	if err != nil {
 		log.Warn("previous password not set", "error", err.Error())
 	}
 	h.Applied()

@@ -59,15 +59,24 @@ func TestAuthPlans(t *testing.T) {
 		t.Errorf("auth_add: %s %+v", p.patch, p)
 	}
 
+	// The operator applies the password that it missed, with the password it
+	// kept.
 	p = planFor(t, config.PasswordRotateOffline, m, authState(), "rfr-x-0")
 	o := p.offline
-	if o == nil || o.secret != "x-auth" || o.previous != "old" || o.first == "" || o.second == "" ||
-		o.first == o.second || o.first == "old" || *p.fetch.password != o.second || p.secret != nil || p.patch != nil {
+	if o == nil || o.secret != "x-auth" || o.previous != "old" || o.first == "" || o.first == "old" || o.second != "" ||
+		o.forget || *p.fetch.password != o.first || p.secret != nil || p.patch != nil {
 		t.Errorf("password_rotate_offline: %+v %+v", p, o)
 	}
 
+	p = planFor(t, config.PasswordRotateOfflineForget, m, authState(), "rfr-x-0")
+	o = p.offline
+	if o == nil || o.secret != "x-auth" || o.previous != "old" || o.first == "" || o.second == "" || !o.forget ||
+		o.first == o.second || o.first == "old" || *p.fetch.password != o.second || p.secret != nil || p.patch != nil {
+		t.Errorf("password_rotate_offline_forget: %+v %+v", p, o)
+	}
+
 	// Passwords never show in what is logged.
-	for _, k := range []config.Kind{config.PasswordRotate, config.AuthRemove, config.PasswordRotateOffline} {
+	for _, k := range []config.Kind{config.PasswordRotate, config.AuthRemove, config.PasswordRotateOffline, config.PasswordRotateOfflineForget} {
 		p := planFor(t, k, m, authState(), "rfr-x-0")
 		for _, pw := range []string{"old", *p.fetch.password} {
 			if pw != "" && strings.Contains(p.params, pw) {
@@ -79,7 +88,7 @@ func TestAuthPlans(t *testing.T) {
 	for _, c := range []struct {
 		kind config.Kind
 		s    state
-	}{{config.AuthAdd, authState()}, {config.AuthRemove, off}, {config.PasswordRotate, off}, {config.PasswordRotateOffline, off}} {
+	}{{config.AuthAdd, authState()}, {config.AuthRemove, off}, {config.PasswordRotate, off}, {config.PasswordRotateOffline, off}, {config.PasswordRotateOfflineForget, off}} {
 		if p := planFor(t, c.kind, m, c.s, "rfr-x-0"); p.skip == "" {
 			t.Errorf("%s not skipped: %+v", c.kind, p)
 		}

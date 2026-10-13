@@ -40,9 +40,9 @@ const (
 	resultTimeout   = "timeout"
 	resultRejected  = "rejected"
 	resultSkipped   = "skipped"
-	// resultStuckRestored is a password rotation that timed out, because the
+	// resultStuckRestored is an auth mutation that timed out, because the
 	// operator could not apply the password. It converged after the tester
-	// set the previous password again.
+	// put the previous password back.
 	resultStuckRestored = "stuck_restored"
 )
 
@@ -171,7 +171,7 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		for _, r := range []string{resultConverged, resultTimeout, resultRejected, resultSkipped} {
 			mu.total.WithLabelValues(string(k), r)
 		}
-		if k == config.PasswordRotate {
+		if restores(k) {
 			mu.total.WithLabelValues(string(k), resultStuckRestored)
 		}
 	}
@@ -397,7 +397,7 @@ func (m *Mutator) execute(ctx context.Context, step int, s state, p plan, log *s
 		result = resultConverged
 		m.converge.WithLabelValues(string(kind)).Observe(d.Seconds())
 		if p.offline != nil {
-			log.Info("scenario phase done", "phase", 8, "phase_name", "expect the rotation to converge",
+			log.Info("scenario phase done", "phase", p.offline.phases+1, "phase_name", "expect the rotation to converge",
 				"duration_seconds", time.Since(appliedAt).Seconds())
 		}
 	case restored:
@@ -438,6 +438,11 @@ func (m *Mutator) execute(ctx context.Context, step int, s state, p plan, log *s
 	return ""
 }
 
+// restores reports whether planAuth can plan a restore for a kind.
+func restores(k config.Kind) bool {
+	return k == config.PasswordRotate || k == config.AuthRemove || k == config.PasswordRotateOffline
+}
+
 // judged reports whether judge counts a version change in place of its
 // mutation result. A change that can fail does not converge by design, so it
 // is not a timeout.
@@ -474,7 +479,7 @@ func (m *Mutator) lossless(p plan, s state) bool {
 	case config.SentinelImageFlip:
 		return true
 	case config.PasswordRotate, config.AuthAdd, config.AuthRemove, config.PasswordRotateOffline,
-		config.SentinelToggle:
+		config.PasswordRotateOfflineForget, config.SentinelToggle:
 		return waits
 	case config.KillMaster, config.RedisReplicas:
 		return volumes && waits
@@ -604,15 +609,20 @@ func (m *Mutator) apply(ctx context.Context, p plan, log *slog.Logger) error {
 	case p.action != nil:
 		return p.action(ctx)
 	case p.patch != nil:
-		rf, err := m.rfs.DatabasesV1().RedisFailovers(m.in.Namespace).Patch(ctx, m.in.Name, types.MergePatchType, p.patch, metav1.PatchOptions{})
-		if err == nil {
-			m.auth.Update(rf)
-		}
-		return err
+		return m.patch(ctx, p.patch)
 	case p.pod != "":
 		return m.deletePod(ctx, p.pod, p.uid, p.force)
 	}
 	return nil
+}
+
+// patch applies a JSON merge patch to the RedisFailover.
+func (m *Mutator) patch(ctx context.Context, body []byte) error {
+	rf, err := m.rfs.DatabasesV1().RedisFailovers(m.in.Namespace).Patch(ctx, m.in.Name, types.MergePatchType, body, metav1.PatchOptions{})
+	if err == nil {
+		m.auth.Update(rf)
+	}
+	return err
 }
 
 // deletePod deletes the pod if it is still the pod with this UID.

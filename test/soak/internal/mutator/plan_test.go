@@ -364,6 +364,8 @@ func TestLosslessByServer(t *testing.T) {
 		{"redis:6.2.24-alpine", plan{kind: config.AuthAdd}, false},
 		{"redis:6.2.24-alpine", plan{kind: config.AuthRemove}, false},
 		{"redis:6.2.24-alpine", plan{kind: config.PasswordRotateOffline}, false},
+		{"redis:6.2.24-alpine", plan{kind: config.PasswordRotateOfflineForget}, false},
+		{"redis:7.2.16-alpine", plan{kind: config.PasswordRotateOfflineForget}, true},
 		{"redis:6.2.24-alpine", plan{kind: config.SentinelToggle}, false},
 		{"redis:6.2.24-alpine", plan{kind: config.KillMaster}, false},
 		{"redis:6.2.24-alpine", plan{kind: config.RedisReplicas}, false},

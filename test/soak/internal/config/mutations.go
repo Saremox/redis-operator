@@ -30,6 +30,10 @@ const (
 	// PasswordRotateOffline is scenario C: the password changes while the
 	// operator is stopped.
 	PasswordRotateOffline Kind = "password_rotate_offline"
+	// PasswordRotateOfflineForget is scenario C without the Secret that keeps
+	// the applied passwords, so the operator does not know the password of
+	// the pods.
+	PasswordRotateOfflineForget Kind = "password_rotate_offline_forget"
 	// ImageUpgrade follows an edge of the transition graph with the redis
 	// image, and the Sentinel image where it follows; at the end of the
 	// chain it resets instead.
@@ -58,7 +62,7 @@ const (
 var kinds = []Kind{
 	RedisReplicas, SentinelReplicas, RedisResources, KillMaster, KillMasterForce, KillReplica, KillSentinel,
 	RedisMemory, MaxMemoryPolicy, MaxMemoryPercent, FillBurst,
-	PasswordRotate, AuthAdd, AuthRemove, SentinelToggle, PasswordRotateOffline,
+	PasswordRotate, AuthAdd, AuthRemove, SentinelToggle, PasswordRotateOffline, PasswordRotateOfflineForget,
 	ImageUpgrade, SentinelImageUpgrade, Reset, SentinelImageFlip, SentinelResetKillMaster,
 }
 
@@ -69,7 +73,7 @@ var bootstrapKinds = []Kind{RedisReplicas, RedisResources, KillReplica}
 // Exclusive reports whether a kind affects every instance, so no other
 // mutation may run meanwhile.
 func Exclusive(k Kind) bool {
-	return k == PasswordRotateOffline
+	return k == PasswordRotateOffline || k == PasswordRotateOfflineForget
 }
 
 func maxMemoryOnly(k Kind) bool {

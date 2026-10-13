@@ -160,7 +160,7 @@ func TestStuckRotationRestored(t *testing.T) {
 	if got := r.results(t, config.PasswordRotate); !maps.Equal(got, want) {
 		t.Errorf("results %v, want %v", got, want)
 	}
-	if line := r.logged("rotation timed out, the tester sets the previous password again"); !strings.Contains(line, `"first_result":"timeout"`) ||
+	if line := r.logged("mutation timed out, the tester sets the previous password again"); !strings.Contains(line, `"first_result":"timeout"`) ||
 		strings.Contains(line, `"result":`) || !strings.Contains(line, `"status_message":"`+passwordNotApplied+`"`) {
 		t.Errorf("the timeout log line is %q", line)
 	}
@@ -238,37 +238,92 @@ func TestRotationNotStuck(t *testing.T) {
 	}
 }
 
-// Only password_rotate sets the previous password again. Scenario C does so
-// itself, and the other auth kinds change more than the password.
-func TestRestoreOnlyForRotation(t *testing.T) {
+// password_rotate and password_rotate_offline write the previous password to
+// the Secret. password_rotate_offline_forget puts it back itself, and auth_add
+// has no previous password. restores agrees with the plans.
+func TestRestoreKinds(t *testing.T) {
 	m := mutations()
-	p := planFor(t, config.PasswordRotate, m, authState(), "rfr-x-0")
-	if p.restore == nil || p.restore.name != "x-auth" || p.restore.password != "old" {
-		t.Errorf("password_rotate restores %+v", p.restore)
+	for _, k := range []config.Kind{config.PasswordRotate, config.PasswordRotateOffline} {
+		p := planFor(t, k, m, authState(), "rfr-x-0")
+		if p.restore == nil || p.restore.name != "x-auth" || p.restore.password != "old" || p.restore.patch != nil {
+			t.Errorf("%s restores %+v", k, p.restore)
+		}
 	}
 	off := authState()
 	off.rf.Spec.Auth.SecretPath = ""
 	for _, c := range []struct {
 		kind config.Kind
 		s    state
-	}{{config.PasswordRotateOffline, authState()}, {config.AuthRemove, authState()}, {config.AuthAdd, off}} {
+	}{{config.PasswordRotateOfflineForget, authState()}, {config.AuthAdd, off}} {
 		if p := planFor(t, c.kind, m, c.s, "rfr-x-0"); p.restore != nil {
 			t.Errorf("%s restores %+v", c.kind, p.restore)
 		}
 	}
+	for _, c := range []struct {
+		kind config.Kind
+		s    state
+	}{
+		{config.PasswordRotate, authState()}, {config.AuthRemove, authState()}, {config.PasswordRotateOffline, authState()},
+		{config.PasswordRotateOfflineForget, authState()}, {config.AuthAdd, off},
+	} {
+		if p := planFor(t, c.kind, m, c.s, "rfr-x-0"); (p.restore != nil) != restores(c.kind) {
+			t.Errorf("%s: restore %+v, restores %t", c.kind, p.restore, restores(c.kind))
+		}
+	}
+}
 
+// auth_remove puts auth.secretPath back. The Secret still has the previous
+// password, because auth_remove does not change it.
+func TestPlanAuthRemoveRestoresSecretPath(t *testing.T) {
+	p := planFor(t, config.AuthRemove, mutations(), authState(), "rfr-x-0")
+	if p.restore == nil || p.restore.name != "x-auth" || p.restore.password != "old" ||
+		string(p.restore.patch) != `{"spec":{"auth":{"secretPath":"x-auth"}}}` {
+		t.Errorf("auth_remove restores %+v", p.restore)
+	}
+}
+
+func TestPlanAuthRemoveWithoutKnownPasswordHasNoRestore(t *testing.T) {
+	unknown := authState()
+	unknown.password = ""
+	if p := planFor(t, config.AuthRemove, mutations(), unknown, "rfr-x-0"); p.skip != "" || p.patch == nil || p.restore != nil {
+		t.Errorf("auth_remove: %+v", p)
+	}
+}
+
+// A stuck auth_remove ends with auth.secretPath set again, and the Secret
+// keeps the previous password.
+func TestRestoreAuthRemovePatchesSecretPathBack(t *testing.T) {
 	r := newRotation(t, stuck, false, true)
 	r.run(t, config.AuthRemove)
-	if len(r.windows) != 1 {
-		t.Errorf("auth_remove opened %d windows, want 1", len(r.windows))
+	if len(r.windows) != 2 {
+		t.Fatalf("%d windows, want 2", len(r.windows))
+	}
+	rf, err := r.rfs.DatabasesV1().RedisFailovers("ns").Get(context.Background(), "x", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rf.Spec.Auth.SecretPath != "x-auth" {
+		t.Errorf("auth.secretPath %q, want x-auth", rf.Spec.Auth.SecretPath)
+	}
+	if got := r.password(); got != "old" {
+		t.Errorf("the Secret has %q, want old", got)
+	}
+	want := map[string]float64{resultConverged: 0, resultTimeout: 0, resultStuckRestored: 1, resultRejected: 0}
+	if got := r.results(t, config.AuthRemove); !maps.Equal(got, want) {
+		t.Errorf("results %v, want %v", got, want)
 	}
 }
 
 // The timeout alert uses increase(), which does not see a series that starts
-// at 1. So New creates the stuck_restored series of password_rotate only.
+// at 1. So New creates the stuck_restored series of each kind with a restore.
 func TestNewCreatesStuckRestoredSeries(t *testing.T) {
 	r := newRotation(t, stuck)
-	ch := make(chan prometheus.Metric, 32)
+	r.m = New(config.Instance{Name: "x", Namespace: "ns", Mode: config.ModeSentinel, Mutations: config.Mutations{Kinds: map[config.Kind]int{
+		config.PasswordRotate: 1, config.AuthRemove: 1, config.AuthAdd: 1, config.PasswordRotateOffline: 1,
+		config.PasswordRotateOfflineForget: 1, config.KillMaster: 1,
+	}}}, &config.Config{}, r.kube, r.rfs, nil, nil, nil, &global.Lock{}, nil,
+		metrics.New(prometheus.NewRegistry(), time.Minute), slog.New(slog.DiscardHandler))
+	ch := make(chan prometheus.Metric, 64)
 	r.m.total.Collect(ch)
 	close(ch)
 	var got []string
@@ -285,7 +340,8 @@ func TestNewCreatesStuckRestoredSeries(t *testing.T) {
 			got = append(got, labels["kind"])
 		}
 	}
-	if want := []string{string(config.PasswordRotate)}; !slices.Equal(got, want) {
+	slices.Sort(got)
+	if want := []string{string(config.AuthRemove), string(config.PasswordRotate), string(config.PasswordRotateOffline)}; !slices.Equal(got, want) {
 		t.Errorf("stuck_restored series of %v, want %v", got, want)
 	}
 }
@@ -409,7 +465,7 @@ func TestNoRestoreWithoutPreviousPassword(t *testing.T) {
 	}
 
 	r := newRotation(t, stuck)
-	restored, ok := r.m.restorePassword(r.ctx, &secretChange{name: "x-auth"}, time.Minute, r.m.log)
+	restored, ok := r.m.restorePassword(r.ctx, &restore{secretChange: secretChange{name: "x-auth"}}, time.Minute, r.m.log)
 	if restored || !ok || len(r.windows) != 0 {
 		t.Errorf("restored %t, ok %t, %d windows, want no restore", restored, ok, len(r.windows))
 	}
