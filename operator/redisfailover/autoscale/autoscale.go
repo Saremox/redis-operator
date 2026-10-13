@@ -247,7 +247,8 @@ func Observe(s State, in Input) State {
 
 // Report returns the status view of the state for the current limit and
 // memoryMax. The user can change both after the recommendation. The status
-// never shows a value above memoryMax, or a value that the limit has.
+// never shows a value above memoryMax, a value that the limit has, or a step
+// from a higher limit.
 func Report(s State, limit, maxLimit int64) redisfailoverv1.AutoscalingStatus {
 	st := redisfailoverv1.AutoscalingStatus{
 		Workload:    s.Workload,
@@ -260,13 +261,18 @@ func Report(s State, limit, maxLimit int64) redisfailoverv1.AutoscalingStatus {
 	if s.EvaluatedAt != 0 {
 		st.EvaluatedAt = time.Unix(s.EvaluatedAt, 0).UTC().Truncate(time.Minute).Format(time.RFC3339)
 	}
-	shown := min(s.Recommended, maxLimit)
+	recommended := s.Recommended
+	if s.Limit != 0 && limit < s.Limit {
+		// Observe clears a step from a higher limit only at the next sample.
+		recommended = 0
+	}
+	shown := min(recommended, maxLimit)
 	switch {
 	case shown > limit:
 		st.RecommendedMemory = formatQuantity(shown)
-	case s.Recommended != 0 && limit >= maxLimit:
+	case recommended != 0 && limit >= maxLimit:
 		st.Reason = ReasonMaximum
-	case s.Recommended != 0:
+	case recommended != 0:
 		st.Reason = ReasonStepIsActive
 	}
 	return st

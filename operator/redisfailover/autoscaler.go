@@ -24,6 +24,9 @@ var errForeignState = errors.New("the state ConfigMap is not controlled by the R
 type autoscaleSample struct {
 	at    time.Time
 	ratio float64
+	// state is the state after the sample. It is newer than the ConfigMap
+	// when the write failed or was not necessary.
+	state autoscale.State
 }
 
 // autoscale runs the memory autoscaler after the checks and sets
@@ -72,13 +75,15 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 	} else {
 		last.ratio = stored.Window.PeakRatio
 	}
+	// While the writes fail, each sample must continue from the last sample
+	// and not from the stored state, or the status changes at each reconcile.
+	state := stored
+	if last.state.LastSample != 0 && last.state.LastSample >= stored.LastSample {
+		state = last.state
+	}
 	// A leftover state, for example of a mode change to Off that the status
-	// did not show, must not give a recommendation of an earlier time. A
-	// failed write keeps an earlier LastSample, but this operator sampled the
-	// state, so it is not a leftover.
-	seen := stored
-	seen.LastSample = max(seen.LastSample, last.at.Unix())
-	state := autoscale.Expire(seen, now)
+	// did not show, must not give a recommendation of an earlier time.
+	state = autoscale.Expire(state, now)
 	var errs []error
 	// The persisted time limits the samples after an operator restart. It is
 	// written only with other changes, so the time in memory is necessary too.
@@ -99,7 +104,7 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 			in.Info = info
 		}
 		state = autoscale.Observe(state, in)
-		last.at = now
+		last.at, last.state = now, state
 		if in.Info != nil {
 			last.ratio = autoscale.UsedRatio(in.Info, limit)
 		}

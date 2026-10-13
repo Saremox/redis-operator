@@ -40,9 +40,23 @@ func TestGeneratedObjectsGolden(t *testing.T) {
 	files, err := filepath.Glob("../../example/redisfailover/*.yaml")
 	require.NoError(t, err)
 	require.NotEmpty(t, files)
-
+	var examples []string
 	for _, f := range files {
-		example := strings.TrimSuffix(filepath.Base(f), ".yaml")
+		examples = append(examples, strings.TrimSuffix(filepath.Base(f), ".yaml"))
+	}
+
+	stale, err := staleGoldenDirs(goldenDir, examples)
+	require.NoError(t, err)
+	if *updateGolden {
+		for _, dir := range stale {
+			require.NoError(t, os.RemoveAll(filepath.Join(goldenDir, dir)))
+		}
+	} else {
+		assert.Empty(t, stale, "golden files of removed examples, run the test with -update")
+	}
+
+	for i, f := range files {
+		example := examples[i]
 		t.Run(example, func(t *testing.T) {
 			got := ensuredObjects(t, exampleRedisFailover(t, f))
 			dir := filepath.Join(goldenDir, example)
@@ -75,8 +89,37 @@ func TestGeneratedObjectsGolden(t *testing.T) {
 	}
 }
 
-// exampleRedisFailover decodes the RedisFailover of an example file, as the
-// API server stores it, and applies the defaults of Validate.
+// staleGoldenDirs returns the golden directories without an example.
+func staleGoldenDirs(dir string, examples []string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var stale []string
+	for _, e := range entries {
+		if !slices.Contains(examples, e.Name()) {
+			stale = append(stale, e.Name())
+		}
+	}
+	return stale, nil
+}
+
+func TestStaleGoldenDirs(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"basic", "removed"} {
+		require.NoError(t, os.Mkdir(filepath.Join(dir, name), 0o755))
+	}
+	stale, err := staleGoldenDirs(dir, []string{"basic", "minimum"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"removed"}, stale)
+
+	_, err = staleGoldenDirs(filepath.Join(dir, "missing"), nil)
+	assert.Error(t, err)
+}
+
+// exampleRedisFailover decodes the RedisFailover of an example file with
+// unknown fields refused, and applies the defaults of Validate. It does not
+// apply the defaults of the CRD schema.
 func exampleRedisFailover(t *testing.T, file string) *redisfailoverv1.RedisFailover {
 	t.Helper()
 	data, err := os.ReadFile(file)

@@ -518,6 +518,19 @@ func TestObserveALoweredLimitClearsTheRecommendation(t *testing.T) {
 	}, Report(s, in.Limit, in.Max))
 }
 
+// A reconcile without a sample reports the state of the last sample. The
+// status must not show the step from a limit that the user lowered since.
+func TestReportHidesAStepFromAHigherLimit(t *testing.T) {
+	s := Observe(known(), input(0, master(990)))
+	require.Equal(t, gi, s.Limit)
+
+	st := Report(s, 512*mi, 4*gi)
+
+	assert.Empty(t, st.RecommendedMemory)
+	assert.Equal(t, ReasonUrgent, st.Reason)
+	assert.Equal(t, "1280Mi", Report(s, 1100*mi, 4*gi).RecommendedMemory, "a raised limit keeps the step")
+}
+
 // After the clock went back, the open window must end one WindowLength after
 // its first sample on the clock that the operator reads now.
 func TestObserveAfterTheClockWentBack(t *testing.T) {

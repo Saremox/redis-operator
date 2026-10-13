@@ -2,11 +2,13 @@ package v1
 
 import (
 	"encoding/json"
-	"math"
+	"math/rand/v2"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -150,10 +152,10 @@ func TestStatusWithoutAutoscaling(t *testing.T) {
 	assert.Equal(t, other, back)
 }
 
-// The API server checks recreateAfter with the pattern of the CRD. The
-// pattern must accept each value that time.ParseDuration accepts and that
-// Duration.String writes, and refuse a value that metav1.Duration cannot parse.
-func TestRecreateAfterPattern(t *testing.T) {
+// recreateAfterSchema returns a check of the CRD pattern and maxLength of
+// recreateAfter, as the API server applies them.
+func recreateAfterSchema(t *testing.T) func(string) bool {
+	t.Helper()
 	data, err := os.ReadFile("../../../manifests/databases.spotahome.com_redisfailovers.yaml")
 	require.NoError(t, err)
 	var crd map[string]any
@@ -164,30 +166,102 @@ func TestRecreateAfterPattern(t *testing.T) {
 	}
 	pattern, _ := node.(map[string]any)["pattern"].(string)
 	require.NotEmpty(t, pattern)
+	maxLength, _ := node.(map[string]any)["maxLength"].(float64)
+	require.NotZero(t, maxLength)
 	re := regexp.MustCompile(pattern)
+	return func(value string) bool {
+		// The API server counts characters, not bytes.
+		return re.MatchString(value) && utf8.RuneCountInString(value) <= int(maxLength)
+	}
+}
 
-	for _, value := range []string{"0", "-0", "0s", "5m", "5m0s", "600s", "1h30m", "1.5h", ".5h", "1.h", "+5m", "300000ms", "300000000µs", "300000000μs", "300000000000ns"} {
+// The API server checks recreateAfter with the schema of the CRD. The schema
+// must accept each value that Validate accepts in a usual notation, and
+// refuse a value that metav1.Duration cannot parse.
+func TestRecreateAfterPattern(t *testing.T) {
+	accepts := recreateAfterSchema(t)
+
+	for _, value := range []string{"0", "-0", "0s", "5m", "5m0s", "600s", "1h30m", "1.5h", ".5h", "1.h", "+5m", "300000ms", "999999h", "999999h59m59s"} {
 		d, err := time.ParseDuration(value)
 		require.NoError(t, err, value)
-		assert.True(t, re.MatchString(value), value)
+		assert.True(t, accepts(value), value)
 		rf := rfWithAutoscaling("", "", &AutoscalingSettings{RecreateAfter: &metav1.Duration{Duration: d}})
 		assert.NoError(t, rf.Validate(), value)
 	}
-	// The pattern checks only the format. Validate refuses a short or a
+	// The schema checks only the format. Validate refuses a short or a
 	// negative wait.
-	for _, value := range []string{"90s", "-5m", "1us"} {
+	for _, value := range []string{"90s", "-5m", "1us", "300000µs", "300000μs"} {
 		d, err := time.ParseDuration(value)
 		require.NoError(t, err, value)
-		assert.True(t, re.MatchString(value), value)
+		assert.True(t, accepts(value), value)
 		rf := rfWithAutoscaling("", "", &AutoscalingSettings{RecreateAfter: &metav1.Duration{Duration: d}})
 		assert.Error(t, rf.Validate(), value)
 	}
-	for _, value := range []string{"5min", "5 m", "", "m", "5", ".", ".s", "00", "5m-1s"} {
+	for _, value := range []string{"5min", "5 m", "", "m", "5", ".", ".s", "00", "5m-1s", "99999999999h", "9223372036854775808ns", "2562048h"} {
 		_, err := time.ParseDuration(value)
 		require.Error(t, err, value)
-		assert.False(t, re.MatchString(value), value)
+		assert.False(t, accepts(value), value)
 	}
-	for _, d := range []time.Duration{0, time.Nanosecond, 1500 * time.Nanosecond, 1500 * time.Millisecond, 5 * time.Minute, 90 * time.Minute, -time.Minute, math.MaxInt64, math.MinInt64} {
-		assert.True(t, re.MatchString(d.String()), d.String())
+	// Valid, but longer than the schema allows.
+	for _, value := range []string{"1000000h", "300000000µs", "999999h999999h99h"} {
+		_, err := time.ParseDuration(value)
+		require.NoError(t, err, value)
+		assert.False(t, accepts(value), value)
 	}
+	// Duration.String of values up to more than 100 years, with a precision
+	// of a millisecond.
+	for _, d := range []time.Duration{0, time.Nanosecond, 1500 * time.Nanosecond, 1500 * time.Millisecond, 5 * time.Minute, 90 * time.Minute, -time.Minute, time.Hour + time.Millisecond, 3 * 365 * 24 * time.Hour, 99999*time.Hour + 59*time.Minute + 59999*time.Millisecond, 999999*time.Hour + 59*time.Minute + 59*time.Second} {
+		assert.True(t, accepts(d.String()), d.String())
+	}
+}
+
+// A value that the schema accepts, but that time.ParseDuration refuses, stops
+// the decode of each list of RedisFailovers. Overflow is the risk.
+func TestRecreateAfterSchemaAcceptsOnlyParsableValues(t *testing.T) {
+	accepts := recreateAfterSchema(t)
+	parses := func(value string) {
+		if accepts(value) {
+			_, err := time.ParseDuration(value)
+			require.NoError(t, err, "the schema accepts %q", value)
+		}
+	}
+	// The largest sums that 16 characters allow.
+	for _, value := range []string{"999999h999999h9h", "999999h999999.9h", "999999.999999h9h", "-999999h999999h9h", "99999h99999h999h"} {
+		parses(value)
+	}
+
+	rng := rand.New(rand.NewPCG(1, 2))
+	alphabet := []string{"0", "1", "5", "9", "9", "9", ".", "+", "-", "n", "s", "u", "µ", "μ", "m", "h", "h"}
+	units := []string{"ns", "us", "µs", "μs", "ms", "s", "m", "h", "h", "h", "x", ""}
+	digits := func(n int) string {
+		var b strings.Builder
+		for range n {
+			b.WriteByte("0123456789999999"[rng.IntN(16)])
+		}
+		return b.String()
+	}
+	accepted := 0
+	for range 300_000 {
+		var b strings.Builder
+		if rng.IntN(2) == 0 {
+			for range 1 + rng.IntN(17) {
+				b.WriteString(alphabet[rng.IntN(len(alphabet))])
+			}
+		} else {
+			b.WriteString([]string{"", "", "+", "-"}[rng.IntN(4)])
+			for range 1 + rng.IntN(4) {
+				b.WriteString(digits(rng.IntN(9)))
+				if rng.IntN(3) == 0 {
+					b.WriteString("." + digits(rng.IntN(9)))
+				}
+				b.WriteString(units[rng.IntN(len(units))])
+			}
+		}
+		value := b.String()
+		if accepts(value) {
+			accepted++
+		}
+		parses(value)
+	}
+	assert.Greater(t, accepted, 10_000)
 }
