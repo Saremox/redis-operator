@@ -720,10 +720,26 @@ Two extra instances, one per mode, ran the chain Redis 6.2, 7.2, 7.4 and 8 and t
 
 All 283 converged, and the ledger found no lost acknowledged write. Only the first step is in the table above. On this chain, an upgrade took 131 s on average (95th percentile 176 s) in operator-managed mode and 166 s (258 s) in Sentinel mode.
 
-The soak test did not test these in-place upgrades:
+An in-place downgrade is a change of `spec.redis.image` to an older server version. The soak test ran downgrades in a separate window of 24 hours, on one instance in operator-managed mode. The instance had 3 Redis pods, a 16 MiB data set and a write ledger.
 
-- Downgrades. An older server cannot load a newer data file.
-- Skipped steps, such as Redis 6.2 to Redis 7.4, Redis 7.2 to Redis 8 or Valkey 7.2 to Valkey 9.
+| From | To | Result | Count (operator-managed mode) |
+|---|---|---|---|
+| Redis 7.4 | Redis 7.2 | fails safe | 46 |
+| Redis 8 | Redis 7.4 | fails safe | 25 |
+| Redis 8 | Redis 7.2 | fails safe | 20 |
+| Valkey 8 | Valkey 7.2 | works | 70 |
+| Valkey 9 | Valkey 8 | works | 23 |
+| Valkey 9 | Valkey 7.2 | works | 22 |
+
+"Works" and "fails safe" have the meanings above. A Redis downgrade fails safe because the older server cannot read the data format of the newer master. The ledger found no lost acknowledged write in the 206 downgrades.
+
+To stop a downgrade that fails safe, set `redis.image` back to the newer image. The operator then replaces the unsynced replica, as [Migrate to Valkey](#migrate-to-valkey) describes.
+
+The soak test did not test these in-place upgrades and downgrades:
+
+- Downgrades to Redis 6.2.
+- Downgrades in Sentinel mode.
+- Skipped steps in an upgrade, such as Redis 6.2 to Redis 7.4, Redis 7.2 to Redis 8 or Valkey 7.2 to Valkey 9.
 - Redis 6.2 to Valkey.
 - Redis 7.4 or Redis 8 to Valkey in Sentinel mode.
 
@@ -741,7 +757,7 @@ The soak test does not cover:
 - Operator-to-operator upgrades.
 - Data sets larger than 16 MiB on the upgrade instances, and more than 5 Redis pods.
 - TLS, which the operator does not support. See [Security notes](#security-notes).
-- Recovery from a fails-safe Redis-to-Valkey change by a revert of the image. The soak test deletes and recreates the instance instead, which loses the data by design. [Migrate to Valkey](#migrate-to-valkey) describes the revert, and the soak test did not test it.
+- Recovery by a revert of the image after a Redis-to-Valkey change or a Redis downgrade that fails safe. The soak test deletes and recreates the instance instead, which loses the data by design. [Migrate to Valkey](#migrate-to-valkey) describes the revert, and the soak test did not test it.
 
 ## Cleanup
 
