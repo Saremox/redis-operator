@@ -12,7 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
@@ -22,6 +24,7 @@ import (
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
+	"github.com/saremox/redis-operator/service/redis"
 )
 
 type logEntry struct {
@@ -81,6 +84,10 @@ func (l recordingLogger) add(level, msg string) {
 
 func (l recordingLogger) Debugf(format string, args ...interface{}) {
 	l.add("debug", fmt.Sprintf(format, args...))
+}
+
+func (l recordingLogger) Info(args ...interface{}) {
+	l.add("info", fmt.Sprint(args...))
 }
 
 func (l recordingLogger) Infof(format string, args ...interface{}) {
@@ -170,18 +177,21 @@ func TestCheckAllSlavesFromMasterLogsEachWrongMasterOnce(t *testing.T) {
 		name    string
 		masters []string
 		expErr  string
+		expPod  string
 		expLogs []string
 	}{
 		{
 			name:    "only new replicas",
 			masters: []string{"127.0.0.1", "127.0.0.1"},
 			expErr:  "slave 10.0.0.2 (pod rfr-1) don't have the master 10.0.0.1, has 127.0.0.1",
+			expPod:  "rfr-1",
 			expLogs: []string{"info rfr-2"},
 		},
 		{
 			name:    "two different masters after a new replica",
 			masters: []string{"127.0.0.1", "10.0.0.9", "10.0.0.8"},
 			expErr:  "slave 10.0.0.3 (pod rfr-2) don't have the master 10.0.0.1, has 10.0.0.9",
+			expPod:  "rfr-2",
 			expLogs: []string{"info rfr-1", "warning rfr-3"},
 		},
 	}
@@ -205,6 +215,10 @@ func TestCheckAllSlavesFromMasterLogsEachWrongMasterOnce(t *testing.T) {
 			err := checker.CheckAllSlavesFromMaster("10.0.0.1", rf)
 
 			assert.EqualError(t, err, test.expErr)
+			// The caller logs the pod as a field.
+			var wrong *rfservice.WrongMasterError
+			require.ErrorAs(t, err, &wrong)
+			assert.Equal(t, test.expPod, wrong.Pod)
 			assert.Equal(t, test.expLogs, levelsAndPods(logs.all()))
 			assertRFFields(t, logs.all())
 		})
@@ -547,4 +561,122 @@ func TestGetMasterIPSkipsPodsNotRunningOrTerminating(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "10.0.0.1", master)
 	mr.AssertExpectations(t)
+}
+
+func TestCheckSentinelsCannotFailoverLogContext(t *testing.T) {
+	sentinel := &corev1.PodList{Items: []corev1.Pod{runningPod("rfs-0", "1.1.1.1")}}
+	tests := []struct {
+		name      string
+		sentinels int32
+		monitor   string
+		monErr    error
+		down      bool
+		downErr   error
+		replicas  []string
+		replErr   error
+		expLevel  string
+		expPod    interface{}
+	}{
+		{name: "too few Sentinels run", sentinels: 3, expLevel: "warning"},
+		{name: "the master is unknown", monErr: errors.New("i/o timeout"), expLevel: "warning"},
+		{name: "the master is a pod", monitor: "10.0.0.1", expLevel: "info", expPod: "rfr-0"},
+		{name: "the master state is unknown", monitor: "10.0.0.9", downErr: errors.New("i/o timeout"), expLevel: "warning"},
+		{name: "the master is not down", monitor: "10.0.0.9", expLevel: "info"},
+		{name: "the replicas are unknown", monitor: "127.0.0.1", replErr: errors.New("i/o timeout"), expLevel: "warning"},
+		{name: "a replica is a pod", monitor: "127.0.0.1", replicas: []string{"10.0.0.1"}, expLevel: "info", expPod: "rfr-0"},
+		{name: "no replica is a pod", monitor: "10.0.0.9", down: true, replicas: []string{"10.0.0.8"}, expLevel: "warning"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			rf.Spec.Sentinel.Replicas = max(test.sentinels, 1)
+			ms := &mK8SService.Services{}
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: []corev1.Pod{readyPod("rfr-0", "10.0.0.1")}}, nil)
+			ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(sentinel, nil)
+			mr := &mRedisService.Client{}
+			mr.On("GetSentinelMonitor", "1.1.1.1").Maybe().Return(test.monitor, "6379", test.monErr)
+			mr.On("SentinelMasterDown", "1.1.1.1").Maybe().Return(test.down, test.downErr)
+			mr.On("GetSentinelReplicas", "1.1.1.1").Maybe().Return(test.replicas, test.replErr)
+			logger, logs := newRecordingLogger()
+
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
+			_, err := checker.CheckSentinelsCannotFailover(rf)
+
+			assert.NoError(t, err)
+			entries := logs.all()
+			require.Len(t, entries, 1)
+			assert.Equal(t, test.expLevel, entries[0].level)
+			assert.Equal(t, test.expPod, entries[0].fields["pod"])
+			assertRFFields(t, entries)
+		})
+	}
+}
+
+func TestCheckMasterHealthLogContext(t *testing.T) {
+	rf := generateRF()
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: []corev1.Pod{readyPod("rfr-0", "10.0.0.1")}}, nil)
+	mr := &mRedisService.Client{}
+	mr.On("IsMaster", "10.0.0.1", "0", "").Once().Return(true, nil)
+	mr.On("IsMaster", "10.0.0.1", "0", "").Once().Return(false, errors.New("i/o timeout"))
+	logger, logs := newRecordingLogger()
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
+	healthy, _, err := checker.CheckMasterHealth(rf)
+
+	assert.NoError(t, err)
+	assert.False(t, healthy)
+	entries := logs.all()
+	require.Len(t, entries, 1)
+	assert.Equal(t, "warning", entries[0].level)
+	assert.Equal(t, "10.0.0.1", entries[0].fields["ip"])
+	assertRFFields(t, entries)
+}
+
+func TestGetBestReplicaForPromotionLogContext(t *testing.T) {
+	rf := generateRF()
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: []corev1.Pod{
+		readyPod("rfr-0", "10.0.0.1"),
+		readyPod("rfr-1", "10.0.0.2"),
+	}}, nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetReplicationInfo", "10.0.0.1", "0", "").Once().Return(nil, errors.New("i/o timeout"))
+	mr.On("GetReplicationInfo", "10.0.0.2", "0", "").Once().Return(&redis.ReplicationInfo{Role: "slave", MasterLinkStatus: "up"}, nil)
+	logger, logs := newRecordingLogger()
+
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
+	best, err := checker.GetBestReplicaForPromotion(rf)
+
+	require.NoError(t, err)
+	assert.Equal(t, "rfr-1", best.PodName)
+	entries := logs.all()
+	assertRFFields(t, entries)
+	assert.Equal(t, []string{"warning rfr-0", "info <nil>", "info rfr-1"}, levelsAndPods(entries))
+	assert.Equal(t, "10.0.0.1", entries[0].fields["ip"])
+}
+
+func TestEnsureNotPresentSentinelResourcesLogContext(t *testing.T) {
+	rf := generateOwnedRF()
+	resName := rfservice.GetSentinelName(rf)
+	saName := rfservice.GetSentinelServiceAccountName(rf)
+	ms := &mK8SService.Services{}
+	ms.On("GetDeployment", namespace, resName).Once().Return(&appsv1.Deployment{ObjectMeta: ownedMeta()}, nil)
+	ms.On("DeleteDeployment", namespace, resName).Once().Return(nil)
+	ms.On("GetService", namespace, resName).Once().Return(&corev1.Service{ObjectMeta: ownedMeta()}, nil)
+	ms.On("DeleteService", namespace, resName).Once().Return(nil)
+	ms.On("GetConfigMap", namespace, resName).Once().Return(&corev1.ConfigMap{ObjectMeta: ownedMeta()}, nil)
+	ms.On("DeleteConfigMap", namespace, resName).Once().Return(nil)
+	ms.On("GetPodDisruptionBudget", namespace, resName).Once().Return(&policyv1.PodDisruptionBudget{ObjectMeta: ownedMeta()}, nil)
+	ms.On("DeletePodDisruptionBudget", namespace, resName).Once().Return(nil)
+	ms.On("GetServiceAccount", namespace, saName).Once().Return(&corev1.ServiceAccount{ObjectMeta: ownedMeta()}, nil)
+	ms.On("DeleteServiceAccount", namespace, saName).Once().Return(nil)
+	logger, logs := newRecordingLogger()
+
+	client := rfservice.NewRedisFailoverKubeClient(ms, logger, metrics.Dummy)
+	require.NoError(t, client.EnsureNotPresentSentinelResources(rf))
+
+	entries := logs.all()
+	assert.Len(t, entries, 5)
+	assertRFFields(t, entries)
 }

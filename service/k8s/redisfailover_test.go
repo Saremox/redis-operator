@@ -2,10 +2,12 @@ package k8s_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	kubetesting "k8s.io/client-go/testing"
 
@@ -190,6 +192,24 @@ func TestRedisFailoverServiceUpdateRedisFailoverStatusAutoscaling(t *testing.T) 
 	got, body = patch(redisfailoverv1.AutoscalingStatus{})
 	assert.Zero(t, got)
 	assert.Contains(t, body, `"autoscaling":null`)
+}
+
+func TestRedisFailoverServiceLogsTheRedisFailover(t *testing.T) {
+	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf1", Namespace: "testns"}}
+	crdcli := redisfailoverfake.NewSimpleClientset()
+	crdcli.PrependReactor("patch", "redisfailovers", func(kubetesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("forbidden")
+	})
+	var lines []string
+	service := k8s.NewRedisFailoverService(crdcli, fieldLogger{lines: &lines}, metrics.Dummy)
+
+	service.UpdateRedisFailoverStatus(context.TODO(), "testns", rf, metav1.PatchOptions{})
+	assert.Error(t, service.PatchRedisFailoverFinalizers(context.TODO(), "testns", "rf1", nil, metav1.PatchOptions{}))
+
+	assert.Equal(t, []string{
+		"error: service=k8s.redisfailover redisfailover=rf1 namespace=testns Error while patching RedisFailover status: forbidden",
+		"error: service=k8s.redisfailover redisfailover=rf1 namespace=testns Error while patching RedisFailover finalizers: forbidden",
+	}, lines)
 }
 
 func TestRedisFailoverServicePatchRedisFailoverFinalizers(t *testing.T) {
