@@ -894,11 +894,15 @@ func TestResizePodInPlaceReportsAnAutoscalerRevision(t *testing.T) {
 		"infeasible without autoscaler": {resizeRF(), infeasible, AutoscalerLimits{}, nil, false},
 		// A lower memoryMax is a change of the user, so the pod takes the
 		// user path and is recreated.
-		"memoryMax lowered before 1.35":    {resizeRF(), resizeCase{k8s.PodResizeSupport{Supported: true}, podTemplate(new), podTemplate(resources("1", "1536Mi")), podFrom(podTemplate(new))}, AutoscalerLimits{Spec: 1 << 30, Effective: 1536 << 20}, nil, false},
-		"disabled":                         {disabled, infeasible, effective, nil, true},
-		"unsupported cluster":              {resizeRF(), resizeCase{k8s.PodResizeSupport{}, infeasible.old, infeasible.new, infeasible.pod}, effective, nil, true},
-		"disabled, revision not available": {disabled, infeasible, effective, revisionNotFound("old"), false},
-		"revision not available":           {resizeRF(), infeasible, effective, revisionNotFound("old"), false},
+		"memoryMax lowered before 1.35": {resizeRF(), resizeCase{k8s.PodResizeSupport{Supported: true}, podTemplate(new), podTemplate(resources("1", "1536Mi")), podFrom(podTemplate(new))}, AutoscalerLimits{Spec: 1 << 30, Effective: 1536 << 20}, nil, false},
+		"disabled":                      {disabled, infeasible, effective, nil, true},
+		"unsupported cluster":           {resizeRF(), resizeCase{k8s.PodResizeSupport{}, infeasible.old, infeasible.new, infeasible.pod}, effective, nil, true},
+		// Without the revision, the pod can be on a step of the autoscaler,
+		// so it is not recreated.
+		"disabled, revision not available":          {disabled, infeasible, effective, revisionNotFound("old"), true},
+		"revision not available":                    {resizeRF(), infeasible, effective, revisionNotFound("old"), true},
+		"update revision not available":             {resizeRF(), infeasible, effective, revisionNotFound("new"), true},
+		"revision not available without autoscaler": {resizeRF(), infeasible, AutoscalerLimits{}, revisionNotFound("old"), false},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {

@@ -58,7 +58,8 @@ type ResizeResult struct {
 	// empty.
 	Message string
 	// AutoscalerRevision reports that the update revision is a step of the
-	// memory autoscaler from the pod's revision.
+	// memory autoscaler from the pod's revision, or that a revision cannot be
+	// read while the autoscaler has an effective limit.
 	AutoscalerRevision bool
 }
 
@@ -100,9 +101,9 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 		return ResizeResult{Action: action, Class: class, Message: message, AutoscalerRevision: autoscaler}, nil
 	}
 	recreate := func(class ResizeClass, reason string) (ResizeResult, error) {
-		if autoscaler && class == ResizePermanent {
-			logger.Infof("The resize to the autoscaler revision failed: %s", reason)
-		} else {
+		// The handler logs the refusal of an autoscaler revision, because it
+		// repeats at each reconcile.
+		if !autoscaler || class != ResizePermanent {
 			logger.Infof("Recreating the pod instead of resizing it in place: %s", reason)
 		}
 		return result(ResizeRecreate, class, reason)
@@ -137,6 +138,7 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 		return ResizeResult{}, err
 	}
 	if reason != "" {
+		autoscaler = limits.Effective != 0
 		return recreate(ResizePermanent, reason)
 	}
 	autoscaler = autoscalerRevision(current, update, limits)
@@ -296,7 +298,9 @@ func (r *RedisFailoverHealer) markResizeRequested(rf *redisfailoverv1.RedisFailo
 }
 
 // isAutoscalerRevision reads the revisions for autoscalerRevision. It reads
-// nothing without an effective limit.
+// nothing without an effective limit. With an effective limit, a revision
+// that it cannot read can be a step of the autoscaler, and a recreate of
+// such a pod restarts Redis for a change that no user made.
 func (r *RedisFailoverHealer) isAutoscalerRevision(rf *redisfailoverv1.RedisFailover, podName, updateRevision string, limits AutoscalerLimits) (bool, error) {
 	if limits.Effective == 0 {
 		return false, nil
@@ -306,10 +310,10 @@ func (r *RedisFailoverHealer) isAutoscalerRevision(rf *redisfailoverv1.RedisFail
 		return false, err
 	}
 	current, update, _, err := r.revisionTemplates(rf, pod, updateRevision)
-	if current == nil || err != nil {
+	if err != nil {
 		return false, err
 	}
-	return autoscalerRevision(current, update, limits), nil
+	return current == nil || autoscalerRevision(current, update, limits), nil
 }
 
 // autoscalerRevision reports whether update is a step of the memory
