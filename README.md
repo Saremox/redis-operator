@@ -404,7 +404,9 @@ status:
 
 To apply a recommendation, set the memory request and limit in `redis.resources` to the recommended value. The operator then resizes the pods as for each other change of the resources.
 
-The operator keeps its state in the ConfigMap `rfa-<NAME>`. In a steady state, it writes the ConfigMap about one time in each window. When the mode changes to `Off`, the operator deletes the ConfigMap, also when a newer operator version wrote the state. After its start, the operator also deletes this ConfigMap of a RedisFailover without autoscaling and without `status.autoscaling`. The operator discards a state when its last sample is more than 11 minutes before the current time. Thus a state that stays after `Off` gives no recommendation from an earlier time. Kubernetes deletes the ConfigMap together with the RedisFailover.
+The operator keeps its state in the ConfigMap `rfa-<NAME>`. In a steady state, it writes the ConfigMap about one time in each window. When the mode changes to `Off`, the operator deletes the ConfigMap, also when a newer operator version wrote the state. After its start, the operator also deletes this ConfigMap of a RedisFailover without autoscaling and without `status.autoscaling`.
+
+The operator discards a state when its last sample is more than 11 minutes before the current time. Thus a state that stays after `Off` gives no recommendation from an earlier time. Kubernetes deletes the ConfigMap together with the RedisFailover.
 
 The operator does not change a ConfigMap `rfa-<NAME>` that another object controls. It also does not change a state that a newer operator version wrote. The reason in the status then tells this.
 
@@ -430,6 +432,8 @@ Validation accepts mode `Auto` only with these settings:
 - `memoryMax` is set and not less than the memory limit.
 - `bootstrapNode`, `recreateAfter` and `redis.inPlaceResize: Disabled` are not set.
 
+For a cache, the operator gives no recommendation. Thus mode `Auto` makes no step for the workload `Cache`, or for an `allkeys-*` policy with the workload `Auto`.
+
 The operator also checks these conditions before each step. When one fails, no step starts, and `status.autoscaling.reason` tells why:
 
 - Kubernetes 1.33 or later. In-place resize needs it.
@@ -437,7 +441,7 @@ The operator also checks these conditions before each step. When one fails, no s
 - No pod has an annotation of a VerticalPodAutoscaler (`vpaUpdates` or `vpaObservedContainers`). Do not use a VerticalPodAutoscaler for the redis pods.
 - The rollout is complete, each replica is in sync, and the RedisFailover is `Healthy`.
 
-The operator needs `patch` on `pods/resize` and `get` on `controllerrevisions`. The chart, the kustomize and the example manifests grant them. Without `pods/resize`, the first resize fails, and the step is reverted.
+The operator needs `patch` on `pods/resize` and `get` on `controllerrevisions`. The chart, the kustomize and the example manifests grant them. Without `pods/resize`, the first resize fails, and the operator reverts the step.
 
 A step uses the rules of Recommend: 3 consecutive high windows, or at once at 95 percent or after an OOM refusal. A step is 25 percent of the current limit, rounded up to a multiple of 64Mi, and `memoryMax` at most. These limits apply between steps:
 
@@ -448,11 +452,11 @@ A step uses the rules of Recommend: 3 consecutive high windows, or at once at 95
 The operator writes the step to the ConfigMap `rfa-<NAME>` first. The next reconcile writes the larger limit to the StatefulSet. Then the operator resizes the pods in place, one at a time: the replicas first and the master last. The master does not fail over. `maxmemory` follows the smallest pod, so it increases when the master has the larger limit. `status.autoscaling.phase` shows the step:
 
 - `Applying`: the pods get the larger limit.
-- `Done`: each pod runs with the larger limit.
-- `Reverted`: the cluster refused the resize before a pod applied it, for example a ResourceQuota, a LimitRange or a node without enough memory. The StatefulSet gets the limit before the step. `retryAfter` shows the end of the back-off.
-- `Held`: the cluster refused the resize after a pod applied it, or the step did not end in 15 minutes. The operator does not lower the limit of a pod, so it keeps the larger limit and starts no further step. The phase changes to `Done` when each pod runs with the larger limit, for example after a pod restart.
+- `Done`: each pod runs with the larger limit on the update revision.
+- `Reverted`: the cluster refused the resize before a pod applied it, for example a ResourceQuota, a LimitRange or a node without enough memory. The operator also reverts a step that no pod applied in 15 minutes, for example because no node can hold the pod. The StatefulSet gets the limit before the step. `retryAfter` shows the end of the back-off.
+- `Held`: the cluster refused the resize after a pod applied it. Or a pod applied the step, and the step did not end in 15 minutes. The operator does not lower the limit of a pod, so it keeps the larger limit and starts no further step. The phase changes to `Done` when each pod runs with the larger limit, for example after a pod restart.
 
-The reason of `Reverted` and `Held` gives the pod and the refusal. Alert on `redis_operator_controller_autoscaler_step_phase` equal to `4`.
+The reason of `Reverted` and `Held` gives the pod and the refusal. Alert on `redis_operator_controller_autoscaler_step_phase` equal to `4`. In the other phases, the reason also shows a refused resize. An example is a change of the spec while the operator cannot read a revision.
 
 A pod can run with a larger limit than the StatefulSet. This happens when the kubelet applies a resize after a revert, or on Kubernetes 1.33 and 1.34, which cannot lower a limit in place. The operator does not change such a pod. `maxmemory` follows the smallest pod, so the larger pod is safe.
 
@@ -463,7 +467,7 @@ Changes of the user:
 - A `memoryMax` below the effective limit lowers the limit of the pods to `memoryMax`. This is a change of the user: Kubernetes 1.35 lowers it in place, and older versions recreate the pods.
 - Mode `Recommend` keeps the effective limit, and completes a step that is `Applying` or `Held`. It starts no step.
 - Mode `Off` gives the pods the spec limit. This lowers the limit as above. To keep the limit, pin it first.
-- A ConfigMap `rfa-<NAME>` that is lost or not valid gives the limit of the live StatefulSet. No step starts until the next change of the spec.
+- A ConfigMap `rfa-<NAME>` that is lost or not valid gives the limit of the live StatefulSet. No step starts until the next change of the spec. Mode `Recommend` also keeps that limit when `status.autoscaling.effectiveMemory` is set.
 - A ConfigMap `rfa-<NAME>` of another owner or of a newer operator version also gives the limit of the live StatefulSet. The operator does not change that ConfigMap and starts no step.
 - A state with a last sample more than 11 minutes before the current time gives the limit of the live StatefulSet. A state that stays after mode `Off` thus does not change the pods.
 
@@ -474,7 +478,7 @@ To pin the effective limit, for example before mode `Off` or a downgrade of the 
 3. Set `redis.autoscaling.mode` to `Recommend` or `Off`.
 4. Wait until `status.state` is `Healthy`.
 
-An operator version without mode `Auto` rejects such a RedisFailover in validation. It then stops all reconciles of the RedisFailover, also the failover. It also gives the pods the spec limit. Thus pin the limit before a downgrade. See the [migration guide](docs/migrations/4.2.0.md).
+An operator version without mode `Auto` rejects such a RedisFailover in validation. It then stops all reconciles of the RedisFailover, also the failover. The 4.1.x CRD removes `redis.autoscaling`, and then the 4.1.x operator gives the pods the spec limit. Thus pin the limit before a downgrade. See the [migration guide](docs/migrations/4.2.0.md).
 
 ### Custom shutdown script
 
