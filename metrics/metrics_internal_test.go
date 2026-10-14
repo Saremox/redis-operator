@@ -174,6 +174,8 @@ func TestRemoveStaleMetricsDeletesStaleResourceInEachRecorder(t *testing.T) {
 		rec.RecordSentinelCheck(namespace, resource, SENTINEL_NOT_READY, "10.0.0.51", STATUS_UNHEALTHY)
 		rec.SetClusterError(namespace, resource)
 		rec.SetAutoscaler(namespace, resource, 1, 0.5, 1, 1)
+		rec.SetAutoscalerPhase(namespace, resource, 1)
+		rec.CountAutoscalerStep(namespace, resource, AutoscalerStepHeld)
 	}
 
 	mutex.Lock()
@@ -186,7 +188,7 @@ func TestRemoveStaleMetricsDeletesStaleResourceInEachRecorder(t *testing.T) {
 		for _, rec := range recs {
 			if testutil.CollectAndCount(rec.redisCheck)+testutil.CollectAndCount(rec.sentinelCheck)+testutil.CollectAndCount(rec.clusterOK)+
 				testutil.CollectAndCount(rec.recommendedMemory)+testutil.CollectAndCount(rec.memoryUsedRatio)+testutil.CollectAndCount(rec.highWindows)+
-				testutil.CollectAndCount(rec.effectiveMemory) != 0 {
+				testutil.CollectAndCount(rec.effectiveMemory)+testutil.CollectAndCount(rec.stepPhase)+testutil.CollectAndCount(rec.steps) != 0 {
 				return false
 			}
 		}

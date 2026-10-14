@@ -50,6 +50,11 @@ const (
 	IO_TIMEOUT          = "CONNECTION_TIMEDOUT"
 	CONNECTION_REFUSED  = "CONNECTION_REFUSED"
 
+	// The results of CountAutoscalerStep.
+	AutoscalerStepDone     = "done"
+	AutoscalerStepReverted = "reverted"
+	AutoscalerStepHeld     = "held"
+
 	K8S_FORBIDDEN_ERR = "USER_FORBIDDEN_TO_PERFORM_ACTION"
 	K8S_UNAUTH        = "CLIENT_NOT_AUTHORISED"
 	K8S_MISC          = "MISC_ERROR_CHECK_LOGS"
@@ -116,8 +121,15 @@ type Recorder interface {
 
 	// SetAutoscaler sets the gauges of the memory autoscaler.
 	SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32, effectiveBytes int64)
-	// DeleteAutoscaler deletes the series of SetAutoscaler, for example when
-	// the autoscaler mode changes to Off.
+	// SetAutoscalerPhase sets the phase of the last autoscaler step: 0 Idle,
+	// 1 Applying, 2 Done, 3 Reverted, 4 Held.
+	SetAutoscalerPhase(namespace string, name string, phase int)
+	// CountAutoscalerStep counts the end of an autoscaler step with the result
+	// AutoscalerStepDone, AutoscalerStepReverted or AutoscalerStepHeld.
+	CountAutoscalerStep(namespace string, name string, result string)
+	// DeleteAutoscaler deletes the series of SetAutoscaler, SetAutoscalerPhase
+	// and CountAutoscalerStep, for example when the autoscaler mode changes to
+	// Off.
 	DeleteAutoscaler(namespace string, name string)
 
 	RecordEnsureOperation(objectNamespace string, objectName string, objectKind string, resourceName string, status string)
@@ -137,6 +149,8 @@ type recorder struct {
 	memoryUsedRatio      *prometheus.GaugeVec
 	highWindows          *prometheus.GaugeVec
 	effectiveMemory      *prometheus.GaugeVec
+	stepPhase            *prometheus.GaugeVec
+	steps                *prometheus.CounterVec
 	ensureResource       *prometheus.CounterVec
 	redisCheck           *prometheus.CounterVec
 	sentinelCheck        *prometheus.CounterVec
@@ -183,6 +197,20 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		Help:      "Memory limit of the redis container that the operator applies: the limit of redis.resources, or a larger limit of the autoscaler.",
 	}, []string{"namespace", "name"})
 
+	stepPhase := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: promControllerSubsystem,
+		Name:      "autoscaler_step_phase",
+		Help:      "Phase of the last autoscaler step: 0 Idle, 1 Applying, 2 Done, 3 Reverted, 4 Held.",
+	}, []string{"namespace", "name"})
+
+	steps := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Subsystem: promControllerSubsystem,
+		Name:      "autoscaler_steps_total",
+		Help:      "Number of autoscaler steps that ended, by result: done, reverted or held.",
+	}, []string{"namespace", "name", "result"})
+
 	ensureResource := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Subsystem: promControllerSubsystem,
@@ -227,6 +255,8 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		memoryUsedRatio:      memoryUsedRatio,
 		highWindows:          highWindows,
 		effectiveMemory:      effectiveMemory,
+		stepPhase:            stepPhase,
+		steps:                steps,
 		ensureResource:       ensureResource,
 		redisCheck:           redisCheck,
 		sentinelCheck:        sentinelCheck,
@@ -242,6 +272,8 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		r.memoryUsedRatio,
 		r.highWindows,
 		r.effectiveMemory,
+		r.stepPhase,
+		r.steps,
 		r.ensureResource,
 		r.redisCheck,
 		r.sentinelCheck,
@@ -279,11 +311,25 @@ func (r recorder) SetAutoscaler(namespace, name string, recommendedBytes int64, 
 	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", name)
 }
 
+func (r recorder) SetAutoscalerPhase(namespace, name string, phase int) {
+	r.stepPhase.WithLabelValues(namespace, name).Set(float64(phase))
+	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", name)
+}
+
+func (r recorder) CountAutoscalerStep(namespace, name, result string) {
+	r.steps.WithLabelValues(namespace, name, result).Inc()
+	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", name)
+}
+
 func (r recorder) DeleteAutoscaler(namespace, name string) {
 	r.recommendedMemory.DeleteLabelValues(namespace, name)
 	r.memoryUsedRatio.DeleteLabelValues(namespace, name)
 	r.highWindows.DeleteLabelValues(namespace, name)
 	r.effectiveMemory.DeleteLabelValues(namespace, name)
+	r.stepPhase.DeleteLabelValues(namespace, name)
+	for _, result := range []string{AutoscalerStepDone, AutoscalerStepReverted, AutoscalerStepHeld} {
+		r.steps.DeleteLabelValues(namespace, name, result)
+	}
 }
 
 func (r recorder) RecordEnsureOperation(objectNamespace, objectName, objectKind, resourceName, status string) {
@@ -365,6 +411,8 @@ func removeStaleMetrics() {
 				metricsDeletedCount += recorder.memoryUsedRatio.DeletePartialMatch(labelWithName)
 				metricsDeletedCount += recorder.highWindows.DeletePartialMatch(labelWithName)
 				metricsDeletedCount += recorder.effectiveMemory.DeletePartialMatch(labelWithName)
+				metricsDeletedCount += recorder.stepPhase.DeletePartialMatch(labelWithName)
+				metricsDeletedCount += recorder.steps.DeletePartialMatch(labelWithName)
 			}
 			for _, label := range ipBasedLabels {
 				metricsDeletedCount += recorder.redisOperations.DeletePartialMatch(label)
