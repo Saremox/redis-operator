@@ -132,9 +132,11 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 // the API calls of the autoscaler without the seam: one state read, before
 // Ensure, and the state write. It reads no StatefulSet. Without autoscaling,
 // the first reconcile looks for a leftover state, and makes no INFO call.
+// Validate accepts mode Auto, which reads the StatefulSet for a state that is
+// missing, and for the rollout result.
 func TestHandleAutoscalingAPICalls(t *testing.T) {
 	const master = "10.0.0.1"
-	for _, autoscaling := range []string{"unset", v1.AutoscalingModeOff, v1.AutoscalingModeRecommend} {
+	for _, autoscaling := range []string{"unset", v1.AutoscalingModeOff, v1.AutoscalingModeRecommend, v1.AutoscalingModeAuto} {
 		t.Run(autoscaling, func(t *testing.T) {
 			rf := generateRF(false, false)
 			rf.Finalizers = []string{"redisfailovers.databases.spotahome.com/finalizer"}
@@ -172,23 +174,32 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 			mrfc.On("GetRedisesSlavesPods", rf).Return([]string{}, nil)
 			mrfc.On("GetRedisesMasterPod", rf).Return(master, nil)
 			mrfc.On("GetRedisRevisionHash", master, rf).Return("1", nil)
-			want := []string{"GetConfigMap", "Ensure"}
-			if autoscaling != v1.AutoscalingModeRecommend {
-				mk.On("GetConfigMap", rf.Namespace, "rfa-"+rf.Name).Once().Run(record("GetConfigMap")).Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "rfa-"+rf.Name))
-			} else {
-				want = []string{"GetConfigMap", "Ensure", "CreateConfigMap"}
-				mk.On("GetConfigMap", rf.Namespace, "rfa-"+rf.Name).Once().Run(record("GetConfigMap")).Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "rfa-"+rf.Name))
+			mk.On("GetConfigMap", rf.Namespace, "rfa-"+rf.Name).Once().Run(record("GetConfigMap")).Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "rfa-"+rf.Name))
+			want := map[string][]string{
+				"unset":                     {"GetConfigMap", "Ensure"},
+				v1.AutoscalingModeOff:       {"GetConfigMap", "Ensure"},
+				v1.AutoscalingModeRecommend: {"GetConfigMap", "Ensure", "CreateConfigMap"},
+				v1.AutoscalingModeAuto:      {"GetConfigMap", "GetStatefulSet", "Ensure", "GetStatefulSet", "CreateConfigMap"},
+			}[autoscaling]
+			if rf.AutoscalingEnabled() {
 				mk.On("CreateConfigMap", rf.Namespace, mock.Anything).Once().Run(record("CreateConfigMap")).Return(nil)
 				mrfc.On("GetAutoscalerInfo", rf, master).Once().Return(&redis.AutoscalerInfo{
 					UsedMemory: 100 << 20, MaxMemory: 768 << 20, UptimeSeconds: 3600, RunID: "run1", Role: "master",
 				}, nil)
+			}
+			if autoscaling == v1.AutoscalingModeAuto {
+				rf.Spec.Redis.MaxMemory = &v1.MaxMemorySettings{}
+				mrfh.On("EnsureRedisMaxMemory", rf, master, []string{master}).Return(rfservice.MaxMemoryResult{}, nil)
+				mk.On("GetStatefulSet", rf.Namespace, "rfr-"+rf.Name).Twice().Run(record("GetStatefulSet")).Return(&appsv1.StatefulSet{Status: appsv1.StatefulSetStatus{UpdateRevision: "1"}}, nil)
 			}
 			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 
 			require.NoError(t, handler.Handle(context.Background(), rf))
 
 			assert.Equal(t, want, calls)
-			mk.AssertNotCalled(t, "GetStatefulSet", mock.Anything, mock.Anything)
+			if autoscaling != v1.AutoscalingModeAuto {
+				mk.AssertNotCalled(t, "GetStatefulSet", mock.Anything, mock.Anything)
+			}
 			mk.AssertExpectations(t)
 			mrfs.AssertExpectations(t)
 			mrfc.AssertExpectations(t)
@@ -197,8 +208,8 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 }
 
 // autoscaleStep gives a CheckAndHeal of mode Auto a state with a sustained
-// recommendation of 1280Mi, three ready pods on the update revision "1", and
-// the checks before a step. The written state goes to step.
+// recommendation of 1280Mi. Three pods are ready on the update revision "1",
+// and the checks before a step pass. The written state goes to step.
 func autoscaleStep(t *testing.T, mk *mK8SService.Services, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover, master string, step *map[string]any) {
 	t.Helper()
 	rf.Spec.Redis.MaxMemory = &v1.MaxMemorySettings{Percent: 75, Policy: "noeviction"}

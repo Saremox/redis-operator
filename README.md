@@ -365,13 +365,13 @@ The operator recreates a pod instead of a resize in place in these cases:
 - The Redis process uses more memory (`used_memory_rss`) than the lowered limit minus 32Mi. Redis often does not return the memory that evictions free to the OS.
 - The kubelet defers or fails the resize for more than 5 minutes, or does not apply it in 5 minutes.
 
-The operator needs `patch` on `pods/resize` and `get` on `controllerrevisions`, which the chart, the kustomize and the example manifests grant. Without them, the operator recreates the pods. In [mode Auto](#mode-auto) with a limit above the spec, the operator keeps a pod whose revision it cannot read, because a recreate would restart Redis for a step.
+The operator needs `patch` on `pods/resize` and `get` on `controllerrevisions`, which the chart, the kustomize and the example manifests grant. Without them, the operator recreates the pods. In [mode Auto](#mode-auto) with a limit above the spec, the operator keeps a pod whose revision it cannot read. A recreate would restart Redis for a step.
 
 A ResourceQuota or a LimitRange can reject a resize. The operator then does not recreate the pod, because the same rejection applies to the new pod. The rollout holds, and the status message gives the reason. The rollout continues when the quota or the LimitRange allows the new resources.
 
 ### Autoscaling
 
-With `redis.autoscaling`, the operator computes a memory limit for the Redis container from the memory use. Mode `Recommend` shows the limit in the status and changes no pod, StatefulSet, resources or `maxmemory`. Mode `Auto` also applies the limit to the pods in place. See [Mode Auto](#mode-auto) and the [autoscaling example file](example/redisfailover/autoscaling.yaml).
+With `redis.autoscaling`, the operator computes a memory limit for the Redis container from the memory use. Mode `Recommend` shows the limit in the status and changes no pod, StatefulSet, resources or `maxmemory`. Mode `Auto` also applies the limit to the pods in place. See [Mode Auto](#mode-auto) and the example files for [Recommend](example/redisfailover/autoscaling.yaml) and [Auto](example/redisfailover/autoscaling-auto.yaml).
 
 The fields of `redis.autoscaling`:
 
@@ -441,11 +441,11 @@ The operator needs `patch` on `pods/resize` and `get` on `controllerrevisions`. 
 
 A step uses the rules of Recommend: 3 consecutive high windows, or at once at 95 percent or after an OOM refusal. A step is 25 percent of the current limit, rounded up to a multiple of 64Mi, and `memoryMax` at most. These limits apply between steps:
 
-- Cooldown: the next step starts 15 minutes after the end of a step at the earliest, or 5 minutes for a step at 95 percent or after an OOM refusal.
+- Cooldown: the next step starts 15 minutes after the end of a step at the earliest. After a use of 95 percent or an OOM refusal, the cooldown is 5 minutes.
 - Budget: at most 6 steps in 24 hours.
 - Back-off: after a revert, the next step waits 1 hour. The wait doubles at each further revert, up to 24 hours. A change of the spec ends the wait.
 
-The operator writes the step to the ConfigMap `rfa-<NAME>` first. The next reconcile writes the larger limit to the StatefulSet and resizes the pods in place, one at a time: the replicas first and the master last. The master does not fail over. `maxmemory` follows the smallest pod, so it increases when the master has the larger limit. `status.autoscaling.phase` shows the step:
+The operator writes the step to the ConfigMap `rfa-<NAME>` first. The next reconcile writes the larger limit to the StatefulSet. Then the operator resizes the pods in place, one at a time: the replicas first and the master last. The master does not fail over. `maxmemory` follows the smallest pod, so it increases when the master has the larger limit. `status.autoscaling.phase` shows the step:
 
 - `Applying`: the pods get the larger limit.
 - `Done`: each pod runs with the larger limit.

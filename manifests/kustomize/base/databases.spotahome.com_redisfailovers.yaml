@@ -1043,7 +1043,9 @@ spec:
                       mode:
                         description: |-
                           Mode is Off, Recommend or Auto. Recommend shows a memory limit in
-                          status.autoscaling and changes no pod. Auto is not available. With
+                          status.autoscaling and changes no pod. Auto also raises the memory
+                          limit of the pods in place. It needs redis.maxMemory, a memory request
+                          equal to the limit or unset, and Kubernetes 1.33 or later. With
                           bootstrapNode, only Off is valid. Defaults to Off.
                         enum:
                         - "Off"
@@ -1052,9 +1054,9 @@ spec:
                         type: string
                       recreateAfter:
                         description: |-
-                          RecreateAfter is the time after which Auto recreates a pod that it
-                          cannot resize in place. 0s recreates at once, other values must be at
-                          least 5m. Unset means that Auto never recreates a pod. Only Auto uses it.
+                          RecreateAfter is reserved for the time after which Auto recreates a pod
+                          that it cannot resize in place. The operator does not use it, and
+                          validation rejects it with Auto. Other modes accept 0s, or 5m and more.
                           The value has at most 16 characters and each number at most 6 digits,
                           because a value that overflows stops the decode of all RedisFailovers.
                         maxLength: 16
