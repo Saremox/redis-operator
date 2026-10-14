@@ -39,7 +39,8 @@ var (
 	// SchemeBuilder collects the functions that add the types of this package to
 	// a scheme.
 	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
-	// AddToScheme adds RedisFailover and RedisFailoverList to a scheme.
+	// AddToScheme adds RedisFailover, RedisFailoverList and the meta types of
+	// the group version to a scheme.
 	AddToScheme = SchemeBuilder.AddToScheme
 )
 

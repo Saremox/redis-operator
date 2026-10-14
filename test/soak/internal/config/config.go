@@ -50,8 +50,8 @@ type Operator struct {
 	Deployment string `json:"deployment"`
 }
 
-// Probe sets how often the probes write and read a key, and how long one
-// probe may take.
+// Probe sets how often each prober probes, and the timeout that the tester
+// uses for its Redis connections and commands.
 type Probe struct {
 	Interval metav1.Duration `json:"interval"`
 	Timeout  metav1.Duration `json:"timeout"`

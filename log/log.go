@@ -244,8 +244,8 @@ func Fatalf(format string, args ...interface{}) {
 	baseLogger.sourced().Fatalf(format, args...)
 }
 
-// With returns a logger that adds the key and the value as a field to each
-// message of the base logger.
+// With returns a child of the base logger that adds the key and the value as a
+// field to each message.
 func With(key string, value interface{}) Logger {
 	return baseLogger.With(key, value)
 }

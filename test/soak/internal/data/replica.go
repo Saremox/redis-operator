@@ -78,7 +78,7 @@ func NewReplica(in config.Instance, cfg *config.Config, source *Data, pods Pods,
 	return r
 }
 
-// Filled is always true for a read-only instance.
+// Filled always reports true for a read-only instance.
 func (r *Replica) Filled() bool { return true }
 
 // Begin does nothing for a read-only instance.

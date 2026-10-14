@@ -77,8 +77,8 @@ func (r *RedisFailoverHealer) setSlaveLabelIfNecessary(rf *redisfailoverv1.Redis
 	return setSlaveLabel(r.k8sService, r.opts, rf, pod, port, password)
 }
 
-// MakeMaster makes the Redis at ip the master and sets the master role label
-// on its pod.
+// MakeMaster makes the Redis at ip the master. It gives the pod the master role
+// label and updates its safe-to-evict annotation.
 func (r *RedisFailoverHealer) MakeMaster(ip string, rf *redisfailoverv1.RedisFailover) error {
 	password, err := k8s.GetRedisPassword(r.k8sService, rf)
 	if err != nil {

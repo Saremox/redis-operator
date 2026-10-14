@@ -18,8 +18,9 @@ const (
 	defaultMaxMemoryPolicy       = "noeviction"
 	// HealthyState is the status.state of a RedisFailover that passed each check.
 	HealthyState = "Healthy"
-	// NotHealthyState is the status.state of a RedisFailover with a failed check.
-	// The status.message gives the reason.
+	// NotHealthyState is the status.state of a RedisFailover that failed a
+	// check or the validation, or that has an object name conflict. The
+	// status.message usually gives the reason.
 	NotHealthyState = "NotHealthy"
 )
 

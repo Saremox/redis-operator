@@ -20,7 +20,7 @@ type ControlledByOtherError struct {
 	OwnerName string
 }
 
-// Error names the object and its controller, or tells that the object has no
+// Error names the object and its controller, or says that the object has no
 // controller.
 func (e *ControlledByOtherError) Error() string {
 	if e.OwnerKind == "" {

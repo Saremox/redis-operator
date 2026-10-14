@@ -931,7 +931,7 @@ func getRedisPort(p int32) string {
 	return strconv.Itoa(int(p))
 }
 
-// AreAllRunning reports whether no pod is scheduling and at least
+// AreAllRunning reports whether no pod is Pending or in deletion, and at least
 // expectedRunningPods pods are not terminal.
 func AreAllRunning(pods *corev1.PodList, expectedRunningPods int) bool {
 	var runningPods int

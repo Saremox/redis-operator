@@ -729,11 +729,11 @@ func TestApplyACLLoad_ConnectionError(t *testing.T) {
 // TestSetCustomRedisConfig_ACLFile covers a real bug found while building
 // this test suite: `CONFIG SET aclfile <path>` is an *immutable* config in
 // real Redis (7.0.15, confirmed here; Redis docs mark aclfile as requiring a
-// server restart to change) - the server rejects it with
-// `ERR CONFIG SET failed... can't set immutable config`, regardless of
-// whether the value being set matches the aclfile Redis was already started with.
+// server restart to change). The server rejects it with
+// `ERR CONFIG SET failed... can't set immutable config`. It also rejects a
+// value that is the same as the aclfile that Redis started with.
 //
-// SetCustomRedisConfig now special-cases "aclfile": it skips the CONFIG SET
+// SetCustomRedisConfig special-cases "aclfile": it skips the CONFIG SET
 // for that parameter (it would always fail) and goes straight to ACL LOAD,
 // which re-reads whatever aclfile Redis already has configured (set at boot,
 // e.g. via a mounted ConfigMap + `--aclfile` flag). This test starts Redis

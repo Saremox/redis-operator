@@ -325,7 +325,8 @@ func (c *client) MonitorRedisWithPort(ip, monitor, port, quorum, password string
 	}(rClient)
 	cmd := rediscli.NewBoolCmd(context.TODO(), "SENTINEL", "REMOVE", masterName)
 	_ = rClient.Process(context.TODO(), cmd)
-	// We will continue even if it fails, the priority is to have the redises monitored
+	// MONITOR runs even when REMOVE fails, because Sentinel must monitor the
+	// Redis instances.
 	cmd = rediscli.NewBoolCmd(context.TODO(), "SENTINEL", "MONITOR", masterName, monitor, port, quorum)
 	err := rClient.Process(context.TODO(), cmd)
 	if err != nil {
