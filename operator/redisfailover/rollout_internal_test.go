@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -234,4 +235,101 @@ func TestUpdateRedisesPodsKeepsWaitingAcrossErrors(t *testing.T) {
 func TestRolloutWaitString(t *testing.T) {
 	assert.Equal(t, "pod rfr-test-1 is not ready", (&rolloutWait{pod: "rfr-test-1", reason: "not ready"}).String())
 	assert.Equal(t, "2 of 3 pods exist", (&rolloutWait{reason: "2 of 3 pods exist"}).String())
+}
+
+// unschedulablePod is a Pending pod on the old revision that the scheduler
+// cannot place.
+func unschedulablePod() corev1.Pod {
+	return corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-2", UID: "p", Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: "old"}},
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodPending,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonUnschedulable}},
+		},
+	}
+}
+
+// newPendingRolloutTest is a rolloutTest with three replicas: two pods run
+// on the update revision, and the third pod is pending.
+func newPendingRolloutTest(t *testing.T, pending corev1.Pod) *rolloutTest {
+	rt := newRolloutTest(t)
+	rt.rf.Spec.Redis.Replicas = 3
+	rt.synced = true
+	rt.pods[0].Labels[appsv1.ControllerRevisionHashLabelKey] = "new"
+	rt.pods[1].Status.Conditions = podReady
+	rt.pods = append(rt.pods, pending)
+	return rt
+}
+
+// A stale pod that the scheduler cannot place never ran, so the rollout
+// deletes it. The StatefulSet then creates it on the update revision.
+func TestUpdateRedisesPodsDeletesAnUnschedulableStalePod(t *testing.T) {
+	rt := newPendingRolloutTest(t, unschedulablePod())
+	rt.heal.On("DeletePod", "rfr-test-2", rt.rf).Once().Return(nil)
+	assert.Empty(t, rt.update(""))
+	rt.heal.AssertExpectations(t)
+
+	// The rollout waits until the last replacement ends.
+	rt = newPendingRolloutTest(t, unschedulablePod())
+	rt.pods[1].Status.Conditions = nil
+	assert.Empty(t, rt.update(""))
+	rt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+	v, ok := rt.handler.rolloutWaits.Load(passwordKey(rt.rf))
+	assert.True(t, ok)
+	assert.Equal(t, "rfr-test-1", v.(rolloutWait).pod)
+
+	fail := errors.New("boom")
+	rt = newPendingRolloutTest(t, unschedulablePod())
+	rt.heal.On("DeletePod", "rfr-test-2", rt.rf).Once().Return(fail)
+	assert.ErrorIs(t, rt.handler.UpdateRedisesPods(rt.rf), fail)
+
+	rt = newPendingRolloutTest(t, unschedulablePod())
+	rt.podsErr = fail
+	assert.ErrorIs(t, rt.handler.UpdateRedisesPods(rt.rf), fail)
+}
+
+func TestUpdateRedisesPodsKeepsOtherPendingPods(t *testing.T) {
+	pod := func(change func(pod *corev1.Pod)) corev1.Pod {
+		p := unschedulablePod()
+		change(&p)
+		return p
+	}
+	started := func(cs corev1.ContainerStatus) func(pod *corev1.Pod) {
+		return func(pod *corev1.Pod) {
+			cs.Name = "redis"
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{cs}
+		}
+	}
+	tests := map[string]corev1.Pod{
+		"running": pod(func(p *corev1.Pod) { p.Status.Phase = corev1.PodRunning }),
+		"on the update revision": pod(func(p *corev1.Pod) {
+			p.Labels[appsv1.ControllerRevisionHashLabelKey] = "new"
+		}),
+		"terminating":                 pod(func(p *corev1.Pod) { p.DeletionTimestamp = &metav1.Time{Time: time.Now()} }),
+		"scheduled":                   pod(func(p *corev1.Pod) { p.Status.Conditions[0].Status = corev1.ConditionTrue }),
+		"scheduling gated":            pod(func(p *corev1.Pod) { p.Status.Conditions[0].Reason = corev1.PodReasonSchedulingGated }),
+		"without condition":           pod(func(p *corev1.Pod) { p.Status.Conditions = nil }),
+		"a running container":         pod(started(corev1.ContainerStatus{State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}})),
+		"a terminated container":      pod(started(corev1.ContainerStatus{State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{}}})),
+		"a container that ran before": pod(started(corev1.ContainerStatus{LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{}}})),
+		"a restarted container":       pod(started(corev1.ContainerStatus{RestartCount: 1})),
+		"an init container that ran": pod(func(p *corev1.Pod) {
+			p.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: "init", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{}}}}
+		}),
+	}
+	for name, pending := range tests {
+		t.Run(name, func(t *testing.T) {
+			rt := newPendingRolloutTest(t, pending)
+			assert.Empty(t, rt.update(""))
+			rt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+		})
+	}
+}
+
+// With all pods running, the rollout makes no extra call.
+func TestUpdateRedisesPodsListsNoPodsWhenAllRun(t *testing.T) {
+	rt := newPendingRolloutTest(t, unschedulablePod())
+	rt.rf.Spec.Redis.Replicas = 2
+	assert.Empty(t, rt.update(""))
+	rt.k8s.AssertNotCalled(t, "GetStatefulSetPods", mock.Anything, mock.Anything)
 }

@@ -3853,6 +3853,9 @@ func TestSentinelModeDoesNotHealSentinelsWhileTheMasterStops(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			assert := assert.New(t)
 			rf := generateRF(false, false)
+			// GetRedisesIPs gives one running pod. With more replicas, the
+			// rollout lists the pods to find a stale Pending pod.
+			rf.Spec.Redis.Replicas = 1
 			pods := &corev1.PodList{Items: []corev1.Pod{redisPod("1", true, false), redisPod("1", true, false), test.masterPod}}
 			// The rollout is done; the next pod list is the check of the guard.
 			rolloutDone := false

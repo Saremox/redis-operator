@@ -202,7 +202,19 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 		r.handoverRetries.Delete(failoverKey(rf))
 	}
 
-	return nil
+	// redises has only the running pods. A stale pod that the scheduler
+	// cannot place stays Pending until the operator deletes it.
+	if len(redises) >= int(rf.Spec.Redis.Replicas) {
+		return nil
+	}
+	pod, err := r.unschedulableStalePod(rf, ssUR)
+	if err != nil || pod == "" {
+		return err
+	}
+	if wait, err = r.redisPodsSettled(rf, ssUR); err != nil || wait != nil {
+		return err
+	}
+	return r.rfHealer.DeletePod(pod, rf)
 }
 
 // handOverMaster moves the master role to the best synced replica with
@@ -342,6 +354,35 @@ func (r *RedisFailoverHandler) redisPodNamesByIP(rf *redisfailoverv1.RedisFailov
 		}
 	}
 	return names, nil
+}
+
+// unschedulableStalePod returns a pod on a stale revision that the scheduler
+// cannot place, or "". Such a pod never ran, so a delete loses no data, and
+// the PVC stays.
+func (r *RedisFailoverHandler) unschedulableStalePod(rf *redisfailoverv1.RedisFailover, updateRevision string) (string, error) {
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return "", err
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Status.Phase != corev1.PodPending || pod.DeletionTimestamp != nil || pod.Labels[appsv1.ControllerRevisionHashLabelKey] == updateRevision {
+			continue
+		}
+		unschedulable := false
+		for _, c := range pod.Status.Conditions {
+			if c.Type == corev1.PodScheduled {
+				unschedulable = c.Status == corev1.ConditionFalse && c.Reason == corev1.PodReasonUnschedulable
+			}
+		}
+		started := slices.ContainsFunc(slices.Concat(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses), func(cs corev1.ContainerStatus) bool {
+			return cs.State.Running != nil || cs.State.Terminated != nil || cs.LastTerminationState.Terminated != nil || cs.RestartCount > 0
+		})
+		if unschedulable && !started {
+			return pod.Name, nil
+		}
+	}
+	return "", nil
 }
 
 // resizeInPlace tries to move a stale pod to the update revision without
