@@ -18,7 +18,7 @@ Each reconcile does these steps in this order:
 4. Validate: `Validate()` rejects an invalid spec and sets the defaults.
 5. Autoscaler state: with `redis.autoscaling.mode` `Recommend` or `Auto`, the operator reads its state from the ConfigMap `rfa-<NAME>`. The state can hold a memory limit of the redis pods above `redis.resources`, and Ensure writes that limit to the statefulset. Thus an error of this read stops the reconcile before Ensure. Without autoscaling and without `status.autoscaling`, the operator reads the ConfigMap one time after its start, and deletes a ConfigMap that it finds.
 
-   After a step, the spec limit can be smaller than the pods. Thus a state that is lost, not valid, of another owner or of a newer operator gives the limit of the live statefulset. Mode `Auto` reads the statefulset for such a state. Mode `Recommend` reads it only when `status.autoscaling.effectiveMemory` is set. A state with a larger limit and without a sample in the last 11 minutes also gives the limit of the live statefulset. A revert is the exception.
+   After a step, the spec limit can be smaller than the pods. Thus a state that is lost, not valid, of another owner or of a newer operator gives the limit of the live statefulset. Mode `Auto` reads the statefulset for such a state. Mode `Recommend` reads it when `status.autoscaling.effectiveMemory` is set, and one time after each operator start. A state with a larger limit and without a sample in the last 11 minutes also gives the limit of the live statefulset. A revert is the exception.
 6. Ensure: the operator creates or updates the objects below. It overwrites a manual change of these objects:
    - Redis service (if exporter enabled)
    - Redis master service and Redis replica service
@@ -47,7 +47,11 @@ While the statefulset status does not show the generation of its template, the r
 
 In mode `Auto`, a step of the autoscaler changes only the memory limit of the redis container. The rollout resizes such a pod in place and never recreates it. This is also true when the cluster refuses the resize or the operator cannot read a revision. It keeps the refusal for step 9, and the status shows it. A change of the spec in the same revision takes the normal rollout.
 
-A revert to the limit before the step happens only while no pod applied the step. Also, no pod may run or start from the template of the step. The revert first removes the annotation of the open resize request from the pods. Otherwise the operator holds the step and does not lower the limit of a pod.
+A revert to the limit before the step happens only while no pod applied the step. Also, no pod may run or start from the template of the step. No pod may be missing or terminating, because the StatefulSet can create it from that template. The revert first removes the annotation of the open resize request from the pods. Otherwise the operator holds the step and does not lower the limit of a pod. It also holds the step when it cannot remove an annotation for 15 minutes.
+
+Before Ensure applies a revert, step 5 lists the pods again, also after an operator outage. A pod of the step then holds the step. A pod that the StatefulSet created from the template of the step after the revert keeps its larger limit. The rollout only moves its revision label. A change of the spec ends this rule.
+
+A pod on the update revision that keeps an annotation of a resize request loses it, because nothing else removes it. A step does not start when the redis container restarts on a memory resize.
 
 A stale pod stays Pending when its `PodScheduled` condition is `False` with the reason `Unschedulable`. The `OnDelete` StatefulSet does not replace such a pod. The operator deletes such a pod when none of its containers started and the StatefulSet status shows the current generation. It does this before the check of the pods that run, which ends the reconcile with 1 or 2 replicas and in bootstrap mode. The operator does not wait for a quorum or for the last replacement, because the pod has no data in memory and serves no client. Its PVC stays, and the StatefulSet creates the pod again on the new revision, so the operator does not delete it again.
 
