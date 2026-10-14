@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -40,6 +41,7 @@ type rolloutTest struct {
 }
 
 func newRolloutTest(t *testing.T) *rolloutTest {
+	t.Helper()
 	timeout := rolloutStallTimeout
 	t.Cleanup(func() { rolloutStallTimeout = timeout })
 	rolloutStallTimeout = 50 * time.Millisecond
@@ -348,7 +350,7 @@ func TestCheckAndHealDeletesAnUnschedulableStalePod(t *testing.T) {
 			t.Run(fmt.Sprintf("%s with %d replicas", mode, replicas), func(t *testing.T) {
 				pt := newPendingTest(mode, replicas, unschedulablePod())
 				pt.expectDelete(nil)
-				assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+				require.NoError(t, pt.handler.CheckAndHeal(pt.rf))
 				assert.Equal(t, redisfailoverv1.NotHealthyState, pt.rf.Status.State)
 				assert.Equal(t, pt.gateMessage(), pt.rf.Status.Message)
 				pt.k8s.AssertExpectations(t)
@@ -385,7 +387,7 @@ func TestCheckAndHealGoesOnAfterAnErrorOfTheStalePodStep(t *testing.T) {
 			t.Run(name+" in "+mode, func(t *testing.T) {
 				pt := newPendingTest(mode, 1, unschedulablePod())
 				test.change(pt)
-				assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+				require.NoError(t, pt.handler.CheckAndHeal(pt.rf))
 				assert.Equal(t, redisfailoverv1.NotHealthyState, pt.rf.Status.State)
 				assert.Equal(t, pt.gateMessage(), pt.rf.Status.Message)
 				assert.Equal(t, test.warning, len(pt.logger.warnings) == 1, pt.logger.warnings)
@@ -412,12 +414,12 @@ func TestCheckAndHealGoesOnWithAQuorumAndAPendingPod(t *testing.T) {
 			pt.expectDelete(nil)
 			if mode == "sentinel" {
 				pt.check.On("IsSentinelRunningQuorum", pt.rf).Once().Return(false)
-				assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+				require.NoError(t, pt.handler.CheckAndHeal(pt.rf))
 				assert.Equal(t, "sentinel quorum not running", pt.rf.Status.Message)
 			} else {
 				pt.heal.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 				pt.check.On("GetNumberMasters", pt.rf).Once().Return(0, fail)
-				assert.ErrorIs(t, pt.handler.CheckAndHeal(pt.rf), fail)
+				require.ErrorIs(t, pt.handler.CheckAndHeal(pt.rf), fail)
 			}
 			pt.check.AssertExpectations(t)
 			pt.k8s.AssertExpectations(t)
@@ -458,7 +460,7 @@ func TestCheckAndHealKeepsOtherPendingPods(t *testing.T) {
 		for mode := range pendingModes {
 			t.Run(name+" in "+mode, func(t *testing.T) {
 				pt := newPendingTest(mode, 1, first)
-				assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+				require.NoError(t, pt.handler.CheckAndHeal(pt.rf))
 				assert.Equal(t, pt.gateMessage(), pt.rf.Status.Message)
 				pt.k8s.AssertNotCalled(t, "DeletePodWithUID", mock.Anything, mock.Anything, mock.Anything)
 				pt.check.AssertExpectations(t)
@@ -476,7 +478,7 @@ func TestCheckAndHealKeepsOtherPendingPods(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pt := newPendingTest("sentinel", 1, unschedulablePod())
 			pt.ss = ss
-			assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+			require.NoError(t, pt.handler.CheckAndHeal(pt.rf))
 			pt.k8s.AssertNotCalled(t, "DeletePodWithUID", mock.Anything, mock.Anything, mock.Anything)
 			pt.check.AssertExpectations(t)
 		})
@@ -488,7 +490,7 @@ func TestCheckAndHealReadsNoStatefulSetWithoutACandidate(t *testing.T) {
 	first := unschedulablePod()
 	first.Status.Phase = corev1.PodRunning
 	pt := newPendingTest("sentinel", 2, first)
-	assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+	require.NoError(t, pt.handler.CheckAndHeal(pt.rf))
 	pt.k8s.AssertNotCalled(t, "GetStatefulSet", mock.Anything, mock.Anything)
 	pt.check.AssertExpectations(t)
 }
@@ -515,7 +517,7 @@ func TestCheckAndHealMakesNoExtraCallsWhenAllRun(t *testing.T) {
 	pt.check.ExpectedCalls = nil
 	pt.check.On("IsRedisRunning", pt.rf).Once().Return(true)
 	pt.check.On("IsSentinelRunningQuorum", pt.rf).Once().Return(false)
-	assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+	require.NoError(t, pt.handler.CheckAndHeal(pt.rf))
 	assert.Equal(t, "sentinel quorum not running", pt.rf.Status.Message)
 	pt.check.AssertExpectations(t)
 
@@ -525,6 +527,6 @@ func TestCheckAndHealMakesNoExtraCallsWhenAllRun(t *testing.T) {
 	pt.check.On("IsRedisRunning", pt.rf).Once().Return(true)
 	pt.check.On("GetNumberMasters", pt.rf).Once().Return(0, fail)
 	pt.heal.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
-	assert.ErrorIs(t, pt.handler.CheckAndHeal(pt.rf), fail)
+	require.ErrorIs(t, pt.handler.CheckAndHeal(pt.rf), fail)
 	pt.check.AssertExpectations(t)
 }

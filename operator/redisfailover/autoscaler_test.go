@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -93,7 +94,7 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 				}
 				handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 
-				assert.NoError(t, handler.CheckAndHeal(rf))
+				require.NoError(t, handler.CheckAndHeal(rf))
 
 				assert.Equal(t, v1.HealthyState, patched.State)
 				if autoscaling == v1.AutoscalingModeRecommend {
@@ -163,7 +164,7 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 			}
 			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 
-			assert.NoError(t, handler.Handle(context.Background(), rf))
+			require.NoError(t, handler.Handle(context.Background(), rf))
 
 			assert.Equal(t, want, calls)
 			mk.AssertNotCalled(t, "GetStatefulSet", mock.Anything, mock.Anything)

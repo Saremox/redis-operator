@@ -152,7 +152,7 @@ func TestCheckAllSlavesFromMasterLogContext(t *testing.T) {
 
 	// The caller logs the returned error. A different master comes first,
 	// because it can be a second master.
-	assert.EqualError(t, err, "slave 10.0.0.5 (pod rfr-4) don't have the master 10.0.0.1, has 10.0.0.9")
+	require.EqualError(t, err, "slave 10.0.0.5 (pod rfr-4) don't have the master 10.0.0.1, has 10.0.0.9")
 	entries := logs.all()
 	assertRFFields(t, entries)
 	// A pod that is not Ready usually restarts.
@@ -214,7 +214,7 @@ func TestCheckAllSlavesFromMasterLogsEachWrongMasterOnce(t *testing.T) {
 			checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
 			err := checker.CheckAllSlavesFromMaster("10.0.0.1", rf)
 
-			assert.EqualError(t, err, test.expErr)
+			require.EqualError(t, err, test.expErr)
 			// The caller logs the pod as a field.
 			var wrong *rfservice.WrongMasterError
 			require.ErrorAs(t, err, &wrong)
@@ -247,7 +247,7 @@ func TestCheckAllSlavesFromMasterLogsTheWrongMastersBeforeALabelError(t *testing
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
 	err := checker.CheckAllSlavesFromMaster("10.0.0.1", rf)
 
-	assert.EqualError(t, err, "forbidden")
+	require.EqualError(t, err, "forbidden")
 	assert.Equal(t, []string{"warning rfr-1"}, levelsAndPods(logs.all()))
 	assertRFFields(t, logs.all())
 }
@@ -275,7 +275,7 @@ func TestCheckSentinelQuorumLeavesTheLogToTheCaller(t *testing.T) {
 			checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
 			_, err := checker.CheckSentinelQuorum(rf)
 
-			assert.EqualError(t, err, "insufficient sentinels to reach the quorum")
+			require.EqualError(t, err, "insufficient sentinels to reach the quorum")
 			assert.Empty(t, logs.all())
 		})
 	}
@@ -309,11 +309,11 @@ func TestCheckIfMasterLocalhostLogContext(t *testing.T) {
 			entries := logs.all()
 			if test.expErr != "" {
 				// The caller logs the error, so the function does not.
-				assert.EqualError(t, err, test.expErr)
+				require.EqualError(t, err, test.expErr)
 				assert.Empty(t, entries)
 				return
 			}
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			require.Len(t, entries, 1)
 			assert.Equal(t, "info", entries[0].level)
 			assertRFFields(t, entries)
@@ -332,9 +332,9 @@ func TestGetMasterIPAndGetNumberMastersLogAWarning(t *testing.T) {
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
 
 	_, err := checker.GetMasterIP(rf)
-	assert.ErrorIs(t, err, rfservice.ErrAmbiguousMasterCount)
+	require.ErrorIs(t, err, rfservice.ErrAmbiguousMasterCount)
 	_, err = checker.GetNumberMasters(rf)
-	assert.ErrorIs(t, err, rfservice.ErrRedisNotAnswering)
+	require.ErrorIs(t, err, rfservice.ErrRedisNotAnswering)
 
 	entries := logs.all()
 	require.Len(t, entries, 2)
@@ -359,9 +359,9 @@ func TestGetNumberMastersAndGetMasterIPLogAPodThatIsNotReadyAtDebug(t *testing.T
 
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
 	_, err := checker.GetNumberMasters(rf)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	_, err = checker.GetMasterIP(rf)
-	assert.ErrorIs(t, err, rfservice.ErrAmbiguousMasterCount)
+	require.ErrorIs(t, err, rfservice.ErrAmbiguousMasterCount)
 
 	assert.Equal(t, []string{"debug rfr-0", "debug rfr-0"}, levelsAndPods(logs.all()))
 	assertRFFields(t, logs.all())
@@ -559,7 +559,7 @@ func TestGetMasterIPSkipsPodsNotRunningOrTerminating(t *testing.T) {
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
 	master, err := checker.GetMasterIP(rf)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, "10.0.0.1", master)
 	mr.AssertExpectations(t)
 }
@@ -603,7 +603,7 @@ func TestCheckSentinelsCannotFailoverLogContext(t *testing.T) {
 			checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
 			_, err := checker.CheckSentinelsCannotFailover(rf)
 
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			entries := logs.all()
 			require.Len(t, entries, 1)
 			assert.Equal(t, test.expLevel, entries[0].level)
@@ -625,7 +625,7 @@ func TestCheckMasterHealthLogContext(t *testing.T) {
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
 	healthy, _, err := checker.CheckMasterHealth(rf)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.False(t, healthy)
 	entries := logs.all()
 	require.Len(t, entries, 1)

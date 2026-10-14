@@ -241,6 +241,6 @@ func TestEffectiveRFReaders(t *testing.T) {
 
 	small := rf.DeepCopy()
 	small.Spec.Redis.Resources.Limits[corev1.ResourceMemory] = resource.MustParse("32Mi")
-	assert.Error(t, small.ManagedMaxMemoryError())
+	require.Error(t, small.ManagedMaxMemoryError())
 	assert.NoError(t, effectiveRF(small, 128*mib).ManagedMaxMemoryError())
 }

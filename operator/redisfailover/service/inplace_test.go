@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -127,7 +128,7 @@ func TestResizePodInPlaceRequestsTheResize(t *testing.T) {
 			got = args.Get(2).(map[string]corev1.ResourceRequirements)
 		}).Return(nil)
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, ResizeWaiting, result.Action)
 	ms.AssertExpectations(t)
 	// Requests are defaulted to the limits, as the API server does for pods.
@@ -158,7 +159,7 @@ func TestResizePodInPlaceFollowsTheKubelet(t *testing.T) {
 					ms.On("UpdatePodLabels", "testns", resizePod, map[string]string{appsv1.ControllerRevisionHashLabelKey: "new"}).Once().Return(nil)
 				}
 			})
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, test.action, result.Action)
 			ms.AssertExpectations(t)
 			if test.action == ResizeDone {
@@ -199,7 +200,7 @@ func TestResizePodInPlaceRecreatesForARefusedMemoryDecrease(t *testing.T) {
 			c.Message = test.message
 			test.pod.Status.Conditions = []corev1.PodCondition{c}
 			result, _, err := runResize(t, resizeCase{fullSupport, old, new, test.pod}, nil)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, ResizeRecreate, result.Action)
 			assert.Equal(t, "resize failed: "+test.message, result.Message)
 		})
@@ -272,7 +273,7 @@ func TestResizePodInPlaceIgnoresAStaleMemoryRefusal(t *testing.T) {
 			pod := stalePod(new, old, test.condition)
 			pod.Generation = test.generation
 			result, _, _, err := runResizeWithRedis(t, resizeRF(), resizeCase{fullSupport, podTemplate(old), podTemplate(new), pod}, nil, memoryInUse(512*mi))
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, test.action, result.Action)
 		})
 	}
@@ -292,18 +293,18 @@ func TestResizePodInPlaceTimesOutWithoutCondition(t *testing.T) {
 	}
 
 	result, ms, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), requested(time.Minute)}, noAnnotation)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, ResizeWaiting, result.Action)
 	ms.AssertExpectations(t)
 
 	result, _, err = runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), requested(time.Hour)}, noAnnotation)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, ResizeRecreate, result.Action)
 	assert.Equal(t, "resize not applied by the kubelet", result.Message)
 
 	// Without a recorded request, the timeout starts now.
 	result, ms, err = runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), stalePod(new, old)}, nil)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, ResizeWaiting, result.Action)
 	ms.AssertCalled(t, "UpdatePodAnnotations", "testns", resizePod, mock.Anything)
 }
@@ -316,7 +317,7 @@ func TestResizePodInPlaceIgnoresStaleConditions(t *testing.T) {
 	pod := stalePod(new, old, stale)
 	pod.Generation = 2
 	result, _, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), pod}, nil)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, ResizeWaiting, result.Action)
 }
 
@@ -336,7 +337,7 @@ func TestResizePodInPlaceKeepsAdmittedResources(t *testing.T) {
 			got = args.Get(2).(map[string]corev1.ResourceRequirements)
 		}).Return(nil)
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 	assert.Equal(t, admitted(memory("2Gi")), got[redisContainerName])
 
@@ -344,7 +345,7 @@ func TestResizePodInPlaceKeepsAdmittedResources(t *testing.T) {
 	result, _, err := runResize(t, resizeCase{fullSupport, podTemplate(memory("1Gi")), podTemplate(memory("2Gi")), stalePod(admitted(memory("2Gi")), admitted(memory("2Gi")))}, func(ms *mK8SService.Services) {
 		ms.On("UpdatePodLabels", "testns", resizePod, mock.Anything).Once().Return(nil)
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, ResizeDone, result.Action)
 }
 
@@ -378,7 +379,7 @@ func TestResizePodInPlaceRecreates(t *testing.T) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			result, _, err := runResize(t, resizeCase{test.support, test.old, test.new, podFrom(test.old)}, nil)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, ResizeRecreate, result.Action)
 			assert.Equal(t, test.reason, result.Message)
 		})
@@ -391,7 +392,7 @@ func TestResizePodInPlaceRecreatesOnAKubeletWithoutSupport(t *testing.T) {
 	pod := podFrom(old)
 	pod.Status.ContainerStatuses = nil
 	result, _, err := runResize(t, resizeCase{fullSupport, old, podTemplate(resources("1", "2Gi")), pod}, nil)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, ResizeRecreate, result.Action)
 	assert.Equal(t, "the kubelet does not report the container's resources", result.Message)
 }
@@ -405,7 +406,7 @@ func TestResizePodInPlaceRecreatesWithoutRevisionsOrSupport(t *testing.T) {
 		rf := rf.DeepCopy()
 		rf.Spec.Redis.InPlaceResize = "Disabled"
 		result, err := NewRedisFailoverHealer(&mK8SService.Services{}, nil, log.Dummy).ResizePodInPlace(rf, resizePod, "new", AutoscalerLimits{})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, ResizeRecreate, result.Action)
 	})
 
@@ -415,7 +416,7 @@ func TestResizePodInPlaceRecreatesWithoutRevisionsOrSupport(t *testing.T) {
 		ms.On("GetPod", "testns", resizePod).Return(stalePod(old, old), nil)
 		ms.On("GetControllerRevision", "testns", "old").Return(nil, apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "controllerrevisions"}, "old", errors.New("rbac")))
 		result, err := NewRedisFailoverHealer(ms, nil, log.Dummy).ResizePodInPlace(rf, resizePod, "new", AutoscalerLimits{})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, ResizeRecreate, result.Action)
 	})
 
@@ -432,7 +433,7 @@ func TestResizePodInPlaceRecreatesWithoutRevisionsOrSupport(t *testing.T) {
 				}
 			}
 			result, err := NewRedisFailoverHealer(ms, nil, log.Dummy).ResizePodInPlace(rf, resizePod, "new", AutoscalerLimits{})
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, ResizeRecreate, result.Action)
 		})
 	}
@@ -447,7 +448,7 @@ func TestResizePodInPlaceErrors(t *testing.T) {
 		result, _, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), stalePod(old, old)}, func(ms *mK8SService.Services) {
 			ms.On("ResizePod", "testns", resizePod, mock.Anything).Return(forbidden)
 		})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, ResizeRecreate, result.Action)
 	})
 
@@ -473,7 +474,7 @@ func TestResizePodInPlaceErrors(t *testing.T) {
 			result, ms, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), stalePod(old, old)}, func(ms *mK8SService.Services) {
 				ms.On("ResizePod", "testns", resizePod, mock.Anything).Once().Return(test.err)
 			})
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, test.want, result.Action)
 			// A pod annotation change queues the next reconcile at once.
 			ms.AssertNotCalled(t, "UpdatePodAnnotations", mock.Anything, mock.Anything, mock.Anything)
@@ -575,7 +576,7 @@ func TestResizePodInPlaceSupersededResize(t *testing.T) {
 			got = args.Get(2).(map[string]corev1.ResourceRequirements)
 		}).Return(nil)
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 	assert.Equal(t, withDefaultRequests(c), got[redisContainerName])
 
@@ -588,12 +589,12 @@ func TestResizePodInPlaceSupersededResize(t *testing.T) {
 			got = args.Get(2).(map[string]corev1.ResourceRequirements)
 		}).Return(nil)
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, withDefaultRequests(a), got[redisContainerName])
 
 	// Reverting a memory increase lowers the pod's limit, although the revisions have the same.
 	result, _, err := runResize(t, resizeCase{k8s.PodResizeSupport{Supported: true}, podTemplate(a), podTemplate(a), stalePod(c, c)}, nil)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, ResizeRecreate, result.Action)
 	assert.Equal(t, "lowering a memory limit in place needs Kubernetes 1.35", result.Message)
 
@@ -602,7 +603,7 @@ func TestResizePodInPlaceSupersededResize(t *testing.T) {
 	result, _, err = runResize(t, resizeCase{k8s.PodResizeSupport{Supported: true}, podTemplate(a), podTemplate(a), stalePod(c, a)}, func(ms *mK8SService.Services) {
 		ms.On("ResizePod", "testns", resizePod, mock.Anything).Once().Return(invalid)
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, ResizeRecreate, result.Action)
 	assert.Equal(t, "resize rejected: "+invalid.Error(), result.Message)
 }
@@ -619,7 +620,7 @@ func TestResizePodInPlaceTimesOutFromTheLatestRequest(t *testing.T) {
 			pod := stalePod(new, old, c)
 			pod.Annotations = map[string]string{resizeRequestedAnnotation: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)}
 			result, _, err := runResize(t, resizeCase{fullSupport, podTemplate(old), podTemplate(new), pod}, nil)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, ResizeWaiting, result.Action)
 		})
 	}
@@ -647,7 +648,7 @@ func TestResizePodInPlaceChecksTheMemoryInUse(t *testing.T) {
 
 	t.Run("too high", func(t *testing.T) {
 		result, ms, mr, err := runResizeWithRedis(t, resizeRF(), lowering, nil, memoryInUse(993*mi))
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, ResizeRecreate, result.Action)
 		assert.Equal(t, "the Redis memory in use (993.0Mi) leaves less than 32Mi below the lowered limit 1024.0Mi", result.Message)
 		mr.AssertExpectations(t)
@@ -657,7 +658,7 @@ func TestResizePodInPlaceChecksTheMemoryInUse(t *testing.T) {
 	t.Run("fits", func(t *testing.T) {
 		// 992Mi + 32Mi = 1Gi
 		result, ms, mr, err := runResizeWithRedis(t, resizeRF(), lowering, resize, memoryInUse(992*mi))
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, ResizeWaiting, result.Action)
 		ms.AssertExpectations(t)
 		mr.AssertExpectations(t)
@@ -674,7 +675,7 @@ func TestResizePodInPlaceChecksTheMemoryInUse(t *testing.T) {
 		}, func(mr *mRedisService.Client) {
 			mr.On("GetMemoryInfo", "10.0.0.1", "6380", "secret").Once().Return(&redis.MemoryInfo{UsedMemoryRSS: 1000 * mi}, nil)
 		})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, ResizeRecreate, result.Action)
 		mr.AssertExpectations(t)
 	})
@@ -683,7 +684,7 @@ func TestResizePodInPlaceChecksTheMemoryInUse(t *testing.T) {
 		_, ms, _, err := runResizeWithRedis(t, resizeRF(), lowering, nil, func(mr *mRedisService.Client) {
 			mr.On("GetMemoryInfo", "", "0", "").Once().Return(nil, fail)
 		})
-		assert.ErrorIs(t, err, fail)
+		require.ErrorIs(t, err, fail)
 		ms.AssertNotCalled(t, "ResizePod", mock.Anything, mock.Anything, mock.Anything)
 	})
 
@@ -693,7 +694,7 @@ func TestResizePodInPlaceChecksTheMemoryInUse(t *testing.T) {
 		_, _, mr, err := runResizeWithRedis(t, rf, lowering, func(ms *mK8SService.Services) {
 			ms.On("GetSecret", "testns", "auth").Return(nil, fail)
 		}, nil)
-		assert.ErrorIs(t, err, fail)
+		require.ErrorIs(t, err, fail)
 		mr.AssertNotCalled(t, "GetMemoryInfo", mock.Anything, mock.Anything, mock.Anything)
 	})
 
@@ -717,7 +718,7 @@ func TestResizePodInPlaceChecksTheMemoryInUse(t *testing.T) {
 				ms.On("ResizePod", "testns", resizePod, mock.Anything).Maybe().Return(nil)
 				ms.On("UpdatePodLabels", "testns", resizePod, mock.Anything).Maybe().Return(nil)
 			}, nil)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, test.action, result.Action)
 			ms.AssertExpectations(t)
 			mr.AssertNotCalled(t, "GetMemoryInfo", mock.Anything, mock.Anything, mock.Anything)
@@ -803,7 +804,7 @@ func TestResizePodInPlaceClass(t *testing.T) {
 				rf = resizeRF()
 			}
 			result, _, _, err := runResizeWithRedis(t, rf, test.c, test.setup, test.redis)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, test.action, result.Action)
 			assert.Equal(t, test.class, result.Class)
 			assert.False(t, result.AutoscalerRevision)
@@ -902,7 +903,7 @@ func TestResizePodInPlaceReportsAnAutoscalerRevision(t *testing.T) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			result, _, _, err := runResizeEffective(t, test.rf, test.c, test.limits, test.setup, nil)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, ResizeRecreate, result.Action)
 			assert.Equal(t, ResizePermanent, result.Class)
 			assert.Equal(t, test.want, result.AutoscalerRevision)
@@ -931,7 +932,7 @@ func TestResizePodInPlaceReportsAnAutoscalerRevision(t *testing.T) {
 func TestClearResizeRequested(t *testing.T) {
 	ms := &mK8SService.Services{}
 	ms.On("UpdatePodAnnotations", "testns", resizePod, map[string]string{resizeRequestedAnnotation: ""}).Once().Return(nil)
-	assert.NoError(t, NewRedisFailoverHealer(ms, nil, log.Dummy).ClearResizeRequested(resizeRF(), resizePod))
+	require.NoError(t, NewRedisFailoverHealer(ms, nil, log.Dummy).ClearResizeRequested(resizeRF(), resizePod))
 	ms.AssertExpectations(t)
 
 	fail := errors.New("boom")

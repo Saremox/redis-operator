@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -98,8 +99,6 @@ func TestEnsure(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert := assert.New(t)
-
 			rf := generateRF(test.exporter, test.bootstrapping)
 			if test.bootstrapping {
 				rf.Spec.BootstrapNode.AllowSentinels = test.bootstrappingAllowSentinels
@@ -137,7 +136,7 @@ func TestEnsure(t *testing.T) {
 			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 			err := handler.Ensure(rf, map[string]string{}, []metav1.OwnerReference{}, metrics.Dummy)
 
-			assert.NoError(err)
+			require.NoError(t, err)
 			mrfs.AssertExpectations(t)
 		})
 	}

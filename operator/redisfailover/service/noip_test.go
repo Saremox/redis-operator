@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -69,7 +70,7 @@ func TestCheckAllSlavesFromMasterSkipsAPodWithoutIP(t *testing.T) {
 
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, logger, metrics.Dummy)
 
-	assert.NoError(t, checker.CheckAllSlavesFromMaster("10.0.0.1", rf))
+	require.NoError(t, checker.CheckAllSlavesFromMaster("10.0.0.1", rf))
 	mr.AssertExpectations(t)
 	mr.AssertNotCalled(t, "GetSlaveOf", "", mock.Anything, mock.Anything)
 	assert.Empty(t, logger.errors)
@@ -91,7 +92,7 @@ func TestCheckAllSlavesFromMasterKeepsTheWrongMasterErrorNextToAPodWithoutIP(t *
 
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.Dummy, metrics.Dummy)
 
-	assert.Error(t, checker.CheckAllSlavesFromMaster("10.0.0.1", rf))
+	require.Error(t, checker.CheckAllSlavesFromMaster("10.0.0.1", rf))
 	mr.AssertExpectations(t)
 }
 
@@ -114,7 +115,7 @@ func TestSetMasterOnAllSkipsAPodWithoutIP(t *testing.T) {
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, logger)
 
-	assert.NoError(t, healer.SetMasterOnAll("10.0.0.1", rf))
+	require.NoError(t, healer.SetMasterOnAll("10.0.0.1", rf))
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 	mr.AssertNotCalled(t, "MakeSlaveOfWithPort", "", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
@@ -144,7 +145,7 @@ func TestSetOldestAsMasterSkipsAPodWithoutIP(t *testing.T) {
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, logger)
 
-	assert.NoError(t, healer.SetOldestAsMaster(rf))
+	require.NoError(t, healer.SetOldestAsMaster(rf))
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 	mr.AssertNotCalled(t, "MakeMaster", "", mock.Anything, mock.Anything)
@@ -164,6 +165,6 @@ func TestSetOldestAsMasterFailsWhenNoPodHasAnIP(t *testing.T) {
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.Dummy)
 
-	assert.Error(t, healer.SetOldestAsMaster(rf))
+	require.Error(t, healer.SetOldestAsMaster(rf))
 	mr.AssertNotCalled(t, "MakeMaster", mock.Anything, mock.Anything, mock.Anything)
 }

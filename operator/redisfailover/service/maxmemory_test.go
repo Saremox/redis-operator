@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -105,7 +106,7 @@ func runEnsureMaxMemory(t *testing.T, rf *redisfailoverv1.RedisFailover, master 
 	t.Helper()
 	healer := NewRedisFailoverHealer(k8sWithPods(pods...), mr, log.Dummy)
 	result, err := healer.EnsureRedisMaxMemory(rf, master, mmRedises)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	mr.AssertExpectations(t)
 	return result
 }
@@ -139,6 +140,7 @@ func expectMemoryInfo(mr *mRedisService.Client, info *redis.MemoryInfo) {
 }
 
 func withShortEvictionWait(t *testing.T) {
+	t.Helper()
 	w, p := evictionWait, evictionPollInterval
 	evictionWait, evictionPollInterval = 20*time.Millisecond, time.Millisecond
 	t.Cleanup(func() { evictionWait, evictionPollInterval = w, p })
@@ -353,7 +355,7 @@ func TestEnsureRedisMaxMemoryWithoutMaster(t *testing.T) {
 				setup(mr)
 				healer := NewRedisFailoverHealer(k8sWithPods(), mr, log.Dummy)
 				_, err := healer.EnsureRedisMaxMemory(rfWithMaxMemory("noeviction"), "", mmRedises)
-				assert.ErrorIs(t, err, fail)
+				require.ErrorIs(t, err, fail)
 				mr.AssertExpectations(t)
 			})
 		}
@@ -417,7 +419,7 @@ func TestEnsureRedisMaxMemoryErrors(t *testing.T) {
 			setup(mr)
 			healer := NewRedisFailoverHealer(k8sWithPods(), mr, log.Dummy)
 			_, err := healer.EnsureRedisMaxMemory(rfWithMaxMemory("allkeys-lru"), mmMaster, mmRedises)
-			assert.ErrorIs(t, err, fail)
+			require.ErrorIs(t, err, fail)
 			mr.AssertExpectations(t)
 		})
 	}
@@ -731,7 +733,7 @@ func TestEnsureRedisMaxMemoryHoldsBeforeTheRevisionIsUpdated(t *testing.T) {
 	ss := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Generation: 2}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 1, UpdateRevision: updateRevision}}
 	healer := NewRedisFailoverHealer(k8sWithStatefulSet(ss, upToDate(redisPod(mmMaster, "1Gi", "")), upToDate(redisPod(mmReplica, "1Gi", ""))), mr, log.Dummy)
 	result, err := healer.EnsureRedisMaxMemory(rf, mmMaster, mmRedises)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, result.HoldRollout)
 	mr.AssertExpectations(t)
 }

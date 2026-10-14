@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -81,7 +82,7 @@ func TestApplyPasswordRemembersAcceptedPassword(t *testing.T) {
 	// and the Sentinels are retried until every one has it.
 	mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Once().Return(false, false, nil)
 	mrfh.On("ApplySentinelPassword", rf, "v1").Once().Return(false, nil)
-	assert.NoError(t, handler.applyPassword(rf))
+	require.NoError(t, handler.applyPassword(rf))
 	mrfh.On("ApplySentinelPassword", rf, "v1").Once().Return(true, nil)
 	assert.NoError(t, handler.applyPassword(rf))
 
@@ -94,9 +95,9 @@ func TestApplyPasswordRemembersAcceptedPassword(t *testing.T) {
 	password = "v2"
 	mrfh.On("ApplyPassword", rf, "v2", []string{"v1"}).Once().Return(false, false, nil)
 	mrfh.On("ApplySentinelPassword", rf, "v2").Once().Return(true, nil)
-	assert.NoError(t, handler.applyPassword(rf))
+	require.NoError(t, handler.applyPassword(rf))
 	mrfh.On("ApplyPassword", rf, "v2", []string{"v1", "v2"}).Once().Return(false, false, nil)
-	assert.NoError(t, handler.applyPassword(rf))
+	require.NoError(t, handler.applyPassword(rf))
 	mrfh.On("ApplyPassword", rf, "v2", []string{"v1", "v2"}).Once().Return(true, false, nil)
 	assert.NoError(t, handler.applyPassword(rf))
 	assert.NoError(t, handler.applyPassword(rf))
@@ -156,11 +157,11 @@ func TestApplyPasswordSecondChangeWhilePodIsPending(t *testing.T) {
 	handler, rf := newPendingPodPasswordHandler(&password, &running)
 
 	password = "v2"
-	assert.NoError(t, handler.applyPassword(rf))
+	require.NoError(t, handler.applyPassword(rf))
 	assert.Equal(t, "v2", running)
 
 	password = "v3"
-	assert.NoError(t, handler.applyPassword(rf))
+	require.NoError(t, handler.applyPassword(rf))
 	assert.Equal(t, "v3", running)
 }
 
@@ -172,11 +173,11 @@ func TestApplyPasswordRevertWhilePodIsPending(t *testing.T) {
 	handler, rf := newPendingPodPasswordHandler(&password, &running)
 
 	password = "v2"
-	assert.NoError(t, handler.applyPassword(rf))
+	require.NoError(t, handler.applyPassword(rf))
 	assert.Equal(t, "v2", running)
 
 	password = "v1"
-	assert.NoError(t, handler.applyPassword(rf))
+	require.NoError(t, handler.applyPassword(rf))
 	assert.Equal(t, "v1", running)
 }
 
@@ -190,7 +191,7 @@ func TestApplyPasswordForgetsDeletedRedisFailover(t *testing.T) {
 	rf.Finalizers = []string{redisFailoverFinalizer}
 	ms := handler.k8sservice.(*mK8SService.Services)
 	ms.On("PatchRedisFailoverFinalizers", mock.Anything, "testns", "test", mock.Anything, mock.Anything).Return(nil)
-	assert.NoError(t, handler.Handle(context.Background(), rf))
+	require.NoError(t, handler.Handle(context.Background(), rf))
 
 	_, cached := handler.passwords.Load(passwordKey(rf))
 	assert.False(t, cached)
@@ -214,7 +215,7 @@ func TestCheckAndHealReportsAnUnappliedPassword(t *testing.T) {
 			mrfh.On("ApplyPassword", rf, "v1", []string{"v1"}).Return(true, false, test.applyErr)
 			mrfh.On("ApplySentinelPassword", rf, "v1").Return(false, test.sentinelErr)
 
-			assert.ErrorIs(t, handler.CheckAndHeal(rf), boom)
+			require.ErrorIs(t, handler.CheckAndHeal(rf), boom)
 			assert.Equal(t, redisfailoverv1.NotHealthyState, rf.Status.State)
 			assert.Equal(t, "unable to apply the configured password", rf.Status.Message)
 			_, cached := handler.passwords.Load(passwordKey(rf))
@@ -234,7 +235,7 @@ func TestCheckAndHealReportsAnUnreadableSecret(t *testing.T) {
 	ms.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, &mRFService.RedisFailoverHeal{}, ms, metrics.Dummy, log.Dummy)
 
-	assert.ErrorIs(t, handler.CheckAndHeal(rf), boom)
+	require.ErrorIs(t, handler.CheckAndHeal(rf), boom)
 	assert.Equal(t, "unable to apply the configured password", rf.Status.Message)
 }
 

@@ -90,14 +90,14 @@ func TestCheckerGetAutoscalerInfo(t *testing.T) {
 
 	got, err := checker.GetAutoscalerInfo(rf, "10.0.0.1")
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Same(t, want, got)
 
 	ms = &mK8SService.Services{}
 	ms.On("GetSecret", "testns", "auth").Return(nil, assert.AnError)
 	checker = NewRedisFailoverChecker(ms, mr, log.Dummy, metrics.Dummy)
 	_, err = checker.GetAutoscalerInfo(rf, "10.0.0.1")
-	assert.ErrorIs(t, err, assert.AnError)
+	require.ErrorIs(t, err, assert.AnError)
 	mr.AssertExpectations(t)
 }
 

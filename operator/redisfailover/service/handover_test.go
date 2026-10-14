@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -29,6 +30,7 @@ func handoverRF() *redisfailoverv1.RedisFailover {
 }
 
 func shortHandoverWait(t *testing.T) {
+	t.Helper()
 	pause, margin, interval := handoverWritePause, handoverWaitMargin, handoverPollInterval
 	t.Cleanup(func() { handoverWritePause, handoverWaitMargin, handoverPollInterval = pause, margin, interval })
 	handoverWritePause, handoverWaitMargin, handoverPollInterval = 20*time.Millisecond, 20*time.Millisecond, time.Millisecond
@@ -346,9 +348,9 @@ func TestHandOverMaster(t *testing.T) {
 			got, err := healer.HandOverMaster(handoverMaster, handoverTarget, handoverRF())
 
 			if test.wantErr != "" {
-				assert.ErrorContains(t, err, test.wantErr)
+				require.ErrorContains(t, err, test.wantErr)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.Equal(t, test.want, got)
 			}
 			if !test.failover {
@@ -412,9 +414,9 @@ func TestAbortOrphanedFailover(t *testing.T) {
 			got, err := healer.AbortOrphanedFailover(handoverMaster, handoverRF())
 
 			if test.wantErr != "" {
-				assert.ErrorContains(t, err, test.wantErr)
+				require.ErrorContains(t, err, test.wantErr)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.Equal(t, test.want, got)
 			}
 			mr.AssertExpectations(t)
@@ -434,7 +436,7 @@ func TestAbortOrphanedFailoverWithoutAPassword(t *testing.T) {
 
 	aborted, err := healer.AbortOrphanedFailover(handoverMaster, rf)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.False(t, aborted)
 	mr.AssertNotCalled(t, "GetFailoverState", mock.Anything, mock.Anything, mock.Anything)
 }

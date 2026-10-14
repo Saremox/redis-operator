@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -34,6 +35,7 @@ func useAutoscaler(rt *rolloutTest) {
 // newStaleRolloutTest is a rolloutTest with synced, ready pods, where only
 // the pod stale is on the old revision.
 func newStaleRolloutTest(t *testing.T, stale string, sentinel bool) *rolloutTest {
+	t.Helper()
 	rt := newRolloutTest(t)
 	rt.synced = true
 	rt.pods[1].Status.Conditions = podReady
@@ -216,7 +218,7 @@ func TestRecordAutoscaleRollout(t *testing.T) {
 				h.autoscaleRollout.Store(failoverKey(rf), autoscaleRollout{refusal: test.refusal})
 			}
 
-			assert.NoError(t, h.recordAutoscaleRollout(rf, test.waits))
+			require.NoError(t, h.recordAutoscaleRollout(rf, test.waits))
 			mk.AssertExpectations(t)
 			v, _ := h.autoscaleRollout.Load(failoverKey(rf))
 			got := v.(autoscaleRollout)
@@ -242,7 +244,7 @@ func TestRecordAutoscaleRolloutOnlyInModeAuto(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			rf := autoscaleRolloutRF(mode)
 			h := NewRedisFailoverHandler(Config{}, nil, nil, nil, &mK8SService.Services{}, metrics.Dummy, log.Dummy)
-			assert.NoError(t, h.recordAutoscaleRollout(rf, false))
+			require.NoError(t, h.recordAutoscaleRollout(rf, false))
 			_, ok := h.autoscaleRollout.Load(failoverKey(rf))
 			assert.False(t, ok)
 		})
@@ -297,7 +299,7 @@ func TestUpdateRedisesPodsRecordsTheAutoscaleRollout(t *testing.T) {
 	ssErr = errors.New("boom")
 	rt.handler.autoscaleRollout.Delete(failoverKey(rt.rf))
 	rt.rf.Status = redisfailoverv1.RedisFailoverStatus{}
-	assert.ErrorIs(t, rt.handler.UpdateRedisesPods(rt.rf), ssErr)
+	require.ErrorIs(t, rt.handler.UpdateRedisesPods(rt.rf), ssErr)
 	_, ok := rt.handler.autoscaleRollout.Load(failoverKey(rt.rf))
 	assert.False(t, ok)
 }
@@ -333,7 +335,7 @@ func TestCheckAndHealDropsTheAutoscaleRollout(t *testing.T) {
 	h := NewRedisFailoverHandler(Config{}, nil, nil, nil, mk, metrics.Dummy, log.Dummy)
 	h.autoscaleRollout.Store(failoverKey(rf), autoscaleRollout{settled: true})
 
-	assert.ErrorIs(t, h.CheckAndHeal(rf), fail)
+	require.ErrorIs(t, h.CheckAndHeal(rf), fail)
 	_, ok := h.autoscaleRollout.Load(failoverKey(rf))
 	assert.False(t, ok)
 }

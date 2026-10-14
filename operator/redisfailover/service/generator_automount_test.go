@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,7 +34,7 @@ func TestRedisStatefulSetAutomountServiceAccountToken(t *testing.T) {
 			}).Return(nil)
 
 			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-			assert.NoError(t, client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{}))
+			require.NoError(t, client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{}))
 
 			if assert.NotNil(t, gotSS) {
 				assertAutomount(t, serviceAccountName, gotSS.Spec.Template.Spec.AutomountServiceAccountToken)
@@ -59,7 +60,7 @@ func TestSentinelDeploymentAutomountServiceAccountToken(t *testing.T) {
 			}).Return(nil)
 
 			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-			assert.NoError(t, client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{}))
+			require.NoError(t, client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{}))
 
 			if assert.NotNil(t, gotD) {
 				assertAutomount(t, serviceAccountName, gotD.Spec.Template.Spec.AutomountServiceAccountToken)
