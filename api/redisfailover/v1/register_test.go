@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	v1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -37,6 +38,6 @@ func TestAddToScheme(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	err := v1.AddToScheme(scheme)
-	assertTest.NoError(err)
+	require.NoError(t, err)
 	assertTest.True(scheme.Recognizes(v1.SchemeGroupVersion.WithKind(v1.RFKind)))
 }

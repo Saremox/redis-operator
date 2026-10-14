@@ -135,7 +135,7 @@ func TestFailoverToConnectionError(t *testing.T) {
 	require.NoError(t, err)
 	c := newTestClient()
 
-	assert.Error(t, c.FailoverTo(testLoopbackIP, strconv.Itoa(port), "", "127.0.0.2", time.Second))
+	require.Error(t, c.FailoverTo(testLoopbackIP, strconv.Itoa(port), "", "127.0.0.2", time.Second))
 	assert.ErrorIs(t, c.FailoverTo("", strconv.Itoa(port), "", "127.0.0.2", time.Second), errNoIP)
 }
 
@@ -284,7 +284,7 @@ func TestFailoverAbortConnectionError(t *testing.T) {
 	require.NoError(t, err)
 	c := newTestClient()
 
-	assert.Error(t, c.FailoverAbort(testLoopbackIP, strconv.Itoa(port), ""))
+	require.Error(t, c.FailoverAbort(testLoopbackIP, strconv.Itoa(port), ""))
 	assert.ErrorIs(t, c.FailoverAbort("", strconv.Itoa(port), ""), errNoIP)
 }
 
@@ -316,9 +316,9 @@ func TestGetRunIDErrors(t *testing.T) {
 	c := newTestClient()
 
 	_, err = c.GetRunID(testLoopbackIP, strconv.Itoa(port), "")
-	assert.Error(t, err)
+	require.Error(t, err)
 	_, err = c.GetRunID("", strconv.Itoa(port), "")
-	assert.ErrorIs(t, err, errNoIP)
+	require.ErrorIs(t, err, errNoIP)
 
 	// A server that answers INFO without run_id.
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -389,7 +389,7 @@ func TestGetFailoverStateOfAFrozenNode(t *testing.T) {
 	start := time.Now()
 	_, err := newTestClient().GetFailoverState(host, port, "")
 
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Less(t, time.Since(start), 1500*time.Millisecond)
 }
 
@@ -399,13 +399,13 @@ func TestGetFailoverStateErrors(t *testing.T) {
 	c := newTestClient()
 
 	_, err = c.GetFailoverState(testLoopbackIP, strconv.Itoa(port), "")
-	assert.Error(t, err)
+	require.Error(t, err)
 	_, err = c.GetFailoverState("", strconv.Itoa(port), "")
-	assert.ErrorIs(t, err, errNoIP)
+	require.ErrorIs(t, err, errNoIP)
 
 	// Redis before 6.2 has no master_failover_state.
 	host, p := fakeServer(t, "$11\r\nrole:master\r\n")
 	state, err := c.GetFailoverState(host, p, "")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Empty(t, state)
 }

@@ -87,7 +87,7 @@ func TestRunServesTheHTTPHandler(t *testing.T) {
 	}
 
 	// Run starts the HTTP server, then fails on the missing kubeconfig.
-	assert.Error(t, m.Run())
+	require.Error(t, m.Run())
 
 	for path, want := range map[string]int{
 		"/metrics":      http.StatusOK,
@@ -117,7 +117,7 @@ func TestRunLogsTheVersion(t *testing.T) {
 
 	err := m.Run()
 
-	assert.ErrorIs(t, err, assert.AnError)
+	require.ErrorIs(t, err, assert.AnError)
 	logger.AssertExpectations(t)
 }
 

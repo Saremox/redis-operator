@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	kubeerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -133,7 +134,7 @@ func TestConfigMapServiceGetCreateOrUpdate(t *testing.T) {
 			if test.expErr {
 				assertTest.Error(err)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 				// Check calls to kubernetes.
 				assertTest.Equal(test.expActions, mcli.Actions())
 			}
@@ -210,7 +211,7 @@ func TestConfigMapServiceObjectUpToDate(t *testing.T) {
 			mcli := kubernetes.NewClientset(stored)
 
 			service := k8s.NewConfigMapService(mcli, log.Dummy, metrics.Dummy)
-			assert.NoError(service.CreateOrUpdateConfigMap(testns, test.desired.DeepCopy()))
+			require.NoError(t, service.CreateOrUpdateConfigMap(testns, test.desired.DeepCopy()))
 
 			updates := 0
 			for _, a := range mcli.Actions() {
@@ -269,9 +270,9 @@ func TestConfigMapServiceUpdate(t *testing.T) {
 			err := service.UpdateConfigMap(testns, testConfigMap)
 
 			if test.expErr {
-				assertTest.Error(err)
+				require.Error(t, err)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 			}
 			assertTest.Equal(test.expActions, mcli.Actions())
 		})
@@ -294,11 +295,11 @@ func TestConfigMapServiceDelete(t *testing.T) {
 		service := k8s.NewConfigMapService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.DeleteConfigMap(testns, "testconfigmap1")
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.Equal([]kubetesting.Action{newConfigMapDeleteAction(testns, "testconfigmap1")}, mcli.Actions())
 
 		_, getErr := mcli.CoreV1().ConfigMaps(testns).Get(context.TODO(), "testconfigmap1", metav1.GetOptions{})
-		assertTest.Error(getErr)
+		require.Error(t, getErr)
 		assertTest.True(kubeerrors.IsNotFound(getErr))
 	})
 
@@ -309,7 +310,7 @@ func TestConfigMapServiceDelete(t *testing.T) {
 		service := k8s.NewConfigMapService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.DeleteConfigMap(testns, "does-not-exist")
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.True(kubeerrors.IsNotFound(err))
 	})
 }
@@ -327,7 +328,7 @@ func TestConfigMapServiceList(t *testing.T) {
 		service := k8s.NewConfigMapService(mcli, log.Dummy, metrics.Dummy)
 
 		list, err := service.ListConfigMaps(testns)
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.Len(list.Items, 2)
 		names := []string{list.Items[0].Name, list.Items[1].Name}
 		assertTest.ElementsMatch([]string{"cm1", "cm2"}, names)
@@ -344,7 +345,7 @@ func TestConfigMapServiceList(t *testing.T) {
 		service := k8s.NewConfigMapService(mcli, log.Dummy, metrics.Dummy)
 
 		list, err := service.ListConfigMaps(testns)
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.Empty(list.Items)
 		assertTest.Equal([]kubetesting.Action{newConfigMapListAction(testns)}, mcli.Actions())
 	})
@@ -362,7 +363,7 @@ func TestConfigMapServiceGetMetricLabel(t *testing.T) {
 
 			_, err := k8s.NewConfigMapService(cli, log.Dummy, rec).GetConfigMap("ns", name)
 
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			rec.AssertExpectations(t)
 		})
 	}

@@ -81,8 +81,8 @@ func TestRemoveStaleMetricsDeletesStaleCheckInstances(t *testing.T) {
 	rec.RecordSentinelCheck(namespace, resource, SENTINEL_NOT_READY, "10.0.0.31", STATUS_HEALTHY)
 
 	// Sanity check the metrics are present before GC runs.
-	assert.Equal(t, float64(1), testutil.ToFloat64(rec.redisCheck.WithLabelValues(namespace, resource, REDIS_REPLICA_MISMATCH, "10.0.0.30", STATUS_UNHEALTHY)))
-	assert.Equal(t, float64(1), testutil.ToFloat64(rec.sentinelCheck.WithLabelValues(namespace, resource, SENTINEL_NOT_READY, "10.0.0.31", STATUS_HEALTHY)))
+	assert.InDelta(t, float64(1), testutil.ToFloat64(rec.redisCheck.WithLabelValues(namespace, resource, REDIS_REPLICA_MISMATCH, "10.0.0.30", STATUS_UNHEALTHY)), 0)
+	assert.InDelta(t, float64(1), testutil.ToFloat64(rec.sentinelCheck.WithLabelValues(namespace, resource, SENTINEL_NOT_READY, "10.0.0.31", STATUS_HEALTHY)), 0)
 
 	old := time.Now().Add(-2 * metricsGCIntervalMinutes * time.Minute)
 	mutex.Lock()

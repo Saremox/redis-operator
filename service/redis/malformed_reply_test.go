@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // The Sentinel image is tenant-controlled, so a reply can have any shape.
@@ -52,6 +53,6 @@ func TestSentinelMasterDownRejectsMalformedReplies(t *testing.T) {
 func TestSentinelMasterDownReadsAWellFormedReply(t *testing.T) {
 	startRawSentinel(t, "127.0.0.3", "*2\r\n$5\r\nflags\r\n$13\r\nmaster,s_down\r\n")
 	down, err := newTestClient().SentinelMasterDown("127.0.0.3")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, down)
 }

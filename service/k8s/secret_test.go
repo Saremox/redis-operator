@@ -8,6 +8,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 	mmetrics "github.com/saremox/redis-operator/mocks/metrics"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 
 	errors "k8s.io/apimachinery/pkg/api/errors"
@@ -45,17 +46,17 @@ func TestSecretServiceGet(t *testing.T) {
 		})
 
 		_, err := mcli.CoreV1().Secrets(secret.Namespace).Create(context.TODO(), &secret, metav1.CreateOptions{})
-		assertTest.NoError(err)
+		require.NoError(t, err)
 
 		// test getting the secret
 		service := NewSecretService(mcli, log.Dummy, metrics.Dummy)
 		ss, err := service.GetSecret(secret.Namespace, secret.Name)
 		assertTest.NotNil(ss)
-		assertTest.NoError(err)
+		require.NoError(t, err)
 
 		// test getting a nonexistent secret
 		_, err = service.GetSecret(secret.Namespace, secret.Name+"nonexistent")
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.True(errors.IsNotFound(err))
 	})
 }
@@ -72,7 +73,7 @@ func TestSecretServiceGetMetricLabel(t *testing.T) {
 
 			_, err := NewSecretService(cli, log.Dummy, rec).GetSecret("ns", name)
 
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			rec.AssertExpectations(t)
 		})
 	}
@@ -99,19 +100,19 @@ func TestSecretServiceCreateOrUpdate(t *testing.T) {
 	rec.On("RecordK8sOperation", "ns", "Secret", "rfr-auth-applied-test", "UPDATE", metrics.SUCCESS, metrics.NOT_APPLICABLE).Once()
 	service := NewSecretService(cli, log.Dummy, rec)
 
-	assert.NoError(t, service.CreateOrUpdateSecret("ns", appliedSecret("test", "v1")))
+	require.NoError(t, service.CreateOrUpdateSecret("ns", appliedSecret("test", "v1")))
 	stored, err := cli.CoreV1().Secrets("ns").Get(context.TODO(), "rfr-auth-applied-test", metav1.GetOptions{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	stored.ResourceVersion = "7"
 	_, err = cli.CoreV1().Secrets("ns").Update(context.TODO(), stored, metav1.UpdateOptions{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	update := appliedSecret("test", "v2")
-	assert.NoError(t, service.CreateOrUpdateSecret("ns", update))
+	require.NoError(t, service.CreateOrUpdateSecret("ns", update))
 	rec.AssertExpectations(t)
 
 	got, err := cli.CoreV1().Secrets("ns").Get(context.TODO(), "rfr-auth-applied-test", metav1.GetOptions{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, "v2", string(got.Data["redis"]))
 	assert.Equal(t, "7", update.ResourceVersion)
 }
@@ -125,9 +126,9 @@ func TestSecretServiceCreateOrUpdateKeepsAForeignSecret(t *testing.T) {
 			err := NewSecretService(cli, log.Dummy, metrics.Dummy).CreateOrUpdateSecret("ns", appliedSecret("test", "v2"))
 
 			var other *ControlledByOtherError
-			assert.ErrorAs(t, err, &other)
+			require.ErrorAs(t, err, &other)
 			if owner == "" {
-				assert.EqualError(t, err, `cannot manage Secret "rfr-auth-applied-test": it has no controller`)
+				require.EqualError(t, err, `cannot manage Secret "rfr-auth-applied-test": it has no controller`)
 			}
 			got, _ := cli.CoreV1().Secrets("ns").Get(context.TODO(), "rfr-auth-applied-test", metav1.GetOptions{})
 			assert.Equal(t, "v1", string(got.Data["redis"]))

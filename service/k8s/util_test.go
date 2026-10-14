@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	kubeerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,8 +43,8 @@ func TestGetRedisPassword(t *testing.T) {
 		}
 
 		password, err := GetRedisPassword(s, rf)
-		assertTest.NoError(err)
-		assertTest.Equal("", password)
+		require.NoError(t, err)
+		assertTest.Empty(password)
 	})
 
 	t.Run("SecretPath set and secret has a password field returns the password", func(t *testing.T) {
@@ -69,7 +70,7 @@ func TestGetRedisPassword(t *testing.T) {
 		}
 
 		password, err := GetRedisPassword(s, rf)
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.Equal("s3cr3t", password)
 	})
 
@@ -87,8 +88,8 @@ func TestGetRedisPassword(t *testing.T) {
 		}
 
 		password, err := GetRedisPassword(s, rf)
-		assertTest.Error(err)
-		assertTest.Equal("", password)
+		require.Error(t, err)
+		assertTest.Empty(password)
 		assertTest.True(kubeerrors.IsNotFound(err))
 	})
 
@@ -115,8 +116,8 @@ func TestGetRedisPassword(t *testing.T) {
 		}
 
 		password, err := GetRedisPassword(s, rf)
-		assertTest.Error(err)
-		assertTest.Equal("", password)
+		require.Error(t, err)
+		assertTest.Empty(password)
 		assertTest.Equal(`secret "redis-auth" does not have a password field`, err.Error())
 	})
 }

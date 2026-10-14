@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	kubeerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,7 +52,7 @@ func TestServiceAccountServiceGet(t *testing.T) {
 		service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
 
 		got, err := service.GetServiceAccount(testns, "testsa")
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.NotNil(got)
 		assertTest.Equal("testsa", got.Name)
 	})
@@ -63,7 +64,7 @@ func TestServiceAccountServiceGet(t *testing.T) {
 		service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
 
 		got, err := service.GetServiceAccount(testns, "does-not-exist")
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.Nil(got)
 	})
 }
@@ -82,10 +83,10 @@ func TestServiceAccountServiceCreate(t *testing.T) {
 	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
 
 	err := service.CreateServiceAccount(testns, sa)
-	assertTest.NoError(err)
+	require.NoError(t, err)
 
 	got, err := mcli.CoreV1().ServiceAccounts(testns).Get(context.TODO(), "testsa", metav1.GetOptions{})
-	assertTest.NoError(err)
+	require.NoError(t, err)
 	assertTest.Equal("testsa", got.Name)
 }
 
@@ -105,10 +106,10 @@ func TestServiceAccountServiceUpdate(t *testing.T) {
 
 	sa.Labels["foo"] = "baz"
 	err := service.UpdateServiceAccount(testns, sa)
-	assertTest.NoError(err)
+	require.NoError(t, err)
 
 	got, err := mcli.CoreV1().ServiceAccounts(testns).Get(context.TODO(), "testsa", metav1.GetOptions{})
-	assertTest.NoError(err)
+	require.NoError(t, err)
 	assertTest.Equal("baz", got.Labels["foo"])
 }
 
@@ -126,7 +127,7 @@ func TestServiceAccountServiceUpdateError(t *testing.T) {
 	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
 
 	err := service.UpdateServiceAccount(testns, sa)
-	assertTest.Error(err)
+	require.Error(t, err)
 	assertTest.True(kubeerrors.IsNotFound(err))
 }
 
@@ -144,10 +145,10 @@ func TestServiceAccountServiceDelete(t *testing.T) {
 	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
 
 	err := service.DeleteServiceAccount(testns, "testsa")
-	assertTest.NoError(err)
+	require.NoError(t, err)
 
 	_, err = mcli.CoreV1().ServiceAccounts(testns).Get(context.TODO(), "testsa", metav1.GetOptions{})
-	assertTest.Error(err)
+	require.Error(t, err)
 	assertTest.True(kubeerrors.IsNotFound(err))
 }
 
@@ -163,7 +164,7 @@ func TestServiceAccountServiceList(t *testing.T) {
 	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
 
 	list, err := service.ListServiceAccounts(testns)
-	assertTest.NoError(err)
+	require.NoError(t, err)
 	assertTest.Len(list.Items, 2)
 }
 
@@ -219,7 +220,7 @@ func TestServiceAccountServiceObjectUpToDate(t *testing.T) {
 			mcli := kubernetes.NewClientset(stored)
 
 			service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
-			assert.NoError(service.CreateOrUpdateServiceAccount(testns, test.desired.DeepCopy()))
+			require.NoError(t, service.CreateOrUpdateServiceAccount(testns, test.desired.DeepCopy()))
 
 			updates := 0
 			for _, a := range mcli.Actions() {
@@ -329,7 +330,7 @@ func TestServiceAccountServiceGetCreateOrUpdate(t *testing.T) {
 			if test.expErr {
 				assertTest.Error(err)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 				// Check calls to kubernetes.
 				assertTest.Equal(test.expActions, mcli.Actions())
 			}

@@ -74,7 +74,7 @@ func TestIsMasterUnresponsiveTimesOut(t *testing.T) {
 
 	start := time.Now()
 	_, err = newTestClient().IsMaster(host, port, "")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Less(t, time.Since(start), 6*time.Second)
 }
 
@@ -283,7 +283,7 @@ func TestGetReplicationInfo_ConnectionError(t *testing.T) {
 	c := newTestClient()
 
 	info, err := c.GetReplicationInfo(testLoopbackIP, strconv.Itoa(port), "")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Nil(t, info)
 }
 
@@ -498,8 +498,8 @@ func TestDisconnectClients_ReturnsErrorWhenDenied(t *testing.T) {
 
 	err := c.DisconnectClients(a.IP, strconv.Itoa(a.Port), "")
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "TYPE normal")
-	assert.ErrorContains(t, err, "TYPE pubsub")
+	require.ErrorContains(t, err, "TYPE normal")
+	require.ErrorContains(t, err, "TYPE pubsub")
 	assert.ErrorContains(t, err, "NOPERM")
 }
 
@@ -511,7 +511,7 @@ func TestDisconnectClients_ConnectionError(t *testing.T) {
 
 	err = c.DisconnectClients(testLoopbackIP, strconv.Itoa(port), "")
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "TYPE normal")
+	require.ErrorContains(t, err, "TYPE normal")
 	assert.NotContains(t, err.Error(), "TYPE pubsub", "the second kill should be skipped once the node is known to be unreachable")
 }
 
@@ -644,7 +644,8 @@ func TestSetCustomRedisConfig_EmptyValue(t *testing.T) {
 	res, err := rc.ConfigGet(bgCtx(), "save").Result()
 	require.NoError(t, err)
 	require.Len(t, res, 2)
-	assert.Equal(t, "", res[1])
+	require.IsType(t, "", res[1])
+	assert.Empty(t, res[1])
 }
 
 func TestSetCustomRedisConfig_Malformed(t *testing.T) {
@@ -901,7 +902,7 @@ func TestGetNumberSentinelsInMemory_NotMonitoringAnything(t *testing.T) {
 	// A sentinel monitoring nothing has no "status=" line to report ok for,
 	// so isSentinelReady should reject it.
 	_, err = c.GetNumberSentinelsInMemory(env.sentinel.IP)
-	assert.Error(t, err)
+	require.Error(t, err)
 
 	// GetNumberSentinelSlavesInMemory shares the same isSentinelReady gate.
 	_, err = c.GetNumberSentinelSlavesInMemory(env.sentinel.IP)
@@ -954,11 +955,11 @@ func TestGetNumberSentinelsInMemory_TooMany(t *testing.T) {
 	c := newTestClient()
 
 	n, err := c.GetNumberSentinelsInMemory(target)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Zero(t, n)
 
 	n, err = c.GetNumberSentinelSlavesInMemory(target)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Zero(t, n)
 }
 
@@ -1209,7 +1210,7 @@ func TestSetCustomSentinelConfigUnreachableSendsNoSet(t *testing.T) {
 			require.Error(t, err)
 			assert.True(t, IsUnreachableError(err), err.Error())
 			if !reset {
-				assert.ErrorIs(t, err, io.EOF)
+				require.ErrorIs(t, err, io.EOF)
 			}
 			assert.Equal(t, 1, recorder.calls)
 			mu.Lock()
@@ -1344,31 +1345,31 @@ func TestSentinelFunctions_SentinelUnreachable(t *testing.T) {
 	killProc(env.sentinel)
 
 	_, err := c.GetNumberSentinelsInMemory(env.sentinel.IP)
-	assert.Error(t, err, "GetNumberSentinelsInMemory should fail once nothing is listening on the sentinel port")
+	require.Error(t, err, "GetNumberSentinelsInMemory should fail once nothing is listening on the sentinel port")
 
 	_, err = c.GetNumberSentinelSlavesInMemory(env.sentinel.IP)
-	assert.Error(t, err, "GetNumberSentinelSlavesInMemory should fail once nothing is listening on the sentinel port")
+	require.Error(t, err, "GetNumberSentinelSlavesInMemory should fail once nothing is listening on the sentinel port")
 
 	err = c.ResetSentinel(env.sentinel.IP)
-	assert.Error(t, err, "ResetSentinel should fail once nothing is listening on the sentinel port")
+	require.Error(t, err, "ResetSentinel should fail once nothing is listening on the sentinel port")
 
 	_, _, err = c.GetSentinelMonitor(env.sentinel.IP)
-	assert.Error(t, err, "GetSentinelMonitor should fail once nothing is listening on the sentinel port")
+	require.Error(t, err, "GetSentinelMonitor should fail once nothing is listening on the sentinel port")
 
 	_, err = c.GetSentinelReplicas(env.sentinel.IP)
-	assert.Error(t, err, "GetSentinelReplicas should fail once nothing is listening on the sentinel port")
+	require.Error(t, err, "GetSentinelReplicas should fail once nothing is listening on the sentinel port")
 
 	_, err = c.SentinelMasterDown(env.sentinel.IP)
-	assert.Error(t, err, "SentinelMasterDown should fail once nothing is listening on the sentinel port")
+	require.Error(t, err, "SentinelMasterDown should fail once nothing is listening on the sentinel port")
 
 	err = c.SetCustomSentinelConfig(env.sentinel.IP, []string{"down-after-milliseconds 1000"})
-	assert.Error(t, err, "SetCustomSentinelConfig should fail once nothing is listening on the sentinel port")
+	require.Error(t, err, "SetCustomSentinelConfig should fail once nothing is listening on the sentinel port")
 
 	err = c.SentinelCheckQuorum(env.sentinel.IP)
-	assert.Error(t, err, "SentinelCheckQuorum should fail once nothing is listening on the sentinel port")
+	require.Error(t, err, "SentinelCheckQuorum should fail once nothing is listening on the sentinel port")
 
 	err = c.MonitorRedisWithPort(env.sentinel.IP, testLoopbackIP, redisPort, "1", "")
-	assert.Error(t, err, "MonitorRedisWithPort should fail once nothing is listening on the sentinel port")
+	require.Error(t, err, "MonitorRedisWithPort should fail once nothing is listening on the sentinel port")
 
 	err = c.SetSentinelAuthPass(env.sentinel.IP, "s3cr3t")
 	assert.Error(t, err, "SetSentinelAuthPass should fail once nothing is listening on the sentinel port")
@@ -1535,7 +1536,7 @@ func TestSlaveIsReady_IPv6MetricLabel(t *testing.T) {
 	c := New(rec)
 
 	_, err = c.SlaveIsReady("::1", strconv.Itoa(port), "")
-	assert.Error(t, err)
+	require.Error(t, err)
 	rec.AssertExpectations(t)
 }
 
@@ -1549,7 +1550,7 @@ func TestApplyRedisConfig_IPv6MetricLabel(t *testing.T) {
 	rc := rediscli.NewClient(&rediscli.Options{Addr: net.JoinHostPort("::1", strconv.Itoa(port))})
 	defer func() { _ = rc.Close() }()
 
-	assert.Error(t, c.applyRedisConfig("maxmemory", "1mb", rc))
+	require.Error(t, c.applyRedisConfig("maxmemory", "1mb", rc))
 	rec.AssertExpectations(t)
 }
 

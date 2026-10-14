@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -117,7 +118,7 @@ func TestValidate(t *testing.T) {
 			err := rf.Validate()
 
 			if test.expectedError == "" {
-				assert.NoError(err)
+				require.NoError(t, err)
 
 				expectedRedisCustomConfig := []string{
 					"replica-priority 100",
@@ -172,7 +173,7 @@ func TestValidate(t *testing.T) {
 				assert.Equal(expectedRF, rf)
 
 				// Validate runs again on each reconcile of the same object.
-				assert.NoError(rf.Validate())
+				require.NoError(t, rf.Validate())
 				assert.Equal(expectedSentinelCustomConfig, rf.Spec.Sentinel.CustomConfig)
 			} else {
 				if assert.Error(err) {
@@ -205,7 +206,7 @@ func TestValidatePreservesExistingStatus(t *testing.T) {
 
 	err := rf.Validate()
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	assert.Equal(RedisFailoverStatus{
 		State:       NotHealthyState,
 		Message:     "unable to update redis pods",
@@ -218,12 +219,12 @@ func TestValidateExporterPort(t *testing.T) {
 		rf := generateRedisFailover("test", nil)
 		rf.Spec.Redis.Exporter.Port = port
 		rf.Spec.Sentinel.Exporter.Port = port
-		assert.NoError(t, rf.Validate(), "port %d", port)
+		require.NoError(t, rf.Validate(), "port %d", port)
 	}
 
 	rf := generateRedisFailover("test", nil)
 	rf.Spec.Redis.Exporter.Port = -1
-	assert.EqualError(t, rf.Validate(), "redis.exporter.port -1 must be between 1 and 65535, or 0 for the default")
+	require.EqualError(t, rf.Validate(), "redis.exporter.port -1 must be between 1 and 65535, or 0 for the default")
 
 	rf = generateRedisFailover("test", nil)
 	rf.Spec.Sentinel.Exporter.Port = 65536

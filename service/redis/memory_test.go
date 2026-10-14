@@ -113,7 +113,7 @@ func TestGetAutoscalerInfo(t *testing.T) {
 
 	// A write above maxmemory without a key to evict counts in errorstat_OOM.
 	require.NoError(t, c.SetCustomRedisConfig(r.IP, port, []string{"maxmemory 1048576", "maxmemory-policy volatile-lru"}, ""))
-	assert.ErrorContains(t, rc.Set(bgCtx(), "k", "v", 0).Err(), "OOM")
+	require.ErrorContains(t, rc.Set(bgCtx(), "k", "v", 0).Err(), "OOM")
 	after, err := c.GetAutoscalerInfo(r.IP, port, "")
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), after.OOMErrors)
@@ -160,7 +160,7 @@ func TestGetAutoscalerInfoErrors(t *testing.T) {
 	port, err := findFreePort()
 	require.NoError(t, err)
 	_, err = newTestClient().GetAutoscalerInfo(testLoopbackIP, strconv.Itoa(port), "")
-	assert.Error(t, err)
+	require.Error(t, err)
 	_, err = newTestClient().GetAutoscalerInfo("", strconv.Itoa(port), "")
 	assert.ErrorIs(t, err, errNoIP)
 }

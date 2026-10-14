@@ -186,7 +186,7 @@ func TestRecreateAfterPattern(t *testing.T) {
 		require.NoError(t, err, value)
 		assert.True(t, accepts(value), value)
 		rf := rfWithAutoscaling("", "", &AutoscalingSettings{RecreateAfter: &metav1.Duration{Duration: d}})
-		assert.NoError(t, rf.Validate(), value)
+		require.NoError(t, rf.Validate(), value)
 	}
 	// The schema checks only the format. Validate refuses a short or a
 	// negative wait.
@@ -195,7 +195,7 @@ func TestRecreateAfterPattern(t *testing.T) {
 		require.NoError(t, err, value)
 		assert.True(t, accepts(value), value)
 		rf := rfWithAutoscaling("", "", &AutoscalingSettings{RecreateAfter: &metav1.Duration{Duration: d}})
-		assert.Error(t, rf.Validate(), value)
+		require.Error(t, rf.Validate(), value)
 	}
 	for _, value := range []string{"5min", "5 m", "", "m", "5", ".", ".s", "00", "5m-1s", "99999999999h", "9223372036854775808ns", "2562048h"} {
 		_, err := time.ParseDuration(value)

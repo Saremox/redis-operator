@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	kubeerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -136,7 +137,7 @@ func TestDeploymentServiceGetCreateOrUpdate(t *testing.T) {
 			if test.expErr {
 				assertTest.Error(err)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 				// Check calls to kubernetes.
 				assertTest.Equal(test.expActions, mcli.Actions())
 			}
@@ -308,7 +309,7 @@ func TestDeploymentServiceObjectUpToDate(t *testing.T) {
 			mcli := kubernetes.NewClientset(stored)
 
 			service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
-			assert.NoError(service.CreateOrUpdateDeployment(testns, test.desired.DeepCopy()))
+			require.NoError(t, service.CreateOrUpdateDeployment(testns, test.desired.DeepCopy()))
 
 			updates := 0
 			for _, a := range mcli.Actions() {
@@ -367,9 +368,9 @@ func TestDeploymentServiceUpdate(t *testing.T) {
 			err := service.UpdateDeployment(testns, testDeployment)
 
 			if test.expErr {
-				assertTest.Error(err)
+				require.Error(t, err)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 			}
 			assertTest.Equal(test.expActions, mcli.Actions())
 		})
@@ -392,11 +393,11 @@ func TestDeploymentServiceDelete(t *testing.T) {
 		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.DeleteDeployment(testns, "testdeployment1")
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.Equal([]kubetesting.Action{newDeploymentDeleteAction(testns, "testdeployment1")}, mcli.Actions())
 
 		_, getErr := mcli.AppsV1().Deployments(testns).Get(context.TODO(), "testdeployment1", metav1.GetOptions{})
-		assertTest.Error(getErr)
+		require.Error(t, getErr)
 		assertTest.True(kubeerrors.IsNotFound(getErr))
 	})
 
@@ -407,7 +408,7 @@ func TestDeploymentServiceDelete(t *testing.T) {
 		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.DeleteDeployment(testns, "does-not-exist")
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.True(kubeerrors.IsNotFound(err))
 	})
 }
@@ -425,7 +426,7 @@ func TestDeploymentServiceList(t *testing.T) {
 		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
 
 		list, err := service.ListDeployments(testns)
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.Len(list.Items, 2)
 		names := []string{list.Items[0].Name, list.Items[1].Name}
 		assertTest.ElementsMatch([]string{"d1", "d2"}, names)
@@ -442,7 +443,7 @@ func TestDeploymentServiceList(t *testing.T) {
 		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
 
 		list, err := service.ListDeployments(testns)
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.Empty(list.Items)
 		assertTest.Equal([]kubetesting.Action{newDeploymentListAction(testns)}, mcli.Actions())
 	})
@@ -503,7 +504,7 @@ func TestDeploymentServiceGetDeploymentPods(t *testing.T) {
 		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
 
 		pods, err := service.GetDeploymentPods(testns, "testdeployment1")
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		names := []string{}
 		for _, pod := range pods.Items {
 			names = append(names, pod.Name)
@@ -525,7 +526,7 @@ func TestDeploymentServiceGetDeploymentPods(t *testing.T) {
 		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
 
 		pods, err := service.GetDeploymentPods(testns, "testdeployment1")
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.Nil(pods)
 	})
 
@@ -536,7 +537,7 @@ func TestDeploymentServiceGetDeploymentPods(t *testing.T) {
 		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
 
 		pods, err := service.GetDeploymentPods(testns, "does-not-exist")
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.True(kubeerrors.IsNotFound(err))
 		assertTest.Nil(pods)
 	})
