@@ -2,14 +2,19 @@ package redisfailover_test
 
 import (
 	"context"
+	"encoding/json"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 
@@ -17,14 +22,18 @@ import (
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
 	mRFService "github.com/saremox/redis-operator/mocks/operator/redisfailover/service"
+	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	rfOperator "github.com/saremox/redis-operator/operator/redisfailover"
+	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
+	"github.com/saremox/redis-operator/service/k8s"
 	"github.com/saremox/redis-operator/service/redis"
 )
 
 // TestCheckAndHealAutoscaling runs a healthy reconcile in both modes. Without
 // autoscaling, the reconcile must make no autoscaler call: the strict mocks
 // panic on a call without an expectation. With Recommend, the autoscaler
-// samples the master that the checks found.
+// samples the master that the checks found. With Auto and a recommendation,
+// a settled instance starts a step in both modes.
 func TestCheckAndHealAutoscaling(t *testing.T) {
 	const (
 		master   = "10.0.0.1"
@@ -66,7 +75,7 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 	}
 
 	for mode, setup := range healthy {
-		for _, autoscaling := range []string{"unset", v1.AutoscalingModeOff, v1.AutoscalingModeRecommend} {
+		for _, autoscaling := range []string{"unset", v1.AutoscalingModeOff, v1.AutoscalingModeRecommend, v1.AutoscalingModeAuto} {
 			t.Run(mode+", "+autoscaling, func(t *testing.T) {
 				rf := generateRF(false, false)
 				rf.Spec.Redis.Resources.Limits = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}
@@ -85,6 +94,10 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 				mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 				mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 				setup(mrfc, mrfh, rf)
+				var step map[string]any
+				if autoscaling == v1.AutoscalingModeAuto {
+					autoscaleStep(t, mk, mrfh, rf, master, &step)
+				}
 				if autoscaling == v1.AutoscalingModeRecommend {
 					mk.On("GetConfigMap", rf.Namespace, "rfa-"+rf.Name).Once().Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "rfa-"+rf.Name))
 					mk.On("CreateConfigMap", rf.Namespace, mock.Anything).Once().Return(nil)
@@ -97,9 +110,14 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 				require.NoError(t, handler.CheckAndHeal(rf))
 
 				assert.Equal(t, v1.HealthyState, patched.State)
-				if autoscaling == v1.AutoscalingModeRecommend {
+				switch autoscaling {
+				case v1.AutoscalingModeAuto:
+					assert.Equal(t, "Applying", patched.Autoscaling.Phase)
+					assert.Equal(t, "Applying", step["phase"])
+					assert.InDelta(t, float64(1280<<20), step["effective"], 0)
+				case v1.AutoscalingModeRecommend:
 					assert.Equal(t, v1.AutoscalingStatus{Workload: v1.AutoscalingWorkloadStore, Reason: "memory use is below the threshold"}, patched.Autoscaling)
-				} else {
+				default:
 					assert.Zero(t, patched.Autoscaling)
 					mk.AssertNotCalled(t, "GetConfigMap", mock.Anything, mock.Anything)
 				}
@@ -112,7 +130,8 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 
 // TestHandleAutoscalingAPICalls runs a full healthy reconcile. Recommend makes
 // the API calls of the autoscaler without the seam: one state read, before
-// Ensure, and the state write. It reads no StatefulSet.
+// Ensure, and the state write. It reads no StatefulSet. Without autoscaling,
+// the first reconcile looks for a leftover state, and makes no INFO call.
 func TestHandleAutoscalingAPICalls(t *testing.T) {
 	const master = "10.0.0.1"
 	for _, autoscaling := range []string{"unset", v1.AutoscalingModeOff, v1.AutoscalingModeRecommend} {
@@ -153,8 +172,10 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 			mrfc.On("GetRedisesSlavesPods", rf).Return([]string{}, nil)
 			mrfc.On("GetRedisesMasterPod", rf).Return(master, nil)
 			mrfc.On("GetRedisRevisionHash", master, rf).Return("1", nil)
-			want := []string{"Ensure"}
-			if autoscaling == v1.AutoscalingModeRecommend {
+			want := []string{"GetConfigMap", "Ensure"}
+			if autoscaling != v1.AutoscalingModeRecommend {
+				mk.On("GetConfigMap", rf.Namespace, "rfa-"+rf.Name).Once().Run(record("GetConfigMap")).Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "rfa-"+rf.Name))
+			} else {
 				want = []string{"GetConfigMap", "Ensure", "CreateConfigMap"}
 				mk.On("GetConfigMap", rf.Namespace, "rfa-"+rf.Name).Once().Run(record("GetConfigMap")).Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "rfa-"+rf.Name))
 				mk.On("CreateConfigMap", rf.Namespace, mock.Anything).Once().Run(record("CreateConfigMap")).Return(nil)
@@ -173,4 +194,47 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 			mrfc.AssertExpectations(t)
 		})
 	}
+}
+
+// autoscaleStep gives a CheckAndHeal of mode Auto a state with a sustained
+// recommendation of 1280Mi, three ready pods on the update revision "1", and
+// the checks before a step. The written state goes to step.
+func autoscaleStep(t *testing.T, mk *mK8SService.Services, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover, master string, step *map[string]any) {
+	t.Helper()
+	rf.Spec.Redis.MaxMemory = &v1.MaxMemorySettings{Percent: 75, Policy: "noeviction"}
+	mrfh.On("EnsureRedisMaxMemory", rf, mock.Anything, []string{master}).Return(rfservice.MaxMemoryResult{}, nil)
+	state, err := json.Marshal(map[string]any{
+		"version": 2, "workload": "Store", "runID": "run1", "limit": 1 << 30, "lastSample": time.Now().Unix(),
+		"reason": "memory use is high in 3 consecutive windows", "recommended": 1280 << 20, "highWindows": 3,
+	})
+	require.NoError(t, err)
+	owner := metav1.NewControllerRef(rf, v1.VersionKind(v1.RFKind))
+	mk.On("GetConfigMap", rf.Namespace, "rfa-"+rf.Name).Once().Return(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "rfa-" + rf.Name, ResourceVersion: "7", OwnerReferences: []metav1.OwnerReference{*owner}},
+		Data:       map[string]string{"state": string(state)},
+	}, nil)
+	pods := make([]corev1.Pod, rf.Spec.Redis.Replicas)
+	for i := range pods {
+		limit := corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}}
+		pods[i] = corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: "1"}},
+			Status: corev1.PodStatus{
+				Conditions:        []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+				ContainerStatuses: []corev1.ContainerStatus{{Name: "redis", Resources: &limit}},
+			},
+		}
+	}
+	mk.ExpectedCalls = slices.DeleteFunc(mk.ExpectedCalls, func(c *mock.Call) bool { return c.Method == "GetStatefulSetPods" })
+	mk.On("GetStatefulSetPods", rf.Namespace, "rfr-"+rf.Name).Return(&corev1.PodList{Items: pods}, nil)
+	mk.On("GetStatefulSet", rf.Namespace, "rfr-"+rf.Name).Return(&appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Generation: 2},
+		Status:     appsv1.StatefulSetStatus{ObservedGeneration: 2, UpdateRevision: "1"},
+	}, nil)
+	mk.On("PodResizeSupport").Once().Return(k8s.PodResizeSupport{Supported: true}, nil)
+	mk.On("GetControllerRevision", rf.Namespace, "1").Once().Return(&appsv1.ControllerRevision{}, nil)
+	mk.On("UpdateConfigMap", rf.Namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		cm := args.Get(1).(*corev1.ConfigMap)
+		assert.Equal(t, "7", cm.ResourceVersion)
+		require.NoError(t, json.Unmarshal([]byte(cm.Data["state"]), step))
+	}).Return(nil)
 }

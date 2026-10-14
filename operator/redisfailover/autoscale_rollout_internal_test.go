@@ -286,7 +286,7 @@ func TestUpdateRedisesPodsRecordsTheAutoscaleRollout(t *testing.T) {
 
 	rt.update("")
 	v, _ := rt.handler.autoscaleRollout.Load(failoverKey(rt.rf))
-	assert.Equal(t, autoscaleRollout{anyApplied: true, refusal: &resizeRefusal{pod: "rfr-test-1", class: rfservice.ResizePermanent, message: "resize infeasible"}}, v)
+	assert.Equal(t, autoscaleRollout{anyApplied: true, refusal: &resizeRefusal{pod: "rfr-test-1", class: rfservice.ResizePermanent, message: "resize infeasible"}, complete: true, updateRevision: "new"}, v)
 
 	// The next reconcile starts without the refusal.
 	rt.handler.autoscaleRollout.Delete(failoverKey(rt.rf))
@@ -294,7 +294,7 @@ func TestUpdateRedisesPodsRecordsTheAutoscaleRollout(t *testing.T) {
 	rt.pods[1].Status.PodIP = "10.0.0.2"
 	rt.update("")
 	v, _ = rt.handler.autoscaleRollout.Load(failoverKey(rt.rf))
-	assert.Equal(t, autoscaleRollout{settled: true, applied: true, anyApplied: true}, v)
+	assert.Equal(t, autoscaleRollout{settled: true, applied: true, anyApplied: true, complete: true, updateRevision: "new"}, v)
 
 	ssErr = errors.New("boom")
 	rt.handler.autoscaleRollout.Delete(failoverKey(rt.rf))
@@ -338,4 +338,59 @@ func TestCheckAndHealDropsTheAutoscaleRollout(t *testing.T) {
 	require.ErrorIs(t, h.CheckAndHeal(rf), fail)
 	_, ok := h.autoscaleRollout.Load(failoverKey(rf))
 	assert.False(t, ok)
+}
+
+// The rollout result holds what a revert and the checks before a step need.
+func TestRecordAutoscaleRolloutForTheStep(t *testing.T) {
+	rf := autoscaleRolloutRF(redisfailoverv1.AutoscalingModeAuto)
+	pods := []corev1.Pod{redisPod("rfr-test-0", "new", "2Gi"), redisPod("rfr-test-1", "new", "1Gi")}
+	pods[1].Annotations = map[string]string{"redisfailovers.databases.spotahome.com/resize-requested-at": "2026-01-01T00:00:00Z"}
+	pods[0].Annotations = map[string]string{"vpaObservedContainers": "redis"}
+	mk := &mK8SService.Services{}
+	mk.On("GetStatefulSet", "testns", "rfr-test").Return(&appsv1.StatefulSet{Status: appsv1.StatefulSetStatus{UpdateRevision: "new"}}, nil)
+	mk.On("GetStatefulSetPods", "testns", "rfr-test").Return(&corev1.PodList{Items: pods}, nil)
+	h := NewRedisFailoverHandler(Config{}, nil, nil, nil, mk, metrics.Dummy, log.Dummy)
+
+	require.NoError(t, h.recordAutoscaleRollout(rf, false))
+
+	v, _ := h.autoscaleRollout.Load(failoverKey(rf))
+	got := v.(autoscaleRollout)
+	assert.True(t, got.complete)
+	assert.Equal(t, []string{"rfr-test-1"}, got.requested)
+	assert.True(t, got.vpa)
+	assert.Equal(t, "new", got.updateRevision)
+
+	pods[0].Annotations = map[string]string{"vpaUpdates": "Pod resources updated by redis: container 0: memory request"}
+	require.NoError(t, h.recordAutoscaleRollout(rf, false))
+	v, _ = h.autoscaleRollout.Load(failoverKey(rf))
+	assert.True(t, v.(autoscaleRollout).vpa)
+
+	pods[0].Annotations = nil
+	require.NoError(t, h.recordAutoscaleRollout(rf, false))
+	v, _ = h.autoscaleRollout.Load(failoverKey(rf))
+	assert.False(t, v.(autoscaleRollout).vpa)
+}
+
+// A replica that is not synced holds a step, also without a pending rollout.
+func TestUpdateRedisesPodsRecordsAnUnsyncedReplica(t *testing.T) {
+	rt := newRolloutTest(t)
+	useAutoscaler(rt)
+	rt.rf.Spec.Redis.Resources.Limits = corev1.ResourceList{corev1.ResourceMemory: *resource.NewQuantity(autoscaleEffective, resource.BinarySI)}
+	rt.pods[0] = redisPod("rfr-test-0", "new", "2Gi")
+	rt.pods[0].Status.PodIP = "10.0.0.1"
+	rt.pods[1] = redisPod("rfr-test-1", "new", "2Gi")
+	rt.pods[1].Status.PodIP = "10.0.0.2"
+
+	rt.update("")
+	v, _ := rt.handler.autoscaleRollout.Load(failoverKey(rt.rf))
+	got := v.(autoscaleRollout)
+	assert.True(t, got.complete)
+	assert.False(t, got.settled)
+	assert.True(t, got.applied)
+
+	rt.synced = true
+	rt.handler.autoscaleRollout.Delete(failoverKey(rt.rf))
+	rt.update("")
+	v, _ = rt.handler.autoscaleRollout.Load(failoverKey(rt.rf))
+	assert.True(t, v.(autoscaleRollout).settled)
 }

@@ -31,10 +31,13 @@ import (
 // update revision of the StatefulSet.
 func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailover) (err error) {
 	var wait *rolloutWait
+	// A replica that is not synced is no wait of a rollout, but an
+	// autoscaler step waits for it.
+	unsynced := false
 	defer func() {
 		if err == nil {
 			r.reportRolloutWait(rf, wait)
-			err = r.recordAutoscaleRollout(rf, wait != nil)
+			err = r.recordAutoscaleRollout(rf, wait != nil || unsynced)
 		}
 	}()
 
@@ -66,6 +69,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 			if ready {
 				continue
 			}
+			unsynced = true
 			// Without a known master, rip can be the master. While bootstrapping,
 			// rip can hold the only copy of the data. Do not replace it.
 			if masterIP == "" {
@@ -451,7 +455,9 @@ func (r *RedisFailoverHandler) resizeInPlace(rf *redisfailoverv1.RedisFailover, 
 	// A recreate restarts Redis for a change that no user made, so the pod
 	// stays on its revision, and the refusal is kept for the autoscaler.
 	if result.AutoscalerRevision && result.Class == rfservice.ResizePermanent {
-		r.autoscaleRollout.Store(failoverKey(rf), autoscaleRollout{refusal: &resizeRefusal{pod: pod, class: result.Class, message: result.Message}})
+		refusal := &resizeRefusal{pod: pod, class: result.Class, message: result.Message}
+		r.autoscaleRollout.Store(failoverKey(rf), autoscaleRollout{refusal: refusal})
+		r.logResizeRefusal(rf, refusal)
 		return false, nil
 	}
 	return result.Action == rfservice.ResizeRecreate, nil

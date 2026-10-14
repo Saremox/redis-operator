@@ -96,7 +96,13 @@ type RedisFailoverHandler struct {
 	// autoscaleLogged holds, per namespace/name, the last autoscaler error
 	// that was logged at Warning.
 	autoscaleLogged sync.Map
-	now             func() time.Time
+	// autoscaleRefusalLogged holds, per namespace/name, the last refusal of
+	// a resize to an autoscaler revision that was logged at Warning.
+	autoscaleRefusalLogged sync.Map
+	// autoscaleOff holds, per namespace/name, true after a reconcile without
+	// autoscaling found no state ConfigMap.
+	autoscaleOff sync.Map
+	now          func() time.Time
 	// requeue is nil until New connects the controller.
 	requeue func(key string, after time.Duration)
 }
@@ -211,6 +217,13 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 // returns rf.
 func (r *RedisFailoverHandler) withEffectiveLimit(rf *redisfailoverv1.RedisFailover) (*redisfailoverv1.RedisFailover, error) {
 	if !rf.AutoscalingEnabled() {
+		// A state with an Effective limit can stay without a status, for
+		// example after a failed status write, and a later mode Recommend or
+		// Auto would use it. One look after the operator start finds it. With
+		// a status, the autoscaler removes the state after the checks.
+		if _, clean := r.autoscaleOff.Load(failoverKey(rf)); !clean && rf.Status.Autoscaling == (redisfailoverv1.AutoscalingStatus{}) {
+			r.stopAutoscaler(rf, rf.Status.Autoscaling)
+		}
 		return rf, nil
 	}
 	read, err := r.readAutoscale(rf)
