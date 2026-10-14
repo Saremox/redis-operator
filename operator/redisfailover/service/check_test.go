@@ -2758,7 +2758,7 @@ func TestCheckSentinelsCannotFailover(t *testing.T) {
 			views: []view{stuck, stuck, {master: gone, downErr: errors.New("timeout")}},
 		},
 		{
-			name:  "a Sentinel monitors the address 127.0.0.1 of its configuration",
+			name: "a Sentinel monitors the address 127.0.0.1 of its configuration",
 			// Nothing listens on 127.0.0.1 in a Sentinel pod, so its state
 			// is not asked.
 			views: []view{{master: "127.0.0.1", up: true}, stuck, stuck},
