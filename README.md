@@ -139,23 +139,23 @@ See the manifests in [manifests/kustomize](manifests/kustomize) for more informa
 
 ### Operator flags
 
-With the Helm chart, set the flags in `image.cli_args`. The chart sets `--listen-address` from `container.port`, and `--watch-auth-secrets` from `watchAuthSecrets`. With kubectl or kustomize, add the flags to the `args` of the operator container.
+With the Helm chart, set the flags in `image.cli_args`. The chart sets `--listen-address` from `container.port`, and `--watch-auth-secrets` from `watchAuthSecrets`. Do not set `--listen-address` in `image.cli_args`, because the probes use `container.port`. With kubectl or kustomize, add the flags to the `args` of the operator container.
 
 | Flag | Default | Description |
 |---|---|---|
 | `--concurrency` | `3` | The number of workers that reconcile RedisFailovers in parallel. A value of 0 or less gives 3. |
 | `--development` | `false` | Use the file in `--kubeconfig`, not the in-cluster configuration. With this flag, the operator can run outside a cluster. |
-| `--disconnect-clients-on-demotion` | `true` | Close the `normal` and `pubsub` client connections of an old master. See [Usage](#usage). |
+| `--disconnect-clients-on-demotion` | `true` | Close the `normal` and `pubsub` client connections of a master when it becomes a replica. See [Usage](#usage). |
 | `--enable-pprof` | `false` | Serve the Go profiler. See [Operator metrics](#operator-metrics). |
-| `--k8s-cli-burstable-limit` | `100` | The number of requests that the Kubernetes client can send at once without a delay. After such a burst, the client sends at the rate of `--k8s-cli-qps-limit`. |
-| `--k8s-cli-qps-limit` | `100` | The mean number of requests in each second that the Kubernetes client sends after a burst. The client delays the requests above this rate. |
+| `--k8s-cli-burstable-limit` | `100` | The number of requests that the Kubernetes client can send at once without a delay. After such a burst, the client sends at the rate of `--k8s-cli-qps-limit`. With `--k8s-cli-qps-limit` above 0, a value of 0 or less stops the operator at start. |
+| `--k8s-cli-qps-limit` | `100` | The maximum mean number of requests in each second that the Kubernetes client sends. The client delays the requests above this rate. |
 | `--kubeconfig` | `$HOME/.kube/config` | The kubeconfig file. The operator reads it only with `--development`. |
 | `--listen-address` | `:9710` | The address of the HTTP server for the metrics. |
-| `--log-level` | `info` | The log level: `panic`, `fatal`, `error`, `warn`, `info`, `debug` or `trace`. With a different value, the operator stops at start. |
+| `--log-level` | `info` | The log level: `panic`, `fatal`, `error`, `warn`, `info`, `debug` or `trace`. The operator ignores the case and also accepts `warning`. With another value, the operator stops at start with exit code 1. |
 | `--metrics-path` | `/metrics` | The HTTP path of the metrics. |
-| `--supported-namespaces-regex` | `.*` | Reconcile only the RedisFailovers in a namespace that matches this regular expression. The match is not anchored, so use `^` and `$` for an exact name. The operator watches all namespaces. A regular expression that is not valid stops the operator at start. |
-| `--sync-interval` | `30` | The seconds between two resyncs of all RedisFailovers. A value of 0 or less gives 180. A change of a RedisFailover or of its pods starts a reconcile immediately. |
-| `--watch-auth-secrets` | `false` | Apply a change of the Secret in `auth.secretPath` immediately, not at the next resync. See [Redis authentication](#redis-authentication). |
+| `--supported-namespaces-regex` | `.*` | Reconcile only the RedisFailovers in a namespace that matches this regular expression. The expression can match a part of the name, so use `^` and `$` for an exact name. The operator still lists and watches the RedisFailovers in all namespaces. A regular expression that is not valid stops the operator at start. |
+| `--sync-interval` | `30` | The seconds between two resyncs of all RedisFailovers. A value of 0 or less gives 180. A change of a RedisFailover or of its pods starts a reconcile immediately. Above 300, the metrics cleanup can delete series between two resyncs. |
+| `--watch-auth-secrets` | `false` | Apply a change of the Secret in `auth.secretPath` immediately, not at the next resync. It needs `list` and `watch` on all Secrets. See [Redis authentication](#redis-authentication). |
 
 ### Operator metrics
 
@@ -647,7 +647,7 @@ By default, the operator finds a change at its next sync (`--sync-interval`, 30s
 
 Until a pod restarts, each program that reads the password from the environment of the pod has the old password. The exporter sidecar cannot authenticate, so it reports Redis down. After a change or an addition of the password, the pre-stop `SAVE` fails, and custom probes that use `$REDIS_PASSWORD` also fail. After a removal, `redis-cli` runs the command after the refused `AUTH`, so the pre-stop `SAVE` and probes that use `redis-cli` work.
 
-Until the pod restarts after a change or an addition of the password, the default readiness probe also reports it Ready without a replication check. The probe uses the old password, which Redis refuses. A refused password says nothing about replication, so the probe does not fail the pod for it. During this time, `rfrs-<NAME>` can send reads to a replica that is not synced.
+Until a pod restarts after a change or an addition of the password, the default readiness probe also reports it Ready without a replication check. The probe uses the old password, which Redis refuses. A refused password says nothing about replication, so the probe does not fail the pod for it. During this time, `rfrs-<NAME>` can send reads to a replica that is not synced.
 
 The operator keeps the passwords that the Redis pods run with in the Secret `rfr-auth-applied-<NAME>`. After its start, the operator reads this Secret at the first check of each RedisFailover, also without `auth.secretPath`. After a complete change, the Secret contains only the new password, or empty values after you remove `auth.secretPath`. The RedisFailover owns the Secret, so Kubernetes deletes it with the RedisFailover. Do not change this Secret. The operator does not read or change a Secret with this name that the RedisFailover does not control.
 
