@@ -393,6 +393,7 @@ These gauges have the labels `namespace` and `name`:
 - `redis_operator_controller_autoscaler_recommended_memory_bytes`: the recommended limit, or `0`.
 - `redis_operator_controller_autoscaler_memory_used_ratio`: the use of the last sample.
 - `redis_operator_controller_autoscaler_high_windows`: the number of consecutive high windows.
+- `redis_operator_controller_autoscaler_effective_memory_bytes`: the memory limit of the redis container. It is the limit of `redis.resources` until the autoscaler applies a larger limit.
 
 ### Custom shutdown script
 

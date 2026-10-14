@@ -890,14 +890,13 @@ func TestReadAutoscaleUsesTheStateLimit(t *testing.T) {
 	}
 }
 
-// handle runs the autoscaler as Handle and CheckAndHeal do: the read before
-// Ensure, and the autoscaler with the effective copy after the checks.
+// handle runs the parts of Handle and CheckAndHeal for the autoscaler: the
+// read before Ensure, and the autoscaler with the effective copy after the
+// checks. Handle itself refuses mode Auto in Validate.
 func (at *autoscaleTest) handle(t *testing.T, observed redisfailoverv1.AutoscalingStatus) *redisfailoverv1.RedisFailover {
 	t.Helper()
-	read, err := at.h.readAutoscale(at.rf)
+	rf, err := at.h.withEffectiveLimit(at.rf)
 	require.NoError(t, err)
-	at.h.autoscaleReads.Store(failoverKey(at.rf), read)
-	rf := effectiveRF(at.rf, read.effective)
 	at.h.autoscaleMasters.Store(failoverKey(rf), autoscaleMaster)
 	rf.Status.Autoscaling = redisfailoverv1.AutoscalingStatus{}
 	at.h.autoscale(rf, observed)
@@ -980,5 +979,73 @@ func TestAutoscaleRecommendKeepsTheEffectiveLimit(t *testing.T) {
 	written := decodeState(t, f.stored)
 	assert.Equal(t, stored.Effective, written.Effective)
 	assert.Equal(t, autoscale.PhaseDone, written.Phase)
+	at.mrec.AssertExpectations(t)
+}
+
+// Handle gives Ensure and the checks the effective limit of the state, and
+// the spec of the RedisFailover stays.
+func TestHandleUsesTheEffectiveLimit(t *testing.T) {
+	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
+	at.rf.Finalizers = []string{redisFailoverFinalizer}
+	at.rf.Spec.Sentinel.Enabled = ptr.To(false)
+	at.h.mClient = metrics.Dummy
+	f := at.fakeStateStore(t)
+	f.stored = at.stateConfigMap(encodeState(t, autoscale.State{
+		Version: autoscale.StateVersion, Effective: 1280 * mib, SpecLimit: 1024 * mib, Phase: autoscale.PhaseDone,
+	}))
+	noAppliedSecret(at.mk)
+	at.mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Maybe().Return(&corev1.PodList{}, nil)
+	at.mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	limits := map[string]string{}
+	capture := func(name string) func(mock.Arguments) {
+		return func(args mock.Arguments) {
+			limits[name] = args.Get(0).(*redisfailoverv1.RedisFailover).Spec.Redis.Resources.Limits.Memory().String()
+		}
+	}
+	mrfs := &mRFService.RedisFailoverClient{}
+	for _, ensure := range []string{"EnsureNotPresentRedisService", "EnsureNotPresentSentinelResources"} {
+		mrfs.On(ensure, mock.Anything).Once().Run(capture(ensure)).Return(nil)
+	}
+	for _, ensure := range []string{"EnsureRedisMasterService", "EnsureRedisSlaveService", "EnsureRedisShutdownConfigMap", "EnsureRedisReadinessConfigMap", "EnsureRedisConfigMap", "EnsureRedisStatefulset"} {
+		mrfs.On(ensure, mock.Anything, mock.Anything, mock.Anything).Once().Run(capture(ensure)).Return(nil)
+	}
+	at.h.rfService = mrfs
+	mrfh := &mRFService.RedisFailoverHeal{}
+	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
+	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
+	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	at.h.rfHealer = mrfh
+	at.mrfc.On("IsRedisRunningQuorum", mock.Anything).Once().Run(capture("IsRedisRunningQuorum")).Return(false)
+
+	require.NoError(t, at.h.Handle(context.Background(), at.rf))
+
+	require.Contains(t, limits, "EnsureRedisStatefulset")
+	require.Contains(t, limits, "IsRedisRunningQuorum")
+	for name, limit := range limits {
+		assert.Equal(t, "1280Mi", limit, name)
+	}
+	assert.Equal(t, "1Gi", at.rf.Spec.Redis.Resources.Limits.Memory().String(), "the spec stays")
+	mrfs.AssertExpectations(t)
+}
+
+// A spec limit above the effective limit is a user change. The state write
+// then keeps no effective limit, so a later lower spec cannot bring it back.
+func TestAutoscaleWritesTheBoundOfASpecChange(t *testing.T) {
+	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
+	at.rf.Spec.Redis.Resources.Limits[corev1.ResourceMemory] = resource.MustParse("1536Mi")
+	f := at.fakeStateStore(t)
+	f.stored = at.stateConfigMap(encodeState(t, autoscale.State{
+		Version: autoscale.StateVersion, Workload: "Store", RunID: "run1", Limit: 1280 * mib, LastSample: autoscaleT0.Unix(),
+		Effective: 1280 * mib, SpecLimit: 1024 * mib, Phase: autoscale.PhaseDone,
+	}))
+	at.mrfc.On("GetAutoscalerInfo", mock.Anything, autoscaleMaster).Return(masterInfo(500), nil)
+	at.mrec.On("SetAutoscaler", "testns", "test", mock.Anything, mock.Anything, mock.Anything, 1536*mib).Once()
+	at.now = autoscaleT0.Add(time.Minute)
+
+	rf := at.handle(t, redisfailoverv1.AutoscalingStatus{})
+
+	require.Equal(t, 1, f.updates)
+	assert.Zero(t, decodeState(t, f.stored).Effective)
+	assert.Empty(t, rf.Status.Autoscaling.EffectiveMemory)
 	at.mrec.AssertExpectations(t)
 }

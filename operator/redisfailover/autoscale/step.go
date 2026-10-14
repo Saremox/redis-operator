@@ -130,11 +130,6 @@ func Plan(s State, o Observation) (State, Action) {
 			return s, ActionHold
 		}
 		return s, ActionNone
-	case PhaseHeld:
-		if o.Applied {
-			return s.done(now), ActionDone
-		}
-		return s, ActionNone
 	case PhaseReverted:
 		if now < s.RetryAt {
 			return s, ActionNone
@@ -144,6 +139,14 @@ func Plan(s State, o Observation) (State, Action) {
 		if now-s.DoneAt >= seconds(Cooldown) {
 			s.Phase = PhaseIdle
 		}
+	case PhaseIdle:
+	default:
+		// Held, and also an unknown phase, for example of a newer operator:
+		// no step starts.
+		if o.Applied {
+			return s.done(now), ActionDone
+		}
+		return s, ActionNone
 	}
 	return s.start(o, now)
 }

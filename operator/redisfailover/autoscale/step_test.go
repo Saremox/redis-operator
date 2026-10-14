@@ -160,6 +160,25 @@ func TestPlanTimeout(t *testing.T) {
 	assert.Equal(t, 1280*mi, s.Effective)
 }
 
+// A phase that this operator does not know, for example of a newer operator,
+// starts no step, as Held.
+func TestPlanUnknownPhaseStartsNoStep(t *testing.T) {
+	s := recommending()
+	s.Phase = "Shrinking"
+
+	got, action := Plan(s, obs(time.Hour))
+
+	assert.Equal(t, ActionNone, action)
+	assert.Equal(t, "Shrinking", got.Phase)
+	assert.Zero(t, got.Effective)
+
+	o := obs(time.Hour)
+	o.Applied = true
+	got, action = Plan(s, o)
+	assert.Equal(t, ActionDone, action)
+	assert.Equal(t, PhaseDone, got.Phase)
+}
+
 func TestPlanHeldEndsWhenAllPodsApplied(t *testing.T) {
 	s, _ := Plan(applying(t), obs(ApplyTimeout))
 	require.Equal(t, PhaseHeld, s.Phase)

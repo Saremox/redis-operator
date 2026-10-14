@@ -171,16 +171,10 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 		return err
 	}
 
-	if rf.AutoscalingEnabled() {
-		// Ensure must not write the pods with the spec limit when the
-		// autoscaler applied a larger one.
-		read, err := r.readAutoscale(rf)
-		if err != nil {
-			r.mClient.SetClusterError(rf.Namespace, rf.Name)
-			return fmt.Errorf("autoscaler state: %w", err)
-		}
-		r.autoscaleReads.Store(failoverKey(rf), read)
-		rf = effectiveRF(rf, read.effective)
+	rf, err := r.withEffectiveLimit(rf)
+	if err != nil {
+		r.mClient.SetClusterError(rf.Namespace, rf.Name)
+		return fmt.Errorf("autoscaler state: %w", err)
 	}
 
 	// The owner references make the RedisFailover the owner of the objects
@@ -205,6 +199,22 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 
 	r.mClient.SetClusterOK(rf.Namespace, rf.Name)
 	return nil
+}
+
+// withEffectiveLimit reads the autoscaler state for the autoscaler of this
+// reconcile and returns effectiveRF. Ensure must not write the pods with the
+// spec limit when the autoscaler applied a larger one. On an error, it
+// returns rf.
+func (r *RedisFailoverHandler) withEffectiveLimit(rf *redisfailoverv1.RedisFailover) (*redisfailoverv1.RedisFailover, error) {
+	if !rf.AutoscalingEnabled() {
+		return rf, nil
+	}
+	read, err := r.readAutoscale(rf)
+	if err != nil {
+		return rf, err
+	}
+	r.autoscaleReads.Store(failoverKey(rf), read)
+	return effectiveRF(rf, read.effective), nil
 }
 
 // effectiveRF returns rf with the effective memory limit of the redis

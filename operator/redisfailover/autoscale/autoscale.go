@@ -164,7 +164,9 @@ type Input struct {
 	Healthy bool
 	// Info is nil when the master did not answer INFO, or no master is known.
 	Info *redis.AutoscalerInfo
-	// Limit is the memory limit of redis.resources, and Max is memoryMax.
+	// Limit is the memory limit of the pods: the effective limit, which is
+	// the limit of redis.resources or a larger limit of a step. Max is
+	// memoryMax.
 	Limit, Max int64
 	// Workload and Policy come from the spec.
 	Workload, Policy string
