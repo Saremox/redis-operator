@@ -1,6 +1,7 @@
 package service
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -98,4 +99,13 @@ func TestCheckerGetAutoscalerInfo(t *testing.T) {
 	_, err = checker.GetAutoscalerInfo(rf, "10.0.0.1")
 	assert.ErrorIs(t, err, assert.AnError)
 	mr.AssertExpectations(t)
+}
+
+func TestTemplateRedisMemoryLimit(t *testing.T) {
+	ss := generateRedisStatefulSet(autoscalerTestRF(t, nil), nil, nil, "pw")
+	require.Len(t, ss.Spec.Template.Spec.Containers, 2, "redis and the exporter")
+	assert.Equal(t, int64(1<<30), TemplateRedisMemoryLimit(ss))
+
+	ss.Spec.Template.Spec.Containers = slices.DeleteFunc(ss.Spec.Template.Spec.Containers, func(c corev1.Container) bool { return c.Name == redisContainerName })
+	assert.Zero(t, TemplateRedisMemoryLimit(ss))
 }

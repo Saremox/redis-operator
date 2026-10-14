@@ -13,7 +13,7 @@ type dummy struct {
 func (d *dummy) SetClusterOK(namespace string, name string)    {}
 func (d *dummy) SetClusterError(namespace string, name string) {}
 func (d *dummy) DeleteCluster(namespace string, name string)   {}
-func (d *dummy) SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32) {
+func (d *dummy) SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32, effectiveBytes int64) {
 }
 func (d *dummy) DeleteAutoscaler(namespace string, name string) {}
 func (d *dummy) RecordEnsureOperation(objectNamespace string, objectName string, objectKind string, resourceName string, status string) {

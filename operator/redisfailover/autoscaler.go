@@ -33,10 +33,63 @@ type autoscaleSample struct {
 	sampled bool
 }
 
+// autoscaleRead is the state that Handle reads before Ensure. Ensure and the
+// checks then use the effective memory limit, and the autoscaler uses the
+// same state without a second read.
+type autoscaleRead struct {
+	state autoscale.State
+	cm    *corev1.ConfigMap
+	// blocked is the reason for a state of another owner or of a newer
+	// operator, and err tells why. The autoscaler does not use or write such
+	// a state.
+	blocked string
+	err     error
+	// spec is the memory limit of redis.resources, and effective the memory
+	// limit of the pods.
+	spec, effective int64
+}
+
+// readAutoscale reads the state and resolves the effective memory limit. In
+// mode Auto, a state without a limit freezes it at the limit of the live
+// StatefulSet, because the spec limit can shrink the pods.
+func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) (autoscaleRead, error) {
+	spec := rf.Spec.Redis.Resources.Limits.Memory().Value()
+	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
+	read := autoscaleRead{spec: spec, effective: spec}
+	var err error
+	read.state, read.cm, err = r.readAutoscaleState(rf)
+	switch {
+	case errors.Is(err, errForeignState):
+		read.blocked, read.err = autoscale.ReasonForeignState, err
+	case err != nil:
+		return read, err
+	case read.state.Version > autoscale.StateVersion:
+		read.blocked = autoscale.ReasonNewerState
+		read.err = fmt.Errorf("the state ConfigMap has version %d, this operator reads version %d", read.state.Version, autoscale.StateVersion)
+	case read.state.Version != 0:
+		read.effective = autoscale.EffectiveLimit(read.state, spec, maxLimit)
+		return read, nil
+	}
+	if rf.Spec.Redis.Autoscaling.Mode != redisfailoverv1.AutoscalingModeAuto {
+		return read, nil
+	}
+	ss, err := r.k8sservice.GetStatefulSet(rf.Namespace, rfservice.GetRedisName(rf))
+	if apierrors.IsNotFound(err) {
+		return read, nil
+	}
+	if err != nil {
+		return read, err
+	}
+	read.effective = max(spec, min(rfservice.TemplateRedisMemoryLimit(ss), maxLimit))
+	return read, nil
+}
+
 // autoscale runs the memory autoscaler after the checks and sets
 // rf.Status.Autoscaling. The Recommend mode only reports, so an error is
 // logged and never fails the reconcile or makes the RedisFailover NotHealthy.
 func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, observed redisfailoverv1.AutoscalingStatus) {
+	key := failoverKey(rf)
+	v, ok := r.autoscaleReads.LoadAndDelete(key)
 	if !rf.AutoscalingEnabled() {
 		// Without an earlier status, there is no state to remove. This keeps
 		// the API calls of an instance without autoscaling unchanged.
@@ -46,31 +99,27 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 		return
 	}
 
-	key := failoverKey(rf)
 	master, _ := r.autoscaleMasters.LoadAndDelete(key)
-	limit := rf.Spec.Redis.Resources.Limits.Memory().Value()
-	stored, cm, err := r.readAutoscaleState(rf)
+	read, _ := v.(autoscaleRead)
+	if !ok {
+		// CheckAndHeal ran without Handle.
+		var err error
+		if read, err = r.readAutoscale(rf); err != nil {
+			rf.Status.Autoscaling = observed
+			r.logAutoscale(rf, err)
+			return
+		}
+	}
 	// The autoscaler cannot use a state of another owner or of a newer
 	// operator, and it does not overwrite it. No metric value is known.
-	blocked := ""
-	switch {
-	case errors.Is(err, errForeignState):
-		blocked = autoscale.ReasonForeignState
-	case err == nil && stored.Version > autoscale.StateVersion:
-		blocked = autoscale.ReasonNewerState
-		err = fmt.Errorf("the state ConfigMap has version %d, this operator reads version %d", stored.Version, autoscale.StateVersion)
-	}
-	if blocked != "" {
-		rf.Status.Autoscaling = redisfailoverv1.AutoscalingStatus{Reason: blocked}
+	if read.blocked != "" {
+		rf.Status.Autoscaling = autoscale.ReportStep(redisfailoverv1.AutoscalingStatus{Reason: read.blocked}, autoscale.State{}, read.spec, read.effective)
 		r.mClient.DeleteAutoscaler(rf.Namespace, rf.Name)
-		r.logAutoscale(rf, err)
+		r.logAutoscale(rf, read.err)
 		return
 	}
-	if err != nil {
-		rf.Status.Autoscaling = observed
-		r.logAutoscale(rf, err)
-		return
-	}
+	stored, cm := read.state, read.cm
+	limit := read.effective
 	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
 	now := r.now()
 	var last autoscaleSample
@@ -92,6 +141,15 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 	if last.sampled && last.version == version {
 		state = last.state
 	}
+	unbound := state
+	if state.Version == 0 && limit != read.spec {
+		// The write of the state keeps the limit that readAutoscale froze.
+		state.Version, state.Effective, state.SpecLimit = autoscale.StateVersion, limit, read.spec
+	}
+	state = autoscale.Bound(state, read.spec, maxLimit)
+	// The next reconcile gives the pods the limit of the stored state, so a
+	// change of the limit cannot wait for the next sample.
+	limitChanged := state != unbound
 	// A leftover state, for example of a mode change to Off that the status
 	// did not show, must not give a recommendation of an earlier time.
 	state = autoscale.Expire(state, now)
@@ -125,14 +183,16 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 			// reads this state from the ConfigMap.
 			errs = append(errs, r.writeAutoscaleState(rf, cm, state))
 		}
+	} else if limitChanged {
+		errs = append(errs, r.writeAutoscaleState(rf, cm, state))
 	}
 
-	rf.Status.Autoscaling = autoscale.Report(state, limit, maxLimit)
+	rf.Status.Autoscaling = autoscale.ReportStep(autoscale.Report(state, limit, maxLimit), state, read.spec, limit)
 	var recommended int64
 	if rf.Status.Autoscaling.RecommendedMemory != "" {
 		recommended = min(state.Recommended, maxLimit)
 	}
-	r.mClient.SetAutoscaler(rf.Namespace, rf.Name, recommended, last.ratio, state.HighWindows)
+	r.mClient.SetAutoscaler(rf.Namespace, rf.Name, recommended, last.ratio, state.HighWindows, limit)
 	r.logAutoscale(rf, errors.Join(errs...))
 }
 
@@ -213,6 +273,7 @@ func (r *RedisFailoverHandler) stopAutoscaler(rf *redisfailoverv1.RedisFailover,
 }
 
 func (r *RedisFailoverHandler) forgetAutoscaler(key string) {
+	r.autoscaleReads.Delete(key)
 	r.autoscaleMasters.Delete(key)
 	r.autoscaleSamples.Delete(key)
 	r.autoscaleLogged.Delete(key)

@@ -25,6 +25,11 @@ func rf(limit, policy string, percent int32, customConfig ...string) *redisfailo
 	return r
 }
 
+func effective(r *redisfailoverv1.RedisFailover, limit string) *redisfailoverv1.RedisFailover {
+	r.Status.Autoscaling.EffectiveMemory = limit
+	return r
+}
+
 func pods(maxmemory int64, policy string, limits ...int64) []Pod {
 	var ps []Pod
 	for i, l := range limits {
@@ -91,6 +96,10 @@ func TestCheck(t *testing.T) {
 		{"not managed without a limit", rf("", "noeviction", 75), "", pods(0, "", 0, 0, 0), true},
 		{"not managed below 64Mi", rf("32Mi", "noeviction", 75), "", pods(0, "", 32*mi, 32*mi, 32*mi), true},
 		{"a pod below 64Mi", rf("192Mi", "noeviction", 75), "", pods(0, "noeviction", 32*mi, l192, l192), true},
+		// The autoscaler applies a limit above the spec.
+		{"effective", effective(rf("192Mi", "noeviction", 75), "256Mi"), "", pods(192*mi, "noeviction", l256, l256, l256), true},
+		{"effective, the spec limit", effective(rf("192Mi", "noeviction", 75), "256Mi"), "", pods(144*mi, "noeviction", l256, l256, l256), false},
+		{"effective, a pod not resized yet", effective(rf("192Mi", "noeviction", 75), "256Mi"), "", pods(144*mi, "noeviction", l192, l256, l256), true},
 		{"unreachable pod", rf("192Mi", "noeviction", 75), "",
 			append(pods(144*mi, "noeviction", l192, l192), Pod{Name: "rfr-x-2", Limit: l192, Err: errors.New("refused")}), false},
 	}

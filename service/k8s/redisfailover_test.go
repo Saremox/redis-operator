@@ -179,15 +179,18 @@ func TestRedisFailoverServiceUpdateRedisFailoverStatusAutoscaling(t *testing.T) 
 		return got.Status.Autoscaling, body
 	}
 
-	full := redisfailoverv1.AutoscalingStatus{Workload: "Store", RecommendedMemory: "1280Mi", Reason: "r", EvaluatedAt: "2026-01-01T00:05:00Z", HighWindows: 3}
+	full := redisfailoverv1.AutoscalingStatus{
+		Workload: "Store", RecommendedMemory: "1600Mi", Reason: "r", EvaluatedAt: "2026-01-01T00:05:00Z", HighWindows: 3,
+		EffectiveMemory: "1280Mi", Phase: "Reverted", LastStep: "2026-01-01T00:00:00Z", RetryAfter: "2026-01-01T01:00:00Z",
+	}
 	got, body := patch(full)
 	assert.Equal(t, full, got)
-	assert.Contains(t, body, `"autoscaling":{"evaluatedAt":"2026-01-01T00:05:00Z","highWindows":3,"reason":"r","recommendedMemory":"1280Mi","workload":"Store"}`)
+	assert.Contains(t, body, `"autoscaling":{"effectiveMemory":"1280Mi","evaluatedAt":"2026-01-01T00:05:00Z","highWindows":3,"lastStep":"2026-01-01T00:00:00Z","phase":"Reverted","reason":"r","recommendedMemory":"1600Mi","retryAfter":"2026-01-01T01:00:00Z","workload":"Store"}`)
 
 	partial := redisfailoverv1.AutoscalingStatus{Workload: "Store", Reason: "low"}
 	got, body = patch(partial)
 	assert.Equal(t, partial, got)
-	assert.Contains(t, body, `"autoscaling":{"evaluatedAt":null,"highWindows":null,"reason":"low","recommendedMemory":null,"workload":"Store"}`)
+	assert.Contains(t, body, `"autoscaling":{"effectiveMemory":null,"evaluatedAt":null,"highWindows":null,"lastStep":null,"phase":null,"reason":"low","recommendedMemory":null,"retryAfter":null,"workload":"Store"}`)
 
 	got, body = patch(redisfailoverv1.AutoscalingStatus{})
 	assert.Zero(t, got)

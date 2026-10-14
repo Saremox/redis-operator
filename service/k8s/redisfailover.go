@@ -114,6 +114,10 @@ func autoscalingPatch(a redisfailoverv1.AutoscalingStatus) interface{} {
 		"reason":            orNil(a.Reason),
 		"evaluatedAt":       orNil(a.EvaluatedAt),
 		"highWindows":       highWindows,
+		"effectiveMemory":   orNil(a.EffectiveMemory),
+		"phase":             orNil(a.Phase),
+		"lastStep":          orNil(a.LastStep),
+		"retryAfter":        orNil(a.RetryAfter),
 	}
 }
 

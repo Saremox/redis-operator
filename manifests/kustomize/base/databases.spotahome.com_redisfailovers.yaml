@@ -17103,6 +17103,11 @@ spec:
                   Autoscaling is the last result of redis.autoscaling. It is empty when
                   the mode is Off.
                 properties:
+                  effectiveMemory:
+                    description: |-
+                      EffectiveMemory is the memory limit of the redis container when it
+                      differs from redis.resources.limits.memory.
+                    type: string
                   evaluatedAt:
                     description: |-
                       EvaluatedAt is the RFC3339 time, in full minutes, of the last change of
@@ -17114,6 +17119,16 @@ spec:
                       memory use, 3 at most.
                     format: int32
                     type: integer
+                  lastStep:
+                    description: |-
+                      LastStep is the RFC3339 time, in full minutes, of the start of the
+                      last step.
+                    type: string
+                  phase:
+                    description: |-
+                      Phase is the phase of the last autoscaler step: Idle, Applying, Done,
+                      Reverted or Held.
+                    type: string
                   reason:
                     description: Reason tells why the autoscaler recommends a change
                       or no change.
@@ -17122,6 +17137,11 @@ spec:
                     description: |-
                       RecommendedMemory is the memory limit that the autoscaler recommends.
                       It is empty when the autoscaler recommends no change.
+                    type: string
+                  retryAfter:
+                    description: |-
+                      RetryAfter is the RFC3339 time, in full minutes, after which a step
+                      can start again after a revert.
                     type: string
                   workload:
                     description: Workload is Store or Cache.

@@ -334,4 +334,16 @@ type AutoscalingStatus struct {
 	// HighWindows is the number of consecutive 5-minute windows with high
 	// memory use, 3 at most.
 	HighWindows int32 `json:"highWindows,omitempty"`
+	// EffectiveMemory is the memory limit of the redis container when it
+	// differs from redis.resources.limits.memory.
+	EffectiveMemory string `json:"effectiveMemory,omitempty"`
+	// Phase is the phase of the last autoscaler step: Idle, Applying, Done,
+	// Reverted or Held.
+	Phase string `json:"phase,omitempty"`
+	// LastStep is the RFC3339 time, in full minutes, of the start of the
+	// last step.
+	LastStep string `json:"lastStep,omitempty"`
+	// RetryAfter is the RFC3339 time, in full minutes, after which a step
+	// can start again after a revert.
+	RetryAfter string `json:"retryAfter,omitempty"`
 }

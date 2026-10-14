@@ -16,7 +16,8 @@ Each reconcile does these steps in this order:
 2. Finalizer: the operator adds its finalizer. With it, the operator sees the deletion timestamp before the object is gone.
 3. Skip: if the annotation `redisfailovers.databases.spotahome.com/skip-reconcile` is `"true"`, the operator stops here. Use it to repair a cluster by hand.
 4. Validate: `Validate()` rejects an invalid spec and sets the defaults.
-5. Ensure: the operator creates or updates the objects below. It overwrites a manual change of these objects:
+5. Autoscaler state: with `redis.autoscaling.mode: Recommend`, the operator reads its state from the ConfigMap `rfa-<NAME>`. The state can hold a memory limit of the redis pods above `redis.resources`, and Ensure writes that limit to the statefulset. Thus an error of this read stops the reconcile before Ensure. Without autoscaling, the operator does not read the ConfigMap.
+6. Ensure: the operator creates or updates the objects below. It overwrites a manual change of these objects:
    - Redis service (if exporter enabled)
    - Redis master service and Redis replica service
    - Redis shutdown configmap
@@ -25,8 +26,8 @@ Each reconcile does these steps in this order:
    - Redis statefulset, and its PodDisruptionBudget unless `redis.disablePodDisruptionBudget` is true
    - Sentinel service, configmap and deployment. Only when Sentinel is on and, in bootstrap mode, `allowSentinels` is true. Otherwise, the operator deletes them. With them, the operator also creates a Sentinel PodDisruptionBudget unless `sentinel.disablePodDisruptionBudget` is true, and a Sentinel service account unless `sentinel.serviceAccountName` is set.
    - When a flag disables a PodDisruptionBudget or `sentinel.serviceAccountName` is set, the operator deletes the object that it created before. An old PodDisruptionBudget would block node drains. The operator deletes only an object that the RedisFailover owns. It deletes the ServiceAccount when no Sentinel pod uses it, because the old ReplicaSet cannot create a pod without it. Without the RBAC verb, the operator logs a warning and keeps the object.
-6. Check & Heal: connects to every Redis and Sentinel and moves them to the desired state. First, it applies a changed password, because every later check authenticates. It keeps the passwords that the Redis pods run with in the Secret `rfr-auth-applied-<NAME>`, so that it can apply a change after a restart. Then it uses one mode, described below.
-7. Autoscaler: with `redis.autoscaling.mode: Recommend`, the operator reads its state from the ConfigMap `rfa-<NAME>` after the checks. At most one time in each minute, it reads `INFO` from the master that the checks found, and writes the state when it changes. It sets `status.autoscaling` and the autoscaler metrics, and changes no pod. An autoscaler error gives a warning in the log, but does not change the state of the RedisFailover. Then the operator writes the status, if it changed.
+7. Check & Heal: connects to every Redis and Sentinel and moves them to the desired state. First, it applies a changed password, because every later check authenticates. It keeps the passwords that the Redis pods run with in the Secret `rfr-auth-applied-<NAME>`, so that it can apply a change after a restart. Then it uses one mode, described below.
+8. Autoscaler: after the checks, the operator uses the state of step 5. At most one time in each minute, it reads `INFO` from the master that the checks found, and writes the state when it changes. It sets `status.autoscaling` and the autoscaler metrics, and changes no pod. An autoscaler error after step 5 gives a warning in the log, but does not change the state of the RedisFailover. Then the operator writes the status, if it changed.
 
 ## Check & Heal modes
 

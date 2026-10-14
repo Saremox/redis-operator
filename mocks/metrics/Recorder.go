@@ -83,9 +83,9 @@ func (_m *Recorder) RegisterResourceQueueLengthFunc(controller string, f func(co
 	return r0
 }
 
-// SetAutoscaler provides a mock function with given fields: namespace, name, recommendedBytes, usedRatio, highWindows
-func (_m *Recorder) SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32) {
-	_m.Called(namespace, name, recommendedBytes, usedRatio, highWindows)
+// SetAutoscaler provides a mock function with given fields: namespace, name, recommendedBytes, usedRatio, highWindows, effectiveBytes
+func (_m *Recorder) SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32, effectiveBytes int64) {
+	_m.Called(namespace, name, recommendedBytes, usedRatio, highWindows, effectiveBytes)
 }
 
 // SetClusterError provides a mock function with given fields: namespace, name

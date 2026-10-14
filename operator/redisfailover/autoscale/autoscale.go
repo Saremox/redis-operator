@@ -44,8 +44,10 @@ const (
 	// for example of a mode change to Off and back, shows an earlier memory use.
 	MaxStateAge = 2*WindowLength + SampleInterval
 	// StateVersion changes when State changes in a way that an older
-	// operator cannot read.
-	StateVersion = 1
+	// operator cannot read. Version 2 adds the step fields. An operator that
+	// reads only version 1 would write the state without them, and the pods
+	// would get the spec limit again.
+	StateVersion = 2
 )
 
 // The reasons in the status. They are constant texts, so that the status changes
@@ -99,6 +101,27 @@ type State struct {
 	// Limit is the memory limit of the last sample in bytes. An operator
 	// that does not know the field ignores it, so StateVersion stays.
 	Limit int64 `json:"limit,omitempty"`
+
+	// The step fields. Expire keeps them, because the pods have the
+	// Effective limit also when no operator samples. Effective is 0 when the
+	// pods have the spec limit, and SpecLimit is the spec limit when
+	// Effective was set. The times are Unix times in seconds.
+	Effective  int64  `json:"effective,omitempty"`
+	SpecLimit  int64  `json:"specLimit,omitempty"`
+	Phase      string `json:"phase,omitempty"`
+	From       int64  `json:"from,omitempty"`
+	To         int64  `json:"to,omitempty"`
+	Generation int64  `json:"generation,omitempty"`
+	StartedAt  int64  `json:"startedAt,omitempty"`
+	DoneAt     int64  `json:"doneAt,omitempty"`
+	RetryAt    int64  `json:"retryAt,omitempty"`
+	Refusal    string `json:"refusal,omitempty"`
+	// Reverts is the number of reverts since the last user change. It
+	// doubles the back-off.
+	Reverts int32 `json:"reverts,omitempty"`
+	// Steps holds the start times of the last StepBudget steps, the oldest
+	// first. An array keeps State comparable with ==.
+	Steps [StepBudget]int64 `json:"steps,omitzero"`
 }
 
 // Expire discards the decision values of a state with a last sample older than
@@ -141,7 +164,9 @@ type Input struct {
 	Healthy bool
 	// Info is nil when the master did not answer INFO, or no master is known.
 	Info *redis.AutoscalerInfo
-	// Limit is the memory limit of redis.resources, and Max is memoryMax.
+	// Limit is the memory limit of the pods: the effective limit, which is
+	// the limit of redis.resources or a larger limit of a step. Max is
+	// memoryMax.
 	Limit, Max int64
 	// Workload and Policy come from the spec.
 	Workload, Policy string
@@ -259,7 +284,7 @@ func Report(s State, limit, maxLimit int64) redisfailoverv1.AutoscalingStatus {
 		st.Reason = ReasonNoSample
 	}
 	if s.EvaluatedAt != 0 {
-		st.EvaluatedAt = time.Unix(s.EvaluatedAt, 0).UTC().Truncate(time.Minute).Format(time.RFC3339)
+		st.EvaluatedAt = formatMinute(s.EvaluatedAt)
 	}
 	recommended := s.Recommended
 	if s.Limit != 0 && limit < s.Limit {
@@ -365,6 +390,10 @@ func (s State) withReason(reason string) State {
 
 func formatQuantity(bytes int64) string {
 	return resource.NewQuantity(bytes, resource.BinarySI).String()
+}
+
+func formatMinute(unix int64) string {
+	return time.Unix(unix, 0).UTC().Truncate(time.Minute).Format(time.RFC3339)
 }
 
 func roundUp(n, multiple int64) int64 {
