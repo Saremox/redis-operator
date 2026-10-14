@@ -368,7 +368,7 @@ func TestResizePodInPlaceRecreates(t *testing.T) {
 		old, new corev1.PodTemplateSpec
 		reason   string
 	}{
-		"unsupported cluster":         {k8s.PodResizeSupport{}, podTemplate(resources("1", "1Gi")), podTemplate(resources("2", "1Gi")), ""},
+		"unsupported cluster":         {k8s.PodResizeSupport{}, podTemplate(resources("1", "1Gi")), podTemplate(resources("2", "1Gi")), "an in-place resize needs Kubernetes 1.33 or later"},
 		"more than resources change":  {fullSupport, podTemplate(resources("1", "1Gi")), other, "the update changes more than container resources"},
 		"resource claims change":      {fullSupport, podTemplate(resources("1", "1Gi")), claimed, "the update changes more than container resources"},
 		"limit replaced":              {fullSupport, podTemplate(resources("1", "1Gi")), podTemplate(corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")}}), "requests or limits are added or removed"},
@@ -408,6 +408,7 @@ func TestResizePodInPlaceRecreatesWithoutRevisionsOrSupport(t *testing.T) {
 		result, err := NewRedisFailoverHealer(&mK8SService.Services{}, nil, log.Dummy).ResizePodInPlace(rf, resizePod, "new", AutoscalerLimits{})
 		require.NoError(t, err)
 		assert.Equal(t, ResizeRecreate, result.Action)
+		assert.Equal(t, "redis.inPlaceResize is Disabled", result.Message)
 	})
 
 	t.Run("revisions forbidden", func(t *testing.T) {

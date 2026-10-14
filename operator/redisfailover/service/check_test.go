@@ -1337,6 +1337,27 @@ func TestGetStatefulSetUpdateRevision(t *testing.T) {
 			expectedUVersion: "",
 			expectedError:    errors.New("not found"),
 		},
+		{
+			name: "template change not observed",
+			ss: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Generation: 3},
+				Status:     appsv1.StatefulSetStatus{ObservedGeneration: 2, UpdateRevision: "10"},
+			},
+			expectedError: rfservice.ErrUpdateRevisionNotObserved,
+		},
+		{
+			name:          "no update revision",
+			ss:            &appsv1.StatefulSet{},
+			expectedError: rfservice.ErrUpdateRevisionNotObserved,
+		},
+		{
+			name: "template change observed",
+			ss: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Generation: 3},
+				Status:     appsv1.StatefulSetStatus{ObservedGeneration: 3, UpdateRevision: "11"},
+			},
+			expectedUVersion: "11",
+		},
 	}
 
 	for _, test := range tests {
@@ -1350,9 +1371,12 @@ func TestGetStatefulSetUpdateRevision(t *testing.T) {
 		checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
 		version, err := checker.GetStatefulSetUpdateRevision(rf)
 
-		if test.expectedError == nil {
+		switch {
+		case test.expectedError == nil:
 			require.NoError(t, err)
-		} else {
+		case errors.Is(test.expectedError, rfservice.ErrUpdateRevisionNotObserved):
+			require.ErrorIs(t, err, rfservice.ErrUpdateRevisionNotObserved)
+		default:
 			require.Error(t, err)
 		}
 

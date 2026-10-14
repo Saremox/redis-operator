@@ -56,9 +56,9 @@ type autoscaleRead struct {
 	spec, effective int64
 }
 
-// readAutoscale reads the state and resolves the effective memory limit. In
-// mode Auto, a state without a limit freezes it at the limit of the live
-// StatefulSet, because the spec limit can shrink the pods.
+// readAutoscale reads the state and resolves the effective memory limit. A
+// state without a limit freezes it at the limit of the live StatefulSet,
+// because the spec limit can shrink the pods.
 func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) (autoscaleRead, error) {
 	spec := rf.Spec.Redis.Resources.Limits.Memory().Value()
 	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
@@ -90,7 +90,10 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 		read.effective = autoscale.EffectiveLimit(read.state, spec, maxLimit)
 		return read, nil
 	}
-	if rf.Spec.Redis.Autoscaling.Mode != redisfailoverv1.AutoscalingModeAuto {
+	// In mode Recommend, only an effective limit in the status shows that a
+	// step of an earlier mode Auto changed the pods. Thus an instance without
+	// a step makes no extra call.
+	if rf.Spec.Redis.Autoscaling.Mode != redisfailoverv1.AutoscalingModeAuto && rf.Status.Autoscaling.EffectiveMemory == "" {
 		return read, nil
 	}
 	live, err := r.liveRedisMemoryLimit(rf, spec)
@@ -172,8 +175,9 @@ type autoscaleRollout struct {
 	// controller observed the latest template, and each pod is ready on the
 	// update revision.
 	settled bool
-	// applied is true when each pod runs with the effective memory limit or
-	// a larger one, and anyApplied when one pod does.
+	// applied is true when the rollout is complete and each pod runs with the
+	// effective memory limit or a larger one. anyApplied is true when one pod
+	// does, or runs or starts on the update revision with that limit.
 	applied, anyApplied bool
 	// refusal is the permanent refusal of a resize to an autoscaler revision.
 	refusal *resizeRefusal
@@ -223,13 +227,24 @@ func (r *RedisFailoverHandler) recordAutoscaleRollout(rf *redisfailoverv1.RedisF
 	}
 	limit := rf.Spec.Redis.Resources.Limits.Memory().Value()
 	complete := len(pods.Items) >= int(rf.Spec.Redis.Replicas)
-	rollout.settled = complete && !waits && rollout.refusal == nil && ss.Status.ObservedGeneration >= ss.Generation
-	rollout.applied = complete
+	observed := ss.Status.ObservedGeneration >= ss.Generation
+	rollout.settled = complete && !waits && rollout.refusal == nil && observed
+	rollout.applied = complete && observed
 	rollout.complete, rollout.updateRevision = true, ss.Status.UpdateRevision
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if pod.DeletionTimestamp != nil || pod.Labels[appsv1.ControllerRevisionHashLabelKey] != ss.Status.UpdateRevision || rfservice.ResizeRequested(pod) || !util.PodIsReady(pod) {
+		updated := pod.Labels[appsv1.ControllerRevisionHashLabelKey] == ss.Status.UpdateRevision
+		if pod.DeletionTimestamp != nil || !updated || rfservice.ResizeRequested(pod) || !util.PodIsReady(pod) {
 			rollout.settled = false
+		}
+		if !updated {
+			rollout.applied = false
+		}
+		// A pod that the StatefulSet created from the template of the step
+		// gets the limit when it starts. A revert would make it stale and
+		// larger than the template. A pod that no node can hold has no data.
+		if updated && rfservice.RequestedRedisMemoryLimit(pod) >= limit && !unplaceable(pod) {
+			rollout.anyApplied = true
 		}
 		if rfservice.ResizeRequested(pod) {
 			rollout.requested = append(rollout.requested, pod.Name)
@@ -261,6 +276,9 @@ func (r *RedisFailoverHandler) logResizeRefusal(rf *redisfailoverv1.RedisFailove
 }
 
 func (f *resizeRefusal) String() string {
+	if f.message == "" {
+		return "pod " + f.pod
+	}
 	return "pod " + f.pod + ": " + f.message
 }
 
@@ -328,6 +346,11 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 		state.Version, state.Effective, state.SpecLimit = autoscale.StateVersion, limit, read.spec
 		state.Frozen, state.Generation = true, rf.Generation
 	}
+	if state.Frozen && state.Generation != rf.Generation {
+		// A change of the spec ends the freeze in each mode. Plan runs only
+		// in mode Auto.
+		state.Frozen = false
+	}
 	state = autoscale.Bound(state, read.spec, maxLimit)
 	// The next reconcile gives the pods the limit of the stored state, so a
 	// change of the limit cannot wait for the next sample.
@@ -385,6 +408,9 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 	if wait != "" && report.RecommendedMemory != "" {
 		report.Reason = wait
 	}
+	if refused := r.refusalReason(rf, next); refused != "" {
+		report.Reason = refused
+	}
 	rf.Status.Autoscaling = autoscale.ReportStep(report, next, read.spec, limit)
 	var recommended int64
 	if rf.Status.Autoscaling.RecommendedMemory != "" {
@@ -410,7 +436,13 @@ func (r *RedisFailoverHandler) planStep(rf *redisfailoverv1.RedisFailover, read 
 		o.Applied, o.AnyApplied = rollout.applied, rollout.anyApplied
 		if rollout.refusal != nil {
 			o.Refusal = rollout.refusal.String()
+		} else {
+			// The next refusal is a change, also when its text is the same.
+			r.autoscaleRefusalLogged.Delete(failoverKey(rf))
 		}
+	} else {
+		// A pod can have applied the step, so the timeout holds it.
+		o.AnyApplied = true
 	}
 	next, action := autoscale.Plan(state, o)
 	var wait string
@@ -434,6 +466,18 @@ func (r *RedisFailoverHandler) planStep(rf *redisfailoverv1.RedisFailover, read 
 		wait = autoscale.WaitReason(next, o)
 	}
 	return next, action, wait, err
+}
+
+// refusalReason returns the status reason of a refusal of this reconcile, or
+// "". Held and Reverted show the refusal of the step. A refusal in another
+// phase holds the rollout of a change of the spec.
+func (r *RedisFailoverHandler) refusalReason(rf *redisfailoverv1.RedisFailover, s autoscale.State) string {
+	v, _ := r.autoscaleRollout.Load(failoverKey(rf))
+	rollout, _ := v.(autoscaleRollout)
+	if rollout.refusal == nil || s.Phase == autoscale.PhaseHeld || s.Phase == autoscale.PhaseReverted {
+		return ""
+	}
+	return autoscale.ReasonResizeRefused + ": " + rollout.refusal.String()
 }
 
 // stepBlocked returns why a step must not start, or "". A step changes the
@@ -481,10 +525,10 @@ func (r *RedisFailoverHandler) autoscaleStepWritten(rf *redisfailoverv1.RedisFai
 		logger.Infof("Autoscaler: the step to %s is done", quantity(s.To))
 		r.mClient.CountAutoscalerStep(rf.Namespace, rf.Name, metrics.AutoscalerStepDone)
 	case autoscale.ActionRevert:
-		logger.Warningf("Autoscaler: the step to %s was reverted to %s: %s", quantity(s.To), quantity(s.From), s.Refusal)
+		logger.Warningf("Autoscaler: the operator reverted the step to %s, back to %s: %s", quantity(s.To), quantity(s.From), s.Refusal)
 		r.mClient.CountAutoscalerStep(rf.Namespace, rf.Name, metrics.AutoscalerStepReverted)
 	case autoscale.ActionHold:
-		logger.Warningf("Autoscaler: the step to %s is held: %s", quantity(s.To), s.Refusal)
+		logger.Warningf("Autoscaler: the operator holds the step to %s: %s", quantity(s.To), s.Refusal)
 		r.mClient.CountAutoscalerStep(rf.Namespace, rf.Name, metrics.AutoscalerStepHeld)
 	}
 	if (action == autoscale.ActionStart || action == autoscale.ActionRevert) && r.requeue != nil {

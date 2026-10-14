@@ -286,8 +286,7 @@ func TestAutoscaleStepTimeoutAndDone(t *testing.T) {
 	st.reconcile(t, waiting)
 	assert.Equal(t, autoscale.ReasonHeld+": "+autoscale.RefusalTimeout, st.status.Reason)
 
-	// The kubelet applied the limit of the last pod, and its label is still
-	// the earlier revision.
+	// Each pod applied the limit, and the rollout moved each label.
 	st.reconcile(t, &autoscaleRollout{complete: true, applied: true, anyApplied: true, updateRevision: "rev1"})
 
 	assert.Equal(t, []string{"Ensure 1280Mi", "write Held 1280Mi", "Ensure 1280Mi", "write Done 1280Mi"}, st.calls)

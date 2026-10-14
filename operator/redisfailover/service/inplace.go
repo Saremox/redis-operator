@@ -111,23 +111,23 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 	waiting := func(class ResizeClass, format string, args ...any) (ResizeResult, error) {
 		return result(ResizeWaiting, class, fmt.Sprintf(format, args...))
 	}
-	unsupported := func() (ResizeResult, error) {
+	unsupported := func(reason string) (ResizeResult, error) {
 		var err error
 		if autoscaler, err = r.isAutoscalerRevision(rf, podName, updateRevision, limits); err != nil {
 			return ResizeResult{}, err
 		}
-		return result(ResizeRecreate, ResizePermanent, "")
+		return result(ResizeRecreate, ResizePermanent, reason)
 	}
 
 	if rf.Spec.Redis.InPlaceResize == "Disabled" {
-		return unsupported()
+		return unsupported("redis.inPlaceResize is Disabled")
 	}
 	support, err := r.k8sService.PodResizeSupport()
 	if err != nil {
 		return ResizeResult{}, err
 	}
 	if !support.Supported {
-		return unsupported()
+		return unsupported("an in-place resize needs Kubernetes 1.33 or later")
 	}
 	pod, err := r.k8sService.GetPod(rf.Namespace, podName)
 	if err != nil {

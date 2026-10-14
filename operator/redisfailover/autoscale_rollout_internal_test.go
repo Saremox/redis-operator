@@ -185,14 +185,30 @@ func TestRecordAutoscaleRollout(t *testing.T) {
 			return p
 		}), observed: 2, want: want{true, true, true}},
 		"a wait":                   {pods: pods(nil), waits: true, observed: 2, want: want{false, true, true}},
-		"template not observed":    {pods: pods(nil), observed: 1, want: want{false, true, true}},
+		"template not observed":    {pods: pods(nil), observed: 1, want: want{false, false, true}},
 		"a refusal":                {pods: pods(nil), observed: 2, refusal: refusal, want: want{false, true, true}},
 		"a pod missing":            {pods: pods(func(p []corev1.Pod) []corev1.Pod { return p[:1] }), observed: 2, want: want{false, false, true}},
 		"a stale pod, not applied": {pods: pods(func(p []corev1.Pod) []corev1.Pod { p[1] = redisPod("rfr-test-1", "old", "1Gi"); return p }), observed: 2, want: want{false, false, true}},
 		"a stale pod, applied": {pods: pods(func(p []corev1.Pod) []corev1.Pod {
 			p[1].Labels[appsv1.ControllerRevisionHashLabelKey] = "old"
 			return p
-		}), observed: 2, want: want{false, true, true}},
+		}), observed: 2, want: want{false, false, true}},
+		"a pod of the step that starts": {pods: pods(func(p []corev1.Pod) []corev1.Pod {
+			p[0] = redisPod("rfr-test-0", "old", "1Gi")
+			p[1] = startingPod("new", "2Gi")
+			return p
+		}), observed: 2, want: want{false, false, true}},
+		"a pod of the step that no node can hold": {pods: pods(func(p []corev1.Pod) []corev1.Pod {
+			p[0] = redisPod("rfr-test-0", "old", "1Gi")
+			p[1] = startingPod("new", "2Gi")
+			p[1].Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonUnschedulable}}
+			return p
+		}), observed: 2, want: want{false, false, false}},
+		"a pod of the template before that starts": {pods: pods(func(p []corev1.Pod) []corev1.Pod {
+			p[0] = redisPod("rfr-test-0", "old", "1Gi")
+			p[1] = startingPod("old", "1Gi")
+			return p
+		}), observed: 2, want: want{false, false, false}},
 		"no pod applied": {pods: pods(func(p []corev1.Pod) []corev1.Pod {
 			return []corev1.Pod{redisPod("rfr-test-0", "old", "1Gi"), redisPod("rfr-test-1", "old", "1Gi")}
 		}), observed: 2, want: want{false, false, false}},
@@ -226,6 +242,17 @@ func TestRecordAutoscaleRollout(t *testing.T) {
 			assert.Equal(t, test.refusal, got.refusal)
 		})
 	}
+}
+
+// startingPod is a Pending redis pod on revision rev with the memory limit
+// requested.
+func startingPod(rev, limit string) corev1.Pod {
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-1", Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: rev}},
+		Status:     corev1.PodStatus{Phase: corev1.PodPending},
+	}
+	pod.Spec.Containers = []corev1.Container{{Name: "redis", Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse(limit)}}}}
+	return pod
 }
 
 func autoscaleRolloutRF(mode string) *redisfailoverv1.RedisFailover {

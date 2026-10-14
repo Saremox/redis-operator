@@ -77,7 +77,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 				return err
 			}
 			if podNames == nil {
-				if ssUR, err = r.rfChecker.GetStatefulSetUpdateRevision(rf); err != nil {
+				if ssUR, wait, err = r.updateRevision(rf); err != nil || wait != nil {
 					return err
 				}
 				if podNames, err = r.redisPodNamesByIP(rf); err != nil {
@@ -102,7 +102,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 	}
 
 	if podNames == nil {
-		if ssUR, err = r.rfChecker.GetStatefulSetUpdateRevision(rf); err != nil {
+		if ssUR, wait, err = r.updateRevision(rf); err != nil || wait != nil {
 			return err
 		}
 	}
@@ -205,6 +205,19 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 		r.handoverRetries.Delete(failoverKey(rf))
 	}
 	return nil
+}
+
+// updateRevision returns the update revision of the redis StatefulSet, or a
+// wait while its status does not show the latest template. Then each pod on
+// the latest template looks stale. A resize or a delete toward the revision
+// of the status can recreate a pod for a replaced template, for example after
+// an autoscaler revert.
+func (r *RedisFailoverHandler) updateRevision(rf *redisfailoverv1.RedisFailover) (string, *rolloutWait, error) {
+	rev, err := r.rfChecker.GetStatefulSetUpdateRevision(rf)
+	if errors.Is(err, rfservice.ErrUpdateRevisionNotObserved) {
+		return "", &rolloutWait{reason: err.Error()}, nil
+	}
+	return rev, nil, err
 }
 
 // handOverMaster moves the master role to the best synced replica with
@@ -404,20 +417,7 @@ func (r *RedisFailoverHandler) unschedulableStalePod(rf *redisfailoverv1.RedisFa
 	}
 	var candidates []*corev1.Pod
 	for i := range pods.Items {
-		pod := &pods.Items[i]
-		if pod.Status.Phase != corev1.PodPending || pod.DeletionTimestamp != nil {
-			continue
-		}
-		unschedulable := false
-		for _, c := range pod.Status.Conditions {
-			if c.Type == corev1.PodScheduled {
-				unschedulable = c.Status == corev1.ConditionFalse && c.Reason == corev1.PodReasonUnschedulable
-			}
-		}
-		started := slices.ContainsFunc(slices.Concat(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses), func(cs corev1.ContainerStatus) bool {
-			return cs.State.Running != nil || cs.State.Terminated != nil || cs.LastTerminationState.Terminated != nil || cs.RestartCount > 0
-		})
-		if unschedulable && !started {
+		if pod := &pods.Items[i]; unplaceable(pod) {
 			candidates = append(candidates, pod)
 		}
 	}
@@ -440,6 +440,24 @@ func (r *RedisFailoverHandler) unschedulableStalePod(rf *redisfailoverv1.RedisFa
 		}
 	}
 	return nil, nil
+}
+
+// unplaceable reports whether pod is Pending because the scheduler cannot
+// place it, and never started a container. Such a pod holds no data.
+func unplaceable(pod *corev1.Pod) bool {
+	if pod.Status.Phase != corev1.PodPending || pod.DeletionTimestamp != nil {
+		return false
+	}
+	unschedulable := false
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodScheduled {
+			unschedulable = c.Status == corev1.ConditionFalse && c.Reason == corev1.PodReasonUnschedulable
+		}
+	}
+	started := slices.ContainsFunc(slices.Concat(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses), func(cs corev1.ContainerStatus) bool {
+		return cs.State.Running != nil || cs.State.Terminated != nil || cs.LastTerminationState.Terminated != nil || cs.RestartCount > 0
+	})
+	return unschedulable && !started
 }
 
 // resizeInPlace tries to move a stale pod to the update revision without
@@ -495,9 +513,9 @@ func (r *RedisFailoverHandler) redisPodsSettled(rf *redisfailoverv1.RedisFailove
 // replicaRolloutWait returns what a pending rollout waits on while the replica
 // at ip is not synced with its master, or nil without a pending rollout.
 func (r *RedisFailoverHandler) replicaRolloutWait(rf *redisfailoverv1.RedisFailover, ip string) (*rolloutWait, error) {
-	updateRevision, err := r.rfChecker.GetStatefulSetUpdateRevision(rf)
-	if err != nil {
-		return nil, err
+	updateRevision, unobserved, err := r.updateRevision(rf)
+	if err != nil || unobserved != nil {
+		return unobserved, err
 	}
 	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
 	if err != nil {

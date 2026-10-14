@@ -43,9 +43,12 @@ const RefusalTimeout = "the step did not end in 15 minutes"
 // The reasons in the status of mode Auto. A reason with a refusal adds the
 // refusal that the state holds, so the text changes only at a transition.
 const (
-	ReasonHeld     = "the step is held"
-	ReasonReverted = "the step was reverted"
-	ReasonFrozen   = "the state ConfigMap was lost, so the limit stays at the StatefulSet limit until a change of the RedisFailover spec"
+	ReasonHeld     = "the operator holds the step"
+	ReasonReverted = "the operator reverted the step"
+	ReasonFrozen   = "the state ConfigMap is missing or not valid, so the pods keep the StatefulSet limit until a change of the spec"
+	// ReasonResizeRefused shows a refusal outside a step, for example of a
+	// change of the spec while the operator cannot read a revision.
+	ReasonResizeRefused = "the operator keeps a pod on its revision, because the resize failed"
 	// The reasons that a recommended step does not start.
 	ReasonNotSettled          = "a step waits until the rollout is complete and the RedisFailover is Healthy"
 	ReasonCooldown            = "a step waits for the cooldown after the last step"
@@ -86,12 +89,13 @@ type Observation struct {
 	// and on the update revision, and the checks before a step passed.
 	Settled bool
 	// Applied is true when all pods have an applied memory limit of at least
-	// To. The revision label does not count: the kubelet applies the limit
-	// before the rollout moves the label, and a revert would then shrink the
-	// pod.
+	// To, and the rollout of the latest template is complete. Thus a step is
+	// done only when no pod waits for the relabel of the rollout.
 	Applied bool
 	// AnyApplied is true when a pod has an applied memory limit of at least
-	// To.
+	// To, or runs or starts from the template of To. Only the limit counts,
+	// not the revision label. The kubelet applies the limit before the
+	// rollout moves the label, and a revert would then shrink the pod.
 	AnyApplied bool
 	// Refusal is the reason of a permanent refusal of a resize, or "".
 	Refusal string
@@ -126,6 +130,11 @@ func Bound(s State, spec, maxLimit int64) State {
 // of Bound. A change ends a step that is not done, because its template did
 // not reach the pods.
 func Resume(s State, live, spec, maxLimit int64) State {
+	if s.Phase == PhaseReverted {
+		// No pod applied the step, and the template of the step can stay
+		// only because Ensure did not run after the revert.
+		return s
+	}
 	e := max(spec, min(live, maxLimit))
 	if e == spec {
 		e = 0
@@ -171,6 +180,10 @@ func Plan(s State, o Observation) (State, Action) {
 		case o.Refusal != "":
 			s.Phase, s.Refusal = PhaseHeld, o.Refusal
 			return s, ActionHold
+		case now-s.StartedAt >= seconds(ApplyTimeout) && !o.AnyApplied:
+			// For example, a pod of the step that no node can hold.
+			o.Refusal = RefusalTimeout
+			return s.revert(o, now), ActionRevert
 		case now-s.StartedAt >= seconds(ApplyTimeout):
 			s.Phase, s.Refusal = PhaseHeld, RefusalTimeout
 			return s, ActionHold

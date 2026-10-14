@@ -148,16 +148,32 @@ func TestPlanRefusal(t *testing.T) {
 	})
 }
 
+// appliedObs is obs(at) with a pod that applied the step.
+func appliedObs(at time.Duration) Observation {
+	o := obs(at)
+	o.AnyApplied = true
+	return o
+}
+
+// A step that does not end in 15 minutes is held when a pod applied it, and
+// reverted otherwise.
 func TestPlanTimeout(t *testing.T) {
-	s, action := Plan(applying(t), obs(ApplyTimeout-time.Second))
+	s, action := Plan(applying(t), appliedObs(ApplyTimeout-time.Second))
 	require.Equal(t, ActionNone, action)
 	require.Equal(t, PhaseApplying, s.Phase)
 
-	s, action = Plan(s, obs(ApplyTimeout))
+	held, action := Plan(s, appliedObs(ApplyTimeout))
 	assert.Equal(t, ActionHold, action)
-	assert.Equal(t, PhaseHeld, s.Phase)
-	assert.Equal(t, RefusalTimeout, s.Refusal)
-	assert.Equal(t, 1280*mi, s.Effective)
+	assert.Equal(t, PhaseHeld, held.Phase)
+	assert.Equal(t, RefusalTimeout, held.Refusal)
+	assert.Equal(t, 1280*mi, held.Effective)
+
+	reverted, action := Plan(s, obs(ApplyTimeout))
+	assert.Equal(t, ActionRevert, action)
+	assert.Equal(t, PhaseReverted, reverted.Phase)
+	assert.Equal(t, RefusalTimeout, reverted.Refusal)
+	assert.Zero(t, reverted.Effective)
+	assert.Equal(t, int32(1), reverted.Reverts)
 }
 
 // A phase that this operator does not know, for example of a newer operator,
@@ -180,7 +196,7 @@ func TestPlanUnknownPhaseStartsNoStep(t *testing.T) {
 }
 
 func TestPlanHeldEndsWhenAllPodsApplied(t *testing.T) {
-	s, _ := Plan(applying(t), obs(ApplyTimeout))
+	s, _ := Plan(applying(t), appliedObs(ApplyTimeout))
 	require.Equal(t, PhaseHeld, s.Phase)
 	o := obs(time.Hour)
 	o.Applied = true
@@ -315,7 +331,7 @@ func TestPlanAfterTheClockWentBack(t *testing.T) {
 		require.Equal(t, ActionNone, action)
 		assert.Equal(t, at(back), s.StartedAt)
 		assert.Equal(t, at(back), s.Steps[StepBudget-1])
-		s, action = Plan(s, obs(back+ApplyTimeout))
+		s, action = Plan(s, appliedObs(back+ApplyTimeout))
 		assert.Equal(t, ActionHold, action)
 	})
 
@@ -519,6 +535,10 @@ func TestResume(t *testing.T) {
 			assert.Equal(t, test.phase, got.Phase)
 		})
 	}
+
+	reverted := s
+	reverted.Phase, reverted.Effective = PhaseReverted, 0
+	assert.Equal(t, reverted, Resume(reverted, 1280*mi, gi, 4*gi), "a revert stays")
 
 	held := s
 	held.Phase, held.Refusal = PhaseHeld, "quota"

@@ -44,6 +44,10 @@ type inPlaceTest struct {
 	*rolloutTest
 	healer  *rfservice.RedisFailoverHealer
 	updated string
+	// resizeErr is the answer of the API server to a resize.
+	resizeErr error
+	// lagging makes the StatefulSet status show an earlier generation.
+	lagging bool
 }
 
 func newInPlaceTest(t *testing.T) *inPlaceTest {
@@ -75,6 +79,9 @@ func newInPlaceTest(t *testing.T) *inPlaceTest {
 	mk.On("GetControllerRevision", "testns", "old").Return(controllerRevision(t, "old", "1Gi"), nil)
 	mk.On("GetControllerRevision", "testns", "new").Return(controllerRevision(t, "new", "2Gi"), nil)
 	mk.On("ResizePod", "testns", mock.Anything, mock.Anything).Return(func(_, name string, desired map[string]corev1.ResourceRequirements) error {
+		if it.resizeErr != nil {
+			return it.resizeErr
+		}
 		pod(name).Spec.Containers[0].Resources = desired["redis"]
 		return nil
 	})
@@ -95,7 +102,11 @@ func newInPlaceTest(t *testing.T) *inPlaceTest {
 		return nil
 	})
 	mk.On("GetStatefulSet", "testns", "rfr-test").Return(func(string, string) (*appsv1.StatefulSet, error) {
-		return &appsv1.StatefulSet{Status: appsv1.StatefulSetStatus{UpdateRevision: it.updated}}, nil
+		ss := &appsv1.StatefulSet{Status: appsv1.StatefulSetStatus{UpdateRevision: it.updated}}
+		if it.lagging {
+			ss.Generation, ss.Status.ObservedGeneration = 2, 1
+		}
+		return ss, nil
 	})
 	it.healer = rfservice.NewRedisFailoverHealer(mk, nil, log.Dummy)
 	return it
@@ -103,9 +114,17 @@ func newInPlaceTest(t *testing.T) *inPlaceTest {
 
 // setUpdateRevision makes the StatefulSet report rev as the update revision.
 func (it *inPlaceTest) setUpdateRevision(rev string) {
-	it.updated = rev
+	it.updated, it.lagging = rev, false
 	it.check.ExpectedCalls = slices.DeleteFunc(it.check.ExpectedCalls, func(c *mock.Call) bool { return c.Method == "GetStatefulSetUpdateRevision" })
 	it.check.On("GetStatefulSetUpdateRevision", it.rf).Return(rev, nil)
+}
+
+// setLagging makes the StatefulSet status show the generation before the
+// template change, with the update revision before the change.
+func (it *inPlaceTest) setLagging() {
+	it.lagging = true
+	it.check.ExpectedCalls = slices.DeleteFunc(it.check.ExpectedCalls, func(c *mock.Call) bool { return c.Method == "GetStatefulSetUpdateRevision" })
+	it.check.On("GetStatefulSetUpdateRevision", it.rf).Return("", rfservice.ErrUpdateRevisionNotObserved)
 }
 
 // handler is the handler of an operator process that starts with the state

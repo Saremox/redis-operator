@@ -141,6 +141,13 @@ func TestAppliedRedisMemoryLimit(t *testing.T) {
 	}
 }
 
+func TestRequestedRedisMemoryLimit(t *testing.T) {
+	limit := corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")}}
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "exporter"}, {Name: redisContainerName, Resources: limit}}}}
+	assert.Equal(t, int64(2<<30), RequestedRedisMemoryLimit(pod))
+	assert.Zero(t, RequestedRedisMemoryLimit(&corev1.Pod{}))
+}
+
 func TestResizeRequested(t *testing.T) {
 	assert.False(t, ResizeRequested(&corev1.Pod{}))
 	assert.False(t, ResizeRequested(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{resizeRequestedAnnotation: ""}}}))
