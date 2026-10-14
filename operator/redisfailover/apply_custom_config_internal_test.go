@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -27,8 +28,6 @@ func newCustomConfigTestRF() *redisfailoverv1.RedisFailover {
 // An unreachable pod must be skipped: the reachable pods still get their config
 // and the reconcile does not abort.
 func TestApplyRedisCustomConfigSkipsUnreachablePod(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := newCustomConfigTestRF()
 	ips := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
 
@@ -45,7 +44,7 @@ func TestApplyRedisCustomConfigSkipsUnreachablePod(t *testing.T) {
 
 	err := handler.applyRedisCustomConfig(rf)
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	// All three pods were attempted - the unreachable one did not stop the loop.
 	mrfh.AssertExpectations(t)
 }
@@ -70,7 +69,7 @@ func TestApplyRedisCustomConfigAbortsOnConfigError(t *testing.T) {
 
 	err := handler.applyRedisCustomConfig(rf)
 
-	assert.Error(err)
+	require.Error(t, err)
 	assert.Contains(err.Error(), "unknown parameter")
 	mrfh.AssertExpectations(t)
 }
@@ -96,7 +95,7 @@ func TestEnsureRedisMaxMemoryReportsBlockedMaxMemory(t *testing.T) {
 
 	hold, err := handler.ensureRedisMaxMemory(rf, "10.0.0.1")
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	assert.True(hold)
 	assert.Equal(redisfailoverv1.HealthyState, rf.Status.State)
 	assert.Equal("maxmemory kept", rf.Status.Message)
@@ -120,7 +119,7 @@ func TestEnsureRedisMaxMemoryUsesCurrentMaster(t *testing.T) {
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, &mK8SService.Services{}, metrics.Dummy, log.Dummy)
 
 	hold, err := handler.ensureRedisMaxMemory(rf, "10.0.0.1")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.False(t, hold)
 	mrfh.AssertExpectations(t)
 }
@@ -141,7 +140,7 @@ func TestEnsureRedisMaxMemorySkippedWithoutMaster(t *testing.T) {
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, &mK8SService.Services{}, metrics.Dummy, log.Dummy)
 
 	hold, err := handler.ensureRedisMaxMemory(rf, "10.0.0.1")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, hold)
 }
 
@@ -167,7 +166,7 @@ func TestEnsureRedisMaxMemoryErrors(t *testing.T) {
 		handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, &mK8SService.Services{}, metrics.Dummy, log.Dummy)
 
 		_, err := handler.ensureRedisMaxMemory(rf, "")
-		assert.EqualError(t, err, "ERR boom")
+		require.EqualError(t, err, "ERR boom")
 		mrfh.AssertExpectations(t)
 	})
 }

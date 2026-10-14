@@ -358,7 +358,7 @@ func TestApplyPasswordKeepsAForeignSecret(t *testing.T) {
 			handler := e.handler(logger)
 
 			// The behavior without the Secret: the pod stays on its password.
-			assert.ErrorContains(t, handler.applyPassword(e.rf), "put the previous password back")
+			require.ErrorContains(t, handler.applyPassword(e.rf), "put the previous password back")
 			assert.Equal(t, "v1", e.running["10.0.0.1"])
 			assert.Equal(t, 0, e.writes())
 
@@ -383,7 +383,7 @@ func TestApplyPasswordSavesARemovedPassword(t *testing.T) {
 	for range 3 {
 		require.NoError(t, handler.applyPassword(e.rf))
 	}
-	assert.Equal(t, "", e.running["10.0.0.1"])
+	assert.Empty(t, e.running["10.0.0.1"])
 	redis, applied := e.applied()
 	assert.Equal(t, []string{"", ""}, []string{redis, applied})
 	assert.Equal(t, 2, e.writes())
@@ -547,7 +547,7 @@ func TestApplyPasswordRestartDuringARemoval(t *testing.T) {
 	e.storeApplied("v1", "v1")
 
 	require.NoError(t, e.handler(log.Dummy).applyPassword(e.rf))
-	assert.Equal(t, "", e.running["10.0.0.1"])
+	assert.Empty(t, e.running["10.0.0.1"])
 	redis, applied := e.applied()
 	assert.Equal(t, []string{"v1", ""}, []string{redis, applied})
 
@@ -651,7 +651,7 @@ func TestApplyPasswordRemovalWithoutAppliedSecretOrPodSecretFails(t *testing.T) 
 	e.ms.ExpectedCalls = append(e.ms.ExpectedCalls[len(e.ms.ExpectedCalls)-1:], e.ms.ExpectedCalls[:len(e.ms.ExpectedCalls)-1]...)
 
 	err := e.handler(log.Dummy).applyPassword(e.rf)
-	assert.EqualError(t, err, "redis pod rfr-test-10.0.0.1 refuses the configured password and the operator doesn't know the one it runs with; set auth.secretPath to a Secret with the previous password until the RedisFailover is healthy, then remove it again")
+	require.EqualError(t, err, "redis pod rfr-test-10.0.0.1 refuses the configured password and the operator doesn't know the one it runs with; set auth.secretPath to a Secret with the previous password until the RedisFailover is healthy, then remove it again")
 	assert.Equal(t, "v1", e.running["10.0.0.1"])
 }
 

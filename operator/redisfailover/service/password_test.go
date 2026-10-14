@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -138,9 +139,9 @@ func TestApplyPassword(t *testing.T) {
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 			complete, stale, err := healer.ApplyPassword(rf, "new", test.previous)
 			if test.expErr != "" {
-				assert.ErrorContains(t, err, test.expErr)
+				require.ErrorContains(t, err, test.expErr)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 			assert.Equal(t, test.expComplete, complete)
 			assert.False(t, stale)
@@ -158,7 +159,7 @@ func TestApplyPasswordListError(t *testing.T) {
 
 	healer := rfservice.NewRedisFailoverHealer(ms, &mRedisService.Client{}, log.DummyLogger{})
 	complete, _, err := healer.ApplyPassword(rf, "new", []string{"old"})
-	assert.ErrorIs(t, err, boom)
+	require.ErrorIs(t, err, boom)
 	assert.False(t, complete)
 }
 
@@ -177,7 +178,7 @@ func TestApplyPasswordTriesEachPreviousPassword(t *testing.T) {
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 	complete, _, err := healer.ApplyPassword(rf, "v3", []string{"v1", "v2"})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, complete)
 	mr.AssertExpectations(t)
 }
@@ -208,7 +209,7 @@ func TestApplyPasswordRemovalHint(t *testing.T) {
 
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 			complete, _, err := healer.ApplyPassword(rf, "", []string{""})
-			assert.EqualError(t, err, "redis pod rfr-0 refuses the configured password and the operator doesn't know the one it runs with; "+test.hint)
+			require.EqualError(t, err, "redis pod rfr-0 refuses the configured password and the operator doesn't know the one it runs with; "+test.hint)
 			assert.False(t, complete)
 			mr.AssertNotCalled(t, "SetPassword", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 		})
@@ -240,7 +241,7 @@ func TestApplyPasswordStalePodYetToStart(t *testing.T) {
 
 			healer := rfservice.NewRedisFailoverHealer(ms, &mRedisService.Client{}, log.DummyLogger{})
 			complete, stale, err := healer.ApplyPassword(rf, "v1", []string{"v1"})
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.False(t, complete)
 			assert.Equal(t, test.expStale, stale)
 		})
@@ -398,9 +399,9 @@ func TestApplyPasswordStalePodTemplate(t *testing.T) {
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, logger)
 			complete, stale, err := healer.ApplyPassword(rf, test.password, test.previous)
 			if test.expErr != "" {
-				assert.ErrorContains(t, err, test.expErr)
+				require.ErrorContains(t, err, test.expErr)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				// Each case without an error and without completion has a stale pod.
 				assert.Equal(t, !test.expComplete, stale)
 			}
@@ -492,9 +493,9 @@ func TestApplySentinelPassword(t *testing.T) {
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 			complete, err := healer.ApplySentinelPassword(rf, "new")
 			if test.expErr != "" {
-				assert.ErrorContains(t, err, test.expErr)
+				require.ErrorContains(t, err, test.expErr)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 			assert.Equal(t, test.expComplete, complete)
 			mr.AssertNumberOfCalls(t, "SetSentinelAuthPass", test.expCalls)

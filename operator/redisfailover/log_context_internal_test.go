@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 
@@ -71,7 +72,7 @@ func TestNoMasterWithLocalhostMastersLogsAtInfo(t *testing.T) {
 	var lines []string
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, podFieldLogger{lines: &lines})
 
-	assert.EqualError(t, handler.CheckAndHeal(rf), "stop here")
+	require.EqualError(t, handler.CheckAndHeal(rf), "stop here")
 	assert.Contains(t, lines, "info: each available redis has 127.0.0.1 as master, the operator elects a master")
 	for _, line := range lines {
 		assert.NotRegexp(t, "^error: ", line)
@@ -98,7 +99,7 @@ func TestNoMasterWithoutSentinelQuorumLogsTheError(t *testing.T) {
 	logger := &warnLogger{}
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, logger)
 
-	assert.EqualError(t, handler.CheckAndHeal(rf), "stop here")
+	require.EqualError(t, handler.CheckAndHeal(rf), "stop here")
 	assert.Contains(t, logger.warnings, "Quorum not available for sentinel to choose master, estimated unhealthy sentinels: 2, operator to step in: insufficient sentinels to reach the quorum")
 }
 
@@ -152,7 +153,7 @@ func TestSlaveNotAssociatedToMasterLogsThePod(t *testing.T) {
 			logs := &recordedLogs{}
 			handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, recordingLogger{logs: logs})
 
-			assert.EqualError(t, handler.CheckAndHeal(rf), "stop here")
+			require.EqualError(t, handler.CheckAndHeal(rf), "stop here")
 			assert.Contains(t, logs.lines, test.expLine)
 		})
 	}

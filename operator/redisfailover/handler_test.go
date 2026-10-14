@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -80,8 +81,6 @@ func TestHandleSkipReconcileAnnotation(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert := assert.New(t)
-
 			// Bootstrapping, no exporter: the minimal path through Ensure and
 			// CheckAndHeal, matching the "Only ensure Redis when bootstrapping"
 			// case already exercised in ensurer_test.go.
@@ -131,7 +130,7 @@ func TestHandleSkipReconcileAnnotation(t *testing.T) {
 			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 			err := handler.Handle(context.Background(), rf)
 
-			assert.NoError(err)
+			require.NoError(t, err)
 
 			if test.expectSkip {
 				// None of Ensure/CheckAndHeal's underlying calls should have
@@ -200,7 +199,7 @@ func TestHandleValidateError(t *testing.T) {
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 	err := handler.Handle(context.Background(), rf)
 
-	assert.Error(err)
+	require.Error(t, err)
 	assert.Equal(redisfailoverv1.NotHealthyState, written.State)
 	assert.Equal(err.Error(), written.Message)
 	assert.NotEqual("2026-01-01T00:00:00Z", written.LastChanged)
@@ -208,7 +207,7 @@ func TestHandleValidateError(t *testing.T) {
 	mrfc.AssertNotCalled(t, "IsRedisRunning", mock.Anything)
 
 	// An unchanged error is not written again.
-	assert.Error(handler.Handle(context.Background(), rf))
+	require.Error(t, handler.Handle(context.Background(), rf))
 	mk.AssertExpectations(t)
 }
 
@@ -419,7 +418,7 @@ func TestHandleGetLabelsWhitelistFiltering(t *testing.T) {
 
 			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 			err := handler.Handle(context.Background(), rf)
-			assert.NoError(err)
+			require.NoError(t, err)
 
 			if assert.NotNil(gotLabels) {
 				assert.Equal(operatorNameMirror, gotLabels[rfLabelManagedByKeyMirror])
@@ -444,8 +443,6 @@ func TestHandleGetLabelsWhitelistFiltering(t *testing.T) {
 // redisFailoverFinalizer on a RedisFailover that does not yet have it, adding
 // it to whatever finalizers were already present rather than replacing them.
 func TestHandleAddsFinalizerOnFreshRF(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF(false, true)
 	rf.Finalizers = []string{"some.other/finalizer"}
 
@@ -478,7 +475,7 @@ func TestHandleAddsFinalizerOnFreshRF(t *testing.T) {
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 	err := handler.Handle(context.Background(), rf)
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	mk.AssertExpectations(t)
 	mrfs.AssertExpectations(t)
 	mrfc.AssertExpectations(t)
@@ -513,7 +510,7 @@ func TestHandleDeletionCleansUpMetricsAndRemovesFinalizer(t *testing.T) {
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, mClient, log.Dummy)
 	err := handler.Handle(context.Background(), rf)
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	assert.Equal([]string{rf.Namespace + "/" + rf.Name}, mClient.deleteClusterCalls)
 	mk.AssertExpectations(t)
 	mrfs.AssertNotCalled(t, "EnsureNotPresentRedisService", mock.Anything)
@@ -545,7 +542,7 @@ func TestHandleDeletionWithoutFinalizerIsNoop(t *testing.T) {
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, mClient, log.Dummy)
 	err := handler.Handle(context.Background(), rf)
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	assert.Empty(mClient.deleteClusterCalls)
 	mk.AssertNotCalled(t, "PatchRedisFailoverFinalizers", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	mrfs.AssertNotCalled(t, "EnsureNotPresentRedisService", mock.Anything)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -31,7 +32,7 @@ func TestApplyMasterEvictionAnnotation(t *testing.T) {
 	t.Run("flag disabled makes no annotation call", func(t *testing.T) {
 		ms := &mK8SService.Services{}
 		err := applyMasterEvictionAnnotation(ms, rfWithEvictionProtection(false), podNamed("p0", nil), true)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		ms.AssertNotCalled(t, "UpdatePodAnnotations", mock.Anything, mock.Anything, mock.Anything)
 	})
 
@@ -42,7 +43,7 @@ func TestApplyMasterEvictionAnnotation(t *testing.T) {
 		}).Once().Return(nil)
 
 		err := applyMasterEvictionAnnotation(ms, rfWithEvictionProtection(true), podNamed("p0", nil), true)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		ms.AssertExpectations(t)
 	})
 
@@ -53,7 +54,7 @@ func TestApplyMasterEvictionAnnotation(t *testing.T) {
 		}).Once().Return(nil)
 
 		err := applyMasterEvictionAnnotation(ms, rfWithEvictionProtection(true), podNamed("p1", nil), false)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		ms.AssertExpectations(t)
 	})
 
@@ -61,7 +62,7 @@ func TestApplyMasterEvictionAnnotation(t *testing.T) {
 		ms := &mK8SService.Services{}
 		pod := podNamed("p0", map[string]string{masterSafeToEvictAnnotation: "false"})
 		err := applyMasterEvictionAnnotation(ms, rfWithEvictionProtection(true), pod, true)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		ms.AssertNotCalled(t, "UpdatePodAnnotations", mock.Anything, mock.Anything, mock.Anything)
 	})
 }
@@ -75,7 +76,7 @@ func TestApplyMasterEvictionAnnotationFlagOff(t *testing.T) {
 		ms.On("RemovePodAnnotation", "testns", "p0", masterSafeToEvictAnnotation).Once().Return(nil)
 		pod := podNamed("p0", map[string]string{masterSafeToEvictAnnotation: "false"})
 
-		assert.NoError(t, applyMasterEvictionAnnotation(ms, rfWithEvictionProtection(false), pod, true))
+		require.NoError(t, applyMasterEvictionAnnotation(ms, rfWithEvictionProtection(false), pod, true))
 		ms.AssertExpectations(t)
 	})
 
@@ -86,7 +87,7 @@ func TestApplyMasterEvictionAnnotationFlagOff(t *testing.T) {
 		ms.On("UpdatePodAnnotations", "testns", "p0", map[string]string{masterSafeToEvictAnnotation: "true"}).Once().Return(nil)
 		pod := podNamed("p0", map[string]string{masterSafeToEvictAnnotation: "false"})
 
-		assert.NoError(t, applyMasterEvictionAnnotation(ms, rf, pod, true))
+		require.NoError(t, applyMasterEvictionAnnotation(ms, rf, pod, true))
 		ms.AssertExpectations(t)
 	})
 
@@ -94,7 +95,7 @@ func TestApplyMasterEvictionAnnotationFlagOff(t *testing.T) {
 		ms := &mK8SService.Services{}
 		pod := podNamed("p0", map[string]string{masterSafeToEvictAnnotation: "true"})
 
-		assert.NoError(t, applyMasterEvictionAnnotation(ms, rfWithEvictionProtection(false), pod, false))
+		require.NoError(t, applyMasterEvictionAnnotation(ms, rfWithEvictionProtection(false), pod, false))
 		ms.AssertNotCalled(t, "RemovePodAnnotation", mock.Anything, mock.Anything, mock.Anything)
 	})
 
@@ -104,7 +105,7 @@ func TestApplyMasterEvictionAnnotationFlagOff(t *testing.T) {
 		ms := &mK8SService.Services{}
 		pod := podNamed("p0", map[string]string{masterSafeToEvictAnnotation: "false"})
 
-		assert.NoError(t, applyMasterEvictionAnnotation(ms, rf, pod, false))
+		require.NoError(t, applyMasterEvictionAnnotation(ms, rf, pod, false))
 		ms.AssertNotCalled(t, "UpdatePodAnnotations", mock.Anything, mock.Anything, mock.Anything)
 		ms.AssertNotCalled(t, "RemovePodAnnotation", mock.Anything, mock.Anything, mock.Anything)
 	})
@@ -119,7 +120,7 @@ func TestSetSlaveLabelMarksSlavesEvictable(t *testing.T) {
 	pod.Labels = generateRedisSlaveRoleLabel()
 
 	err := setSlaveLabel(ms, options{}, rfWithEvictionProtection(true), pod, "0", "")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 }
 
@@ -130,7 +131,7 @@ func TestSetSlaveLabelKeepsADemotedMasterPinnedUntilRelabelled(t *testing.T) {
 	ms := &mK8SService.Services{}
 	ms.On("UpdatePodLabels", "testns", "p0", generateRedisSlaveRoleLabel()).Once().Return(errors.New("boom"))
 	err := setSlaveLabel(ms, options{}, rfWithEvictionProtection(true), pod, "0", "")
-	assert.EqualError(t, err, "boom")
+	require.EqualError(t, err, "boom")
 	ms.AssertNotCalled(t, "UpdatePodAnnotations", mock.Anything, mock.Anything, mock.Anything)
 
 	var calls []string
@@ -139,7 +140,7 @@ func TestSetSlaveLabelKeepsADemotedMasterPinnedUntilRelabelled(t *testing.T) {
 		Run(func(mock.Arguments) { calls = append(calls, "label") }).Return(nil)
 	ms.On("UpdatePodAnnotations", "testns", "p0", map[string]string{masterSafeToEvictAnnotation: "true"}).Once().
 		Run(func(mock.Arguments) { calls = append(calls, "annotate") }).Return(nil)
-	assert.NoError(t, setSlaveLabel(ms, options{}, rfWithEvictionProtection(true), pod, "0", ""))
+	require.NoError(t, setSlaveLabel(ms, options{}, rfWithEvictionProtection(true), pod, "0", ""))
 	assert.Equal(t, []string{"label", "annotate"}, calls)
 	ms.AssertExpectations(t)
 }
@@ -160,7 +161,7 @@ func TestSetMasterLabelStopsWhenPinningFails(t *testing.T) {
 
 			err := setMaster(ms, rfWithEvictionProtection(true), podNamed("p0", nil))
 
-			assert.EqualError(t, err, "boom")
+			require.EqualError(t, err, "boom")
 			ms.AssertNotCalled(t, "UpdatePodLabels", mock.Anything, mock.Anything, mock.Anything)
 		})
 	}

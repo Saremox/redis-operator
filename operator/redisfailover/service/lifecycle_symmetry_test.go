@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -58,15 +59,15 @@ func sentinelResourceInventory(t *testing.T, kubecli *kubefake.Clientset, rf *re
 	listOpts := metav1.ListOptions{LabelSelector: selector}
 
 	deployments, err := kubecli.AppsV1().Deployments(rf.Namespace).List(t.Context(), listOpts)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	services, err := kubecli.CoreV1().Services(rf.Namespace).List(t.Context(), listOpts)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	configMaps, err := kubecli.CoreV1().ConfigMaps(rf.Namespace).List(t.Context(), listOpts)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	pdbs, err := kubecli.PolicyV1().PodDisruptionBudgets(rf.Namespace).List(t.Context(), listOpts)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	serviceAccounts, err := kubecli.CoreV1().ServiceAccounts(rf.Namespace).List(t.Context(), listOpts)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	return map[string]int{
 		"Deployment":          len(deployments.Items),
@@ -107,7 +108,7 @@ func TestSentinelResourceLifecycleSymmetry(t *testing.T) {
 	}
 
 	// Disable Sentinel the way Ensure() does when sentinelsAllowed flips to false.
-	assert.NoError(t, client.EnsureNotPresentSentinelResources(rf))
+	require.NoError(t, client.EnsureNotPresentSentinelResources(rf))
 
 	after := sentinelResourceInventory(t, kubecli, rf)
 	for kind, count := range after {
@@ -154,10 +155,10 @@ func TestSentinelResourceLifecycleSymmetryPreservesUserServiceAccount(t *testing
 	inventory := sentinelResourceInventory(t, kubecli, rf)
 	assert.Equal(t, 0, inventory["ServiceAccount"], "no operator-owned ServiceAccount should be created when ServiceAccountName is user-supplied")
 
-	assert.NoError(t, client.EnsureNotPresentSentinelResources(rf))
+	require.NoError(t, client.EnsureNotPresentSentinelResources(rf))
 
 	_, err = kubecli.CoreV1().ServiceAccounts(rf.Namespace).Get(t.Context(), "user-managed-sa", metav1.GetOptions{})
-	assert.NoError(t, err, "the user's own ServiceAccount must survive cleanup")
+	require.NoError(t, err, "the user's own ServiceAccount must survive cleanup")
 
 	after := sentinelResourceInventory(t, kubecli, rf)
 	for kind, count := range after {
@@ -213,28 +214,28 @@ func TestDisablePodDisruptionBudgetDeletesExistingPDB(t *testing.T) {
 			}
 
 			// A PDB that another RedisFailover or the user owns stays.
-			assert.NoError(t, test.ensure(client, rf, nil))
+			require.NoError(t, test.ensure(client, rf, nil))
 			*test.flag(rf) = true
-			assert.NoError(t, test.ensure(client, rf, ownerRefs))
+			require.NoError(t, test.ensure(client, rf, ownerRefs))
 			assert.True(t, pdbExists(), "a PDB that the RedisFailover does not own must stay")
 
-			assert.NoError(t, kubecli.PolicyV1().PodDisruptionBudgets(rf.Namespace).Delete(t.Context(), test.pdbName, metav1.DeleteOptions{}))
+			require.NoError(t, kubecli.PolicyV1().PodDisruptionBudgets(rf.Namespace).Delete(t.Context(), test.pdbName, metav1.DeleteOptions{}))
 			*test.flag(rf) = false
-			assert.NoError(t, test.ensure(client, rf, ownerRefs))
+			require.NoError(t, test.ensure(client, rf, ownerRefs))
 			assert.True(t, pdbExists())
 
 			*test.flag(rf) = true
-			assert.NoError(t, test.ensure(client, rf, ownerRefs))
+			require.NoError(t, test.ensure(client, rf, ownerRefs))
 			assert.False(t, pdbExists(), "the disabled PDB must be deleted")
 
 			// The next reconcile finds no PDB, which is not an error.
-			assert.NoError(t, test.ensure(client, rf, ownerRefs))
+			require.NoError(t, test.ensure(client, rf, ownerRefs))
 
 			// A missing RBAC verb does not stop the reconcile.
 			kubecli.PrependReactor("get", "poddisruptionbudgets", func(k8stesting.Action) (bool, runtime.Object, error) {
 				return true, nil, apierrors.NewForbidden(policyv1.Resource("poddisruptionbudgets"), test.pdbName, errors.New("no get"))
 			})
-			assert.NoError(t, test.ensure(client, rf, ownerRefs))
+			require.NoError(t, test.ensure(client, rf, ownerRefs))
 
 			kubecli.PrependReactor("get", "poddisruptionbudgets", func(k8stesting.Action) (bool, runtime.Object, error) {
 				return true, nil, errors.New("get failed")
@@ -251,7 +252,7 @@ func TestDisablePodDisruptionBudgetIgnoresForbiddenDelete(t *testing.T) {
 	kubecli := kubefake.NewClientset()
 	k8sService := k8s.New(kubecli, redisfailoverfake.NewSimpleClientset(), log.Dummy, metrics.Dummy)
 	client := rfservice.NewRedisFailoverKubeClient(k8sService, log.Dummy, metrics.Dummy)
-	assert.NoError(t, client.EnsureRedisStatefulset(rf, map[string]string{}, ownerRefs))
+	require.NoError(t, client.EnsureRedisStatefulset(rf, map[string]string{}, ownerRefs))
 
 	kubecli.PrependReactor("delete", "poddisruptionbudgets", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewForbidden(policyv1.Resource("poddisruptionbudgets"), "rfr-lifecycle", errors.New("no delete"))
@@ -277,7 +278,7 @@ func TestEnsureSentinelDeploymentDeletesUnusedServiceAccount(t *testing.T) {
 		return err == nil
 	}
 
-	assert.NoError(t, ensure())
+	require.NoError(t, ensure())
 	assert.True(t, saExists())
 	d, err := kubecli.AppsV1().Deployments(rf.Namespace).Get(t.Context(), rfservice.GetSentinelName(rf), metav1.GetOptions{})
 	assert.NoError(t, err)
@@ -304,7 +305,7 @@ func TestEnsureSentinelDeploymentDeletesUnusedServiceAccount(t *testing.T) {
 		Spec: corev1.PodSpec{ServiceAccountName: autoName},
 	}
 	_, err = kubecli.CoreV1().Pods(rf.Namespace).Create(t.Context(), oldPod, metav1.CreateOptions{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	// A pod with the labels but without the owner does not keep the ServiceAccount.
 	foreignPod := oldPod.DeepCopy()
 	foreignPod.Name = "rfs-lifecycle-foreign"
@@ -393,7 +394,7 @@ func TestEnsureSentinelDeploymentKeepsServiceAccount(t *testing.T) {
 			if test.ownerRefs != nil {
 				createRefs = test.ownerRefs(ownerRefs)
 			}
-			assert.NoError(t, client.EnsureSentinelDeployment(rf, map[string]string{}, createRefs))
+			require.NoError(t, client.EnsureSentinelDeployment(rf, map[string]string{}, createRefs))
 
 			if test.reactor != nil {
 				test.reactor(kubecli)
@@ -403,9 +404,9 @@ func TestEnsureSentinelDeploymentKeepsServiceAccount(t *testing.T) {
 			rf.Spec.Sentinel.Replicas = 5
 			err := client.EnsureSentinelDeployment(rf, map[string]string{}, ownerRefs)
 			if test.expErr {
-				assert.Error(t, err)
+				require.Error(t, err)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 
 			_, err = kubecli.CoreV1().ServiceAccounts(rf.Namespace).Get(t.Context(), rfservice.GetSentinelServiceAccountName(rf), metav1.GetOptions{})

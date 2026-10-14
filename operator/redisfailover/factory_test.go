@@ -146,7 +146,7 @@ func TestNewRedisFailoverRetrieverWatchNilWatcherNoError(t *testing.T) {
 	assert.NotPanics(t, func() {
 		w, err = retriever.WatchWithContext(context.Background(), metav1.ListOptions{})
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Nil(t, w)
 	mk.AssertExpectations(t)
 }
@@ -240,7 +240,7 @@ func TestNewPropagatesLeaderElectionError(t *testing.T) {
 
 	ctrl, err := New(cfg, mk, k8sClient, fakemetadata.NewSimpleMetadataClient(fakemetadata.NewTestScheme()), "", mr, metrics.Dummy, log.Dummy)
 
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Nil(t, ctrl)
 	mk.AssertExpectations(t)
 	mr.AssertExpectations(t)
@@ -258,6 +258,6 @@ func TestNewWatchesAuthSecretsOnlyWhenEnabled(t *testing.T) {
 func TestNewPropagatesControllerError(t *testing.T) {
 	ctrl, err := New(Config{SupportedNamespacesRegex: ".*"}, &mK8SService.Services{}, fakekubernetes.NewClientset(), fakemetadata.NewSimpleMetadataClient(fakemetadata.NewTestScheme()), "test-namespace", &mRedisService.Client{}, failingQueueMetrics{metrics.Dummy}, log.Dummy)
 
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Nil(t, ctrl)
 }

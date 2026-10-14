@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,7 +33,7 @@ func TestRedisConfigMapExcludesPassword(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisConfigMap(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	for key, value := range cm.Data {
 		assert.NotContains(value, "requirepass", "%s must not embed requirepass", key)
 		assert.NotContains(value, "masterauth", "%s must not embed masterauth", key)
@@ -62,7 +63,7 @@ func TestRedisCommandUsesEnvAuthWhenSecretConfigured(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	// Shell wrapper so $REDIS_PASSWORD expands; exec keeps redis as PID 1.
 	assert.Equal([]string{"sh", "-c"}, gotCommand[:2])
 	joined := strings.Join(gotCommand, " ")

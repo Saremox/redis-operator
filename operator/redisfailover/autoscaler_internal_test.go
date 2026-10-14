@@ -108,6 +108,7 @@ type fakeStateStore struct {
 }
 
 func (at *autoscaleTest) fakeStateStore(t *testing.T) *fakeStateStore {
+	t.Helper()
 	f := &fakeStateStore{}
 	at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(func(string, string) (*corev1.ConfigMap, error) {
 		if f.stored == nil {
@@ -781,7 +782,7 @@ func TestHandleReadsTheAutoscalerStateBeforeEnsure(t *testing.T) {
 
 			err := at.h.Handle(context.Background(), at.rf)
 
-			assert.EqualError(t, err, test.wantErr)
+			require.EqualError(t, err, test.wantErr)
 			assert.Equal(t, test.want, calls)
 			at.mk.AssertExpectations(t)
 			at.mrec.AssertExpectations(t)

@@ -416,7 +416,7 @@ func TestRFControllerRunsUnderLeaderElection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	assert.NoError(t, c.Run(ctx), "shutting down before the cache synced is not an error")
+	require.NoError(t, c.Run(ctx), "shutting down before the cache synced is not an error")
 	assert.True(t, runner.ran)
 }
 
@@ -473,7 +473,7 @@ func TestRFControllerStopsTakingQueuedReconcilesOnceCancelled(t *testing.T) {
 	<-h.started
 	cancel()
 	close(h.release)
-	assert.NoError(t, <-done)
+	require.NoError(t, <-done)
 	assert.Equal(t, int32(1), h.calls.Load(), "the queued RedisFailovers are not reconciled after cancel")
 }
 
@@ -900,7 +900,7 @@ func TestRFControllerProcessTurnsAPanicIntoAnError(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, c.rfInformer.GetIndexer().Add(&redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "bad", Namespace: "ns"}}))
 
-	assert.Error(t, c.process(context.Background(), "ns/bad"))
+	require.Error(t, c.process(context.Background(), "ns/bad"))
 	assert.Contains(t, logs.text(), "object-key=ns/bad redisfailover=bad namespace=ns panic on object processing: boom")
 	assert.Contains(t, logs.text(), "panickingHandler")
 }

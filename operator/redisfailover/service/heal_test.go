@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -19,8 +20,6 @@ import (
 )
 
 func TestSetOldestAsMasterNewMasterError(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	pods := &corev1.PodList{
@@ -41,14 +40,12 @@ func TestSetOldestAsMasterNewMasterError(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetOldestAsMaster(rf)
-	assert.Error(err)
+	require.Error(t, err)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
 
 func TestSetOldestAsMaster(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	pods := &corev1.PodList{
@@ -71,14 +68,12 @@ func TestSetOldestAsMaster(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetOldestAsMaster(rf)
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
 
 func TestSetOldestAsMasterMultiplePodsMakeSlaveOfError(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	pods := &corev1.PodList{
@@ -109,14 +104,12 @@ func TestSetOldestAsMasterMultiplePodsMakeSlaveOfError(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetOldestAsMaster(rf)
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
 
 func TestSetOldestAsMasterMultiplePods(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	pods := &corev1.PodList{
@@ -147,14 +140,12 @@ func TestSetOldestAsMasterMultiplePods(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetOldestAsMaster(rf)
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
 
 func TestSetOldestAsMasterOrdering(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	pods := &corev1.PodList{
@@ -195,7 +186,7 @@ func TestSetOldestAsMasterOrdering(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetOldestAsMaster(rf)
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
@@ -326,7 +317,7 @@ func TestSetOldestAsMasterCandidates(t *testing.T) {
 				mr.AssertNotCalled(t, "MakeSlaveOfWithPort", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 				return
 			}
-			assert.NoError(err)
+			require.NoError(t, err)
 			mr.AssertNumberOfCalls(t, "MakeMaster", 1)
 			mr.AssertCalled(t, "MakeMaster", test.wantMaster, "0", "")
 			mr.AssertNumberOfCalls(t, "MakeSlaveOfWithPort", len(test.wantSlaves))
@@ -391,15 +382,13 @@ func TestSetOldestAsMasterErrors(t *testing.T) {
 			mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Return(nil)
 
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
-			assert.Error(t, healer.SetOldestAsMaster(rf))
+			require.Error(t, healer.SetOldestAsMaster(rf))
 			ms.AssertExpectations(t)
 		})
 	}
 }
 
 func TestSetMasterOnAllMakeMasterError(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	pods := &corev1.PodList{
@@ -424,7 +413,7 @@ func TestSetMasterOnAllMakeMasterError(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetMasterOnAll("0.0.0.0", rf)
-	assert.Error(err)
+	require.Error(t, err)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
@@ -442,8 +431,6 @@ func TestSetMasterOnAllMakeMasterError(t *testing.T) {
 // nil and treated an aborted, partially-reconfigured pod loop as complete
 // success.
 func TestSetMasterOnAllReturnsErrorWhenNoLongerMaster(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	pods := &corev1.PodList{
@@ -461,13 +448,11 @@ func TestSetMasterOnAllReturnsErrorWhenNoLongerMaster(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetMasterOnAll("0.0.0.0", rf)
-	assert.Error(err, "must not report success when the IP is no longer the master")
+	require.Error(t, err, "must not report success when the IP is no longer the master")
 	mr.AssertExpectations(t) // no MakeSlaveOfWithPort call should have happened
 }
 
 func TestSetMasterOnAllMakeSlaveOfErrorIsSkipped(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	pods := &corev1.PodList{
@@ -503,14 +488,12 @@ func TestSetMasterOnAllMakeSlaveOfErrorIsSkipped(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetMasterOnAll("0.0.0.0", rf)
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t) // proves the reachable slave was still reconfigured
 }
 
 func TestSetMasterOnAll(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	pods := &corev1.PodList{
@@ -540,14 +523,12 @@ func TestSetMasterOnAll(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetMasterOnAll("0.0.0.0", rf)
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
 
 func TestSetMasterOnAllRejectsIPNotOwnedByRF(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	// None of this RedisFailover's own pods have this IP: it could be a stale
@@ -568,14 +549,12 @@ func TestSetMasterOnAllRejectsIPNotOwnedByRF(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetMasterOnAll("9.9.9.9", rf)
-	assert.Error(err, "should refuse to act on an IP that isn't currently one of this RedisFailover's own pods")
+	require.Error(t, err, "should refuse to act on an IP that isn't currently one of this RedisFailover's own pods")
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t) // no IsMaster/MakeSlaveOfWithPort calls should have happened
 }
 
 func TestSetMasterOnAllSlaveAlreadyLabeled(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	pods := &corev1.PodList{
@@ -605,7 +584,7 @@ func TestSetMasterOnAllSlaveAlreadyLabeled(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetMasterOnAll("0.0.0.0", rf)
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t) // pod already has the slave label, so UpdatePodLabels must not be called
 }
 
@@ -630,7 +609,6 @@ func TestSetExternalMasterOnAll(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert := assert.New(t)
 			rf := generateRF()
 			pods := &corev1.PodList{
 				Items: []corev1.Pod{
@@ -673,9 +651,9 @@ func TestSetExternalMasterOnAll(t *testing.T) {
 			err := healer.SetExternalMasterOnAll("5.5.5.5", "6379", rf)
 
 			if expectError {
-				assert.Error(err)
+				require.Error(t, err)
 			} else {
-				assert.NoError(err)
+				require.NoError(t, err)
 			}
 			ms.AssertExpectations(t)
 			mr.AssertExpectations(t)
@@ -684,7 +662,6 @@ func TestSetExternalMasterOnAll(t *testing.T) {
 }
 
 func TestPromoteBestReplicaSuccess(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateRF()
 
 	newMasterIP := "1.1.1.1"
@@ -721,7 +698,7 @@ func TestPromoteBestReplicaSuccess(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.PromoteBestReplica(newMasterIP, rf)
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
@@ -730,7 +707,6 @@ func TestPromoteBestReplicaSuccess(t *testing.T) {
 // replacement is Pending without an IP. A replica command to such a pod fails
 // and marks the failover as partial.
 func TestPromoteBestReplicaSkipsPendingAndTerminatingPods(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateRF()
 
 	newMasterIP := "1.1.1.1"
@@ -757,13 +733,12 @@ func TestPromoteBestReplicaSkipsPendingAndTerminatingPods(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.PromoteBestReplica(newMasterIP, rf)
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t) // no MakeSlaveOfWithPort call to the terminating or the Pending pod
 }
 
 func TestPromoteBestReplicaReplicaRepointerFails(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateRF()
 
 	newMasterIP := "1.1.1.1"
@@ -799,8 +774,8 @@ func TestPromoteBestReplicaReplicaRepointerFails(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.PromoteBestReplica(newMasterIP, rf)
-	assert.Error(err, "partial failover should not be reported as success")
-	assert.True(errors.Is(err, rfservice.ErrPartialReconciliation), "replica repoint failure should be wrapped as ErrPartialReconciliation")
+	require.Error(t, err, "partial failover should not be reported as success")
+	require.ErrorIs(t, err, rfservice.ErrPartialReconciliation, "replica repoint failure should be wrapped as ErrPartialReconciliation")
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
@@ -811,7 +786,7 @@ func TestPromoteBestReplicaRelabelsAnOldMasterThatDoesNotAnswer(t *testing.T) {
 }
 
 func testPromoteBestReplicaRelabelsOldMaster(t *testing.T, labelErr error) {
-	assert := assert.New(t)
+	t.Helper()
 	rf := generateRF()
 
 	newMasterIP := "1.1.1.1"
@@ -842,16 +817,15 @@ func testPromoteBestReplicaRelabelsOldMaster(t *testing.T, labelErr error) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.PromoteBestReplica(newMasterIP, rf)
-	assert.ErrorIs(err, rfservice.ErrPartialReconciliation)
+	require.ErrorIs(t, err, rfservice.ErrPartialReconciliation)
 	if labelErr != nil {
-		assert.ErrorIs(err, labelErr)
+		require.ErrorIs(t, err, labelErr)
 	}
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
 
 func TestPromoteBestReplicaLabelUpdateFails(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateRF()
 
 	newMasterIP := "1.1.1.1"
@@ -888,14 +862,13 @@ func TestPromoteBestReplicaLabelUpdateFails(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.PromoteBestReplica(newMasterIP, rf)
-	assert.Error(err, "label update failure should not be reported as success")
-	assert.True(errors.Is(err, rfservice.ErrPartialReconciliation), "slave label update failure should be wrapped as ErrPartialReconciliation")
+	require.Error(t, err, "label update failure should not be reported as success")
+	require.ErrorIs(t, err, rfservice.ErrPartialReconciliation, "slave label update failure should be wrapped as ErrPartialReconciliation")
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
 
 func TestPromoteBestReplicaMakeMasterFails(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateRF()
 
 	newMasterIP := "1.1.1.1"
@@ -920,14 +893,13 @@ func TestPromoteBestReplicaMakeMasterFails(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.PromoteBestReplica(newMasterIP, rf)
-	assert.Error(err, "MakeMaster failure should return an error")
-	assert.False(errors.Is(err, rfservice.ErrPartialReconciliation), "full promotion failure should not be wrapped as ErrPartialReconciliation")
+	require.Error(t, err, "MakeMaster failure should return an error")
+	require.NotErrorIs(t, err, rfservice.ErrPartialReconciliation, "full promotion failure should not be wrapped as ErrPartialReconciliation")
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
 
 func TestPromoteBestReplicaRejectsIPNotOwnedByRF(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateRF()
 
 	// newMasterIP is not a pod of this RedisFailover: refuse to promote it
@@ -954,8 +926,8 @@ func TestPromoteBestReplicaRejectsIPNotOwnedByRF(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.PromoteBestReplica(newMasterIP, rf)
-	assert.Error(err, "should refuse to promote an IP that isn't currently one of this RedisFailover's own pods")
-	assert.False(errors.Is(err, rfservice.ErrPartialReconciliation))
+	require.Error(t, err, "should refuse to promote an IP that isn't currently one of this RedisFailover's own pods")
+	require.NotErrorIs(t, err, rfservice.ErrPartialReconciliation)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t) // no MakeMaster call should have happened
 }
@@ -976,7 +948,6 @@ func TestNewSentinelMonitor(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert := assert.New(t)
 			rf := generateRF()
 			ms := &mK8SService.Services{}
 			mr := &mRedisService.Client{}
@@ -994,9 +965,9 @@ func TestNewSentinelMonitor(t *testing.T) {
 			err := healer.NewSentinelMonitor("0.0.0.0", "1.1.1.1", rf)
 
 			if errorExpected {
-				assert.Error(err)
+				require.Error(t, err)
 			} else {
-				assert.NoError(err)
+				require.NoError(t, err)
 			}
 			ms.AssertExpectations(t)
 			mr.AssertExpectations(t)
@@ -1005,8 +976,6 @@ func TestNewSentinelMonitor(t *testing.T) {
 }
 
 func TestNewSentinelMonitorPasswordError(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 	rf.Spec.Auth.SecretPath = "redis-secret"
 
@@ -1017,13 +986,11 @@ func TestNewSentinelMonitorPasswordError(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.NewSentinelMonitor("0.0.0.0", "1.1.1.1", rf)
-	assert.Error(err)
+	require.Error(t, err)
 	mr.AssertExpectations(t) // no MonitorRedisWithPort call should have happened
 }
 
 func TestNewSentinelMonitorWithPortPasswordError(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 	rf.Spec.Auth.SecretPath = "redis-secret"
 
@@ -1034,15 +1001,13 @@ func TestNewSentinelMonitorWithPortPasswordError(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.NewSentinelMonitorWithPort("0.0.0.0", "1.1.1.1", "6379", rf)
-	assert.Error(err)
+	require.Error(t, err)
 	mr.AssertExpectations(t) // no MonitorRedisWithPort call should have happened
 }
 
 // --- MakeMaster ---
 
 func TestMakeMasterPasswordError(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 	rf.Spec.Auth.SecretPath = "redis-secret"
 
@@ -1053,14 +1018,12 @@ func TestMakeMasterPasswordError(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.MakeMaster("1.1.1.1", rf)
-	assert.Error(err)
+	require.Error(t, err)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t) // no redis MakeMaster call should have happened
 }
 
 func TestMakeMasterRedisClientError(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	ms := &mK8SService.Services{}
@@ -1070,7 +1033,7 @@ func TestMakeMasterRedisClientError(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.MakeMaster("1.1.1.1", rf)
-	assert.Error(err)
+	require.Error(t, err)
 	ms.AssertExpectations(t) // no GetStatefulSetPods call should have happened
 }
 
@@ -1091,8 +1054,6 @@ func TestMakeMasterGetStatefulSetPodsError(t *testing.T) {
 }
 
 func TestMakeMasterSetsLabelOnMatchingPod(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	pods := &corev1.PodList{
@@ -1117,13 +1078,11 @@ func TestMakeMasterSetsLabelOnMatchingPod(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.MakeMaster("1.1.1.1", rf)
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t) // label update must target the matching pod only
 }
 
 func TestMakeMasterSkipsLabelUpdateWhenAlreadyMaster(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	pods := &corev1.PodList{
@@ -1146,7 +1105,7 @@ func TestMakeMasterSkipsLabelUpdateWhenAlreadyMaster(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.MakeMaster("1.1.1.1", rf)
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t) // no UpdatePodLabels call should have happened, the pod is already labeled master
 }
 
@@ -1177,8 +1136,6 @@ func TestMakeMasterLabelUpdateError(t *testing.T) {
 }
 
 func TestMakeMasterNoMatchingPodReturnsNil(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 
 	pods := &corev1.PodList{
@@ -1198,7 +1155,7 @@ func TestMakeMasterNoMatchingPodReturnsNil(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.MakeMaster("1.1.1.1", rf)
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t) // no UpdatePodLabels call should have happened, no pod matched the ip
 }
 
@@ -1267,8 +1224,6 @@ func TestSetSentinelCustomConfigError(t *testing.T) {
 // --- SetRedisCustomConfig ---
 
 func TestSetRedisCustomConfigPasswordError(t *testing.T) {
-	assert := assert.New(t)
-
 	rf := generateRF()
 	rf.Spec.Auth.SecretPath = "redis-secret"
 	rf.Spec.Redis.CustomConfig = []string{"maxmemory 100mb"}
@@ -1280,7 +1235,7 @@ func TestSetRedisCustomConfigPasswordError(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
 	err := healer.SetRedisCustomConfig("1.1.1.1", rf)
-	assert.Error(err)
+	require.Error(t, err)
 	mr.AssertExpectations(t) // no SetCustomRedisConfig call should have happened
 }
 
@@ -1364,7 +1319,6 @@ func TestNewSentinelMonitorWithPort(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert := assert.New(t)
 			rf := generateRF()
 			ms := &mK8SService.Services{}
 			mr := &mRedisService.Client{}
@@ -1382,9 +1336,9 @@ func TestNewSentinelMonitorWithPort(t *testing.T) {
 			err := healer.NewSentinelMonitorWithPort("0.0.0.0", "1.1.1.1", "6379", rf)
 
 			if errorExpected {
-				assert.Error(err)
+				require.Error(t, err)
 			} else {
-				assert.NoError(err)
+				require.NoError(t, err)
 			}
 			ms.AssertExpectations(t)
 			mr.AssertExpectations(t)

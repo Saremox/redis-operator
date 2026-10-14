@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -57,7 +58,7 @@ func TestRedisMainContainerEnv(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	assert.True(hasEnv(got, "MY_CUSTOM", "hello"), "custom user env must be injected")
 	// Operator REDIS_PORT (6379) is appended after the user's, so it wins.
 	port, found := lastValueOf(got, "REDIS_PORT")
@@ -84,6 +85,6 @@ func TestSentinelMainContainerEnv(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	assert.True(hasEnv(got, "MY_CUSTOM", "world"), "custom user env must be injected into sentinel")
 }

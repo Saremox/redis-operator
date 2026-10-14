@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -476,13 +477,13 @@ func TestCheckAndHeal(t *testing.T) {
 			err := handler.CheckAndHeal(rf)
 
 			if test.wantState != "" {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 				assertTest.Equal(test.wantState, rf.Status.State)
 			} else if expErr {
-				assertTest.Error(err)
+				require.Error(t, err)
 				assertTest.Equal(v1.NotHealthyState, rf.Status.State)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 				assertTest.Equal(v1.HealthyState, rf.Status.State)
 			}
 			mrfc.AssertExpectations(t)
@@ -834,12 +835,12 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 			err := handler.CheckAndHeal(rf)
 
 			if test.wantErr {
-				assertTest.Error(err)
+				require.Error(t, err)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 			}
 			if test.wantErrIs != nil {
-				assertTest.True(errors.Is(err, test.wantErrIs), "expected error to wrap %v, got %v", test.wantErrIs, err)
+				require.ErrorIs(t, err, test.wantErrIs, "expected error to wrap %v, got %v", test.wantErrIs, err)
 			}
 			assertTest.Equal(test.wantState, rf.Status.State)
 			if test.wantMessage != "" {
@@ -905,11 +906,11 @@ func TestUpdateStatusLastChanged(t *testing.T) {
 		before := time.Now()
 		handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 		err := handler.CheckAndHeal(rf)
-		assertTest.NoError(err)
+		require.NoError(t, err)
 
 		assertTest.Equal(v1.HealthyState, rf.Status.State)
 		stamped, parseErr := time.Parse(time.RFC3339, rf.Status.LastChanged)
-		assertTest.NoError(parseErr)
+		require.NoError(t, parseErr)
 		assertTest.False(stamped.Before(before.Add(-time.Second)), "LastChanged should be stamped to roughly now, got %s", rf.Status.LastChanged)
 	})
 
@@ -935,7 +936,7 @@ func TestUpdateStatusLastChanged(t *testing.T) {
 
 		handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 		err := handler.CheckAndHeal(rf)
-		assertTest.NoError(err)
+		require.NoError(t, err)
 
 		assertTest.Equal(v1.HealthyState, rf.Status.State)
 		assertTest.Equal(previousLastChanged, rf.Status.LastChanged, "LastChanged must not be reset to empty on a no-op reconcile")
@@ -1041,12 +1042,12 @@ func TestCheckAndHealSteadyStateWritesNoStatus(t *testing.T) {
 			test.setup(mrfc, mrfh, rf)
 			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 
-			assert.NoError(t, handler.CheckAndHeal(rf))
+			require.NoError(t, handler.CheckAndHeal(rf))
 			assert.Equal(t, test.wantState, rf.Status.State)
 			assert.Equal(t, 1, writes, "the first reconcile changes the status")
 
 			writes = 0
-			assert.NoError(t, handler.CheckAndHeal(rf))
+			require.NoError(t, handler.CheckAndHeal(rf))
 			assert.Equal(t, test.wantState, rf.Status.State)
 			assert.Zero(t, writes, "a steady-state reconcile writes no status")
 			mrfc.AssertExpectations(t)
@@ -1462,9 +1463,9 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 			err := handler.CheckAndHeal(rf)
 
 			if test.wantErr {
-				assertTest.Error(err)
+				require.Error(t, err)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 			}
 			assertTest.Equal(test.wantState, rf.Status.State)
 			if test.wantMessage != "" {
@@ -1642,9 +1643,9 @@ func TestSentinelModeElectsWhenSentinelKnowsNoReplica(t *testing.T) {
 			err := handler.CheckAndHeal(rf)
 
 			if test.wantErr {
-				assert.Error(t, err)
+				require.Error(t, err)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 			assert.Equal(t, v1.NotHealthyState, rf.Status.State)
 			assert.Equal(t, test.wantMessage, rf.Status.Message)
@@ -1683,7 +1684,6 @@ func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert := assert.New(t)
 			rf := generateRF(false, false)
 
 			mk := settledK8sServices()
@@ -1729,9 +1729,9 @@ func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
 			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 			err := handler.CheckAndHeal(rf)
 			if test.wantSkip1 {
-				assert.EqualError(err, "sentinel(s) 1.1.1.1 unreachable")
+				require.EqualError(t, err, "sentinel(s) 1.1.1.1 unreachable")
 			} else {
-				assert.NoError(err)
+				require.NoError(t, err)
 			}
 
 			if !test.wantNewMonitor1 {
@@ -1847,7 +1847,7 @@ func TestCheckAndHealSkipsUnreachableSentinel(t *testing.T) {
 			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 			err := handler.CheckAndHeal(rf)
 
-			assert.Error(err)
+			require.Error(t, err)
 			assert.Equal(v1.NotHealthyState, rf.Status.State)
 			if test.wantStop {
 				assert.Equal("unable to set sentinel custom config", rf.Status.Message)
@@ -1901,7 +1901,7 @@ func TestCheckAndHealNoResetAfterNewMonitor(t *testing.T) {
 		mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(errors.New("mismatch"))
 		mrfh.On("SetSentinelCustomConfig", sentinel, rf).Once().Return(nil)
 
-		assert.NoError(t, handler.CheckAndHeal(rf), "reconcile %d", reconcile)
+		require.NoError(t, handler.CheckAndHeal(rf), "reconcile %d", reconcile)
 		mrfc.AssertExpectations(t)
 	}
 	mrfh.AssertNotCalled(t, "RestoreSentinel", mock.Anything)
@@ -2111,9 +2111,9 @@ func TestCheckAndHealBootstrapModeErrorBranches(t *testing.T) {
 			err := handler.CheckAndHeal(rf)
 
 			if test.wantErr {
-				assertTest.Error(err)
+				require.Error(t, err)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 			}
 			assertTest.Equal(test.wantState, rf.Status.State)
 			if test.wantMessage != "" {
@@ -2616,8 +2616,6 @@ func TestUpdate(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assertTest := assert.New(t)
-
 			rf := generateRF(false, test.bootstrapping)
 
 			config := generateConfig()
@@ -2716,9 +2714,9 @@ func TestUpdate(t *testing.T) {
 			err := handler.UpdateRedisesPods(rf)
 
 			if test.errExpected {
-				assertTest.Error(err)
+				require.Error(t, err)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 			}
 
 			mrfc.AssertExpectations(t)
@@ -2740,8 +2738,6 @@ func TestUpdate(t *testing.T) {
 // ("unable to update redis pods") on every single reconcile, since the
 // stale master pod could never be deleted.
 func TestUpdateRedisesPodsOperatorManagedModeSkipsSentinelGate(t *testing.T) {
-	assertTest := assert.New(t)
-
 	rf := operatorManagedRF()
 	config := generateConfig()
 	mrfs := &mRFService.RedisFailoverClient{}
@@ -2766,7 +2762,7 @@ func TestUpdateRedisesPodsOperatorManagedModeSkipsSentinelGate(t *testing.T) {
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 	err := handler.UpdateRedisesPods(rf)
 
-	assertTest.NoError(err)
+	require.NoError(t, err)
 	// The point of the fix: no sentinel-related call is ever made.
 	mrfc.AssertNotCalled(t, "GetSentinelsIPs", mock.Anything)
 	mrfc.AssertNotCalled(t, "CheckSentinelSlavesNumberQuorumInMemory", mock.Anything, mock.Anything)
@@ -2848,9 +2844,9 @@ func TestUpdateRedisesPodsHandsTheMasterRoleOver(t *testing.T) {
 			err := handler.UpdateRedisesPods(rf)
 
 			if test.wantErr != "" {
-				assert.ErrorContains(t, err, test.wantErr)
+				require.ErrorContains(t, err, test.wantErr)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 			if test.wantMessage != "" {
 				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
@@ -2970,8 +2966,6 @@ func TestUpdateRedisesPodsErrorBranches(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assertTest := assert.New(t)
-
 			rf := generateRF(false, false)
 
 			config := generateConfig()
@@ -2988,7 +2982,7 @@ func TestUpdateRedisesPodsErrorBranches(t *testing.T) {
 			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 			err := handler.UpdateRedisesPods(rf)
 
-			assertTest.Error(err)
+			require.Error(t, err)
 
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
@@ -3347,13 +3341,13 @@ func TestSentinelModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) {
 				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
 				assert.Equal(t, "unable to check whether the master is stopping", rf.Status.Message)
 			case test.wantElect && test.replicas > 1:
-				assert.EqualError(t, err, "stop here")
+				require.EqualError(t, err, "stop here")
 			case !test.wantElect:
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.Equal(t, v1.NotHealthyState, rf.Status.State)
 				assert.Equal(t, "no master, waiting for the stopping master pod to exit", rf.Status.Message)
 			default:
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
@@ -3387,7 +3381,7 @@ func TestUpdateRedisesPodsResizesInPlace(t *testing.T) {
 				mrfh.On("ResizePodInPlace", rf, stale, "new", rfservice.AutoscalerLimits{}).Once().Return(rfservice.ResizeResult{Action: action, Message: "resizing"}, nil)
 
 				handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, settledK8sServices(), metrics.Dummy, log.Dummy)
-				assert.NoError(t, handler.UpdateRedisesPods(rf))
+				require.NoError(t, handler.UpdateRedisesPods(rf))
 				if action == rfservice.ResizeWaiting {
 					assert.Equal(t, "resizing", rf.Status.Message)
 				}
@@ -3413,7 +3407,7 @@ func TestUpdateRedisesPodsResizeError(t *testing.T) {
 	mrfh.On("ResizePodInPlace", rf, "slave", "new", rfservice.AutoscalerLimits{}).Once().Return(rfservice.ResizeResult{}, errors.New("resize err"))
 
 	handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, settledK8sServices(), metrics.Dummy, log.Dummy)
-	assert.EqualError(t, handler.UpdateRedisesPods(rf), "resize err")
+	require.EqualError(t, handler.UpdateRedisesPods(rf), "resize err")
 	mrfh.AssertExpectations(t)
 }
 
@@ -3589,7 +3583,7 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 			if test.errOn != "" {
 				assert.Equal(t, errBoom, handler.UpdateRedisesPods(rf))
 			} else {
-				assert.NoError(t, handler.UpdateRedisesPods(rf))
+				require.NoError(t, handler.UpdateRedisesPods(rf))
 			}
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
@@ -3656,9 +3650,9 @@ func TestOperatorManagedModeDoesNotReplaceAStalledMaster(t *testing.T) {
 			err := handler.CheckAndHeal(rf)
 
 			if test.wantErr != nil {
-				assert.ErrorIs(t, err, test.wantErr)
+				require.ErrorIs(t, err, test.wantErr)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 			assert.Equal(t, v1.NotHealthyState, rf.Status.State)
 			assert.Regexp(t, test.wantMessage, rf.Status.Message)
@@ -3689,7 +3683,7 @@ func TestOperatorManagedModeDoesNotReplaceAStalledMasterWhenThePodLookupFails(t 
 	handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 	err := handler.CheckAndHeal(rf)
 
-	assert.ErrorIs(t, err, listErr)
+	require.ErrorIs(t, err, listErr)
 	assert.Equal(t, v1.NotHealthyState, rf.Status.State)
 	assert.Equal(t, "unable to look up the master pod", rf.Status.Message)
 	mrfc.AssertExpectations(t)
@@ -3798,11 +3792,11 @@ func TestOperatorManagedModeDemotesTheMastersThatAreNotLabelledMaster(t *testing
 
 			switch {
 			case test.wantErr != nil:
-				assert.ErrorIs(t, err, test.wantErr)
+				require.ErrorIs(t, err, test.wantErr)
 			case test.wantMessage != "":
-				assert.EqualError(t, err, test.wantMessage)
+				require.EqualError(t, err, test.wantMessage)
 			default:
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 			wantStatus := test.wantStatus
 			if wantStatus == "" {
@@ -3899,9 +3893,9 @@ func TestSentinelModeDoesNotHealSentinelsWhileTheMasterStops(t *testing.T) {
 			err := handler.CheckAndHeal(rf)
 
 			if test.wantErr {
-				assert.ErrorIs(err, test.listErr)
+				require.ErrorIs(t, err, test.listErr)
 			} else {
-				assert.NoError(err)
+				require.NoError(t, err)
 			}
 			assert.Equal(test.wantStatus.State, rf.Status.State)
 			assert.Equal(test.wantStatus.Message, rf.Status.Message)

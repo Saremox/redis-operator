@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -52,7 +53,7 @@ func TestEnsureSentinelDeploymentCreatesServiceAccountWhenUnset(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureSentinelDeployment(rf, labels, ownerRefs)
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 
 	if assert.NotNil(gotSA) {
@@ -87,7 +88,7 @@ func TestEnsureSentinelDeploymentDoesNotTouchExistingServiceAccount(t *testing.T
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 	ms.AssertNotCalled(t, "CreateOrUpdateServiceAccount", mock.Anything, mock.Anything)
 	ms.AssertNotCalled(t, "GetServiceAccount", namespace, "user-provided-sa")
@@ -98,7 +99,6 @@ func TestEnsureSentinelDeploymentDoesNotTouchExistingServiceAccount(t *testing.T
 }
 
 func TestEnsureSentinelDeploymentPropagatesServiceAccountCreationError(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateRF()
 	rf.Spec.Sentinel.ServiceAccountName = ""
 
@@ -109,7 +109,7 @@ func TestEnsureSentinelDeploymentPropagatesServiceAccountCreationError(t *testin
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
-	assert.Error(err)
+	require.Error(t, err)
 	// The Deployment must never be written once provisioning its own
 	// ServiceAccount failed -- it would otherwise reference a ServiceAccount
 	// that does not exist.

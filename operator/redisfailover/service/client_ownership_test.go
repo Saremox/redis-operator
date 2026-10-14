@@ -3,7 +3,7 @@ package service_test
 import (
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -64,7 +64,7 @@ func TestEnsureNotPresentRedisServiceDeletesOnlyAnOwnedService(t *testing.T) {
 
 			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 
-			assert.NoError(t, client.EnsureNotPresentRedisService(rf))
+			require.NoError(t, client.EnsureNotPresentRedisService(rf))
 			ms.AssertExpectations(t)
 			if !test.wantDelete {
 				ms.AssertNotCalled(t, "DeleteService", namespace, svcName)
@@ -83,6 +83,7 @@ func TestEnsureNotPresentSentinelResourcesDeletesOnlyOwnedObjects(t *testing.T) 
 	kinds := []string{"Deployment", "Service", "ConfigMap", "PodDisruptionBudget", "ServiceAccount"}
 
 	run := func(t *testing.T, refsOf func(kind string) []metav1.OwnerReference, wantDelete map[string]bool) {
+		t.Helper()
 		ms := &mK8SService.Services{}
 		meta := func(n, kind string) metav1.ObjectMeta {
 			return metav1.ObjectMeta{Name: n, OwnerReferences: refsOf(kind)}
@@ -111,7 +112,7 @@ func TestEnsureNotPresentSentinelResourcesDeletesOnlyOwnedObjects(t *testing.T) 
 
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 
-		assert.NoError(t, client.EnsureNotPresentSentinelResources(rf))
+		require.NoError(t, client.EnsureNotPresentSentinelResources(rf))
 		ms.AssertExpectations(t)
 	}
 

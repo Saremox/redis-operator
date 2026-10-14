@@ -905,7 +905,7 @@ func TestSentinelDeploymentServiceAccountName(t *testing.T) {
 			err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
 			assert.Equal(expectedServiceAccountName, gotServiceAccountName)
-			assert.NoError(err)
+			require.NoError(t, err)
 
 			if test.expectServiceAccountCreated {
 				ms.AssertCalled(t, "CreateOrUpdateServiceAccount", namespace, mock.Anything)
@@ -1151,7 +1151,7 @@ func TestRedisShutdownConfigMapRetries(t *testing.T) {
 
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	// Both sentinel calls are retried: a single failed query used to be enough
 	// to skip the failover and shut the master down anyway.
@@ -1228,7 +1228,7 @@ func TestSentinelServiceExporterPort(t *testing.T) {
 			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 			err := client.EnsureSentinelService(rf, nil, []metav1.OwnerReference{{Name: "testing"}})
 
-			assert.NoError(err)
+			require.NoError(t, err)
 			assert.Equal(test.expectedPorts, generatedService.Spec.Ports)
 		})
 	}
@@ -2047,7 +2047,7 @@ func TestRedisHostNetworkAndDnsPolicy(t *testing.T) {
 
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
-		assert.NoError(err)
+		require.NoError(t, err)
 
 		assert.Equal(test.expectedHostNetwork, actualHostNetwork)
 		assert.Equal(test.expectedDnsPolicy, actualDnsPolicy)
@@ -2097,7 +2097,7 @@ func TestSentinelHostNetworkAndDnsPolicy(t *testing.T) {
 
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
-		assert.NoError(err)
+		require.NoError(t, err)
 
 		assert.Equal(test.expectedHostNetwork, actualHostNetwork)
 		assert.Equal(test.expectedDnsPolicy, actualDnsPolicy)
@@ -2148,7 +2148,7 @@ func TestRedisImagePullPolicy(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Equal(string(test.expectedPolicy), string(policy))
 		assert.Equal(string(test.expectedExporterPolicy), string(exporterPolicy))
 	}
@@ -2195,7 +2195,7 @@ func TestSentinelImagePullPolicy(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Equal(string(test.expectedPolicy), string(policy))
 		assert.Equal(string(test.expectedConfigPolicy), string(configPolicy))
 	}
@@ -2270,7 +2270,7 @@ func TestRedisExtraVolumeMounts(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Equal(test.expectedVolumes[0], extraVolume)
 		assert.Equal(test.expectedVolumeMounts[0], extraVolumeMount)
 	}
@@ -2346,7 +2346,7 @@ func TestSentinelExtraVolumeMounts(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Equal(test.expectedVolumes[0], extraVolume)
 		assert.Equal(test.expectedVolumeMounts[0], extraVolumeMount)
 	}
@@ -2402,7 +2402,7 @@ func TestCustomPort(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Equal(test.expectedContainerPort[0], port)
 	}
 }
@@ -2489,7 +2489,7 @@ func TestRedisEnv(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Equal(test.expectedRedisEnv, env)
 	}
 }
@@ -2541,7 +2541,7 @@ func TestRedisStartupProbe(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Contains(startupVolumes, test.expectedVolume)
 		assert.Contains(startupVolumeMounts, test.expectedVolumeMount)
 	}
@@ -2595,7 +2595,7 @@ func TestSentinelStartupProbe(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Contains(startupVolumes, test.expectedVolume)
 		assert.Contains(startupVolumeMounts, test.expectedVolumeMount)
 	}
@@ -2678,7 +2678,7 @@ func TestRedisCustomLivenessProbe(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Equal(test.expectedLivenessProbe, livenessProbe)
 	}
 }
@@ -2758,7 +2758,7 @@ func TestSentinelCustomLivenessProbe(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Equal(test.expectedLivenessProbe, livenessProbe)
 	}
 }
@@ -2825,7 +2825,7 @@ func TestRedisCustomReadinessProbe(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Equal(test.expectedReadinessProbe, readinessProbe)
 	}
 }
@@ -2905,7 +2905,7 @@ func TestSentinelCustomReadinessProbe(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Equal(test.expectedReadinessProbe, readinessProbe)
 	}
 }
@@ -2964,7 +2964,7 @@ func TestRedisCustomStartupProbe(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Equal(test.expectedStartupProbe, startupProbe)
 	}
 }
@@ -3032,7 +3032,7 @@ func TestSentinelCustomStartupProbe(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.Equal(test.expectedStartupProbe, startupProbe)
 	}
 }
@@ -3075,7 +3075,7 @@ func TestRedisPDBUsesRedisReplicaCount(t *testing.T) {
 			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 			err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-			assert.NoError(err)
+			require.NoError(t, err)
 			assert.NotNil(gotPDB)
 			assert.Equal(test.expectedMin, *gotPDB.Spec.MinAvailable)
 		})
@@ -3121,7 +3121,7 @@ func TestSentinelPDBUsesSentinelReplicaCount(t *testing.T) {
 			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 			err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
-			assert.NoError(err)
+			require.NoError(t, err)
 			assert.NotNil(gotPDB)
 			assert.Equal(test.expectedMin, *gotPDB.Spec.MinAvailable)
 		})
@@ -3154,7 +3154,7 @@ func TestPDBSelectorContainsOnlyStableLabels(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureRedisStatefulset(rf, extraLabels, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.NotNil(gotPDB)
 		selector := gotPDB.Spec.Selector.MatchLabels
 		// Extra propagated labels must not appear in the selector.
@@ -3184,7 +3184,7 @@ func TestPDBSelectorContainsOnlyStableLabels(t *testing.T) {
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 		err := client.EnsureSentinelDeployment(rf, extraLabels, []metav1.OwnerReference{})
 
-		assert.NoError(err)
+		require.NoError(t, err)
 		assert.NotNil(gotPDB)
 		selector := gotPDB.Spec.Selector.MatchLabels
 		for k := range extraLabels {
@@ -3222,7 +3222,7 @@ func TestEnsureRedisConfigMapNoPassword(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisConfigMap(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	if assert.NotNil(gotCM) {
 		content := gotCM.Data["redis.conf"]
 		assert.Contains(content, "slaveof 127.0.0.1 6379")
@@ -3261,7 +3261,7 @@ func TestEnsureRedisConfigMapWithPassword(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisConfigMap(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	if assert.NotNil(gotCM) {
 		content := gotCM.Data["redis.conf"]
 		assert.NotContains(content, "masterauth")
@@ -3287,7 +3287,7 @@ func TestEnsureRedisConfigMapCustomCommandRenames(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisConfigMap(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	if assert.NotNil(gotCM) {
 		content := gotCM.Data["redis.conf"]
 
@@ -3321,7 +3321,7 @@ func TestEnsureSentinelConfigMapContent(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureSentinelConfigMap(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	if assert.NotNil(gotCM) {
 		// The timeouts must be the sentinel customConfig defaults. Otherwise a
 		// restarted Sentinel disagrees with the other Sentinels.
@@ -3378,7 +3378,7 @@ func TestEnsureRedisShutdownConfigMapGenerated(t *testing.T) {
 			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 			err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
 
-			assert.NoError(err)
+			require.NoError(t, err)
 			if assert.NotNil(gotCM) {
 				content := gotCM.Data["shutdown.sh"]
 				// The redis pods have no service links, so the script must
@@ -3599,7 +3599,6 @@ esac
 }
 
 func TestEnsureRedisShutdownConfigMapUserSuppliedExists(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateRF()
 	rf.Spec.Redis.ShutdownConfigMap = "custom-shutdown-cm"
 
@@ -3609,13 +3608,12 @@ func TestEnsureRedisShutdownConfigMapUserSuppliedExists(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertNotCalled(t, "CreateOrUpdateConfigMap", mock.Anything, mock.Anything)
 	ms.AssertExpectations(t)
 }
 
 func TestEnsureRedisShutdownConfigMapUserSuppliedMissingPropagatesError(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateRF()
 	rf.Spec.Redis.ShutdownConfigMap = "custom-shutdown-cm"
 
@@ -3625,7 +3623,7 @@ func TestEnsureRedisShutdownConfigMapUserSuppliedMissingPropagatesError(t *testi
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{})
 
-	assert.Error(err)
+	require.Error(t, err)
 	ms.AssertNotCalled(t, "CreateOrUpdateConfigMap", mock.Anything, mock.Anything)
 }
 
@@ -3647,7 +3645,7 @@ func TestEnsureRedisReadinessConfigMap(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisReadinessConfigMap(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	if assert.NotNil(gotCM) {
 		content := gotCM.Data["ready.sh"]
 		assert.Contains(content, "redis-cli -p 6380")
@@ -3935,7 +3933,6 @@ func TestRedisReadinessLinkDownWindow(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEnsureNotPresentRedisServiceDeletesExisting(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateOwnedRF()
 	svcName := rfservice.GetRedisName(rf)
 
@@ -3946,12 +3943,11 @@ func TestEnsureNotPresentRedisServiceDeletesExisting(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureNotPresentRedisService(rf)
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 }
 
 func TestEnsureNotPresentRedisServiceNoopWhenAbsent(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateOwnedRF()
 	svcName := rfservice.GetRedisName(rf)
 
@@ -3961,7 +3957,7 @@ func TestEnsureNotPresentRedisServiceNoopWhenAbsent(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureNotPresentRedisService(rf)
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertNotCalled(t, "DeleteService", mock.Anything, mock.Anything)
 }
 
@@ -3973,7 +3969,6 @@ func TestEnsureNotPresentRedisServiceNoopWhenAbsent(t *testing.T) {
 // treated as "the service does not exist" and the function returns nil
 // without ever attempting the delete or surfacing the failure to the caller.
 func TestEnsureNotPresentRedisServiceSwallowsNonNotFoundGetErrors(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateOwnedRF()
 	svcName := rfservice.GetRedisName(rf)
 
@@ -3983,7 +3978,7 @@ func TestEnsureNotPresentRedisServiceSwallowsNonNotFoundGetErrors(t *testing.T) 
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureNotPresentRedisService(rf)
 
-	assert.NoError(err, "documents current behavior: any GetService error is treated as absence, see comment above")
+	require.NoError(t, err, "documents current behavior: any GetService error is treated as absence, see comment above")
 	ms.AssertNotCalled(t, "DeleteService", mock.Anything, mock.Anything)
 }
 
@@ -4007,7 +4002,6 @@ func TestEnsureNotPresentRedisServiceDeleteErrorPropagates(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEnsureNotPresentSentinelResourcesDeletesAllExisting(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateOwnedRF()
 	resName := rfservice.GetSentinelName(rf)
 	saName := rfservice.GetSentinelServiceAccountName(rf)
@@ -4027,12 +4021,11 @@ func TestEnsureNotPresentSentinelResourcesDeletesAllExisting(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureNotPresentSentinelResources(rf)
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 }
 
 func TestEnsureNotPresentSentinelResourcesNoopWhenAbsent(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateOwnedRF()
 	resName := rfservice.GetSentinelName(rf)
 	saName := rfservice.GetSentinelServiceAccountName(rf)
@@ -4047,7 +4040,7 @@ func TestEnsureNotPresentSentinelResourcesNoopWhenAbsent(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureNotPresentSentinelResources(rf)
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertNotCalled(t, "DeleteDeployment", mock.Anything, mock.Anything)
 	ms.AssertNotCalled(t, "DeleteService", mock.Anything, mock.Anything)
 	ms.AssertNotCalled(t, "DeleteConfigMap", mock.Anything, mock.Anything)
@@ -4060,7 +4053,6 @@ func TestEnsureNotPresentSentinelResourcesNoopWhenAbsent(t *testing.T) {
 // rf.Spec.Sentinel.ServiceAccountName themselves, that ServiceAccount is
 // theirs to manage, so cleanup must not even look it up, let alone delete it.
 func TestEnsureNotPresentSentinelResourcesSkipsUserProvidedServiceAccount(t *testing.T) {
-	assert := assert.New(t)
 	rf := generateOwnedRF()
 	rf.Spec.Sentinel.ServiceAccountName = "user-managed-sa"
 	resName := rfservice.GetSentinelName(rf)
@@ -4074,7 +4066,7 @@ func TestEnsureNotPresentSentinelResourcesSkipsUserProvidedServiceAccount(t *tes
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureNotPresentSentinelResources(rf)
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertNotCalled(t, "GetServiceAccount", mock.Anything, mock.Anything)
 	ms.AssertNotCalled(t, "DeleteServiceAccount", mock.Anything, mock.Anything)
 	ms.AssertExpectations(t)
@@ -4189,7 +4181,7 @@ func TestRedisInitAndExtraContainersGetRedisEnvAppended(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	if assert.NotNil(gotSS) {
 		// The operator prepends its own rdb-tempfile-cleanup init container, so
 		// look the user-supplied one up by name rather than by position.
@@ -4284,7 +4276,7 @@ func TestSentinelExporterContainer(t *testing.T) {
 			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 			err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
-			assert.NoError(err)
+			require.NoError(t, err)
 			if assert.NotNil(gotDeployment) {
 				// sentinel, sentinel-exporter, sentinel-extra
 				if assert.Len(gotDeployment.Spec.Template.Spec.Containers, 3) {
@@ -4347,7 +4339,7 @@ func TestRedisExporterCustomResources(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	if assert.NotNil(gotSS) && assert.Len(gotSS.Spec.Template.Spec.Containers, 2) {
 		assert.Equal(*customResources, gotSS.Spec.Template.Spec.Containers[1].Resources)
 	}
@@ -4379,7 +4371,7 @@ func TestRedisExporterListensOnCustomPort(t *testing.T) {
 			}).Return(nil)
 
 			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-			assert.NoError(client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{}))
+			require.NoError(t, client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{}))
 
 			if assert.NotNil(gotSS) && assert.Len(gotSS.Spec.Template.Spec.Containers, 2) {
 				exporter := gotSS.Spec.Template.Spec.Containers[1]
@@ -4495,7 +4487,7 @@ func TestRedisExporterEnvRespectsUserSuppliedVarsAndAuthSecret(t *testing.T) {
 			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 			err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-			assert.NoError(err)
+			require.NoError(t, err)
 			assert.Equal(test.expectedEnv, gotEnv)
 		})
 	}
@@ -4537,7 +4529,7 @@ func TestGetAffinityUsesUserSuppliedValue(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	// getAffinity must return the user-supplied Affinity unchanged, instead of
 	// building the default soft anti-affinity.
 	assert.Same(customAffinity, gotAffinity)
@@ -4558,7 +4550,7 @@ func TestGetAffinityDefaultMatchesMasterPod(t *testing.T) {
 	}).Return(nil)
 
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-	assert.NoError(client.EnsureRedisStatefulset(rf, map[string]string{"some": "label"}, []metav1.OwnerReference{}))
+	require.NoError(t, client.EnsureRedisStatefulset(rf, map[string]string{"some": "label"}, []metav1.OwnerReference{}))
 
 	terms := ss.Spec.Template.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution
 	if assert.Len(terms, 1) {
@@ -4602,7 +4594,7 @@ func TestGetSecurityContextUsesUserSuppliedValue(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	// The user's RunAsUser wins...
 	assert.Equal(uid, *gotSecCtx.RunAsUser)
 	// ...but the operator defaults still fill every field the user left unset.
@@ -4639,7 +4631,7 @@ func TestGetContainerSecurityContextUsesUserSuppliedValue(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	// The user's Privileged wins...
 	assert.True(*gotSecCtx.Privileged)
 	// ...but the operator defaults still fill every field the user left unset.
@@ -4667,7 +4659,7 @@ func TestGetTerminationGracePeriodSecondsUsesUserSuppliedValue(t *testing.T) {
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
 	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	if assert.NotNil(got) {
 		assert.EqualValues(120, *got)
 	}

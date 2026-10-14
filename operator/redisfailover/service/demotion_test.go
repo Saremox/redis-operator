@@ -103,7 +103,7 @@ func TestCheckAllSlavesFromMasterDemotedMasterLabel(t *testing.T) {
 			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy, opts...)
 			err := checker.CheckAllSlavesFromMaster("0.0.0.0", rf)
 
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			ms.AssertExpectations(t)
 			mr.AssertExpectations(t)
 			assert.Equal(t, test.expectedActions, actions)
@@ -128,7 +128,7 @@ func TestCheckAllSlavesFromMasterRelabelFailureSkipsDisconnect(t *testing.T) {
 		rfservice.WithClientDisconnector(fakeDisconnector{calls: &disconnects}))
 	err := checker.CheckAllSlavesFromMaster("0.0.0.0", rf)
 
-	assert.Error(err)
+	require.Error(t, err)
 	assert.Empty(disconnects)
 }
 
@@ -156,7 +156,7 @@ func TestSetMasterOnAllDisconnectsOnlyTheDemotedMaster(t *testing.T) {
 		rfservice.WithClientDisconnector(fakeDisconnector{calls: &disconnects}))
 	err := healer.SetMasterOnAll("0.0.0.0", rf)
 
-	assert.NoError(err)
+	require.NoError(t, err)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 	assert.Equal([]string{"disconnect old-master"}, disconnects)
@@ -245,7 +245,7 @@ func TestSetMasterOnAllDisconnectsAMasterWithoutTheMasterLabel(t *testing.T) {
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{}, opts...)
 			err := healer.SetMasterOnAll("0.0.0.0", rf)
 
-			assert.ErrorIs(t, err, test.relabelErr)
+			require.ErrorIs(t, err, test.relabelErr)
 			ms.AssertExpectations(t)
 			mr.AssertExpectations(t)
 			assert.Equal(t, test.expectedActions, actions)
@@ -271,7 +271,7 @@ func TestSetExternalMasterOnAllNeverDisconnectsClients(t *testing.T) {
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{},
 		rfservice.WithClientDisconnector(fakeDisconnector{calls: &disconnects}))
 	for reconcile := 0; reconcile < 3; reconcile++ {
-		assert.NoError(healer.SetExternalMasterOnAll("5.5.5.5", "6379", rf))
+		require.NoError(t, healer.SetExternalMasterOnAll("5.5.5.5", "6379", rf))
 	}
 
 	mr.AssertNumberOfCalls(t, "MakeSlaveOfWithPort", 6)
