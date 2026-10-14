@@ -134,6 +134,7 @@ func TestPackageFunctionsWriteToTheBaseLogger(t *testing.T) {
 		{name: "Debugf", call: func() { Debugf("n=%d", 1) }, level: "debug", msg: "n=1"},
 		{name: "Info", call: func() { Info("a", "b") }, level: "info", msg: "ab"},
 		{name: "Infoln", call: func() { Infoln("a", "b") }, level: "info", msg: "a b"},
+		{name: "Infof", call: func() { Infof("n=%d", 2) }, level: "info", msg: "n=2"},
 		{name: "Warn", call: func() { Warn("a", "b") }, level: "warning", msg: "ab"},
 		{name: "Warnln", call: func() { Warnln("a", "b") }, level: "warning", msg: "a b"},
 		{name: "Warnf", call: func() { Warnf("n=%d", 3) }, level: "warning", msg: "n=3"},
@@ -143,6 +144,9 @@ func TestPackageFunctionsWriteToTheBaseLogger(t *testing.T) {
 		{name: "Fatal", call: func() { Fatal("a", "b") }, level: "fatal", msg: "ab", exit: true},
 		{name: "Fatalln", call: func() { Fatalln("a", "b") }, level: "fatal", msg: "a b", exit: true},
 		{name: "Fatalf", call: func() { Fatalf("n=%d", 6) }, level: "fatal", msg: "n=6", exit: true},
+		{name: "Panic", call: func() { Panic("a", "b") }, level: "panic", msg: "ab", panic: true},
+		{name: "Panicln", call: func() { Panicln("a", "b") }, level: "panic", msg: "a b", panic: true},
+		{name: "Panicf", call: func() { Panicf("n=%d", 7) }, level: "panic", msg: "n=7", panic: true},
 	}, buf, exits)
 }
 
