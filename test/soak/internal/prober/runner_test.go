@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -221,5 +222,33 @@ func TestFollowerSwitchesPassword(t *testing.T) {
 	stop()
 	if n := total(Pooled, ResultAuth); n != 0 {
 		t.Errorf("the pooled client was refused %v times", n)
+	}
+}
+
+// Pooled and Retrying keep the client of their first probe.
+func TestPooledClientsKeepTheirClient(t *testing.T) {
+	s := miniredis.RunT(t)
+	in := config.Instance{Name: "x", Namespace: "ns", Mode: config.ModeOperator, Port: 6379}
+	for _, c := range []Client{Pooled, Retrying} {
+		t.Run(string(c), func(t *testing.T) {
+			m := metrics.New(prometheus.NewRegistry(), time.Minute)
+			var clients atomic.Int32
+			path := Path{Name: PathRFRM, NewClient: func(Client) *redis.Client {
+				clients.Add(1)
+				return redis.NewClient(&redis.Options{Addr: s.Addr()})
+			}}
+			p := New(in, path, c, fastProbe, nil, m, discard())
+			ctx, cancel := context.WithCancel(context.Background())
+			var wg sync.WaitGroup
+			wg.Go(func() { p.Run(ctx) })
+			waitFor(t, "three probes", func() bool {
+				return testutil.ToFloat64(m.ProbeTotal.WithLabelValues("x", "ns", "operator", PathRFRM, string(c), "set", ResultOK)) >= 3
+			})
+			cancel()
+			wg.Wait()
+			if n := clients.Load(); n != 1 {
+				t.Errorf("%d clients, want 1", n)
+			}
+		})
 	}
 }

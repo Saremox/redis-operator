@@ -1,6 +1,7 @@
 package mutator
 
 import (
+	"bytes"
 	"fmt"
 	"slices"
 	"strconv"
@@ -383,6 +384,80 @@ func TestLosslessByServer(t *testing.T) {
 		s.rf.Spec.Redis.Storage.PersistentVolumeClaim = &redisfailoverv1.EmbeddedPersistentVolumeClaim{}
 		if got := m.lossless(c.p, s); got != c.want {
 			t.Errorf("%s on %s: %v, want %v", c.p.kind, c.image, got, c.want)
+		}
+	}
+}
+
+// The kinds that lossless has no rule for can lose writes, also on volumes
+// and on a server that waits for its replicas.
+func TestLosslessOfOtherKinds(t *testing.T) {
+	m := versionMutator(t, "chain")
+	for _, kind := range []config.Kind{
+		config.SentinelReplicas, config.RedisResources, config.KillMasterForce, config.KillReplica,
+		config.KillSentinel, config.RedisMemory, config.MaxMemoryPolicy, config.MaxMemoryPercent,
+		config.FillBurst, config.SentinelImageUpgrade, config.Reset, config.SentinelResetKillMaster,
+	} {
+		s := testState()
+		s.rf.Spec.Redis.Image = "redis:7.2.16-alpine"
+		s.rf.Spec.Redis.Storage.PersistentVolumeClaim = &redisfailoverv1.EmbeddedPersistentVolumeClaim{}
+		if m.lossless(plan{kind: kind}, s) {
+			t.Errorf("%s is lossless", kind)
+		}
+	}
+}
+
+func TestPlanGivesTheOtherKindsToNewPlan(t *testing.T) {
+	m := failedResetMutator(t, fakeData{})
+	m.in.Mutations = mutations()
+	for _, kind := range []config.Kind{
+		config.RedisReplicas, config.SentinelReplicas, config.RedisResources, config.KillMaster,
+		config.KillMasterForce, config.KillReplica, config.KillSentinel, config.RedisMemory,
+		config.MaxMemoryPolicy, config.MaxMemoryPercent, config.FillBurst, config.PasswordRotate,
+		config.AuthAdd, config.AuthRemove, config.SentinelToggle, config.PasswordRotateOffline,
+		config.PasswordRotateOfflineForget,
+	} {
+		s := authState()
+		got := m.plan(stepRand(1, m.in, 1), kind, s)
+		want := newPlan(stepRand(1, m.in, 1), kind, m.in.Mutations, s, m.observer.Master(), m.data)
+		if got.kind != want.kind || got.params != want.params || got.skip != want.skip || !bytes.Equal(got.patch, want.patch) {
+			t.Errorf("%s: plan %+v, newPlan %+v", kind, got, want)
+		}
+	}
+}
+
+// newPlan does not plan the kinds of Mutator.plan.
+func TestNewPlanSkipsTheKindsOfMutatorPlan(t *testing.T) {
+	for _, kind := range []config.Kind{
+		config.ImageUpgrade, config.SentinelImageUpgrade, config.Reset, config.SentinelImageFlip, config.SentinelResetKillMaster,
+	} {
+		s := testState()
+		p := newPlan(stepRand(1, testInstance, 1), kind, mutations(), s, "rfr-x-0", nil)
+		if p.kind != kind || p.skip != "the RedisFailover has no maxMemory" {
+			t.Errorf("%s without maxMemory: %+v", kind, p)
+		}
+		s.rf.Spec.Redis.MaxMemory = &redisfailoverv1.MaxMemorySettings{Percent: 75, Policy: "noeviction"}
+		p = newPlan(stepRand(1, testInstance, 1), kind, mutations(), s, "rfr-x-0", nil)
+		if p.kind != kind || p.skip != "unknown kind" {
+			t.Errorf("%s with maxMemory: %+v", kind, p)
+		}
+	}
+}
+
+// planAuth changes no Secret and no spec for a kind other than an auth kind.
+func TestPlanAuthOfAnotherKind(t *testing.T) {
+	for _, kind := range []config.Kind{
+		config.RedisReplicas, config.SentinelReplicas, config.RedisResources, config.KillMaster,
+		config.KillMasterForce, config.KillReplica, config.KillSentinel, config.RedisMemory,
+		config.MaxMemoryPolicy, config.MaxMemoryPercent, config.FillBurst, config.SentinelToggle,
+		config.ImageUpgrade, config.SentinelImageUpgrade, config.Reset, config.SentinelImageFlip,
+		config.SentinelResetKillMaster,
+	} {
+		p := planAuth(kind, authState())
+		if p.kind != kind || p.skip != "" || p.params != "" || p.secret != nil || p.patch != nil || p.restore != nil || p.offline != nil {
+			t.Errorf("%s: %+v", kind, p)
+		}
+		if p.fetch.password == nil || p.converged == nil {
+			t.Errorf("%s: fetch %+v, converged %v", kind, p.fetch, p.converged != nil)
 		}
 	}
 }

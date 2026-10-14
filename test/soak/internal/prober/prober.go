@@ -130,6 +130,8 @@ func (p *Prober) Run(ctx context.Context) {
 				pooled = nil
 				p.log.Info("follower switched password")
 			}
+		case Pooled, Retrying:
+			// These clients keep their pooled client.
 		}
 		if pooled == nil {
 			password = p.auth.Password()
