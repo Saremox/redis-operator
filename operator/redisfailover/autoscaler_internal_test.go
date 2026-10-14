@@ -1003,9 +1003,7 @@ func TestAutoscaleRecommendKeepsTheEffectiveLimit(t *testing.T) {
 		Reason:            autoscale.ReasonUrgent + "; " + autoscale.NoteSpecBelowEffective,
 		EvaluatedAt:       at.now.UTC().Format(time.RFC3339),
 		EffectiveMemory:   "1536Mi",
-		Phase:             autoscale.PhaseDone,
-		LastStep:          autoscaleT0.Add(-time.Hour).UTC().Format(time.RFC3339),
-	}, rf.Status.Autoscaling)
+	}, rf.Status.Autoscaling, "Recommend shows no step of an earlier mode Auto")
 	assert.Equal(t, "1536Mi", rf.Spec.Redis.Resources.Limits.Memory().String())
 	assert.Equal(t, "1Gi", at.rf.Spec.Redis.Resources.Limits.Memory().String())
 	written := decodeState(t, f.stored)

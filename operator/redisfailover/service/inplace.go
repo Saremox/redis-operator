@@ -189,6 +189,16 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 		return waiting(ResizeTransient, "resizing pod %s in place", podName)
 	}
 
+	if autoscaler && !ResizeRequested(pod) && !podApplied(pod, desired) && !infeasible(pod) {
+		// The spec requests the target of the step since an earlier step
+		// that the operator reverted. Without a request time, a deferred
+		// resize would time out at once.
+		if err := r.markResizeRequested(rf, podName); err != nil {
+			return ResizeResult{}, err
+		}
+		return waiting(ResizeTransient, "resize of pod %s in progress", podName)
+	}
+
 	// A condition keeps its transition time when a newer resize supersedes
 	// the one it reported on.
 	sinceLatest := func(t time.Time) time.Duration {
@@ -198,7 +208,7 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 		return time.Since(t)
 	}
 	if c := podCondition(pod, corev1.PodResizePending); c != nil {
-		if c.Reason == corev1.PodReasonInfeasible {
+		if infeasible(pod) {
 			return recreate(ResizePermanent, "resize infeasible: "+c.Message)
 		}
 		if sinceLatest(c.LastTransitionTime.Time) > inPlaceResizeTimeout {
@@ -243,6 +253,13 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 // to the same resources times out at once.
 func (r *RedisFailoverHealer) ClearResizeRequested(rf *redisfailoverv1.RedisFailover, podName string) error {
 	return r.k8sService.UpdatePodAnnotations(rf.Namespace, podName, map[string]string{resizeRequestedAnnotation: ""})
+}
+
+// infeasible reports whether the kubelet cannot apply the resize of pod on
+// its node.
+func infeasible(pod *corev1.Pod) bool {
+	c := podCondition(pod, corev1.PodResizePending)
+	return c != nil && c.Reason == corev1.PodReasonInfeasible
 }
 
 // refusesDesiredMemory reports whether c refuses a desired memory limit as

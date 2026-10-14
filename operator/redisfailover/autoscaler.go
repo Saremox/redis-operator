@@ -121,7 +121,10 @@ func (r *RedisFailoverHandler) holdUnappliedRevert(rf *redisfailoverv1.RedisFail
 	if s.Phase != autoscale.PhaseReverted || s.RevertApplied || s.To <= autoscale.EffectiveLimit(s, spec, maxLimit) {
 		return nil
 	}
-	applied, _, err := r.stepPodsApplied(rf, s.To)
+	// A missing pod has no data of the step. Step of autoscalerLimits keeps a
+	// pod that the StatefulSet creates later from the template of the step.
+	// A hold for it would wait for a pod that a quota can refuse.
+	applied, _, err := r.stepPodsApplied(rf, s.To, false)
 	if err != nil || !applied {
 		return err
 	}
@@ -159,7 +162,7 @@ func (r *RedisFailoverHandler) liveRedisMemoryLimit(rf *redisfailoverv1.RedisFai
 // limit. Only then a revision can be a step of the autoscaler. Otherwise, a
 // frozen effective limit makes no step, so each revision takes the user path.
 func (r *RedisFailoverHandler) autoscalerLimits(rf *redisfailoverv1.RedisFailover) rfservice.AutoscalerLimits {
-	if !r.autoscaleStepping(rf) {
+	if !rf.AutoscalingEnabled() {
 		return rfservice.AutoscalerLimits{}
 	}
 	v, _ := r.autoscaleReads.Load(failoverKey(rf))
@@ -168,13 +171,13 @@ func (r *RedisFailoverHandler) autoscalerLimits(rf *redisfailoverv1.RedisFailove
 		return rfservice.AutoscalerLimits{}
 	}
 	var limits rfservice.AutoscalerLimits
-	if read.effective != read.spec {
+	if r.autoscaleStepping(rf) && read.effective != read.spec {
 		limits.Spec, limits.Effective = read.spec, read.effective
 	}
-	// The last step keeps the pods of its template in each phase, also after
-	// the back-off of a revert. A change of the spec after the step makes
-	// each revision a change of the user, also a lower limit.
-	if s := read.state; s.Generation == rf.Generation {
+	// The last step keeps the pods of its template in each phase and mode,
+	// also after the back-off of a revert. Only the limits end it: a user
+	// shrinks such a pod with a memoryMax below its limit, or with mode Off.
+	if s := read.state; s.To > read.spec && s.To <= rf.Spec.Redis.Autoscaling.MemoryMax.Value() {
 		limits.Step = s.To
 	}
 	return limits
@@ -279,7 +282,9 @@ func (r *RedisFailoverHandler) recordAutoscaleRollout(rf *redisfailoverv1.RedisF
 			// The rollout moved the pod after the resize, and the removal of
 			// the request failed. Nothing else removes it, and it would hold
 			// each later step.
-			requested = r.rfHealer.ClearResizeRequested(rf, pod.Name) != nil
+			err := r.rfHealer.ClearResizeRequested(rf, pod.Name)
+			r.logClearError(rf, pod.Name, err)
+			requested = err != nil
 		}
 		if !updated || requested || !util.PodIsReady(pod) {
 			rollout.settled = false
@@ -310,20 +315,30 @@ func stepPod(pod *corev1.Pod, to int64) bool {
 }
 
 // stepPodsApplied lists the pods for a revert without the rollout result of
-// this reconcile. It reports whether a pod is missing, terminates or is a
-// stepPod, and returns the pods with a resize request.
-func (r *RedisFailoverHandler) stepPodsApplied(rf *redisfailoverv1.RedisFailover, to int64) (bool, []string, error) {
+// this reconcile. It reports whether a pod is a stepPod, or, with absent,
+// whether a pod is missing or terminates. It returns the pods with a resize
+// request. Without the StatefulSet, the pods are absent.
+func (r *RedisFailoverHandler) stepPodsApplied(rf *redisfailoverv1.RedisFailover, to int64, absent bool) (bool, []string, error) {
 	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if apierrors.IsNotFound(err) {
+		return absent, nil, nil
+	}
 	if err != nil {
 		return true, nil, err
 	}
-	if len(pods.Items) < int(rf.Spec.Redis.Replicas) {
+	if absent && len(pods.Items) < int(rf.Spec.Redis.Replicas) {
 		return true, nil, nil
 	}
 	var requested []string
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if pod.DeletionTimestamp != nil || stepPod(pod, to) {
+		if pod.DeletionTimestamp != nil {
+			if absent {
+				return true, nil, nil
+			}
+			continue
+		}
+		if stepPod(pod, to) {
 			return true, nil, nil
 		}
 		if rfservice.ResizeRequested(pod) {
@@ -360,6 +375,22 @@ func (r *RedisFailoverHandler) logResizeRefusal(rf *redisfailoverv1.RedisFailove
 		return
 	}
 	logger.Warningf("The resize to the autoscaler revision failed: %s", refusal.message)
+}
+
+// logClearError logs a failed removal of a resize request at Warning when it
+// differs from the last one, and at Debug otherwise.
+func (r *RedisFailoverHandler) logClearError(rf *redisfailoverv1.RedisFailover, pod string, err error) {
+	if err == nil {
+		r.autoscaleClearLogged.Delete(failoverKey(rf))
+		return
+	}
+	logger := r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("pod", pod)
+	text := pod + ": " + err.Error()
+	if last, _ := r.autoscaleClearLogged.Swap(failoverKey(rf), text); last == text {
+		logger.Debugf("Autoscaler: the operator cannot remove the resize request: %s", err.Error())
+		return
+	}
+	logger.Warningf("Autoscaler: the operator cannot remove the resize request: %s", err.Error())
 }
 
 func (f *resizeRefusal) String() string {
@@ -495,21 +526,33 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 	}
 	r.autoscaleStepWritten(rf, next, action)
 
+	shown := shownStep(rf, next)
 	report := autoscale.Report(next, limit, maxLimit)
 	if wait != "" && report.RecommendedMemory != "" {
 		report.Reason = wait
 	}
-	if refused := r.refusalReason(rf, next); refused != "" {
+	if refused := r.refusalReason(rf, shown); refused != "" {
 		report.Reason = refused
 	}
-	rf.Status.Autoscaling = autoscale.ReportStep(report, next, read.spec, limit)
+	rf.Status.Autoscaling = autoscale.ReportStep(report, shown, read.spec, limit)
 	var recommended int64
 	if rf.Status.Autoscaling.RecommendedMemory != "" {
 		recommended = min(next.Recommended, maxLimit)
 	}
 	r.mClient.SetAutoscaler(rf.Namespace, rf.Name, recommended, last.ratio, next.HighWindows, limit)
-	r.mClient.SetAutoscalerPhase(rf.Namespace, rf.Name, phaseValue(next.Phase))
+	r.mClient.SetAutoscalerPhase(rf.Namespace, rf.Name, phaseValue(shown.Phase))
 	r.logAutoscale(rf, errors.Join(errs...))
+}
+
+// shownStep returns the step fields of s for the status. Mode Recommend
+// makes no step, so it shows only a step of an earlier mode Auto that it
+// completes. The effective limit stays.
+func shownStep(rf *redisfailoverv1.RedisFailover, s autoscale.State) autoscale.State {
+	if rf.Spec.Redis.Autoscaling.Mode == redisfailoverv1.AutoscalingModeAuto || stepUnfinished(s) {
+		return s
+	}
+	s.Phase, s.Refusal, s.StartedAt, s.RetryAt = "", "", 0, 0
+	return s
 }
 
 // planStep runs the step lifecycle of state on the rollout of this reconcile.
@@ -533,10 +576,11 @@ func (r *RedisFailoverHandler) planStep(rf *redisfailoverv1.RedisFailover, read 
 		// With the annotation, a later step to the same limit on a pod that
 		// still requests it times out at once.
 		if clearErr := r.clearResizeRequests(rf, requested); clearErr != nil {
-			if now.Unix()-state.StartedAt < int64(autoscale.ApplyTimeout/time.Second) {
+			// A short API error gets one more ApplyTimeout. A revert that never
+			// ends would keep the step in Applying.
+			if now.Unix()-state.StartedAt < int64(2*autoscale.ApplyTimeout/time.Second) {
 				return state, autoscale.ActionNone, "", fmt.Errorf("the revert of the autoscaler step waits: %w", clearErr)
 			}
-			// A revert that never ends would keep the step in Applying.
 			state.Phase, state.Refusal = autoscale.PhaseHeld, autoscale.RefusalClear
 			return state, autoscale.ActionHold, "", fmt.Errorf("the autoscaler holds the step: %w", clearErr)
 		}
@@ -568,7 +612,7 @@ func (r *RedisFailoverHandler) stepObservation(rf *redisfailoverv1.RedisFailover
 	if state.Phase != autoscale.PhaseApplying || now.Unix()-state.StartedAt < int64(autoscale.ApplyTimeout/time.Second) {
 		return o, nil, nil
 	}
-	applied, requested, err := r.stepPodsApplied(rf, state.To)
+	applied, requested, err := r.stepPodsApplied(rf, state.To, true)
 	o.AnyApplied = applied
 	return o, requested, err
 }
@@ -762,6 +806,7 @@ func (r *RedisFailoverHandler) forgetAutoscaler(key string) {
 	r.autoscaleRefusalLogged.Delete(key)
 	r.autoscaleOff.Delete(key)
 	r.autoscaleLiveRead.Delete(key)
+	r.autoscaleClearLogged.Delete(key)
 }
 
 // logAutoscale logs an error at Warning when it differs from the last one,

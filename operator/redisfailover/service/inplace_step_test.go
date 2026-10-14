@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -67,6 +68,35 @@ func TestResizePodInPlaceKeepsTheLimitOfAStep(t *testing.T) {
 	t.Run("annotation error", func(t *testing.T) {
 		_, _, _, err := runResizeEffective(t, resizeRF(), revert, AutoscalerLimits{Step: 2 << 30}, func(ms *mK8SService.Services) {
 			ms.On("UpdatePodLabels", "testns", resizePod, mock.Anything).Return(nil)
+			ms.ExpectedCalls = slices.DeleteFunc(ms.ExpectedCalls, func(c *mock.Call) bool { return c.Method == "UpdatePodAnnotations" })
+			ms.On("UpdatePodAnnotations", "testns", resizePod, mock.Anything).Return(fail)
+		}, nil)
+		require.ErrorIs(t, err, fail)
+	})
+
+	t.Run("a deferred resize of a step before a revert waits", func(t *testing.T) {
+		old, step := resources("1", "1Gi"), resources("1", "2Gi")
+		deferred := stalePod(step, old, condition(corev1.PodResizePending, corev1.PodReasonDeferred, 10*time.Minute))
+		c := resizeCase{fullSupport, podTemplate(old), podTemplate(step), deferred}
+		result, ms, _, err := runResizeEffective(t, resizeRF(), c, AutoscalerLimits{Spec: 1 << 30, Effective: 2 << 30}, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, ResizeWaiting, result.Action)
+		assert.Equal(t, ResizeTransient, result.Class)
+		ms.AssertCalled(t, "UpdatePodAnnotations", "testns", resizePod, mock.MatchedBy(func(a map[string]string) bool { return a[resizeRequestedAnnotation] != "" }))
+
+		// A user revision keeps the timeout of the condition.
+		result, _, _, err = runResizeEffective(t, resizeRF(), c, AutoscalerLimits{}, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, ResizeRecreate, result.Action)
+
+		// An infeasible resize needs no wait.
+		c.pod = stalePod(step, old, condition(corev1.PodResizePending, corev1.PodReasonInfeasible, 0))
+		result, _, _, err = runResizeEffective(t, resizeRF(), c, AutoscalerLimits{Spec: 1 << 30, Effective: 2 << 30}, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, ResizePermanent, result.Class)
+
+		fail := errors.New("boom")
+		_, _, _, err = runResizeEffective(t, resizeRF(), resizeCase{fullSupport, podTemplate(old), podTemplate(step), deferred}, AutoscalerLimits{Spec: 1 << 30, Effective: 2 << 30}, func(ms *mK8SService.Services) {
 			ms.ExpectedCalls = slices.DeleteFunc(ms.ExpectedCalls, func(c *mock.Call) bool { return c.Method == "UpdatePodAnnotations" })
 			ms.On("UpdatePodAnnotations", "testns", resizePod, mock.Anything).Return(fail)
 		}, nil)

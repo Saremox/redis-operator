@@ -176,6 +176,7 @@ func TestAutoscaleTimeoutRevertsAStepThatNoPodApplied(t *testing.T) {
 		"a pod of the step runs":                    {1, []corev1.Pod{step("rfr-test-0", corev1.PodRunning, "1280Mi")}, nil, []string{"Ensure 1280Mi", "write Held 1280Mi"}},
 		"a pod of the step starts":                  {1, []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-0"}, Spec: unplaced.Spec}}, nil, []string{"Ensure 1280Mi", "write Held 1280Mi"}},
 		"a list error":                              {1, nil, errors.New("timeout"), []string{"Ensure 1280Mi", "write Held 1280Mi"}},
+		"no StatefulSet":                            {1, nil, apierrors.NewNotFound(schema.GroupResource{Resource: "statefulsets"}, "rfr-test"), []string{"Ensure 1280Mi", "write Held 1280Mi"}},
 		"the only pod of the step cannot be placed": {1, []corev1.Pod{unplaced}, nil, []string{"Ensure 1280Mi", "clear rfr-test-0", "write Reverted 0", "requeue testns/test 0s"}},
 	}
 	for name, test := range tests {
@@ -197,27 +198,39 @@ func TestAutoscaleTimeoutRevertsAStepThatNoPodApplied(t *testing.T) {
 // be removed, and holds the step when the wait continues. A pod that is gone
 // has no request.
 func TestAutoscaleHoldsAStepThatTheOperatorCannotRevert(t *testing.T) {
-	gone := apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, "rfr-test-1")
-	for name, test := range map[string]struct {
-		err  error
-		want string
-	}{
-		"webhook denies":  {errors.New("denied by webhook"), "write Held 1280Mi"},
-		"the pod is gone": {gone, "write Reverted 0"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			stored := applying()
-			stored.StartedAt = stepNow.Add(-autoscale.ApplyTimeout).Unix()
-			st := newStepTest(t, stored)
-			st.heal.On("ClearResizeRequested", mock.Anything, "rfr-test-1").Return(test.err)
-			st.mrec.On("CountAutoscalerStep", "testns", "test", mock.Anything).Once()
-			st.reconcile(t, &autoscaleRollout{complete: true, requested: []string{"rfr-test-1"}, updateRevision: "rev1"})
-			assert.Equal(t, test.want, st.calls[1])
-			if test.want == "write Held 1280Mi" {
-				assert.Equal(t, autoscale.ReasonHeld+": "+autoscale.RefusalClear, st.status.Reason)
-			}
-		})
-	}
+	refused := &autoscaleRollout{complete: true, requested: []string{"rfr-test-1"}, updateRevision: "rev1"}
+	timedOut := applying()
+	timedOut.StartedAt = stepNow.Add(-autoscale.ApplyTimeout).Unix()
+
+	t.Run("a short error waits", func(t *testing.T) {
+		st := newStepTest(t, timedOut)
+		st.heal.On("ClearResizeRequested", mock.Anything, "rfr-test-1").Once().Return(errors.New("timeout"))
+		st.heal.On("ClearResizeRequested", mock.Anything, "rfr-test-1").Once().Return(nil)
+		st.mrec.On("CountAutoscalerStep", "testns", "test", metrics.AutoscalerStepReverted).Once()
+		st.reconcile(t, refused)
+		st.now = stepNow.Add(time.Minute)
+		st.reconcile(t, refused)
+		assert.Equal(t, []string{"Ensure 1280Mi", "Ensure 1280Mi", "write Reverted 0", "requeue testns/test 0s"}, st.calls)
+	})
+
+	t.Run("a lasting error holds after a second timeout", func(t *testing.T) {
+		stored := applying()
+		stored.StartedAt = stepNow.Add(-2 * autoscale.ApplyTimeout).Unix()
+		st := newStepTest(t, stored)
+		st.heal.On("ClearResizeRequested", mock.Anything, "rfr-test-1").Return(errors.New("denied by webhook"))
+		st.mrec.On("CountAutoscalerStep", "testns", "test", metrics.AutoscalerStepHeld).Once()
+		st.reconcile(t, refused)
+		assert.Equal(t, []string{"Ensure 1280Mi", "write Held 1280Mi"}, st.calls)
+		assert.Equal(t, autoscale.ReasonHeld+": "+autoscale.RefusalClear, st.status.Reason)
+	})
+
+	t.Run("the pod is gone", func(t *testing.T) {
+		st := newStepTest(t, timedOut)
+		st.heal.On("ClearResizeRequested", mock.Anything, "rfr-test-1").Return(apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, "rfr-test-1"))
+		st.mrec.On("CountAutoscalerStep", "testns", "test", metrics.AutoscalerStepReverted).Once()
+		st.reconcile(t, refused)
+		assert.Equal(t, "write Reverted 0", st.calls[1])
+	})
 }
 
 // A refusal outside a step holds the rollout of a change of the spec, and

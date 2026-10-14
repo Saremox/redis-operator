@@ -105,7 +105,10 @@ type RedisFailoverHandler struct {
 	// autoscaleLiveRead holds, per namespace/name, true after a read of the
 	// StatefulSet for a state without a limit.
 	autoscaleLiveRead sync.Map
-	now               func() time.Time
+	// autoscaleClearLogged holds, per namespace/name, the last failed removal
+	// of a resize request that was logged at Warning.
+	autoscaleClearLogged sync.Map
+	now                  func() time.Time
 	// requeue is nil until New connects the controller.
 	requeue func(key string, after time.Duration)
 }

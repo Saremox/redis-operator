@@ -12,7 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -69,15 +71,28 @@ func TestAutoscaleTimeoutHoldsWithAMissingOrTerminatingPod(t *testing.T) {
 	})
 }
 
-// A pod that the StatefulSet created from the template of the step after a
-// revert keeps its limit: the rollout moves it to the update revision. After
-// a change of the spec, the same pod takes the user path.
+// A pod that the StatefulSet created from the template of a step after a
+// revert keeps its limit. The rollout moves it to the update revision. A
+// change of another field keeps it too. The documented user shrinks, a
+// memoryMax below the limit of the pod or mode Off, take the user path.
 func TestUpdateRedisesPodsKeepsAPodOfARevertedStep(t *testing.T) {
-	for name, generation := range map[string]int64{"reverted step": 0, "change of the spec after it": 1} {
+	tests := map[string]struct {
+		change func(rf *redisfailoverv1.RedisFailover)
+		kept   bool
+	}{
+		"reverted step":           {change: func(*redisfailoverv1.RedisFailover) {}, kept: true},
+		"change of another field": {change: func(rf *redisfailoverv1.RedisFailover) { rf.Generation = 7 }, kept: true},
+		"memoryMax below the step": {change: func(rf *redisfailoverv1.RedisFailover) {
+			rf.Spec.Redis.Autoscaling.MemoryMax = ptr.To(resource.MustParse("1536Mi"))
+		}},
+		"mode Off": {change: func(rf *redisfailoverv1.RedisFailover) {
+			rf.Spec.Redis.Autoscaling.Mode = redisfailoverv1.AutoscalingModeOff
+		}},
+	}
+	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			it := newInPlaceTest(t)
 			it.rf.Spec.Redis.Resources = memoryLimit("1Gi")
-			it.rf.Generation = generation
 			it.setUpdateRevision("old")
 			p := &it.pods[1]
 			p.Labels[appsv1.ControllerRevisionHashLabelKey] = "new"
@@ -90,11 +105,12 @@ func TestUpdateRedisesPodsKeepsAPodOfARevertedStep(t *testing.T) {
 			h.autoscaleReads.Store(failoverKey(it.rf), autoscaleRead{state: reverted, spec: 1 << 30, effective: 1 << 30})
 			mh := &recordingHealer{RedisFailoverHeal: it.healer}
 			h.rfHealer = mh
+			test.change(it.rf)
 
 			require.NoError(t, h.UpdateRedisesPods(it.rf))
 
-			if generation == 0 {
-				it.k8s.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+			if test.kept {
+				assert.Empty(t, mh.deleted)
 				assert.Equal(t, "old", p.Labels[appsv1.ControllerRevisionHashLabelKey])
 				assert.Equal(t, "2Gi", p.Spec.Containers[0].Resources.Limits.Memory().String())
 				return
@@ -105,18 +121,34 @@ func TestUpdateRedisesPodsKeepsAPodOfARevertedStep(t *testing.T) {
 	}
 }
 
-// The limit of the last step goes to the rollout in each phase, until a
-// change of the spec.
+// The limit of the last step goes to the rollout in each phase and mode with
+// autoscaling. It must be above the spec limit and not above memoryMax.
 func TestAutoscalerLimitsStep(t *testing.T) {
 	h := NewRedisFailoverHandler(Config{}, nil, nil, nil, nil, metrics.Dummy, log.Dummy)
-	rf := autoscaleRolloutRF(redisfailoverv1.AutoscalingModeAuto)
-	rf.Generation = 4
-	for phase, want := range map[string]int64{autoscale.PhaseIdle: 2 << 30, autoscale.PhaseReverted: 2 << 30, autoscale.PhaseDone: 2 << 30} {
-		h.autoscaleReads.Store(failoverKey(rf), autoscaleRead{state: autoscale.State{Phase: phase, To: 2 << 30, Generation: 4}, spec: 1 << 30, effective: 1 << 30})
-		assert.Equal(t, rfservice.AutoscalerLimits{Step: want}, h.autoscalerLimits(rf), phase)
+	tests := map[string]struct {
+		mode, spec, max, phase string
+		want                   int64
+	}{
+		"Reverted":                 {"Auto", "1Gi", "4Gi", autoscale.PhaseReverted, 2 << 30},
+		"Idle":                     {"Auto", "1Gi", "4Gi", autoscale.PhaseIdle, 2 << 30},
+		"Done":                     {"Auto", "1Gi", "4Gi", autoscale.PhaseDone, 2 << 30},
+		"Recommend":                {"Recommend", "1Gi", "4Gi", autoscale.PhaseReverted, 2 << 30},
+		"memoryMax at the step":    {"Auto", "1Gi", "2Gi", autoscale.PhaseReverted, 2 << 30},
+		"memoryMax below the step": {"Auto", "1Gi", "1536Mi", autoscale.PhaseReverted, 0},
+		"spec at the step":         {"Auto", "2Gi", "4Gi", autoscale.PhaseReverted, 0},
+		"Off":                      {"Off", "1Gi", "4Gi", autoscale.PhaseReverted, 0},
 	}
-	h.autoscaleReads.Store(failoverKey(rf), autoscaleRead{state: autoscale.State{Phase: autoscale.PhaseReverted, To: 2 << 30, Generation: 3}, spec: 1 << 30, effective: 1 << 30})
-	assert.Zero(t, h.autoscalerLimits(rf), "a change of the spec")
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			rf := autoscaleRolloutRF(test.mode)
+			rf.Generation = 9
+			rf.Spec.Redis.Autoscaling.MemoryMax = ptr.To(resource.MustParse(test.max))
+			spec := resource.MustParse(test.spec)
+			s := autoscale.State{Phase: test.phase, To: 2 << 30, Generation: 1}
+			h.autoscaleReads.Store(failoverKey(rf), autoscaleRead{state: s, spec: spec.Value(), effective: spec.Value()})
+			assert.Equal(t, rfservice.AutoscalerLimits{Step: test.want}, h.autoscalerLimits(rf))
+		})
+	}
 }
 
 // recordingHealer records DeletePod and passes the other calls on.
