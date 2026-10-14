@@ -65,7 +65,7 @@ func TestOperatorManagedModeAbortsAnOrphanedFailover(t *testing.T) {
 			if test.labelled {
 				ft.healer.On("AbortOrphanedFailover", timeoutMaster, ft.rf).Once().Return(test.aborted, test.abortErr)
 			}
-			ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
+			ft.checker.On("IsRedisRunning", ft.rf).Once().Return(true)
 			if !test.aborted && test.abortErr == nil {
 				ft.checker.On("GetNumberMasters", ft.rf).Once().Return(0, stop)
 			}

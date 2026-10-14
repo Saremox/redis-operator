@@ -704,7 +704,7 @@ func TestCheckAndHealKeepsNoMasterWithoutAutoscaling(t *testing.T) {
 				mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 				mrfh.On("SetRedisCustomConfig", autoscaleMaster, at.rf).Return(nil)
 				at.h.rfHealer = mrfh
-				at.mrfc.On("IsRedisRunningQuorum", at.rf).Return(true)
+				at.mrfc.On("IsRedisRunning", at.rf).Return(true)
 				at.mrfc.On("GetNumberMasters", at.rf).Return(1, nil)
 				at.mrfc.On("CheckAllSlavesFromMaster", autoscaleMaster, at.rf).Return(nil)
 				at.mrfc.On("GetRedisesIPs", at.rf).Return([]string{autoscaleMaster}, nil)
@@ -1016,11 +1016,13 @@ func TestHandleUsesTheEffectiveLimit(t *testing.T) {
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	at.h.rfHealer = mrfh
+	at.mrfc.On("IsRedisRunning", mock.Anything).Once().Run(capture("IsRedisRunning")).Return(false)
 	at.mrfc.On("IsRedisRunningQuorum", mock.Anything).Once().Run(capture("IsRedisRunningQuorum")).Return(false)
 
 	require.NoError(t, at.h.Handle(context.Background(), at.rf))
 
 	require.Contains(t, limits, "EnsureRedisStatefulset")
+	require.Contains(t, limits, "IsRedisRunning")
 	require.Contains(t, limits, "IsRedisRunningQuorum")
 	for name, limit := range limits {
 		assert.Equal(t, "1280Mi", limit, name)

@@ -31,7 +31,7 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 	)
 	healthy := map[string]func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover){
 		"sentinel": func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-			mrfc.On("IsRedisRunningQuorum", rf).Return(true)
+			mrfc.On("IsRedisRunning", rf).Return(true)
 			mrfc.On("IsSentinelRunningQuorum", rf).Return(true)
 			mrfc.On("GetNumberMasters", rf).Return(1, nil)
 			mrfc.On("GetMasterIP", rf).Return(master, nil)
@@ -50,7 +50,7 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 		},
 		"operator-managed": func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
 			rf.Spec.Sentinel.Enabled = ptr.To(false)
-			mrfc.On("IsRedisRunningQuorum", rf).Return(true)
+			mrfc.On("IsRedisRunning", rf).Return(true)
 			mrfc.On("GetNumberMasters", rf).Return(1, nil)
 			mrfc.On("CheckMasterHealth", rf).Return(true, master, nil)
 			mrfc.On("CheckAllSlavesFromMaster", master, rf).Return(nil)
@@ -141,7 +141,7 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
-			mrfc.On("IsRedisRunningQuorum", rf).Return(true)
+			mrfc.On("IsRedisRunning", rf).Return(true)
 			mrfc.On("GetNumberMasters", rf).Return(1, nil)
 			mrfc.On("CheckMasterHealth", rf).Return(true, master, nil)
 			mrfc.On("CheckAllSlavesFromMaster", master, rf).Return(nil)

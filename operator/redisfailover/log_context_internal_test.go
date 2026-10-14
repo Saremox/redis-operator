@@ -58,7 +58,7 @@ func TestNoMasterWithLocalhostMastersLogsAtInfo(t *testing.T) {
 	mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{}, nil)
 	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mrfc := &mRFService.RedisFailoverCheck{}
-	mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+	mrfc.On("IsRedisRunning", rf).Once().Return(true)
 	mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
 	mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
 	mrfc.On("GetMaxRedisPodTime", rf).Once().Return(time.Hour, nil)
@@ -87,7 +87,7 @@ func TestNoMasterWithoutSentinelQuorumLogsTheError(t *testing.T) {
 	mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{}, nil)
 	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mrfc := &mRFService.RedisFailoverCheck{}
-	mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+	mrfc.On("IsRedisRunning", rf).Once().Return(true)
 	mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
 	mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
 	mrfc.On("GetMaxRedisPodTime", rf).Once().Return(time.Hour, nil)
@@ -138,7 +138,7 @@ func TestSlaveNotAssociatedToMasterLogsThePod(t *testing.T) {
 			mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{}, nil)
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
-			mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+			mrfc.On("IsRedisRunning", rf).Once().Return(true)
 			mrfc.On("IsSentinelRunningQuorum", rf).Maybe().Return(true)
 			mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
 			mrfc.On("CheckMasterHealth", rf).Maybe().Return(true, master, nil)

@@ -200,20 +200,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 		// The next rollout counts the refusals from zero.
 		r.handoverRetries.Delete(failoverKey(rf))
 	}
-
-	// redises has only the running pods. A stale pod that the scheduler
-	// cannot place stays Pending until the operator deletes it.
-	if len(redises) >= int(rf.Spec.Redis.Replicas) {
-		return nil
-	}
-	pod, err := r.unschedulableStalePod(rf, ssUR)
-	if err != nil || pod == "" {
-		return err
-	}
-	if wait, err = r.redisPodsSettled(rf, ssUR); err != nil || wait != nil {
-		return err
-	}
-	return r.rfHealer.DeletePod(pod, rf)
+	return nil
 }
 
 // handOverMaster moves the master role to the best synced replica with
@@ -355,17 +342,47 @@ func (r *RedisFailoverHandler) redisPodNamesByIP(rf *redisfailoverv1.RedisFailov
 	return names, nil
 }
 
+// redisPodsRunning reports whether all redis pods run. When not, it first
+// deletes a stale pod that the scheduler cannot place. The StatefulSet uses
+// OnDelete, so only the operator replaces such a pod.
+//
+// The step runs in each mode before the gates on the running pods. A stale
+// Pending pod leaves fewer pods running than a quorum with one or two
+// replicas, and bootstrapping needs all pods. Thus the gates end the reconcile
+// before the rollout, and the only pod of a failover with one replica stays
+// Pending for ever.
+//
+// The step needs no quorum and no wait for the last replacement. The pod is
+// Pending, the scheduler did not place it, and no container of it started, so
+// it holds no data in memory and serves no client. Its PVC stays. Its revision
+// is not the update revision of a StatefulSet whose status is current, and
+// the StatefulSet creates the replacement on the update revision, so the step
+// does not delete the replacement again.
+//
+// With all pods running, the step makes no API call beyond the gate.
+func (r *RedisFailoverHandler) redisPodsRunning(rf *redisfailoverv1.RedisFailover) (bool, error) {
+	if r.rfChecker.IsRedisRunning(rf) {
+		return true, nil
+	}
+	pod, err := r.unschedulableStalePod(rf)
+	if err != nil || pod == "" {
+		return false, err
+	}
+	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("pod", pod).Infof("deleting the stale redis pod %s, which the scheduler cannot place", pod)
+	return false, r.rfHealer.DeletePod(pod, rf)
+}
+
 // unschedulableStalePod returns a pod on a stale revision that the scheduler
-// cannot place, or "". Such a pod never ran, so a delete loses no data, and
-// the PVC stays.
-func (r *RedisFailoverHandler) unschedulableStalePod(rf *redisfailoverv1.RedisFailover, updateRevision string) (string, error) {
+// cannot place and that never started a container, or "".
+func (r *RedisFailoverHandler) unschedulableStalePod(rf *redisfailoverv1.RedisFailover) (string, error) {
 	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
 	if err != nil {
 		return "", err
 	}
+	var candidates []*corev1.Pod
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if pod.Status.Phase != corev1.PodPending || pod.DeletionTimestamp != nil || pod.Labels[appsv1.ControllerRevisionHashLabelKey] == updateRevision {
+		if pod.Status.Phase != corev1.PodPending || pod.DeletionTimestamp != nil {
 			continue
 		}
 		unschedulable := false
@@ -378,6 +395,24 @@ func (r *RedisFailoverHandler) unschedulableStalePod(rf *redisfailoverv1.RedisFa
 			return cs.State.Running != nil || cs.State.Terminated != nil || cs.LastTerminationState.Terminated != nil || cs.RestartCount > 0
 		})
 		if unschedulable && !started {
+			candidates = append(candidates, pod)
+		}
+	}
+	if len(candidates) == 0 {
+		return "", nil
+	}
+	// Before the StatefulSet controller sees a change of the spec, the update
+	// revision in the status is the one before. A pod that the controller
+	// created on the new revision would then look stale.
+	ss, err := r.k8sservice.GetStatefulSet(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return "", err
+	}
+	if ss == nil || ss.Status.UpdateRevision == "" || ss.Status.ObservedGeneration < ss.Generation {
+		return "", nil
+	}
+	for _, pod := range candidates {
+		if pod.Labels[appsv1.ControllerRevisionHashLabelKey] != ss.Status.UpdateRevision {
 			return pod.Name, nil
 		}
 	}
@@ -896,12 +931,23 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		return err
 	}
 
+	// The password skips the pods that do not run, so a stale Pending pod
+	// does not hold it.
+	allRunning, err := r.redisPodsRunning(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to replace a stale pending redis pod",
+		}
+		return err
+	}
+
 	if rf.Bootstrapping() {
-		return r.checkAndHealBootstrapMode(rf)
+		return r.checkAndHealBootstrapMode(rf, allRunning)
 	}
 
 	if rf.OperatorManagedFailover() {
-		return r.checkAndHealOperatorManagedMode(rf)
+		return r.checkAndHealOperatorManagedMode(rf, allRunning)
 	}
 
 	// Sentinel-managed mode checks and heals, in this order:
@@ -917,8 +963,8 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	// A quorum (majority) of Running pods is sufficient to heal. One Pending
 	// pod, for example from an unschedulable affinity or a lost zone, must not
 	// block the election and the Sentinel configuration. The heal steps below
-	// use only the Running pods.
-	if !r.rfChecker.IsRedisRunningQuorum(rf) {
+	// use only the Running pods. With all pods running, a quorum runs.
+	if !allRunning && !r.rfChecker.IsRedisRunningQuorum(rf) {
 		errorMsg := "redis quorum not running"
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
@@ -1330,11 +1376,11 @@ func (r *RedisFailoverHandler) abortOrphanedFailover(rf *redisfailoverv1.RedisFa
 
 // checkAndHealOperatorManagedMode handles failover when Sentinel is disabled.
 // The operator directly manages master election and failover.
-func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailoverv1.RedisFailover) error {
+func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailoverv1.RedisFailover, allRunning bool) error {
 	// A quorum (majority) of Running pods is sufficient to heal, as in
 	// CheckAndHeal. One Pending pod must not block the master election in
 	// this mode, which is the default.
-	if !r.rfChecker.IsRedisRunningQuorum(rf) {
+	if !allRunning && !r.rfChecker.IsRedisRunningQuorum(rf) {
 		errorMsg := "redis quorum not running"
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
@@ -1599,9 +1645,9 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 	return nil
 }
 
-func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.RedisFailover) error {
+func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.RedisFailover, allRunning bool) error {
 
-	if !r.rfChecker.IsRedisRunning(rf) {
+	if !allRunning {
 		errorMsg := "not all replicas running"
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,

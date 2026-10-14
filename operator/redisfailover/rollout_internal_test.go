@@ -2,6 +2,7 @@ package redisfailover
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -241,7 +242,7 @@ func TestRolloutWaitString(t *testing.T) {
 // cannot place.
 func unschedulablePod() corev1.Pod {
 	return corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-2", UID: "p", Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: "old"}},
+		ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-0", UID: "p", Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: "old"}},
 		Status: corev1.PodStatus{
 			Phase:      corev1.PodPending,
 			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonUnschedulable}},
@@ -249,46 +250,125 @@ func unschedulablePod() corev1.Pod {
 	}
 }
 
-// newPendingRolloutTest is a rolloutTest with three replicas: two pods run
-// on the update revision, and the third pod is pending.
-func newPendingRolloutTest(t *testing.T, pending corev1.Pod) *rolloutTest {
-	rt := newRolloutTest(t)
-	rt.rf.Spec.Redis.Replicas = 3
-	rt.synced = true
-	rt.pods[0].Labels[appsv1.ControllerRevisionHashLabelKey] = "new"
-	rt.pods[1].Status.Conditions = podReady
-	rt.pods = append(rt.pods, pending)
-	return rt
+// pendingModes are the modes of CheckAndHeal, each with its own gate on the
+// running redis pods.
+var pendingModes = map[string]func(rf *redisfailoverv1.RedisFailover){
+	"sentinel": func(rf *redisfailoverv1.RedisFailover) {
+		enabled := true
+		rf.Spec.Sentinel.Enabled = &enabled
+	},
+	"operator-managed": func(rf *redisfailoverv1.RedisFailover) {
+		enabled := false
+		rf.Spec.Sentinel.Enabled = &enabled
+	},
+	"bootstrapping": func(rf *redisfailoverv1.RedisFailover) {
+		rf.Spec.BootstrapNode = &redisfailoverv1.BootstrapSettings{Host: "10.9.9.9"}
+	},
 }
 
-// A stale pod that the scheduler cannot place never ran, so the rollout
-// deletes it. The StatefulSet then creates it on the update revision.
-func TestUpdateRedisesPodsDeletesAnUnschedulableStalePod(t *testing.T) {
-	rt := newPendingRolloutTest(t, unschedulablePod())
-	rt.heal.On("DeletePod", "rfr-test-2", rt.rf).Once().Return(nil)
-	assert.Empty(t, rt.update(""))
-	rt.heal.AssertExpectations(t)
+// pendingTest runs CheckAndHeal on a RedisFailover whose redis pods do not
+// all run.
+type pendingTest struct {
+	rf      *redisfailoverv1.RedisFailover
+	pods    []corev1.Pod
+	ss      *appsv1.StatefulSet
+	podsErr error
+	ssErr   error
+	check   *mRFService.RedisFailoverCheck
+	heal    *mRFService.RedisFailoverHeal
+	k8s     *mK8SService.Services
+	handler *RedisFailoverHandler
+}
 
-	// The rollout waits until the last replacement ends.
-	rt = newPendingRolloutTest(t, unschedulablePod())
-	rt.pods[1].Status.Conditions = nil
-	assert.Empty(t, rt.update(""))
-	rt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
-	v, ok := rt.handler.rolloutWaits.Load(passwordKey(rt.rf))
-	assert.True(t, ok)
-	assert.Equal(t, "rfr-test-1", v.(rolloutWait).pod)
+// newPendingTest has the pod first, and replicas-1 more pods that are
+// Pending on the update revision. IsRedisRunning, and IsRedisRunningQuorum
+// out of bootstrap mode, report false once.
+func newPendingTest(mode string, replicas int32, first corev1.Pod) *pendingTest {
+	pt := &pendingTest{
+		rf: &redisfailoverv1.RedisFailover{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"},
+			Spec:       redisfailoverv1.RedisFailoverSpec{Redis: redisfailoverv1.RedisSettings{Replicas: replicas}},
+		},
+		pods:  []corev1.Pod{first},
+		ss:    &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Generation: 2}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 2, UpdateRevision: "new"}},
+		check: &mRFService.RedisFailoverCheck{},
+		heal:  &mRFService.RedisFailoverHeal{},
+		k8s:   noAppliedSecret(&mK8SService.Services{}),
+	}
+	pendingModes[mode](pt.rf)
+	for i := int32(1); i < replicas; i++ {
+		pt.pods = append(pt.pods, corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("rfr-test-%d", i), Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: "new"}},
+			Status:     corev1.PodStatus{Phase: corev1.PodPending},
+		})
+	}
+	pt.heal.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
+	pt.heal.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
+	pt.k8s.On("GetStatefulSetPods", "testns", "rfr-test").Return(func(string, string) (*corev1.PodList, error) {
+		return &corev1.PodList{Items: pt.pods}, pt.podsErr
+	})
+	pt.k8s.On("GetStatefulSet", "testns", "rfr-test").Return(func(string, string) (*appsv1.StatefulSet, error) {
+		return pt.ss, pt.ssErr
+	})
+	pt.k8s.On("UpdateRedisFailoverStatus", mock.Anything, "testns", pt.rf, mock.Anything).Maybe().Return()
+	pt.check.On("IsRedisRunning", pt.rf).Once().Return(false)
+	if !pt.rf.Bootstrapping() {
+		pt.check.On("IsRedisRunningQuorum", pt.rf).Once().Return(false)
+	}
+	pt.handler = NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, pt.check, pt.heal, pt.k8s, metrics.Dummy, log.Dummy)
+	return pt
+}
 
+// gateMessage is the status message of a reconcile that the gate on the
+// running redis pods ends.
+func (pt *pendingTest) gateMessage() string {
+	if pt.rf.Bootstrapping() {
+		return "not all replicas running"
+	}
+	return "redis quorum not running"
+}
+
+// A stale pod that the scheduler cannot place never ran, so CheckAndHeal
+// deletes it before the gates on the running pods. The StatefulSet then
+// creates it on the update revision. With one or two replicas, the pod leaves
+// fewer pods running than a quorum, and bootstrapping needs all pods.
+func TestCheckAndHealDeletesAnUnschedulableStalePod(t *testing.T) {
+	for mode := range pendingModes {
+		for _, replicas := range []int32{1, 2} {
+			t.Run(fmt.Sprintf("%s with %d replicas", mode, replicas), func(t *testing.T) {
+				pt := newPendingTest(mode, replicas, unschedulablePod())
+				pt.heal.On("DeletePod", "rfr-test-0", pt.rf).Once().Return(nil)
+				assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+				assert.Equal(t, redisfailoverv1.NotHealthyState, pt.rf.Status.State)
+				assert.Equal(t, pt.gateMessage(), pt.rf.Status.Message)
+				pt.heal.AssertExpectations(t)
+				pt.check.AssertExpectations(t)
+			})
+		}
+	}
+}
+
+func TestCheckAndHealReturnsAnErrorOfTheStalePodStep(t *testing.T) {
 	fail := errors.New("boom")
-	rt = newPendingRolloutTest(t, unschedulablePod())
-	rt.heal.On("DeletePod", "rfr-test-2", rt.rf).Once().Return(fail)
-	assert.ErrorIs(t, rt.handler.UpdateRedisesPods(rt.rf), fail)
-
-	rt = newPendingRolloutTest(t, unschedulablePod())
-	rt.podsErr = fail
-	assert.ErrorIs(t, rt.handler.UpdateRedisesPods(rt.rf), fail)
+	for name, change := range map[string]func(pt *pendingTest){
+		"pods":        func(pt *pendingTest) { pt.podsErr = fail },
+		"StatefulSet": func(pt *pendingTest) { pt.ssErr = fail },
+		"delete":      func(pt *pendingTest) { pt.heal.On("DeletePod", "rfr-test-0", pt.rf).Once().Return(fail) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			pt := newPendingTest("sentinel", 1, unschedulablePod())
+			pt.check.ExpectedCalls = nil
+			pt.check.On("IsRedisRunning", pt.rf).Once().Return(false)
+			change(pt)
+			assert.ErrorIs(t, pt.handler.CheckAndHeal(pt.rf), fail)
+			assert.Equal(t, "unable to replace a stale pending redis pod", pt.rf.Status.Message)
+			pt.check.AssertExpectations(t)
+			pt.check.AssertNotCalled(t, "IsRedisRunningQuorum", mock.Anything)
+		})
+	}
 }
 
-func TestUpdateRedisesPodsKeepsOtherPendingPods(t *testing.T) {
+func TestCheckAndHealKeepsOtherPendingPods(t *testing.T) {
 	pod := func(change func(pod *corev1.Pod)) corev1.Pod {
 		p := unschedulablePod()
 		change(&p)
@@ -317,19 +397,79 @@ func TestUpdateRedisesPodsKeepsOtherPendingPods(t *testing.T) {
 			p.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: "init", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{}}}}
 		}),
 	}
-	for name, pending := range tests {
+	for name, first := range tests {
+		for mode := range pendingModes {
+			t.Run(name+" in "+mode, func(t *testing.T) {
+				pt := newPendingTest(mode, 1, first)
+				assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+				assert.Equal(t, pt.gateMessage(), pt.rf.Status.Message)
+				pt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+				pt.check.AssertExpectations(t)
+			})
+		}
+	}
+
+	// Before the StatefulSet controller sees a change of the spec, the update
+	// revision in its status can be the one before.
+	for name, ss := range map[string]*appsv1.StatefulSet{
+		"status of an older generation": {ObjectMeta: metav1.ObjectMeta{Generation: 3}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 2, UpdateRevision: "new"}},
+		"no update revision":            {},
+		"no StatefulSet":                nil,
+	} {
 		t.Run(name, func(t *testing.T) {
-			rt := newPendingRolloutTest(t, pending)
-			assert.Empty(t, rt.update(""))
-			rt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+			pt := newPendingTest("sentinel", 1, unschedulablePod())
+			pt.ss = ss
+			assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+			pt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+			pt.check.AssertExpectations(t)
 		})
 	}
 }
 
-// With all pods running, the rollout makes no extra call.
-func TestUpdateRedisesPodsListsNoPodsWhenAllRun(t *testing.T) {
-	rt := newPendingRolloutTest(t, unschedulablePod())
-	rt.rf.Spec.Redis.Replicas = 2
-	assert.Empty(t, rt.update(""))
-	rt.k8s.AssertNotCalled(t, "GetStatefulSetPods", mock.Anything, mock.Anything)
+// Without a Pending pod that the step can delete, it reads no StatefulSet.
+func TestCheckAndHealReadsNoStatefulSetWithoutACandidate(t *testing.T) {
+	first := unschedulablePod()
+	first.Status.Phase = corev1.PodRunning
+	pt := newPendingTest("sentinel", 2, first)
+	assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+	pt.k8s.AssertNotCalled(t, "GetStatefulSet", mock.Anything, mock.Anything)
+	pt.check.AssertExpectations(t)
+}
+
+// With all pods running, the step makes no call beyond its gate, and the
+// gates on a quorum make none.
+func TestCheckAndHealMakesNoExtraCallsWhenAllRun(t *testing.T) {
+	for mode := range pendingModes {
+		t.Run(mode, func(t *testing.T) {
+			pt := newPendingTest(mode, 1, unschedulablePod())
+			pt.check.ExpectedCalls = nil
+			pt.check.On("IsRedisRunning", pt.rf).Once().Return(true)
+			running, err := pt.handler.redisPodsRunning(pt.rf)
+			assert.NoError(t, err)
+			assert.True(t, running)
+			pt.k8s.AssertNotCalled(t, "GetStatefulSetPods", mock.Anything, mock.Anything)
+			pt.k8s.AssertNotCalled(t, "GetStatefulSet", mock.Anything, mock.Anything)
+			pt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+			pt.check.AssertExpectations(t)
+		})
+	}
+
+	// The reconcile passes the gates on the redis pods without a quorum check.
+	// The strict mock fails on a call of IsRedisRunningQuorum.
+	pt := newPendingTest("sentinel", 1, unschedulablePod())
+	pt.check.ExpectedCalls = nil
+	pt.check.On("IsRedisRunning", pt.rf).Once().Return(true)
+	pt.check.On("IsSentinelRunningQuorum", pt.rf).Once().Return(false)
+	assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+	assert.Equal(t, "sentinel quorum not running", pt.rf.Status.Message)
+	pt.check.AssertExpectations(t)
+
+	pt = newPendingTest("operator-managed", 1, unschedulablePod())
+	fail := errors.New("no masters")
+	pt.check.ExpectedCalls = nil
+	pt.check.On("IsRedisRunning", pt.rf).Once().Return(true)
+	pt.check.On("GetNumberMasters", pt.rf).Once().Return(0, fail)
+	pt.heal.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
+	assert.ErrorIs(t, pt.handler.CheckAndHeal(pt.rf), fail)
+	pt.check.AssertExpectations(t)
 }

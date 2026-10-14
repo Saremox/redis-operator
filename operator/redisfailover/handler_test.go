@@ -124,6 +124,8 @@ func TestHandleSkipReconcileAnnotation(t *testing.T) {
 				// Minimal CheckAndHeal() expectation: bootstrap mode bails out
 				// early once IsRedisRunning reports false.
 				mrfc.On("IsRedisRunning", rf).Once().Return(false)
+				// No redis pod is a stale Pending pod to delete.
+				mk.On("GetStatefulSetPods", rf.Namespace, mock.Anything).Once().Return(&corev1.PodList{}, nil)
 			}
 
 			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
@@ -309,7 +311,7 @@ func TestHandleCheckAndHealError(t *testing.T) {
 	// CheckAndHeal routes to checkAndHealOperatorManagedMode, finds no
 	// FAILOVER to abort, and fails at GetNumberMasters.
 	mk.On("GetStatefulSetPods", rf.Namespace, mock.Anything).Return(&corev1.PodList{}, nil)
-	mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
+	mrfc.On("IsRedisRunning", rf).Once().Return(true)
 	mrfc.On("GetNumberMasters", rf).Once().Return(0, checkErr)
 
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
@@ -412,6 +414,8 @@ func TestHandleGetLabelsWhitelistFiltering(t *testing.T) {
 			mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Once().Return(nil)
 
 			mrfc.On("IsRedisRunning", rf).Once().Return(false)
+			// No redis pod is a stale Pending pod to delete.
+			mk.On("GetStatefulSetPods", rf.Namespace, mock.Anything).Once().Return(&corev1.PodList{}, nil)
 
 			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 			err := handler.Handle(context.Background(), rf)
@@ -468,6 +472,8 @@ func TestHandleAddsFinalizerOnFreshRF(t *testing.T) {
 	mrfs.On("EnsureRedisReadinessConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
 	mrfs.On("EnsureRedisStatefulset", rf, mock.Anything, mock.Anything).Once().Return(nil)
 	mrfc.On("IsRedisRunning", rf).Once().Return(false)
+	// No redis pod is a stale Pending pod to delete.
+	mk.On("GetStatefulSetPods", rf.Namespace, mock.Anything).Once().Return(&corev1.PodList{}, nil)
 
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 	err := handler.Handle(context.Background(), rf)
@@ -663,6 +669,8 @@ func TestHandleRecordsClusterMetrics(t *testing.T) {
 			// Reached only by the successful-reconcile case (CheckAndHeal always
 			// defers updateStatus), but harmless to configure unconditionally.
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			// No redis pod is a stale Pending pod to delete.
+			mk.On("GetStatefulSetPods", rf.Namespace, mock.Anything).Maybe().Return(&corev1.PodList{}, nil)
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
