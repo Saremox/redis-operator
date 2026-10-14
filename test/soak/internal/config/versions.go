@@ -54,6 +54,7 @@ type Edge struct {
 	Group string `json:"group"`
 }
 
+// String returns the edge as "From -> To".
 func (e Edge) String() string { return e.From + " -> " + e.To }
 
 // How a chain instance's Sentinels change image.

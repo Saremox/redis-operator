@@ -235,7 +235,7 @@ func TestMixedWindow(t *testing.T) {
 		pods []podImage
 	}{
 		{0, []podImage{old, old, old}},
-		// A replica on the new image that doesn't answer yet.
+		// A replica on the new image that does not answer yet.
 		{5, []podImage{old, old, starting}},
 		{10, []podImage{old, old, running}},
 		{60, []podImage{old, running, running}},
@@ -252,7 +252,7 @@ func TestMixedWindow(t *testing.T) {
 	if !w.start.Equal(at(10)) {
 		t.Errorf("started at %s", w.start)
 	}
-	// It's gone, and its replacement not up yet.
+	// It is gone, and its replacement not up yet.
 	if d, ended := w.observe(at(100), []podImage{running, running, starting}); !ended || d != 90*time.Second {
 		t.Errorf("ended %t after %s", ended, d)
 	}
@@ -286,7 +286,7 @@ func TestClassify(t *testing.T) {
 		reasons string
 	}{
 		{"converged", tr, func(o observation) observation { return observation{converged: true, verified: true} }, transitionOK, ""},
-		// An unknown edge that didn't converge within its bound, or got stuck.
+		// An unknown edge that did not converge within its bound, or got stuck.
 		{"stuck, stopped safely", tr, func(o observation) observation { return o }, transitionFailedSafe, "RDB format version 12"},
 		{"lost writes", tr, func(o observation) observation { o.lost = 3; return o }, transitionFailedUnsafe, "3 acknowledged writes lost"},
 		{"not verified", tr, func(o observation) observation { o.verified = false; return o }, transitionFailedUnsafe, "couldn't be verified"},

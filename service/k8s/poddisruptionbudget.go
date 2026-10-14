@@ -12,7 +12,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// PodDisruptionBudget the PodDisruptionBudget service that knows how to interact with k8s to manage them
+// PodDisruptionBudget the PodDisruptionBudget service that knows how to interact with k8s to manage them.
 type PodDisruptionBudget interface {
 	GetPodDisruptionBudget(namespace string, name string) (*policyv1.PodDisruptionBudget, error)
 	CreatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error
@@ -38,6 +38,7 @@ func NewPodDisruptionBudgetService(kubeClient kubernetes.Interface, logger log.L
 	}
 }
 
+// GetPodDisruptionBudget returns the named PodDisruptionBudget.
 func (p *PodDisruptionBudgetService) GetPodDisruptionBudget(namespace string, name string) (*policyv1.PodDisruptionBudget, error) {
 	podDisruptionBudget, err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "PodDisruptionBudget", name, "GET", err, p.metricsRecorder)
@@ -47,6 +48,7 @@ func (p *PodDisruptionBudgetService) GetPodDisruptionBudget(namespace string, na
 	return podDisruptionBudget, nil
 }
 
+// CreatePodDisruptionBudget creates the given PodDisruptionBudget.
 func (p *PodDisruptionBudgetService) CreatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
 	_, err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Create(context.TODO(), podDisruptionBudget, metav1.CreateOptions{})
 	recordMetrics(namespace, "PodDisruptionBudget", podDisruptionBudget.GetName(), "CREATE", err, p.metricsRecorder)
@@ -57,6 +59,8 @@ func (p *PodDisruptionBudgetService) CreatePodDisruptionBudget(namespace string,
 	return nil
 }
 
+// UpdatePodDisruptionBudget replaces the stored PodDisruptionBudget with the given
+// PodDisruptionBudget.
 func (p *PodDisruptionBudgetService) UpdatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
 	_, err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Update(context.TODO(), podDisruptionBudget, metav1.UpdateOptions{})
 	recordMetrics(namespace, "PodDisruptionBudget", podDisruptionBudget.GetName(), "UPDATE", err, p.metricsRecorder)
@@ -67,6 +71,10 @@ func (p *PodDisruptionBudgetService) UpdatePodDisruptionBudget(namespace string,
 	return nil
 }
 
+// CreateOrUpdatePodDisruptionBudget creates the PodDisruptionBudget, or
+// updates the stored PodDisruptionBudget when it is not up to date. It returns
+// a ControlledByOtherError when another controller controls the stored
+// PodDisruptionBudget.
 func (p *PodDisruptionBudgetService) CreateOrUpdatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
 	storedPodDisruptionBudget, err := p.GetPodDisruptionBudget(namespace, podDisruptionBudget.Name)
 	if err != nil {
@@ -92,6 +100,7 @@ func (p *PodDisruptionBudgetService) CreateOrUpdatePodDisruptionBudget(namespace
 	return p.UpdatePodDisruptionBudget(namespace, podDisruptionBudget)
 }
 
+// DeletePodDisruptionBudget deletes the named PodDisruptionBudget.
 func (p *PodDisruptionBudgetService) DeletePodDisruptionBudget(namespace string, name string) error {
 	err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 	recordMetrics(namespace, "PodDisruptionBudget", name, "DELETE", err, p.metricsRecorder)

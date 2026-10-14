@@ -101,7 +101,7 @@ func TestReopeningRestartsTheTimeout(t *testing.T) {
 }
 
 // A violation that began outside a window stays a finding when a window
-// opens, and isn't counted again at the timeout.
+// opens, and is not counted again at the timeout.
 func TestFindingIsCountedOnce(t *testing.T) {
 	tr := newTracker(time.Minute, 15*time.Second)
 	expect(t, tr.update(at(0), checksFor(invPods), false),
@@ -113,7 +113,7 @@ func TestFindingIsCountedOnce(t *testing.T) {
 		event{kind: evRestored, invariant: invPods, duration: 70 * time.Second, finding: true})
 }
 
-// A held window doesn't close on the first tick where every invariant
+// A held window does not close on the first tick where every invariant
 // holds: the mutation must have converged, and the dwell passed.
 func TestHeldWindow(t *testing.T) {
 	tr := newTracker(time.Minute, 15*time.Second)

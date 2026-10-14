@@ -134,22 +134,22 @@ func TestGetSlaveOf_NonIPv4MasterHost(t *testing.T) {
 //	    strings.Contains(info, redisLinkUp)
 //
 // where redisMasterSillPending is the literal string "master_host:127.0.0.1".
-// That's presumably meant to catch a transitional state (a pod that hasn't
-// picked up its real master's address yet), but it's implemented as an exact
+// That is presumably meant to catch a transitional state (a pod that has not
+// picked up its real master's address yet), but it is implemented as an exact
 // match on the loopback address rather than on some other placeholder value.
 // The practical effect: a replica whose master genuinely *is* reachable at
 // 127.0.0.1 is reported "not ready" by SlaveIsReady forever, even once
 // replication is fully caught up (master_link_status:up) - because the
 // string "master_host:127.0.0.1" is present in INFO replication regardless
 // of sync state. This is exactly the shared test master/replica pair in this
-// package (everything here binds to 127.0.0.1), so it's confirmed directly
+// package (everything here binds to 127.0.0.1), so it is confirmed directly
 // below rather than asserted as a TODO.
 func TestSlaveIsReady_LoopbackMasterHostNeverReady(t *testing.T) {
 	env := getSharedEnv(t)
 	c := newTestClient()
 
 	// Give replication as long as we reasonably can to fully catch up, to
-	// make sure what we're observing is the master_host:127.0.0.1 quirk and
+	// make sure what we are observing is the master_host:127.0.0.1 quirk and
 	// not merely "still syncing".
 	waitForCondition(t, 10*time.Second, func() bool {
 		info, err := c.GetReplicationInfo(env.replica.IP, strconv.Itoa(env.replica.Port), "")
@@ -165,7 +165,7 @@ func TestSlaveIsReady_LoopbackMasterHostNeverReady(t *testing.T) {
 
 	// A master has no master_link_status line at all, so SlaveIsReady should
 	// report false for it too (but for the entirely unrelated, correct
-	// reason that it just isn't a slave).
+	// reason that it just is not a slave).
 	ok, err = c.SlaveIsReady(env.master.IP, strconv.Itoa(env.master.Port), "")
 	require.NoError(t, err)
 	assert.False(t, ok)
@@ -503,7 +503,7 @@ func TestDisconnectClients_ReturnsErrorWhenDenied(t *testing.T) {
 	assert.ErrorContains(t, err, "NOPERM")
 }
 
-// Unreachable: don't pay the dial timeout twice.
+// Unreachable: do not pay the dial timeout twice.
 func TestDisconnectClients_ConnectionError(t *testing.T) {
 	port, err := findFreePort()
 	require.NoError(t, err)
@@ -689,7 +689,7 @@ func TestApplyACLLoad_Success(t *testing.T) {
 	aclPath := dir + "/users.acl"
 	require.NoError(t, os.WriteFile(aclPath, []byte("user testuser on >testpass ~* +@all\n"), 0o600))
 
-	// The aclfile must already be configured at boot - it's the only way
+	// The aclfile must already be configured at boot - it is the only way
 	// real Redis will accept it (see TestSetCustomRedisConfig_ACLFile).
 	r := startRedisProcess(t, "--aclfile", aclPath)
 	c := newTestClientStruct()
@@ -729,9 +729,9 @@ func TestApplyACLLoad_ConnectionError(t *testing.T) {
 // TestSetCustomRedisConfig_ACLFile covers a real bug found while building
 // this test suite: `CONFIG SET aclfile <path>` is an *immutable* config in
 // real Redis (7.0.15, confirmed here; Redis docs mark aclfile as requiring a
-// server restart to change) - the server rejects it with "ERR CONFIG SET
-// failed... can't set immutable config", regardless of whether the value
-// being set matches the aclfile Redis was already started with.
+// server restart to change) - the server rejects it with
+// `ERR CONFIG SET failed... can't set immutable config`, regardless of
+// whether the value being set matches the aclfile Redis was already started with.
 //
 // SetCustomRedisConfig now special-cases "aclfile": it skips the CONFIG SET
 // for that parameter (it would always fail) and goes straight to ACL LOAD,
@@ -885,7 +885,7 @@ func TestSentinelReplicaIPs(t *testing.T) {
 // the shared sentinel's only monitored master (SENTINEL REMOVE) rather than
 // starting a second sentinel process - see newSentinelProcessOnPort's doc
 // comment for why there can only be one. It restores the shared sentinel's
-// normal monitoring state via t.Cleanup so later tests aren't affected.
+// normal monitoring state via t.Cleanup so later tests are not affected.
 func TestGetNumberSentinelsInMemory_NotMonitoringAnything(t *testing.T) {
 	env := getSharedEnv(t)
 	c := newTestClient()
@@ -978,7 +978,7 @@ func TestGetNumberSentinelsInMemory_TooMany(t *testing.T) {
 // TestMonitorRedis covers the MonitorRedis convenience wrapper, which
 // hardcodes the monitored master's port to redisPort ("6379") when calling
 // MonitorRedisWithPort. Unlike MakeSlaveOf's use of the same constant, this
-// doesn't require anything actually listening on 6379: the port is only
+// does not require anything actually listening on 6379: the port is only
 // ever used as a text argument to `SENTINEL MONITOR`, never as a connection
 // address (MonitorRedisWithPort always connects to the sentinel itself, on
 // sentinelPort), so this can safely run even where port 6379 is unavailable
@@ -1326,13 +1326,13 @@ func TestSetSentinelAuthPass(t *testing.T) {
 // port at a time). That means the only way to make "connecting to the
 // sentinel" itself fail - as opposed to a command reaching a live sentinel
 // but getting an unexpected reply, which every other Sentinel test in this
-// file covers - is to stop the one process that's listening there.
+// file covers - is to stop the one process that is listening there.
 //
 // This test does exactly that: it kills the shared sentinel process outright
 // and, unlike every other test here that mutates sentinel state, never
 // restarts or restores it. It MUST THEREFORE STAY THE LAST TEST DECLARED IN
 // THIS FILE. `go test` runs the tests within a package sequentially, in the
-// order they're declared (nothing in this package calls t.Parallel - every
+// order they are declared (nothing in this package calls t.Parallel - every
 // other sentinel-mutating test already relies on that same sequential
 // ordering, see e.g. restoreSharedSentinel's doc comment), so as long as
 // this stays last, no later test ever tries to reach a sentinel that no

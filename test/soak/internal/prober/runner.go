@@ -29,6 +29,7 @@ type Runner struct {
 	running map[string]func()
 }
 
+// NewRunner returns the Runner of an instance. It starts no prober before Run.
 func NewRunner(in config.Instance, probe config.Probe, a *auth.Source, m *metrics.Metrics, log *slog.Logger) *Runner {
 	return &Runner{
 		in:    in,

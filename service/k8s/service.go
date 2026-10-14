@@ -12,7 +12,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// Service the Service service that knows how to interact with k8s to manage them
+// Service the Service service that knows how to interact with k8s to manage them.
 type Service interface {
 	GetService(namespace string, name string) (*corev1.Service, error)
 	CreateService(namespace string, service *corev1.Service) error
@@ -39,6 +39,7 @@ func NewServiceService(kubeClient kubernetes.Interface, logger log.Logger, metri
 	}
 }
 
+// GetService returns the named Service.
 func (s *ServiceService) GetService(namespace string, name string) (*corev1.Service, error) {
 	service, err := s.kubeClient.CoreV1().Services(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "Service", name, "GET", err, s.metricsRecorder)
@@ -48,6 +49,7 @@ func (s *ServiceService) GetService(namespace string, name string) (*corev1.Serv
 	return service, err
 }
 
+// CreateService creates the given Service.
 func (s *ServiceService) CreateService(namespace string, service *corev1.Service) error {
 	_, err := s.kubeClient.CoreV1().Services(namespace).Create(context.TODO(), service, metav1.CreateOptions{})
 	recordMetrics(namespace, "Service", service.GetName(), "CREATE", err, s.metricsRecorder)
@@ -58,6 +60,7 @@ func (s *ServiceService) CreateService(namespace string, service *corev1.Service
 	return nil
 }
 
+// UpdateService replaces the stored Service with the given Service.
 func (s *ServiceService) UpdateService(namespace string, service *corev1.Service) error {
 	_, err := s.kubeClient.CoreV1().Services(namespace).Update(context.TODO(), service, metav1.UpdateOptions{})
 	recordMetrics(namespace, "Service", service.GetName(), "UPDATE", err, s.metricsRecorder)
@@ -67,6 +70,11 @@ func (s *ServiceService) UpdateService(namespace string, service *corev1.Service
 	s.logger.WithField("namespace", namespace).WithField("serviceName", service.Name).Debugf("service updated")
 	return nil
 }
+
+// CreateOrUpdateService creates the Service, or updates the stored Service
+// when it is not up to date. It keeps the immutable fields that the API server
+// assigned, and returns a ControlledByOtherError when another controller
+// controls the stored Service.
 func (s *ServiceService) CreateOrUpdateService(namespace string, service *corev1.Service) error {
 	storedService, err := s.GetService(namespace, service.Name)
 	if err != nil {
@@ -127,6 +135,7 @@ func mergeImmutableServiceFields(stored, desired *corev1.Service) {
 	}
 }
 
+// DeleteService deletes the named Service with foreground propagation.
 func (s *ServiceService) DeleteService(namespace string, name string) error {
 	propagation := metav1.DeletePropagationForeground
 	err := s.kubeClient.CoreV1().Services(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{PropagationPolicy: &propagation})
@@ -134,6 +143,7 @@ func (s *ServiceService) DeleteService(namespace string, name string) error {
 	return err
 }
 
+// ListServices returns all the Services of the namespace.
 func (s *ServiceService) ListServices(namespace string) (*corev1.ServiceList, error) {
 	serviceList, err := s.kubeClient.CoreV1().Services(namespace).List(context.TODO(), metav1.ListOptions{})
 	recordMetrics(namespace, "Service", metrics.NOT_APPLICABLE, "LIST", err, s.metricsRecorder)

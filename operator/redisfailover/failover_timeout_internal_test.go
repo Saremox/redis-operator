@@ -234,7 +234,7 @@ func TestOperatorManagedModeZeroFailoverTimeoutFailsOverAtOnce(t *testing.T) {
 	ft.assertExpectations(t)
 }
 
-// A failed annotation write can't stop a failover without a wait.
+// A failed annotation write cannot stop a failover without a wait.
 func TestOperatorManagedModeZeroFailoverTimeoutDoesNotPatchThePod(t *testing.T) {
 	ft := newFailoverTimeoutTest(&metav1.Duration{})
 	ft.patchErr = errors.New("api err")

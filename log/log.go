@@ -8,7 +8,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Level refers to the level of logging
+// Level refers to the level of logging.
 type Level string
 
 // Logger is an interface that needs to be implemented in order to log.
@@ -173,66 +173,84 @@ func Debug(args ...interface{}) {
 	baseLogger.sourced().Debug(args...)
 }
 
+// Debugln is Debug, but it always adds a space between the arguments.
 func Debugln(args ...interface{}) {
 	baseLogger.sourced().Debugln(args...)
 }
 
+// Debugf is Debug with a fmt.Sprintf format.
 func Debugf(format string, args ...interface{}) {
 	baseLogger.sourced().Debugf(format, args...)
 }
 
+// Info logs the arguments at the info level.
 func Info(args ...interface{}) {
 	baseLogger.sourced().Info(args...)
 }
 
+// Infoln is Info, but it always adds a space between the arguments.
 func Infoln(args ...interface{}) {
 	baseLogger.sourced().Infoln(args...)
 }
 
+// Infof is Info with a fmt.Sprintf format.
 func Infof(format string, args ...interface{}) {
 	baseLogger.sourced().Infof(format, args...)
 }
 
+// Warn logs the arguments at the warning level.
 func Warn(args ...interface{}) {
 	baseLogger.sourced().Warn(args...)
 }
 
+// Warnln is Warn, but it always adds a space between the arguments.
 func Warnln(args ...interface{}) {
 	baseLogger.sourced().Warnln(args...)
 }
 
+// Warnf is Warn with a fmt.Sprintf format.
 func Warnf(format string, args ...interface{}) {
 	baseLogger.sourced().Warnf(format, args...)
 }
 
+// Error logs the arguments at the error level.
 func Error(args ...interface{}) {
 	baseLogger.sourced().Error(args...)
 }
 
+// Errorln is Error, but it always adds a space between the arguments.
 func Errorln(args ...interface{}) {
 	baseLogger.sourced().Errorln(args...)
 }
 
+// Errorf is Error with a fmt.Sprintf format.
 func Errorf(format string, args ...interface{}) {
 	baseLogger.sourced().Errorf(format, args...)
 }
 
+// Fatal logs the arguments at the fatal level, then stops the process with
+// exit code 1.
 func Fatal(args ...interface{}) {
 	baseLogger.sourced().Fatal(args...)
 }
 
+// Fatalln is Fatal, but it always adds a space between the arguments.
 func Fatalln(args ...interface{}) {
 	baseLogger.sourced().Fatalln(args...)
 }
 
+// Fatalf is Fatal with a fmt.Sprintf format.
 func Fatalf(format string, args ...interface{}) {
 	baseLogger.sourced().Fatalf(format, args...)
 }
 
+// With returns a logger that adds the key and the value as a field to each
+// message of the base logger.
 func With(key string, value interface{}) Logger {
 	return baseLogger.With(key, value)
 }
 
+// WithField is the same as With.
 func WithField(key string, value interface{}) Logger {
 	return baseLogger.WithField(key, value)
 }
@@ -242,14 +260,17 @@ func Set(level Level) error {
 	return baseLogger.Set(level)
 }
 
+// Panic logs the arguments at the panic level, then panics.
 func Panic(args ...interface{}) {
 	baseLogger.sourced().Panic(args...)
 }
 
+// Panicln is Panic, but it always adds a space between the arguments.
 func Panicln(args ...interface{}) {
 	baseLogger.sourced().Panicln(args...)
 }
 
+// Panicf is Panic with a fmt.Sprintf format.
 func Panicf(format string, args ...interface{}) {
 	baseLogger.sourced().Panicf(format, args...)
 }

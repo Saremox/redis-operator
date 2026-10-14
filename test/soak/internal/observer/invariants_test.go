@@ -184,7 +184,7 @@ func TestLags(t *testing.T) {
 	}
 }
 
-// A Valkey 9 replica that can't load a Redis 8 RDB retries its full sync
+// A Valkey 9 replica that cannot load a Redis 8 RDB retries its full sync
 // forever; between attempts INFO reports its link down since it started.
 func TestReplicaReadyWithoutDataRealInfo(t *testing.T) {
 	s := snapshot{redisReplicas: 2, port: 6379, state: "Healthy", endpoints: []string{"10.0.0.10"}}

@@ -20,7 +20,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// healthServer is the global health server instance
+// healthServer is the global health server instance.
 var healthServer *HealthServer
 
 const (
@@ -52,7 +52,7 @@ var (
 	redisPort  string
 )
 
-// NewCmd creates the run command
+// NewCmd creates the run command.
 func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run",

@@ -45,9 +45,9 @@ func bgCtx() context.Context {
 	return context.Background()
 }
 
-// requireRedisServer skips the calling test when redis-server isn't
+// requireRedisServer skips the calling test when redis-server is not
 // available on PATH, so `go test ./...` keeps working on a machine that
-// doesn't have Redis installed.
+// does not have Redis installed.
 func requireRedisServer(t *testing.T) {
 	t.Helper()
 	if !hasRedisServer() {
@@ -74,7 +74,7 @@ func (p *redisProc) Addr() string {
 }
 
 // findFreePort asks the OS for a currently-unused TCP port by briefly
-// binding to :0 and releasing it. redis-server itself doesn't support
+// binding to :0 and releasing it. redis-server itself does not support
 // OS-assigned ports, so callers pass the returned port to redis-server and
 // retry in the unlikely case something else grabs it first.
 func findFreePort() (int, error) {
@@ -165,7 +165,7 @@ func newRedisProcess(extraArgs ...string) (*redisProc, error) {
 // file it can rewrite to disk, so one is written into an isolated temp dir
 // first. extraConfLines are appended to that config file verbatim (e.g.
 // "sentinel monitor mymaster 127.0.0.1 6379 1"). Like newRedisProcess, this
-// has no *testing.T dependency, so it's usable from TestMain.
+// has no *testing.T dependency, so it is usable from TestMain.
 //
 // Every Sentinel-related method on Client (GetSentinelMonitor,
 // GetNumberSentinelsInMemory, MonitorRedisWithPort, SentinelCheckQuorum,
@@ -175,7 +175,7 @@ func newRedisProcess(extraArgs ...string) (*redisProc, error) {
 // Addr as `net.JoinHostPort(ip, sentinelPort)`. Unlike the plain-Redis
 // methods (which all take an explicit port parameter), there is no way to
 // reach a test sentinel on any other port through the Client interface.
-// That's why this package starts exactly one sentinel process, on
+// That is why this package starts exactly one sentinel process, on
 // sentinelPort, for the whole test binary run (see TestMain) instead of a
 // dedicated throwaway sentinel per test: only one process can bind
 // 127.0.0.1:<sentinelPort> at a time. Tests that need a differently
@@ -316,9 +316,9 @@ func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) boo
 }
 
 // sharedEnv holds the small, fixed set of long-lived redis/sentinel
-// processes shared read-only across tests that don't mutate topology or
-// sentinel state, so we don't pay subprocess-startup cost per test case.
-// It's started once in TestMain (not via a per-test t.Cleanup-guarded
+// processes shared read-only across tests that do not mutate topology or
+// sentinel state, so we do not pay subprocess-startup cost per test case.
+// It is started once in TestMain (not via a per-test t.Cleanup-guarded
 // sync.Once - the processes must outlive whichever individual test happens
 // to run first) and torn down after all tests in the package finish.
 // Tests that mutate replication topology (MakeMaster, MakeSlaveOf, ...) must
@@ -337,7 +337,7 @@ var sharedEnvVal *sharedEnv
 
 // TestMain starts the shared environment once (if redis-server is
 // available) before any test runs, and tears it down after all tests in the
-// package complete - see sharedEnv's doc comment for why this can't be a
+// package complete - see sharedEnv's doc comment for why this cannot be a
 // lazy sync.Once initialized from inside an individual test.
 func TestMain(m *testing.M) {
 	var cleanups []func()
@@ -385,7 +385,7 @@ func TestMain(m *testing.M) {
 
 		// Wait for the replication link to come up so tests relying on
 		// master-side connected_slaves / sentinel-side slave discovery
-		// don't race the initial sync.
+		// do not race the initial sync.
 		deadline := time.Now().Add(15 * time.Second)
 		for time.Now().Before(deadline) {
 			rc := rediscli.NewClient(&rediscli.Options{Addr: replica.Addr()})
@@ -406,7 +406,7 @@ func TestMain(m *testing.M) {
 }
 
 // getSharedEnv returns the shared master/replica/sentinel environment
-// started in TestMain, skipping the calling test if redis-server wasn't
+// started in TestMain, skipping the calling test if redis-server was not
 // available (and so the shared environment was never started).
 func getSharedEnv(t *testing.T) *sharedEnv {
 	t.Helper()
@@ -418,11 +418,11 @@ func getSharedEnv(t *testing.T) *sharedEnv {
 }
 
 // pointSharedSentinelAt repoints the single shared sentinel process (see
-// newSentinelProcessOnPort's doc comment for why there's only one) at the
+// newSentinelProcessOnPort's doc comment for why there is only one) at the
 // given master/quorum via raw SENTINEL REMOVE+MONITOR, bypassing the
-// Client under test so setup/teardown for tests that aren't themselves
-// about MonitorRedisWithPort doesn't depend on it. It fails the test if the
-// commands don't succeed.
+// Client under test so setup/teardown for tests that are not themselves
+// about MonitorRedisWithPort does not depend on it. It fails the test if the
+// commands do not succeed.
 func pointSharedSentinelAt(t *testing.T, sentinel *redisProc, masterIP string, masterPort int, quorum int) {
 	t.Helper()
 	rc := rediscli.NewSentinelClient(&rediscli.Options{Addr: sentinel.Addr()})
@@ -442,7 +442,7 @@ func pointSharedSentinelAt(t *testing.T, sentinel *redisProc, masterIP string, m
 // restoreSharedSentinel points the shared sentinel back at the shared
 // master with quorum 1, the state every read-only test expects to find it
 // in. Tests that repoint the shared sentinel elsewhere must register this
-// via t.Cleanup so later tests aren't affected - Go runs tests within a
+// via t.Cleanup so later tests are not affected - Go runs tests within a
 // package sequentially unless they call t.Parallel (none here do), so this
 // is safe as long as every mutating test restores what it changed.
 func restoreSharedSentinel(t *testing.T, env *sharedEnv) {

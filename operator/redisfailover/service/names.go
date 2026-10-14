@@ -44,7 +44,7 @@ func GetRedisAuthAppliedName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(redisAuthAppliedName, rf.Name)
 }
 
-// GetSentinelName returns the name for sentinel resources
+// GetSentinelName returns the name for sentinel resources.
 func GetSentinelName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(sentinelName, rf.Name)
 }
@@ -55,10 +55,14 @@ func GetSentinelServiceAccountName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(sentinelServiceAccountName, rf.Name)
 }
 
+// GetRedisMasterName returns the name of the Service that selects the Redis
+// pod with the master role label.
 func GetRedisMasterName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(redisMasterName, rf.Name)
 }
 
+// GetRedisSlaveName returns the name of the Service that selects the Redis
+// pods with the replica role label.
 func GetRedisSlaveName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(redisSlaveName, rf.Name)
 }

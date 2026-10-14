@@ -20,7 +20,7 @@ import (
 // The failover is then incomplete, but the new master works.
 var ErrPartialReconciliation = errors.New("promotion succeeded but replica reconciliation incomplete")
 
-// RedisFailoverHeal defines the interface able to fix the problems on the redis failovers
+// RedisFailoverHeal defines the interface able to fix the problems on the redis failovers.
 type RedisFailoverHeal interface {
 	MakeMaster(ip string, rFailover *redisfailoverv1.RedisFailover) error
 	SetOldestAsMaster(rFailover *redisfailoverv1.RedisFailover) error
@@ -77,6 +77,8 @@ func (r *RedisFailoverHealer) setSlaveLabelIfNecessary(rf *redisfailoverv1.Redis
 	return setSlaveLabel(r.k8sService, r.opts, rf, pod, port, password)
 }
 
+// MakeMaster makes the Redis at ip the master and sets the master role label
+// on its pod.
 func (r *RedisFailoverHealer) MakeMaster(ip string, rf *redisfailoverv1.RedisFailover) error {
 	password, err := k8s.GetRedisPassword(r.k8sService, rf)
 	if err != nil {
@@ -321,7 +323,7 @@ func (r *RedisFailoverHealer) SetExternalMasterOnAll(masterIP, masterPort string
 	return nil
 }
 
-// NewSentinelMonitor changes the master that Sentinel has to monitor
+// NewSentinelMonitor changes the master that Sentinel has to monitor.
 func (r *RedisFailoverHealer) NewSentinelMonitor(ip string, monitor string, rf *redisfailoverv1.RedisFailover) error {
 	quorum := strconv.Itoa(int(getQuorum(rf)))
 
@@ -334,7 +336,7 @@ func (r *RedisFailoverHealer) NewSentinelMonitor(ip string, monitor string, rf *
 	return r.redisClient.MonitorRedisWithPort(ip, monitor, port, quorum, password)
 }
 
-// NewSentinelMonitorWithPort changes the master that Sentinel has to monitor by the provided IP and Port
+// NewSentinelMonitorWithPort changes the master that Sentinel has to monitor by the provided IP and Port.
 func (r *RedisFailoverHealer) NewSentinelMonitorWithPort(ip string, monitor string, monitorPort string, rf *redisfailoverv1.RedisFailover) error {
 	quorum := strconv.Itoa(int(getQuorum(rf)))
 
@@ -354,13 +356,13 @@ func (r *RedisFailoverHealer) RestoreSentinel(ip string) error {
 	return r.redisClient.ResetSentinel(ip)
 }
 
-// SetSentinelCustomConfig will call sentinel to set the configuration given in config
+// SetSentinelCustomConfig will call sentinel to set the configuration given in config.
 func (r *RedisFailoverHealer) SetSentinelCustomConfig(ip string, rf *redisfailoverv1.RedisFailover) error {
 	r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Debugf("Setting the custom config on sentinel %s...", ip)
 	return r.redisClient.SetCustomSentinelConfig(ip, rf.Spec.Sentinel.CustomConfig)
 }
 
-// SetRedisCustomConfig will call redis to set the configuration given in config
+// SetRedisCustomConfig will call redis to set the configuration given in config.
 func (r *RedisFailoverHealer) SetRedisCustomConfig(ip string, rf *redisfailoverv1.RedisFailover) error {
 	r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Debugf("Setting the custom config on redis %s...", ip)
 

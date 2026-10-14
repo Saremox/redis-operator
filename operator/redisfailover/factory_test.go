@@ -225,7 +225,7 @@ func TestNewBuildsController(t *testing.T) {
 
 // TestNewPropagatesLeaderElectionError covers the error path returned by
 // leaderelection.NewDefault: it validates its namespace argument and errors
-// out when it's empty, before ever touching the kubernetes client. This lets
+// out when it is empty, before ever touching the kubernetes client. This lets
 // us deterministically trigger New()'s `if err != nil { return nil, err }`
 // branch without needing a live cluster.
 func TestNewPropagatesLeaderElectionError(t *testing.T) {

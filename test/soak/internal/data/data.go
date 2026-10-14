@@ -90,6 +90,7 @@ type request struct {
 	err      error
 }
 
+// New returns the Data of an instance. The instance must have data configured.
 func New(in config.Instance, cfg *config.Config, master Master, a *auth.Source, m *metrics.Metrics, log *slog.Logger) *Data {
 	labels := prometheus.Labels{"rf": in.Name, "namespace": in.Namespace, "mode": string(in.Mode)}
 	h := fnv.New64a()
@@ -126,6 +127,8 @@ func initEvents(cfg *config.Config, in config.Instance, counters ...*prometheus.
 	}
 }
 
+// Run deletes the ledger and burst keys of an earlier run. Then it runs the
+// filler, the ledger when configured, and the verifier until ctx is done.
 func (d *Data) Run(ctx context.Context) {
 	defer func() { _ = d.client.Close() }()
 	// Keys of an earlier run would never be verified or deleted.

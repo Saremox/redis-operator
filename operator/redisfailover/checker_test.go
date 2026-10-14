@@ -237,7 +237,7 @@ func TestCheckAndHeal(t *testing.T) {
 			bootstrapping:         true,
 			allowSentinels:        false,
 			// checkAndHealBootstrapMode's redis-not-running gate must report
-			// NotHealthy even though it returns nil (it's waiting for the next
+			// NotHealthy even though it returns nil (it is waiting for the next
 			// reconcile, not failing outright).
 			wantState: v1.NotHealthyState,
 		},
@@ -408,7 +408,7 @@ func TestCheckAndHeal(t *testing.T) {
 				if !expErr && continueTests {
 					// checker.go re-resolves GetMasterIP right before SetMasterOnAll
 					// (when slaves are wrong) and right before NewSentinelMonitor
-					// (when a sentinel isn't monitoring the right master), on top
+					// (when a sentinel is not monitoring the right master), on top
 					// of the base call in checkAndHeal and the one inside
 					// UpdateRedisesPods.
 					getMasterIPCalls := 2
@@ -2997,7 +2997,7 @@ func TestUpdateRedisesPodsErrorBranches(t *testing.T) {
 }
 
 // settledK8sServices returns a k8s service mock whose redis pods are all up,
-// so the pod-replacement and master-election waits don't hold anything back.
+// so the pod-replacement and master-election waits do not hold anything back.
 func settledK8sServices() *mK8SService.Services {
 	mk := noAppliedSecret(&mK8SService.Services{})
 	mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Maybe().Return(&corev1.PodList{Items: make([]corev1.Pod, 5)}, nil)

@@ -111,7 +111,7 @@ func TestLedgerAging(t *testing.T) {
 		t.Errorf("nothing to age yet: %+v", old)
 	}
 
-	// A write in flight isn't checked yet.
+	// A write in flight is not checked yet.
 	write(5, all)
 	inflight := l.begin()
 	r = l.plan(rnd, 3)
@@ -386,7 +386,7 @@ func TestVerifyEvictable(t *testing.T) {
 	if _, err := d.verify(ctx, "redis_memory", 1, false); err != nil {
 		t.Fatal(err)
 	}
-	// Evicted keys are expected; a wrong value isn't.
+	// Evicted keys are expected; a wrong value is not.
 	if got := testutil.ToFloat64(mt.LostWrites.WithLabelValues("x", "ns", "operator", "redis_memory")); got != 1 {
 		t.Errorf("lost %v, want 1", got)
 	}

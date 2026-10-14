@@ -171,7 +171,7 @@ func TestRunCleanupNotADirectory(t *testing.T) {
 	dbFilename = "dump.rdb"
 	dryRun = false
 
-	// Run cleanup - should error because it's not a directory
+	// Run cleanup - should error because it is not a directory
 	if err := runCleanup(nil, nil); err == nil {
 		t.Fatal("runCleanup should fail when dataDir is not a directory")
 	}

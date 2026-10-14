@@ -236,7 +236,7 @@ func TestResourcesKeepQoS(t *testing.T) {
 		}
 	}
 
-	// A request above a limit the config doesn't bound.
+	// A request above a limit the config does not bound.
 	s = testState()
 	m.Resources = config.Resources{Requests: config.ResourceRanges{Memory: config.Range{Min: 300, Max: 400}}}
 	if p := planResources(stepRand(1, testInstance, 1), m.Resources, s); !strings.Contains(p.skip, "would exceed limits.memory") {

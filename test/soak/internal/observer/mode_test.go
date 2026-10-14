@@ -51,7 +51,7 @@ func TestEvaluateBootstrap(t *testing.T) {
 		{"wrong port", func(s *snapshot) {
 			s.redis[2].info["master_port"] = "6380"
 		}, []string{invOneMaster}},
-		// The source's master was replaced and a pod hasn't reached the
+		// The source's master was replaced and a pod has not reached the
 		// new one yet.
 		{"old stream", func(s *snapshot) {
 			s.sourceReplID = "b"
@@ -91,7 +91,7 @@ func TestEvaluateBootstrap(t *testing.T) {
 	if want := map[string]int64{"rfr-x-0": 0, "rfr-x-1": 10, "rfr-x-2": 600}; !mapsEqual(lags, want) {
 		t.Errorf("lags %v, want %v", lags, want)
 	}
-	// Offsets of another stream can't be compared.
+	// Offsets of another stream cannot be compared.
 	s := bootstrapped()
 	s.redis[2].info["master_replid"] = "old"
 	if want := map[string]int64{"rfr-x-0": 0, "rfr-x-1": 10}; !mapsEqual(s.bootstrapLags(), want) {

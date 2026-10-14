@@ -13,16 +13,23 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+// Mode is the configured mode of an instance. The metrics and the log lines
+// of the instance carry it as the mode label.
 type Mode string
 
 const (
+	// ModeOperator is the default mode, and the only mode for an instance with
+	// bootstrap.
 	ModeOperator Mode = "operator"
+	// ModeSentinel is the mode that the Sentinel mutation kinds,
+	// sentinelVersion and a chain sentinel setting need.
 	ModeSentinel Mode = "sentinel"
 )
 
 // maxNameLength is the operator's limit on RedisFailover names.
 const maxNameLength = 48
 
+// Config is the content of the YAML configuration file.
 type Config struct {
 	Operator Operator `json:"operator"`
 	Probe    Probe    `json:"probe"`
@@ -43,6 +50,8 @@ type Operator struct {
 	Deployment string `json:"deployment"`
 }
 
+// Probe sets how often the probes write and read a key, and how long one
+// probe may take.
 type Probe struct {
 	Interval metav1.Duration `json:"interval"`
 	Timeout  metav1.Duration `json:"timeout"`
@@ -98,6 +107,7 @@ type Timeout struct {
 // can start afresh with a new namespace.
 const DefaultNamespace = "redis-soak-instances"
 
+// Instance is one RedisFailover that the tester probes, observes and mutates.
 type Instance struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
@@ -154,6 +164,8 @@ func Load(path string) (*Config, error) {
 	return c, nil
 }
 
+// Parse decodes the YAML configuration strictly, sets the defaults and
+// validates the result. Unlike Load, it does not resolve relative paths.
 func Parse(b []byte) (*Config, error) {
 	var c Config
 	if err := yaml.UnmarshalStrict(b, &c); err != nil {

@@ -20,6 +20,8 @@ type ControlledByOtherError struct {
 	OwnerName string
 }
 
+// Error names the object and its controller, or tells that the object has no
+// controller.
 func (e *ControlledByOtherError) Error() string {
 	if e.OwnerKind == "" {
 		return fmt.Sprintf("cannot manage %s %q: it has no controller", e.Kind, e.Name)

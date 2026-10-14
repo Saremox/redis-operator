@@ -227,7 +227,7 @@ func TestDeploymentServiceObjectUpToDate(t *testing.T) {
 		{
 			name: "server-defaulted fields the operator never sets do not trigger an update",
 			// stored is what a real API server would persist and return for
-			// exactly this desired object - if the comparison isn't
+			// exactly this desired object - if the comparison is not
 			// normalized, this looks different on every single field the
 			// server defaults, even though nothing meaningful changed.
 			stored:        serverDefaulted(realisticDeployment(3)),

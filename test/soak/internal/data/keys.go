@@ -8,9 +8,14 @@ import (
 	"strconv"
 )
 
-func FillKey(rf string, n int64) string   { return key(rf, "fill", n) }
+// FillKey returns the name of fill key n of the instance rf.
+func FillKey(rf string, n int64) string { return key(rf, "fill", n) }
+
+// LedgerKey returns the name of ledger key n of the instance rf.
 func LedgerKey(rf string, n int64) string { return key(rf, "ledger", n) }
-func BurstKey(rf string, n int64) string  { return key(rf, "burst", n) }
+
+// BurstKey returns the name of burst key n of the instance rf.
+func BurstKey(rf string, n int64) string { return key(rf, "burst", n) }
 
 func key(rf, kind string, n int64) string {
 	return "soak:" + rf + ":" + kind + ":" + strconv.FormatInt(n, 10)

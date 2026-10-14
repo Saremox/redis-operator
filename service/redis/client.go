@@ -17,7 +17,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// ReplicationInfo contains replication information for a Redis instance
+// ReplicationInfo contains replication information for a Redis instance.
 type ReplicationInfo struct {
 	Role             string // "master" or "slave"
 	MasterHost       string // only for slaves
@@ -32,7 +32,7 @@ type ReplicationInfo struct {
 	FailoverState string
 }
 
-// MemoryInfo contains the memory figures of a Redis instance relevant to maxmemory
+// MemoryInfo contains the memory figures of a Redis instance relevant to maxmemory.
 type MemoryInfo struct {
 	MaxMemory       int64
 	MaxMemoryPolicy string
@@ -93,7 +93,7 @@ type client struct {
 	metricsRecorder metrics.Recorder
 }
 
-// New returns a redis client
+// New returns a redis client.
 func New(metricsRecorder metrics.Recorder) Client {
 	return &client{
 		metricsRecorder: metricsRecorder,
@@ -142,7 +142,7 @@ func redisOptions(addr, password string) *rediscli.Options {
 	}
 }
 
-// GetNumberSentinelsInMemory return the number of sentinels that the requested sentinel has
+// GetNumberSentinelsInMemory return the number of sentinels that the requested sentinel has.
 func (c *client) GetNumberSentinelsInMemory(ip string) (int32, error) {
 	if ip == "" {
 		return 0, errNoIP
@@ -182,7 +182,7 @@ func (c *client) GetNumberSentinelsInMemory(ip string) (int32, error) {
 	return int32(nSentinels), nil
 }
 
-// GetNumberSentinelSlavesInMemory returns the number of slaves that the requested sentinel knows for its master
+// GetNumberSentinelSlavesInMemory returns the number of slaves that the requested sentinel knows for its master.
 func (c *client) GetNumberSentinelSlavesInMemory(ip string) (int32, error) {
 	if ip == "" {
 		return 0, errNoIP
@@ -230,7 +230,7 @@ func isSentinelReady(info string) error {
 	return nil
 }
 
-// ResetSentinel sends a sentinel reset * for the given sentinel
+// ResetSentinel sends a sentinel reset * for the given sentinel.
 func (c *client) ResetSentinel(ip string) error {
 	if ip == "" {
 		return errNoIP
@@ -325,7 +325,7 @@ func (c *client) MonitorRedisWithPort(ip, monitor, port, quorum, password string
 	}(rClient)
 	cmd := rediscli.NewBoolCmd(context.TODO(), "SENTINEL", "REMOVE", masterName)
 	_ = rClient.Process(context.TODO(), cmd)
-	// We'll continue even if it fails, the priority is to have the redises monitored
+	// We will continue even if it fails, the priority is to have the redises monitored
 	cmd = rediscli.NewBoolCmd(context.TODO(), "SENTINEL", "MONITOR", masterName, monitor, port, quorum)
 	err := rClient.Process(context.TODO(), cmd)
 	if err != nil {

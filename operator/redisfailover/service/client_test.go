@@ -25,7 +25,7 @@ import (
 // but never persisted it against the k8s API -- the Sentinel Deployment would
 // reference a ServiceAccount name that was never actually created. These tests
 // pin the fixed behavior: EnsureSentinelDeployment must create the ServiceAccount
-// itself before/alongside the Deployment when the user hasn't set one, and must
+// itself before/alongside the Deployment when the user has not set one, and must
 // never touch it when the user already provided their own.
 // ---------------------------------------------------------------------------
 
@@ -112,7 +112,7 @@ func TestEnsureSentinelDeploymentPropagatesServiceAccountCreationError(t *testin
 	assert.Error(err)
 	// The Deployment must never be written once provisioning its own
 	// ServiceAccount failed -- it would otherwise reference a ServiceAccount
-	// that doesn't exist.
+	// that does not exist.
 	ms.AssertNotCalled(t, "CreateOrUpdateDeployment", mock.Anything, mock.Anything)
 }
 
@@ -121,7 +121,7 @@ func TestEnsureSentinelDeploymentPropagatesServiceAccountCreationError(t *testin
 //
 // PR #43 named the auto-provisioned ServiceAccount directly after the
 // RedisFailover CR (rf.Name), which both collides with the CR's own name and
-// doesn't match how every sibling resource is namespaced via a Get*Name
+// does not match how every sibling resource is namespaced via a Get*Name
 // helper built on generateName(typeName, rf.Name). This pins the fixed
 // convention.
 // ---------------------------------------------------------------------------

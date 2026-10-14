@@ -104,7 +104,7 @@ func (rt *rolloutTest) update(message string) string {
 func TestUpdateRedisesPodsReportsAStalledRollout(t *testing.T) {
 	rt := newRolloutTest(t)
 
-	// A replaced replica that doesn't sync is reported once the rollout has
+	// A replaced replica that does not sync is reported once the rollout has
 	// waited on it for longer than the bound.
 	assert.Empty(t, rt.update(""))
 	time.Sleep(2 * rolloutStallTimeout)
@@ -126,7 +126,7 @@ func TestUpdateRedisesPodsReportsAStalledRollout(t *testing.T) {
 	rt.synced = false
 	assert.Empty(t, rt.update(""))
 
-	// A replica that isn't synced while no rollout is pending is not reported.
+	// A replica that is not synced while no rollout is pending is not reported.
 	rt.pods[0].Labels[appsv1.ControllerRevisionHashLabelKey] = "new"
 	time.Sleep(2 * rolloutStallTimeout)
 	assert.Empty(t, rt.update(""))
@@ -218,7 +218,7 @@ func TestUpdateRedisesPodsKeepsWaitingAcrossErrors(t *testing.T) {
 			assert.Empty(t, rt.update(""))
 			time.Sleep(2 * rolloutStallTimeout)
 
-			// A failed lookup is returned and doesn't restart the wait.
+			// A failed lookup is returned and does not restart the wait.
 			err := errors.New("lookup failed")
 			if step == "pods" {
 				rt.podsErr = err

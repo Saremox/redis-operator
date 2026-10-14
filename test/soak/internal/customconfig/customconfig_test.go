@@ -30,7 +30,7 @@ func TestRedis(t *testing.T) {
 	}, nil, false)
 	keys := RedisKeys(rf)
 	// The operator's default replica-priority comes first; requirepass and
-	// aclfile aren't the customConfig's to set; the later hz wins.
+	// aclfile are not the customConfig's to set; the later hz wins.
 	want := []string{"replica-priority", "maxmemory-samples", "maxmemory", "replica-ignore-maxmemory", "save", "hz"}
 	if !slices.Equal(keys, want) {
 		t.Fatalf("keys %v, want %v", keys, want)
@@ -78,7 +78,7 @@ func TestSentinel(t *testing.T) {
 	rf := rfWith(nil, []string{
 		"down-after-milliseconds 4000", "failover-timeout 9000", "parallel-syncs 1", "auth-pass secret", "quorum 2",
 	}, false)
-	// auth-pass isn't reported, so it can't be checked.
+	// auth-pass is not reported, so it cannot be checked.
 	if err := Sentinel(rf, sentinelMaster); err != nil {
 		t.Errorf("applied: %v", err)
 	}

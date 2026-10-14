@@ -97,7 +97,7 @@ func TestEvaluateConfig(t *testing.T) {
 	if err := s.checkConfig(); err == nil || !strings.Contains(err.Error(), "want volatile-lru") {
 		t.Errorf("policy: %v", err)
 	}
-	// A pod that isn't scheduled yet has no IP and isn't configured.
+	// A pod that is not scheduled yet has no IP and is not configured.
 	s = withMaxMemory("noeviction")
 	s.redis[2].IP, s.redis[2].config = "", nil
 	if err := s.checkConfig(); err != nil {

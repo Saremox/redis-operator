@@ -37,7 +37,7 @@ func TestApply(t *testing.T) {
 	o.apply(at(5), s, 1, false)
 
 	// rfr-x-0 is killed: rfr-x-1 takes over, and the replacement for
-	// rfr-x-0 isn't up yet.
+	// rfr-x-0 is not up yet.
 	s = healthy(true)
 	s.redis = s.redis[1:]
 	s.redis[0].info = replicationInfo("master", "", "", "2000")
@@ -162,7 +162,7 @@ func TestHold(t *testing.T) {
 	})
 	h.Applied()
 	result := h.Done()
-	// The killed master's replacement isn't there yet.
+	// The killed master's replacement is not there yet.
 	s := healthy(true)
 	s.redis = s.redis[1:]
 	s.redis[0].info = replicationInfo("master", "", "", "2000")

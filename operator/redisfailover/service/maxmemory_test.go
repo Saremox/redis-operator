@@ -26,7 +26,7 @@ var (
 	mmMaster  = "10.0.0.1"
 	mmReplica = "10.0.0.2"
 	mmRedises = []string{mmMaster, mmReplica}
-	// 1Gi limit at 75% -> 768Mi
+	// 1Gi limit at 75% -> 768Mi.
 	mmTarget = 768 * mi
 )
 

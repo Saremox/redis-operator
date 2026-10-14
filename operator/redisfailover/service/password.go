@@ -12,12 +12,12 @@ import (
 )
 
 // ApplyPassword brings every Redis onto password. Redis reads requirepass only
-// at startup, and restarting the pods one at a time can't apply a new one: a
-// restarted replica can't authenticate to a master still on the old password.
+// at startup, and restarting the pods one at a time cannot apply a new one: a
+// restarted replica cannot authenticate to a master still on the old password.
 // So a Redis still on one of the previous passwords is changed in place, and the
 // rolling update then restarts the pods onto the secret.
 //
-// It returns an error if a running Redis refuses password and can't be
+// It returns an error if a running Redis refuses password and cannot be
 // changed. complete is true once every Redis pod runs, accepts password and
 // has a template with the password Secret of rf. stale is true while a pod
 // has a template with another password Secret: a container restart gives

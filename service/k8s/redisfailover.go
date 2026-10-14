@@ -15,7 +15,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// RedisFailover the RF service that knows how to interact with k8s to get them
+// RedisFailover the RF service that knows how to interact with k8s to get them.
 type RedisFailover interface {
 	// ListRedisFailovers lists the redisfailovers on a cluster.
 	ListRedisFailovers(ctx context.Context, namespace string, opts metav1.ListOptions) (*redisfailoverv1.RedisFailoverList, error)
@@ -59,6 +59,8 @@ func (r *RedisFailoverService) WatchRedisFailovers(ctx context.Context, namespac
 	return watcher, err
 }
 
+// UpdateRedisFailoverStatus patches the status of the RedisFailover. It logs
+// a failed patch and does not return the error.
 func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, namespace string, rf *redisfailoverv1.RedisFailover, opts metav1.PatchOptions) {
 	// Fields are nested under an explicit map (rather than marshaling
 	// redisfailoverv1.RedisFailoverStatus directly) so every field is always
@@ -82,7 +84,7 @@ func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, na
 	}
 	patchBytes, _ := json.Marshal(patch)
 
-	// Through the status subresource, so a status change doesn't bump
+	// Through the status subresource, so a status change does not bump
 	// metadata.generation.
 	_, err := r.k8sCli.DatabasesV1().RedisFailovers(namespace).Patch(ctx, rf.Name, types.MergePatchType, patchBytes, opts, "status")
 	if err != nil {
