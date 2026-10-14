@@ -127,7 +127,7 @@ func (ft *failoverTimeoutTest) unreachableSince() string {
 // unhealthyMaster moves the clock by at.
 func (ft *failoverTimeoutTest) unhealthyMaster(at time.Duration, wantPromote bool) error {
 	ft.now = ft.now.Add(at)
-	ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
+	ft.checker.On("IsRedisRunning", ft.rf).Once().Return(true)
 	ft.checker.On("GetNumberMasters", ft.rf).Once().Return(1, nil)
 	ft.checker.On("CheckMasterHealth", ft.rf).Once().Return(false, timeoutMaster, nil)
 	if wantPromote {
@@ -140,7 +140,7 @@ func (ft *failoverTimeoutTest) unhealthyMaster(at time.Duration, wantPromote boo
 // master check.
 func (ft *failoverTimeoutTest) healthyMaster(at time.Duration) error {
 	ft.now = ft.now.Add(at)
-	ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
+	ft.checker.On("IsRedisRunning", ft.rf).Once().Return(true)
 	ft.checker.On("GetNumberMasters", ft.rf).Once().Return(1, nil)
 	ft.checker.On("CheckMasterHealth", ft.rf).Once().Return(true, timeoutMaster, nil)
 	ft.checker.On("CheckAllSlavesFromMaster", timeoutMaster, ft.rf).Once().Return(nil)
@@ -215,7 +215,7 @@ func TestOperatorManagedModeNamesTheUnhealthyMaster(t *testing.T) {
 			}
 			var lines []string
 			ft.handler.logger = podFieldLogger{lines: &lines}
-			ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
+			ft.checker.On("IsRedisRunning", ft.rf).Once().Return(true)
 			ft.checker.On("GetNumberMasters", ft.rf).Once().Return(1, nil)
 			ft.checker.On("CheckMasterHealth", ft.rf).Once().Return(false, test.masterIP, nil)
 			ft.expectPromotion()
@@ -304,7 +304,7 @@ func TestOperatorManagedModeClearsALeftoverAnnotationAfterARestart(t *testing.T)
 // the outage longer.
 func TestOperatorManagedModeNoMasterFoundByHealthCheckFailsOverAtOnce(t *testing.T) {
 	ft := newFailoverTimeoutTest(nil)
-	ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
+	ft.checker.On("IsRedisRunning", ft.rf).Once().Return(true)
 	ft.checker.On("GetNumberMasters", ft.rf).Once().Return(1, nil)
 	ft.checker.On("CheckMasterHealth", ft.rf).Once().Return(false, "", nil)
 	ft.expectPromotion()
@@ -328,7 +328,7 @@ func TestOperatorManagedModeUnhealthyMasterWithoutAPodFailsOverAtOnce(t *testing
 func TestOperatorManagedModeWaitsForAnUnreachableMasterPod(t *testing.T) {
 	ft := newFailoverTimeoutTest(nil)
 
-	ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
+	ft.checker.On("IsRedisRunning", ft.rf).Once().Return(true)
 	ft.checker.On("GetNumberMasters", ft.rf).Once().Return(0, fmt.Errorf("%w: rfr-test-0: i/o timeout", rfservice.ErrRedisNotAnswering))
 	assert.Error(t, ft.handler.CheckAndHeal(ft.rf))
 	assert.Equal(t, "2026-10-02T12:00:00Z", ft.unreachableSince())
@@ -337,7 +337,7 @@ func TestOperatorManagedModeWaitsForAnUnreachableMasterPod(t *testing.T) {
 	ft.pods[0].Annotations[masterUnreachableAnnotation] = "2026-10-02T12:00:00Z"
 	noMaster := func(at time.Duration) error {
 		ft.now = ft.now.Add(at)
-		ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
+		ft.checker.On("IsRedisRunning", ft.rf).Once().Return(true)
 		ft.checker.On("GetNumberMasters", ft.rf).Once().Return(0, nil)
 		return ft.handler.CheckAndHeal(ft.rf)
 	}
@@ -364,7 +364,7 @@ func TestOperatorManagedModeElectsAtOnceWithoutAnUnreachableMasterPod(t *testing
 		t.Run(test.name, func(t *testing.T) {
 			ft := newFailoverTimeoutTest(nil)
 			ft.pods[0] = test.pod
-			ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
+			ft.checker.On("IsRedisRunning", ft.rf).Once().Return(true)
 			ft.checker.On("GetNumberMasters", ft.rf).Once().Return(0, nil)
 			ft.expectPromotion()
 			assert.NoError(t, ft.handler.CheckAndHeal(ft.rf))
@@ -377,7 +377,7 @@ func TestOperatorManagedModeElectsAtOnceWithoutAnUnreachableMasterPod(t *testing
 // nothing to change.
 func (ft *failoverTimeoutTest) healthyMasterReconcile(at time.Duration) error {
 	ft.now = ft.now.Add(at)
-	ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
+	ft.checker.On("IsRedisRunning", ft.rf).Once().Return(true)
 	ft.checker.On("GetNumberMasters", ft.rf).Once().Return(1, nil)
 	ft.checker.On("CheckMasterHealth", ft.rf).Once().Return(true, timeoutMaster, nil)
 	ft.checker.On("CheckAllSlavesFromMaster", timeoutMaster, ft.rf).Once().Return(nil)
@@ -416,7 +416,7 @@ func TestOperatorManagedModeFailoverTimeoutErrors(t *testing.T) {
 		ft.k8s.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(ft.rf)).Twice().Return(&corev1.PodList{}, nil)
 		ft.k8s.On("GetStatefulSetPods", "testns", rfservice.GetRedisName(ft.rf)).Once().Return(nil, apiErr)
 		ft.restart()
-		ft.checker.On("IsRedisRunningQuorum", ft.rf).Once().Return(true)
+		ft.checker.On("IsRedisRunning", ft.rf).Once().Return(true)
 		ft.checker.On("GetNumberMasters", ft.rf).Once().Return(0, nil)
 		assertNotHealthy(t, ft, ft.handler.CheckAndHeal(ft.rf), "unable to look up the master pod")
 		ft.assertExpectations(t)

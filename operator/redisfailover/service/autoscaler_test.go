@@ -109,3 +109,40 @@ func TestTemplateRedisMemoryLimit(t *testing.T) {
 	ss.Spec.Template.Spec.Containers = slices.DeleteFunc(ss.Spec.Template.Spec.Containers, func(c corev1.Container) bool { return c.Name == redisContainerName })
 	assert.Zero(t, TemplateRedisMemoryLimit(ss))
 }
+
+func TestAppliedRedisMemoryLimit(t *testing.T) {
+	limit := func(size string) corev1.ResourceRequirements {
+		return corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse(size)}}
+	}
+	pod := func(status corev1.ContainerStatus) *corev1.Pod {
+		status.Name = redisContainerName
+		return &corev1.Pod{
+			Spec:   corev1.PodSpec{Containers: []corev1.Container{{Name: "exporter", Resources: limit("64Mi")}, {Name: redisContainerName, Resources: limit("2Gi")}}},
+			Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Name: "exporter"}, status}},
+		}
+	}
+	reported := limit("1Gi")
+	running := corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}
+	tests := map[string]struct {
+		pod  *corev1.Pod
+		want int64
+	}{
+		"kubelet report":                    {pod(corev1.ContainerStatus{Resources: &reported, State: running}), 1 << 30},
+		"kubelet report, not running":       {pod(corev1.ContainerStatus{Resources: &reported}), 1 << 30},
+		"no report, running":                {pod(corev1.ContainerStatus{State: running}), 2 << 30},
+		"no report, not running":            {pod(corev1.ContainerStatus{}), 0},
+		"no container status":               {&corev1.Pod{}, 0},
+		"running without a redis container": {&corev1.Pod{Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Name: redisContainerName, State: running}}}}, 0},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, test.want, AppliedRedisMemoryLimit(test.pod))
+		})
+	}
+}
+
+func TestResizeRequested(t *testing.T) {
+	assert.False(t, ResizeRequested(&corev1.Pod{}))
+	assert.False(t, ResizeRequested(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{resizeRequestedAnnotation: ""}}}))
+	assert.True(t, ResizeRequested(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{resizeRequestedAnnotation: "2026-01-01T00:00:00Z"}}}))
+}

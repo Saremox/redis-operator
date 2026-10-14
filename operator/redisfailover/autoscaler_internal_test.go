@@ -625,13 +625,14 @@ func TestForgetDropsTheAutoscalerState(t *testing.T) {
 	key := failoverKey(at.rf)
 	at.h.autoscaleReads.Store(key, autoscaleRead{})
 	at.h.autoscaleMasters.Store(key, autoscaleMaster)
+	at.h.autoscaleRollout.Store(key, autoscaleRollout{settled: true})
 	at.h.autoscaleSamples.Store(key, autoscaleSample{at: autoscaleT0})
 	at.h.autoscaleLogged.Store(key, "error")
 	at.mrec.On("DeleteCluster", "testns", "test").Once()
 
 	at.h.Forget(key)
 
-	for _, m := range []interface{ Load(any) (any, bool) }{&at.h.autoscaleReads, &at.h.autoscaleMasters, &at.h.autoscaleSamples, &at.h.autoscaleLogged} {
+	for _, m := range []interface{ Load(any) (any, bool) }{&at.h.autoscaleReads, &at.h.autoscaleMasters, &at.h.autoscaleRollout, &at.h.autoscaleSamples, &at.h.autoscaleLogged} {
 		_, ok := m.Load(key)
 		assert.False(t, ok)
 	}
@@ -703,7 +704,7 @@ func TestCheckAndHealKeepsNoMasterWithoutAutoscaling(t *testing.T) {
 				mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 				mrfh.On("SetRedisCustomConfig", autoscaleMaster, at.rf).Return(nil)
 				at.h.rfHealer = mrfh
-				at.mrfc.On("IsRedisRunningQuorum", at.rf).Return(true)
+				at.mrfc.On("IsRedisRunning", at.rf).Return(true)
 				at.mrfc.On("GetNumberMasters", at.rf).Return(1, nil)
 				at.mrfc.On("CheckAllSlavesFromMaster", autoscaleMaster, at.rf).Return(nil)
 				at.mrfc.On("GetRedisesIPs", at.rf).Return([]string{autoscaleMaster}, nil)
@@ -1015,11 +1016,13 @@ func TestHandleUsesTheEffectiveLimit(t *testing.T) {
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	at.h.rfHealer = mrfh
+	at.mrfc.On("IsRedisRunning", mock.Anything).Once().Run(capture("IsRedisRunning")).Return(false)
 	at.mrfc.On("IsRedisRunningQuorum", mock.Anything).Once().Run(capture("IsRedisRunningQuorum")).Return(false)
 
 	require.NoError(t, at.h.Handle(context.Background(), at.rf))
 
 	require.Contains(t, limits, "EnsureRedisStatefulset")
+	require.Contains(t, limits, "IsRedisRunning")
 	require.Contains(t, limits, "IsRedisRunningQuorum")
 	for name, limit := range limits {
 		assert.Equal(t, "1280Mi", limit, name)

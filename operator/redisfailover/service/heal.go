@@ -36,7 +36,8 @@ type RedisFailoverHeal interface {
 	HandOverMaster(masterIP, targetIP string, rFailover *redisfailoverv1.RedisFailover) (HandoverResult, error)
 	AbortOrphanedFailover(masterIP string, rFailover *redisfailoverv1.RedisFailover) (bool, error)
 	EnsureRedisMaxMemory(rFailover *redisfailoverv1.RedisFailover, master string, redises []string) (MaxMemoryResult, error)
-	ResizePodInPlace(rFailover *redisfailoverv1.RedisFailover, podName, updateRevision string) (ResizeResult, error)
+	ResizePodInPlace(rFailover *redisfailoverv1.RedisFailover, podName, updateRevision string, limits AutoscalerLimits) (ResizeResult, error)
+	ClearResizeRequested(rFailover *redisfailoverv1.RedisFailover, podName string) error
 	ApplyPassword(rFailover *redisfailoverv1.RedisFailover, password string, previous []string) (complete, stale bool, err error)
 	ApplySentinelPassword(rFailover *redisfailoverv1.RedisFailover, password string) (bool, error)
 }

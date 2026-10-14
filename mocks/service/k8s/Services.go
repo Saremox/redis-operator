@@ -17,6 +17,8 @@ import (
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 
+	types "k8s.io/apimachinery/pkg/types"
+
 	v1 "k8s.io/api/core/v1"
 
 	watch "k8s.io/apimachinery/pkg/watch"
@@ -326,6 +328,24 @@ func (_m *Services) DeletePodDisruptionBudget(namespace string, name string) err
 	var r0 error
 	if rf, ok := ret.Get(0).(func(string, string) error); ok {
 		r0 = rf(namespace, name)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// DeletePodWithUID provides a mock function with given fields: namespace, name, uid
+func (_m *Services) DeletePodWithUID(namespace string, name string, uid types.UID) error {
+	ret := _m.Called(namespace, name, uid)
+
+	if len(ret) == 0 {
+		panic("no return value specified for DeletePodWithUID")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string, types.UID) error); ok {
+		r0 = rf(namespace, name, uid)
 	} else {
 		r0 = ret.Error(0)
 	}
