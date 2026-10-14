@@ -53,34 +53,60 @@ spec:
           metadata:
             type: object
           spec:
-            description: RedisFailoverSpec is the desired state of a RedisFailover.
+            description: |-
+              Spec is the desired state. The operator does not reconcile a spec that
+              fails validation, and the status then shows the error.
             properties:
               auth:
-                description: AuthSettings configures the Redis password.
+                description: Auth configures the Redis password. Without it, Redis
+                  has no password.
                 properties:
                   secretPath:
+                    description: |-
+                      SecretPath is the name of a Secret in the namespace of the RedisFailover.
+                      Its key password is the Redis password. Sentinel has no password.
                     type: string
                 type: object
               bootstrapNode:
-                description: BootstrapSettings names an external Redis that the Redis
-                  pods replicate from.
+                description: |-
+                  BootstrapNode is an external Redis. All Redis pods replicate from it, so
+                  that the clients can move from that Redis to this RedisFailover.
                 properties:
                   allowSentinels:
+                    description: |-
+                      AllowSentinels lets the operator deploy the Sentinels, which then
+                      monitor the external Redis. It applies only when sentinel.enabled is
+                      true. Defaults to false.
                     type: boolean
                   host:
+                    description: |-
+                      Host is the IP address of the external Redis, or the ClusterIP of a
+                      Service. Validation requires it.
                     type: string
                   port:
+                    description: Port is the port of the external Redis. Defaults
+                      to 6379.
                     type: string
                 type: object
               labelWhitelist:
+                description: |-
+                  LabelWhitelist is a list of RE2 regular expressions. The operator copies
+                  a label of the RedisFailover to the objects that it creates only when
+                  the label key matches one expression. Without a list, the operator
+                  copies all labels. The operator ignores an expression that does not
+                  compile.
                 items:
                   type: string
                 type: array
               redis:
-                description: RedisSettings configures the Redis pods.
+                description: Redis configures the Redis StatefulSet rfr-<NAME> and
+                  its pods.
                 properties:
                   affinity:
-                    description: Affinity is a group of affinity scheduling rules.
+                    description: |-
+                      Affinity replaces the default affinity of the Redis pods. The default is
+                      a preferred pod anti-affinity, so the scheduler tries to put each Redis
+                      pod on a different node.
                     properties:
                       nodeAffinity:
                         description: Describes node affinity scheduling rules for
@@ -1056,9 +1082,10 @@ spec:
                     type: array
                   containerSecurityContext:
                     description: |-
-                      SecurityContext holds security configuration that will be applied to a container.
-                      Some fields are present in both SecurityContext and PodSecurityContext.  When both
-                      are set, the values in SecurityContext take precedence.
+                      ContainerSecurityContext applies to the Redis container and to the init
+                      container that removes RDB tempfiles. A field that is not set keeps the
+                      default of the operator. A capabilities value replaces the default drop
+                      of ALL.
                     properties:
                       allowPrivilegeEscalation:
                         description: |-
@@ -1249,6 +1276,9 @@ spec:
                         type: object
                     type: object
                   customCommandRenames:
+                    description: |-
+                      CustomCommandRenames writes rename-command entries to redis.conf.
+                      Validation rejects a rename of a command that the RedisFailover needs.
                     items:
                       description: |-
                         RedisCommandRename is a "rename-command" entry of redis.conf.
@@ -1258,19 +1288,30 @@ spec:
                         The shutdown script also sends SAVE. Validation allows a rename of SAVE, but then that SAVE fails.
                       properties:
                         from:
+                          description: |-
+                            From is the command to rename. It can contain only letters and
+                            underscores.
                           type: string
                         to:
+                          description: |-
+                            To is the name that replaces From. It can contain only letters and
+                            underscores. An empty value disables the command.
                           type: string
                       type: object
                     type: array
                   customConfig:
+                    description: |-
+                      CustomConfig is a list of "parameter value" entries. The operator
+                      applies each entry with CONFIG SET on each Redis, so a change restarts
+                      no pod. Do not set port, bind or dir, because the operator controls
+                      them.
                     items:
                       type: string
                     type: array
                   customLivenessProbe:
                     description: |-
-                      Probe describes a health check to be performed against a container to determine whether it is
-                      alive or ready to receive traffic.
+                      CustomLivenessProbe replaces the default liveness probe of the Redis
+                      container, which sends PING.
                     properties:
                       exec:
                         description: Exec specifies a command to execute in the container.
@@ -1434,8 +1475,9 @@ spec:
                     type: object
                   customReadinessProbe:
                     description: |-
-                      Probe describes a health check to be performed against a container to determine whether it is
-                      alive or ready to receive traffic.
+                      CustomReadinessProbe replaces the default readiness probe of the Redis
+                      container. The default probe keeps a replica not ready while it syncs
+                      with the master.
                     properties:
                       exec:
                         description: Exec specifies a command to execute in the container.
@@ -1599,8 +1641,8 @@ spec:
                     type: object
                   customStartupProbe:
                     description: |-
-                      Probe describes a health check to be performed against a container to determine whether it is
-                      alive or ready to receive traffic.
+                      CustomStartupProbe is the startup probe of the Redis container. Without
+                      it, the container has a startup probe only with startupConfigMap.
                     properties:
                       exec:
                         description: Exec specifies a command to execute in the container.
@@ -1763,11 +1805,20 @@ spec:
                         type: integer
                     type: object
                   disablePodDisruptionBudget:
+                    description: |-
+                      DisablePodDisruptionBudget removes the PodDisruptionBudget of the Redis
+                      pods. Defaults to false.
                     type: boolean
                   dnsPolicy:
-                    description: DNSPolicy defines how a pod's DNS will be configured.
+                    description: DNSPolicy is the DNS policy of the Redis pods. Defaults
+                      to ClusterFirst.
                     type: string
                   env:
+                    description: |-
+                      Env adds environment variables to the Redis container. The variables
+                      REDIS_ADDR, REDIS_PORT, REDIS_USER and REDIS_PASSWORD of the operator
+                      replace a variable with the same name. Do not set REDIS_PASSWORD here:
+                      without auth.secretPath, the pod scripts use it as the password.
                     items:
                       description: EnvVar represents an environment variable present
                         in a Container.
@@ -1927,18 +1978,19 @@ spec:
                       type: object
                     type: array
                   exporter:
-                    description: Exporter configures the metrics exporter sidecar
-                      of the Redis or Sentinel pods.
+                    description: |-
+                      Exporter configures a metrics exporter sidecar in each Redis pod. When it
+                      is enabled, the operator also creates the Service rfr-<NAME> for its port.
                     properties:
                       args:
+                        description: Args are the arguments of the exporter container.
                         items:
                           type: string
                         type: array
                       containerSecurityContext:
                         description: |-
-                          SecurityContext holds security configuration that will be applied to a container.
-                          Some fields are present in both SecurityContext and PodSecurityContext.  When both
-                          are set, the values in SecurityContext take precedence.
+                          ContainerSecurityContext applies to the exporter container. A field
+                          that is not set keeps the default of the operator.
                         properties:
                           allowPrivilegeEscalation:
                             description: |-
@@ -2129,8 +2181,14 @@ spec:
                             type: object
                         type: object
                       enabled:
+                        description: Enabled adds the exporter sidecar. Defaults to
+                          false.
                         type: boolean
                       env:
+                        description: |-
+                          Env adds environment variables to the exporter container. In the Redis
+                          exporter, a REDIS_USER or REDIS_PASSWORD entry replaces the value of
+                          the operator.
                         items:
                           description: EnvVar represents an environment variable present
                             in a Container.
@@ -2290,10 +2348,14 @@ spec:
                           type: object
                         type: array
                       image:
+                        description: |-
+                          Image is the image of the exporter container. Without a value, the
+                          operator uses its default redis_exporter image.
                         type: string
                       imagePullPolicy:
-                        description: PullPolicy describes a policy for if/when to
-                          pull a container image
+                        description: |-
+                          ImagePullPolicy is the image pull policy of the exporter container.
+                          Defaults to Always.
                         type: string
                       port:
                         description: |-
@@ -2305,8 +2367,10 @@ spec:
                         minimum: 0
                         type: integer
                       resources:
-                        description: ResourceRequirements describes the compute resource
-                          requirements.
+                        description: |-
+                          Resources replace the default resources of the exporter container:
+                          requests of 10m CPU and 50Mi memory, limits of 1000m CPU and 100Mi
+                          memory.
                         properties:
                           claims:
                             description: |-
@@ -2366,6 +2430,9 @@ spec:
                         type: object
                     type: object
                   extraContainers:
+                    description: |-
+                      ExtraContainers are more containers in each Redis pod. They get the same
+                      environment variables of the operator as initContainers.
                     items:
                       description: A single application container that you want to
                         run within a pod.
@@ -3955,6 +4022,8 @@ spec:
                       type: object
                     type: array
                   extraVolumeMounts:
+                    description: ExtraVolumeMounts are more volume mounts in the Redis
+                      container.
                     items:
                       description: VolumeMount describes a mounting of a Volume within
                         a container.
@@ -4029,6 +4098,7 @@ spec:
                       type: object
                     type: array
                   extraVolumes:
+                    description: ExtraVolumes are more volumes in the Redis pods.
                     items:
                       description: Volume represents a named volume in a pod that
                         may be accessed by any container in the pod.
@@ -6038,14 +6108,24 @@ spec:
                       type: object
                     type: array
                   hostNetwork:
+                    description: HostNetwork runs the Redis pods in the network namespace
+                      of the node.
                     type: boolean
                   image:
+                    description: |-
+                      Image is the image of the Redis container and of the init container that
+                      removes RDB tempfiles. Without a value, the operator uses its default
+                      Redis image.
                     type: string
                   imagePullPolicy:
-                    description: PullPolicy describes a policy for if/when to pull
-                      a container image
+                    description: |-
+                      ImagePullPolicy applies to the Redis container and to the init
+                      container that removes RDB tempfiles. Defaults to Always.
                     type: string
                   imagePullSecrets:
+                    description: |-
+                      ImagePullSecrets are the Secrets that the Redis pods use to pull their
+                      images.
                     items:
                       description: |-
                         LocalObjectReference contains enough information to let you locate the
@@ -6074,6 +6154,10 @@ spec:
                     - Disabled
                     type: string
                   initContainers:
+                    description: |-
+                      InitContainers run after the init container that removes RDB tempfiles.
+                      The operator adds REDIS_ADDR, REDIS_PORT, REDIS_USER and, with
+                      auth.secretPath, REDIS_PASSWORD to their environment.
                     items:
                       description: A single application container that you want to
                         run within a pod.
@@ -7696,10 +7780,16 @@ spec:
                   nodeSelector:
                     additionalProperties:
                       type: string
+                    description: NodeSelector limits the Redis pods to the nodes with
+                      these labels.
                     type: object
                   podAnnotations:
                     additionalProperties:
                       type: string
+                    description: |-
+                      PodAnnotations are added to the Redis pods. The operator also sets the
+                      annotation redisfailovers.databases.spotahome.com/secret-checksum, so
+                      that a password change restarts the pods.
                     type: object
                   podDisruptionBudgetMinAvailable:
                     anyOf:
@@ -7710,6 +7800,9 @@ spec:
                       minAvailable for the redis pods. Defaults to 2 (or 1 when replicas <= 2).
                     x-kubernetes-int-or-string: true
                   port:
+                    description: |-
+                      Port is the Redis port in each pod and in the Services rfrm-<NAME> and
+                      rfrs-<NAME>. Defaults to 6379.
                     format: int32
                     type: integer
                   preventMasterEviction:
@@ -7720,13 +7813,20 @@ spec:
                       replicas as evictable. Defaults to false.
                     type: boolean
                   priorityClassName:
+                    description: |-
+                      PriorityClassName is the PriorityClass of the Redis pods. The operator
+                      does not create the PriorityClass.
                     type: string
                   replicas:
+                    description: |-
+                      Replicas is the number of Redis pods: one master and its replicas.
+                      Defaults to 3.
                     format: int32
                     type: integer
                   resources:
-                    description: ResourceRequirements describes the compute resource
-                      requirements.
+                    description: |-
+                      Resources are the compute resources of the Redis container. maxMemory
+                      and autoscaling use its memory limit.
                     properties:
                       claims:
                         description: |-
@@ -7786,9 +7886,9 @@ spec:
                     type: object
                   securityContext:
                     description: |-
-                      PodSecurityContext holds pod-level security attributes and common container settings.
-                      Some fields are also present in container.securityContext.  Field values of
-                      container.securityContext take precedence over field values of PodSecurityContext.
+                      SecurityContext is the pod security context of the Redis pods. A field
+                      that is not set keeps the default of the operator: user, group and
+                      fsGroup 1000, runAsNonRoot and the RuntimeDefault seccomp profile.
                     properties:
                       appArmorProfile:
                         description: |-
@@ -8017,23 +8117,41 @@ spec:
                         type: object
                     type: object
                   serviceAccountName:
+                    description: |-
+                      ServiceAccountName is the ServiceAccount of the Redis pods, which the
+                      user creates. Without a value, the pods use the default ServiceAccount
+                      and do not mount its token.
                     type: string
                   serviceAnnotations:
                     additionalProperties:
                       type: string
+                    description: |-
+                      ServiceAnnotations are added to the Services rfr-<NAME>, rfrm-<NAME> and
+                      rfrs-<NAME>. On rfr-<NAME>, they replace a default prometheus.io
+                      annotation with the same key.
                     type: object
                   shutdownConfigMap:
+                    description: |-
+                      ShutdownConfigMap is the name of a ConfigMap with a shutdown.sh key, in
+                      the namespace of the RedisFailover. Its script replaces the default
+                      preStop script, also the write pause before a Sentinel failover. The
+                      ConfigMap must exist, or the reconcile fails.
                     type: string
                   startupConfigMap:
+                    description: |-
+                      StartupConfigMap is the name of a ConfigMap with a startup.sh key. The
+                      operator mounts it at /redis-startup and runs the script as the startup
+                      probe, unless customStartupProbe is set.
                     type: string
                   storage:
-                    description: RedisStorage configures the data volume of the Redis
-                      pods.
+                    description: |-
+                      Storage configures the data volume at /data. Without a value, it is an
+                      emptyDir, so the data of a pod is lost when Kubernetes deletes the pod.
                     properties:
                       emptyDir:
                         description: |-
-                          Represents an empty directory for a pod.
-                          Empty directory volumes support ownership management and SELinux relabeling.
+                          EmptyDir configures the emptyDir data volume, for example its medium or
+                          sizeLimit. The operator ignores it when persistentVolumeClaim is set.
                         properties:
                           medium:
                             description: |-
@@ -8069,11 +8187,17 @@ spec:
                             x-kubernetes-int-or-string: true
                         type: object
                       keepAfterDeletion:
+                        description: |-
+                          KeepAfterDeletion keeps the PVCs when Kubernetes deletes the
+                          RedisFailover. The operator removes the owner reference of the
+                          RedisFailover from the PVCs. When the field is false again, the operator
+                          does not add the owner reference.
                         type: boolean
                       persistentVolumeClaim:
                         description: |-
-                          EmbeddedPersistentVolumeClaim is an embedded version of k8s.io/api/core/v1.PersistentVolumeClaim.
-                          It contains TypeMeta and a reduced ObjectMeta.
+                          PersistentVolumeClaim is the volume claim template of the Redis
+                          StatefulSet. The operator increases the storage request of the PVCs to
+                          a larger request here. It does not make a PVC smaller.
                         properties:
                           apiVersion:
                             description: |-
@@ -8573,6 +8697,7 @@ spec:
                     format: int64
                     type: integer
                   tolerations:
+                    description: Tolerations are the tolerations of the Redis pods.
                     items:
                       description: |-
                         The pod this Toleration is attached to tolerates any taint that matches
@@ -8612,6 +8737,8 @@ spec:
                       type: object
                     type: array
                   topologySpreadConstraints:
+                    description: TopologySpreadConstraints spread the Redis pods across
+                      zones or nodes.
                     items:
                       description: TopologySpreadConstraint specifies how to spread
                         matching pods among the given topology.
@@ -8786,11 +8913,15 @@ spec:
                     type: array
                 type: object
               sentinel:
-                description: SentinelSettings configures the Sentinel pods and the
-                  failover.
+                description: |-
+                  Sentinel configures the Sentinel Deployment rfs-<NAME>, and selects
+                  whether Sentinel or the operator does the failover.
                 properties:
                   affinity:
-                    description: Affinity is a group of affinity scheduling rules.
+                    description: |-
+                      Affinity replaces the default affinity of the Sentinel pods. The default
+                      is a preferred pod anti-affinity, so the scheduler tries to put each
+                      Sentinel pod on a different node.
                     properties:
                       nodeAffinity:
                         description: Describes node affinity scheduling rules for
@@ -9709,19 +9840,19 @@ spec:
                         type: object
                     type: object
                   command:
+                    description: |-
+                      Command replaces the default Sentinel command, redis-server
+                      /redis/sentinel.conf --sentinel.
                     items:
                       type: string
                     type: array
                   configCopy:
-                    description: |-
-                      SentinelConfigCopy configures the init container that copies sentinel.conf
-                      to a writable volume. Sentinel writes its state to that file.
+                    description: ConfigCopy configures the init container sentinel-config-copy.
                     properties:
                       containerSecurityContext:
                         description: |-
-                          SecurityContext holds security configuration that will be applied to a container.
-                          Some fields are present in both SecurityContext and PodSecurityContext.  When both
-                          are set, the values in SecurityContext take precedence.
+                          ContainerSecurityContext applies to the init container. A field that is
+                          not set keeps the default of the operator.
                         properties:
                           allowPrivilegeEscalation:
                             description: |-
@@ -9914,9 +10045,9 @@ spec:
                     type: object
                   containerSecurityContext:
                     description: |-
-                      SecurityContext holds security configuration that will be applied to a container.
-                      Some fields are present in both SecurityContext and PodSecurityContext.  When both
-                      are set, the values in SecurityContext take precedence.
+                      ContainerSecurityContext applies to the Sentinel container. A field that
+                      is not set keeps the default of the operator. A capabilities value
+                      replaces the default drop of ALL.
                     properties:
                       allowPrivilegeEscalation:
                         description: |-
@@ -10107,13 +10238,18 @@ spec:
                         type: object
                     type: object
                   customConfig:
+                    description: |-
+                      CustomConfig is a list of "parameter value" entries. The operator
+                      applies each entry with SENTINEL SET mymaster on each Sentinel. It adds
+                      down-after-milliseconds 5000 and failover-timeout 10000, unless the
+                      list sets them.
                     items:
                       type: string
                     type: array
                   customLivenessProbe:
                     description: |-
-                      Probe describes a health check to be performed against a container to determine whether it is
-                      alive or ready to receive traffic.
+                      CustomLivenessProbe replaces the default liveness probe of the Sentinel
+                      container, which sends PING.
                     properties:
                       exec:
                         description: Exec specifies a command to execute in the container.
@@ -10277,8 +10413,9 @@ spec:
                     type: object
                   customReadinessProbe:
                     description: |-
-                      Probe describes a health check to be performed against a container to determine whether it is
-                      alive or ready to receive traffic.
+                      CustomReadinessProbe replaces the default readiness probe of the
+                      Sentinel container. The default probe keeps a Sentinel not ready until
+                      it monitors a master and SENTINEL CKQUORUM succeeds.
                     properties:
                       exec:
                         description: Exec specifies a command to execute in the container.
@@ -10442,8 +10579,9 @@ spec:
                     type: object
                   customStartupProbe:
                     description: |-
-                      Probe describes a health check to be performed against a container to determine whether it is
-                      alive or ready to receive traffic.
+                      CustomStartupProbe is the startup probe of the Sentinel container.
+                      Without it, the container has a startup probe only with
+                      startupConfigMap.
                     properties:
                       exec:
                         description: Exec specifies a command to execute in the container.
@@ -10606,9 +10744,14 @@ spec:
                         type: integer
                     type: object
                   disablePodDisruptionBudget:
+                    description: |-
+                      DisablePodDisruptionBudget removes the PodDisruptionBudget of the
+                      Sentinel pods. Defaults to false.
                     type: boolean
                   dnsPolicy:
-                    description: DNSPolicy defines how a pod's DNS will be configured.
+                    description: |-
+                      DNSPolicy is the DNS policy of the Sentinel pods. Defaults to
+                      ClusterFirst.
                     type: string
                   enabled:
                     description: |-
@@ -10616,6 +10759,9 @@ spec:
                       the operator does the failover. Defaults to false.
                     type: boolean
                   env:
+                    description: |-
+                      Env adds environment variables to the Sentinel container. The operator
+                      adds no variables of its own to this container.
                     items:
                       description: EnvVar represents an environment variable present
                         in a Container.
@@ -10775,18 +10921,19 @@ spec:
                       type: object
                     type: array
                   exporter:
-                    description: Exporter configures the metrics exporter sidecar
-                      of the Redis or Sentinel pods.
+                    description: |-
+                      Exporter configures a metrics exporter sidecar in each Sentinel pod. When
+                      it is enabled, the Service rfs-<NAME> also exposes its port.
                     properties:
                       args:
+                        description: Args are the arguments of the exporter container.
                         items:
                           type: string
                         type: array
                       containerSecurityContext:
                         description: |-
-                          SecurityContext holds security configuration that will be applied to a container.
-                          Some fields are present in both SecurityContext and PodSecurityContext.  When both
-                          are set, the values in SecurityContext take precedence.
+                          ContainerSecurityContext applies to the exporter container. A field
+                          that is not set keeps the default of the operator.
                         properties:
                           allowPrivilegeEscalation:
                             description: |-
@@ -10977,8 +11124,14 @@ spec:
                             type: object
                         type: object
                       enabled:
+                        description: Enabled adds the exporter sidecar. Defaults to
+                          false.
                         type: boolean
                       env:
+                        description: |-
+                          Env adds environment variables to the exporter container. In the Redis
+                          exporter, a REDIS_USER or REDIS_PASSWORD entry replaces the value of
+                          the operator.
                         items:
                           description: EnvVar represents an environment variable present
                             in a Container.
@@ -11138,10 +11291,14 @@ spec:
                           type: object
                         type: array
                       image:
+                        description: |-
+                          Image is the image of the exporter container. Without a value, the
+                          operator uses its default redis_exporter image.
                         type: string
                       imagePullPolicy:
-                        description: PullPolicy describes a policy for if/when to
-                          pull a container image
+                        description: |-
+                          ImagePullPolicy is the image pull policy of the exporter container.
+                          Defaults to Always.
                         type: string
                       port:
                         description: |-
@@ -11153,8 +11310,10 @@ spec:
                         minimum: 0
                         type: integer
                       resources:
-                        description: ResourceRequirements describes the compute resource
-                          requirements.
+                        description: |-
+                          Resources replace the default resources of the exporter container:
+                          requests of 10m CPU and 50Mi memory, limits of 1000m CPU and 100Mi
+                          memory.
                         properties:
                           claims:
                             description: |-
@@ -11214,6 +11373,8 @@ spec:
                         type: object
                     type: object
                   extraContainers:
+                    description: ExtraContainers are more containers in each Sentinel
+                      pod.
                     items:
                       description: A single application container that you want to
                         run within a pod.
@@ -12803,6 +12964,8 @@ spec:
                       type: object
                     type: array
                   extraVolumeMounts:
+                    description: ExtraVolumeMounts are more volume mounts in the Sentinel
+                      container.
                     items:
                       description: VolumeMount describes a mounting of a Volume within
                         a container.
@@ -12877,6 +13040,7 @@ spec:
                       type: object
                     type: array
                   extraVolumes:
+                    description: ExtraVolumes are more volumes in the Sentinel pods.
                     items:
                       description: Volume represents a named volume in a pod that
                         may be accessed by any container in the pod.
@@ -14893,14 +15057,24 @@ spec:
                       gets no wait. Defaults to 10s; 0s disables the wait.
                     type: string
                   hostNetwork:
+                    description: HostNetwork runs the Sentinel pods in the network
+                      namespace of the node.
                     type: boolean
                   image:
+                    description: |-
+                      Image is the image of the Sentinel container and of the init container
+                      that copies sentinel.conf. Without a value, the operator uses its
+                      default Redis image.
                     type: string
                   imagePullPolicy:
-                    description: PullPolicy describes a policy for if/when to pull
-                      a container image
+                    description: |-
+                      ImagePullPolicy applies to the Sentinel container and to the init
+                      container that copies sentinel.conf. Defaults to Always.
                     type: string
                   imagePullSecrets:
+                    description: |-
+                      ImagePullSecrets are the Secrets that the Sentinel pods use to pull
+                      their images.
                     items:
                       description: |-
                         LocalObjectReference contains enough information to let you locate the
@@ -14919,6 +15093,8 @@ spec:
                       x-kubernetes-map-type: atomic
                     type: array
                   initContainers:
+                    description: InitContainers run after the init container that
+                      copies sentinel.conf.
                     items:
                       description: A single application container that you want to
                         run within a pod.
@@ -16510,10 +16686,13 @@ spec:
                   nodeSelector:
                     additionalProperties:
                       type: string
+                    description: NodeSelector limits the Sentinel pods to the nodes
+                      with these labels.
                     type: object
                   podAnnotations:
                     additionalProperties:
                       type: string
+                    description: PodAnnotations are added to the Sentinel pods.
                     type: object
                   podDisruptionBudgetMinAvailable:
                     anyOf:
@@ -16525,13 +16704,19 @@ spec:
                       replicas <= 2).
                     x-kubernetes-int-or-string: true
                   priorityClassName:
+                    description: |-
+                      PriorityClassName is the PriorityClass of the Sentinel pods. The
+                      operator does not create the PriorityClass.
                     type: string
                   replicas:
+                    description: |-
+                      Replicas is the number of Sentinel pods. Defaults to 3. The quorum of
+                      the Sentinels is replicas / 2 + 1.
                     format: int32
                     type: integer
                   resources:
-                    description: ResourceRequirements describes the compute resource
-                      requirements.
+                    description: Resources are the compute resources of the Sentinel
+                      container.
                     properties:
                       claims:
                         description: |-
@@ -16591,9 +16776,9 @@ spec:
                     type: object
                   securityContext:
                     description: |-
-                      PodSecurityContext holds pod-level security attributes and common container settings.
-                      Some fields are also present in container.securityContext.  Field values of
-                      container.securityContext take precedence over field values of PodSecurityContext.
+                      SecurityContext is the pod security context of the Sentinel pods. A
+                      field that is not set keeps the default of the operator, as in
+                      redis.securityContext.
                     properties:
                       appArmorProfile:
                         description: |-
@@ -16822,12 +17007,22 @@ spec:
                         type: object
                     type: object
                   serviceAccountName:
+                    description: |-
+                      ServiceAccountName is the ServiceAccount of the Sentinel pods, which the
+                      user creates. Without a value, the operator creates the ServiceAccount
+                      rfs-sa-<NAME>, and the pods do not mount its token.
                     type: string
                   serviceAnnotations:
                     additionalProperties:
                       type: string
+                    description: ServiceAnnotations are added to the Sentinel Service
+                      rfs-<NAME>.
                     type: object
                   startupConfigMap:
+                    description: |-
+                      StartupConfigMap is the name of a ConfigMap with a startup.sh key. The
+                      operator mounts it at /sentinel-startup and runs the script as the
+                      startup probe, unless customStartupProbe is set.
                     type: string
                   strategy:
                     description: |-
@@ -16880,6 +17075,7 @@ spec:
                         type: string
                     type: object
                   tolerations:
+                    description: Tolerations are the tolerations of the Sentinel pods.
                     items:
                       description: |-
                         The pod this Toleration is attached to tolerates any taint that matches
@@ -16919,6 +17115,9 @@ spec:
                       type: object
                     type: array
                   topologySpreadConstraints:
+                    description: |-
+                      TopologySpreadConstraints spread the Sentinel pods across zones or
+                      nodes.
                     items:
                       description: TopologySpreadConstraint specifies how to spread
                         matching pods among the given topology.
@@ -17094,9 +17293,7 @@ spec:
                 type: object
             type: object
           status:
-            description: |-
-              RedisFailoverStatus is the result of the last reconcile. State is Healthy or
-              NotHealthy, and Message gives the reason.
+            description: Status is the state that the operator found in its last reconcile.
             properties:
               autoscaling:
                 description: |-
@@ -17148,10 +17345,16 @@ spec:
                     type: string
                 type: object
               lastChanged:
+                description: LastChanged is the RFC3339 time of the last change of
+                  state.
                 type: string
               message:
+                description: |-
+                  Message gives the reason for a NotHealthy state. With a Healthy state,
+                  it can show a wait of the operator, for example in a pod rollout.
                 type: string
               state:
+                description: State is Healthy or NotHealthy.
                 type: string
             type: object
         required:
