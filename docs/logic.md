@@ -33,7 +33,7 @@ Each reconcile does these steps in this order:
 
 Operator-managed mode and Sentinel mode need a quorum (a majority) of the pods to run, not the full number in the spec. A Pending pod does not block the heal of the others while the running pods are a majority. With 2 replicas, one Pending pod blocks the heal.
 
-A pod rollout replaces one stale pod in each reconcile: the replicas first, the master last. Before each replacement, the operator waits until the last replaced pod is ready and each replica on the new revision is in sync. A stale replica that is not in sync has no data to lose, so the operator replaces it first and does not wait for its sync. When only the container resources change and the kubelet allows it, the operator resizes the pod in place. With `redis.maxMemory`, a lowered memory limit holds the rollout until the `maxmemory` and the memory in use of the master fit the new limit.
+A pod rollout replaces one stale pod in each reconcile: the replicas first, the master last. Before each replacement, the operator waits until the last replaced pod is ready and each replica on the new revision is in sync. A stale replica that is not in sync has no data to lose. For this reason, the operator replaces such a replica first and does not wait for its sync. When only the container resources change and the kubelet allows it, the operator resizes the pod in place. With `redis.maxMemory`, a lowered memory limit holds the rollout until the `maxmemory` and the memory in use of the master fit the new limit.
 
 A stale pod stays Pending when its `PodScheduled` condition is `False` with the reason `Unschedulable`. The `OnDelete` StatefulSet does not replace such a pod. The operator deletes such a pod when none of its containers started and the StatefulSet status shows the current generation. It does this before the check of the pods that run, which ends the reconcile with 1 or 2 replicas and in bootstrap mode. The operator does not wait for a quorum or for the last replacement, because the pod has no data in memory and serves no client. Its PVC stays, and the StatefulSet creates the pod again on the new revision, so the operator does not delete it again.
 
@@ -42,7 +42,7 @@ A stale pod stays Pending when its `PodScheduled` condition is `False` with the 
 This is the default mode (`sentinel.enabled` not set or `false`). There is no Sentinel, so the operator elects the master itself. It checks:
 
 - A quorum of Redis pods runs.
-- Only one Redis works as a master. An old master that did not answer during a failover can come back as a second master. If exactly one running pod has the master label, the other masters become replicas of that pod, because the label shows the master that the operator elected. Otherwise the operator reports `multiple masters detected, fix manually`.
+- Only one Redis works as a master. An old master that did not answer during a failover can come back as a second master. If exactly one running pod has the master label, the other masters become replicas of that pod, because the label shows the elected master. Otherwise the operator reports `multiple masters detected, fix manually`.
 - No master: the operator promotes the best replica, or the oldest pod if it finds no replica to promote. Before the promotion, it waits in these cases. The status is `NotHealthy` while it waits.
   - The old master pod is still stopping. That master can still take writes.
   - No pod answers as master, and a Ready pod does not answer. That pod can be the master in a short stall.

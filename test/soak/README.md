@@ -20,7 +20,7 @@ window. It counts these events in `redis_soak_findings_total`, and
 - a violation of an invariant outside a window;
 - a violation that is still open when its window times out;
 - an OOM kill of a redis or Sentinel container, also inside a window,
-  because the configuration keeps room for a fork of the data (see
+  because the configuration keeps room for a fork (see
   [Mutations](#mutations));
 - a version change that fails unsafely (see [Server versions](#server-versions));
 - a reset that does not complete within two times its timeout;
@@ -32,10 +32,13 @@ These events are also not expected, and have their own alerts:
 - a mutation or chaos action that times out or fails;
 - an `auth` outage of the `follower` client for more than 2 minutes.
 
-The tester measures this behaviour, but it is not a failure: outages and
-violations inside a window, writes lost to asynchronous replication in a
-forced kill or a failover, `failed_safe` version changes, `OOM` rejections
-under `noeviction`, and evictions under `allkeys-*`.
+The tester measures this behaviour, but it is not a failure:
+
+- outages and violations inside a window;
+- writes lost to asynchronous replication in a forced kill or a failover;
+- `failed_safe` version changes;
+- `OOM` rejections under `noeviction`;
+- evictions under `allkeys-*`.
 
 ## How the tester works
 
@@ -119,11 +122,11 @@ that can run under `allkeys-*`, and a ledger under `volatile-*` without
 `fill.ttl`.
 
 A bootstrapping instance (`bootstrap.source`) is read-only. Its
-verification reads a sample of the source writes from the source master,
-and then from each pod when the pod caught up with the replication stream
-of that master. The tester does not compare offsets of different
-replication IDs: a pod that did not sync with a new source master yet can
-be far ahead in the old stream.
+verification reads a sample of the source writes from the source master.
+Then it reads the sample from each pod, after the pod reaches the
+replication offset that the master had at that read. The tester does not
+compare offsets of different replication IDs: a pod that did not sync with
+a new source master yet can be far ahead in the old stream.
 
 ### Invariants
 
@@ -319,8 +322,9 @@ step.
 
 `image_upgrade` follows an edge from the current version. The tester
 observes a change along an `unknown` or `fail` edge for the timeout of the
-kind, or for one more minute after a pod on the new version logged that it
-could not load the data. It then judges the change:
+kind. If a pod on the new version logs a failed load of the data, the
+tester observes the change for at most one more minute. The timeout of
+the kind still applies. It then judges the change:
 
 - `ok`: it converged.
 - `failed_safe`: it did not converge, but the rollout stopped. The single
