@@ -391,9 +391,9 @@ func TestPhaseValue(t *testing.T) {
 	}
 }
 
-// An old state shows the limit of an earlier time. The live template wins:
-// its limit is the limit of the pods.
-func TestReadAutoscaleResumesAnOldState(t *testing.T) {
+// An expired state shows the limit of an earlier time. The live template
+// wins: its limit is the limit of the pods.
+func TestReadAutoscaleResumesAnExpiredState(t *testing.T) {
 	old := applying()
 	old.LastSample = autoscaleT0.Add(-time.Hour).Unix()
 	tests := map[string]struct {

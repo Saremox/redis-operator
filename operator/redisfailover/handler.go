@@ -218,8 +218,8 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 func (r *RedisFailoverHandler) withEffectiveLimit(rf *redisfailoverv1.RedisFailover) (*redisfailoverv1.RedisFailover, error) {
 	if !rf.AutoscalingEnabled() {
 		// A state with an Effective limit can stay without a status, for
-		// example after a failed status write, and a later mode Recommend or
-		// Auto would use it. One look after the operator start finds it. With
+		// example after a failed status write. A later mode Recommend or Auto
+		// would use it. One look after the operator start finds it. With
 		// a status, the autoscaler removes the state after the checks.
 		if _, clean := r.autoscaleOff.Load(failoverKey(rf)); !clean && rf.Status.Autoscaling == (redisfailoverv1.AutoscalingStatus{}) {
 			r.stopAutoscaler(rf, rf.Status.Autoscaling)

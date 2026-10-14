@@ -108,8 +108,8 @@ func (it *inPlaceTest) setUpdateRevision(rev string) {
 	it.check.On("GetStatefulSetUpdateRevision", it.rf).Return(rev, nil)
 }
 
-// handler is the handler of a new operator process with the state of a step
-// from 1Gi to 2Gi.
+// handler is the handler of an operator process that starts with the state
+// of a step from 1Gi to 2Gi.
 func (it *inPlaceTest) handler(state autoscale.State) *RedisFailoverHandler {
 	h := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, it.check, it.healer, it.k8s, metrics.Dummy, log.Dummy)
 	h.autoscaleReads.Store(failoverKey(it.rf), autoscaleRead{state: state, spec: 1 << 30, effective: autoscaleEffective})
@@ -124,7 +124,7 @@ func stepTo2Gi() autoscale.State {
 }
 
 // An operator restart during a step continues it. The pod spec holds the
-// request, so the new process sends no second resize.
+// request, so the restarted process sends no second resize.
 func TestUpdateRedisesPodsResizesOnceAcrossARestart(t *testing.T) {
 	it := newInPlaceTest(t)
 

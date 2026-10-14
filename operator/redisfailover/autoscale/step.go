@@ -210,7 +210,7 @@ func (s State) start(o Observation, now int64) (State, Action) {
 	return s, ActionStart
 }
 
-// startWait returns why a step cannot start now, or "".
+// startWait returns why a recommended step waits, or "".
 func (s State) startWait(o Observation, now int64) string {
 	cooldown := Cooldown
 	if s.Reason == ReasonUrgent || s.Reason == ReasonOOM {

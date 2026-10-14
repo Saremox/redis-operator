@@ -74,12 +74,12 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 		read.blocked = autoscale.ReasonNewerState
 		read.err = fmt.Errorf("the state ConfigMap has version %d, this operator reads version %d", read.state.Version, autoscale.StateVersion)
 	case read.state.Version != 0:
-		// No operator sampled an old state for MaxStateAge, so its Effective
+		// No operator sampled an expired state for MaxStateAge. Its Effective
 		// can be a leftover of an earlier mode Auto, or of a step whose
 		// template never reached the pods. Only the template shows the limit
 		// of the pods. The template wins, because a leftover would resize the
 		// pods without a decision, and a lower Effective would shrink them.
-		if read.state.Effective != 0 && r.autoscaleStateIsOld(rf, read) {
+		if read.state.Effective != 0 && r.autoscaleStateExpired(rf, read) {
 			live, err := r.liveRedisMemoryLimit(rf, spec)
 			if err != nil {
 				return read, err
@@ -101,9 +101,9 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 	return read, nil
 }
 
-// autoscaleStateIsOld reports whether the last sample of the state, or of the
-// same state in memory, is older than MaxStateAge.
-func (r *RedisFailoverHandler) autoscaleStateIsOld(rf *redisfailoverv1.RedisFailover, read autoscaleRead) bool {
+// autoscaleStateExpired reports whether the last sample of the state, or of
+// the same state in memory, is older than MaxStateAge.
+func (r *RedisFailoverHandler) autoscaleStateExpired(rf *redisfailoverv1.RedisFailover, read autoscaleRead) bool {
 	last := read.state.LastSample
 	v, _ := r.autoscaleSamples.Load(failoverKey(rf))
 	if sample, _ := v.(autoscaleSample); sample.sampled && sample.version == read.cm.ResourceVersion {
@@ -145,8 +145,8 @@ func (r *RedisFailoverHandler) autoscalerLimits(rf *redisfailoverv1.RedisFailove
 }
 
 // autoscaleStepping reports whether the autoscaler makes steps in this
-// reconcile: in mode Auto, and in mode Recommend until a step of an earlier
-// mode Auto ends. The user path would recreate the pods of such a step.
+// reconcile. Mode Auto makes steps. Mode Recommend completes a step of an
+// earlier mode Auto, because the user path would recreate its pods.
 func (r *RedisFailoverHandler) autoscaleStepping(rf *redisfailoverv1.RedisFailover) bool {
 	switch {
 	case !rf.AutoscalingEnabled():

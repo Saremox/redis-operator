@@ -299,8 +299,8 @@ func (r *RedisFailoverHealer) markResizeRequested(rf *redisfailoverv1.RedisFailo
 
 // isAutoscalerRevision reads the revisions for autoscalerRevision. It reads
 // nothing without an effective limit. With an effective limit, a revision
-// that it cannot read can be a step of the autoscaler, and a recreate of
-// such a pod restarts Redis for a change that no user made.
+// that it cannot read can be a step of the autoscaler. A recreate of such a
+// pod restarts Redis for a change that no user made.
 func (r *RedisFailoverHealer) isAutoscalerRevision(rf *redisfailoverv1.RedisFailover, podName, updateRevision string, limits AutoscalerLimits) (bool, error) {
 	if limits.Effective == 0 {
 		return false, nil
