@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	kubeerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
+	mmetrics "github.com/saremox/redis-operator/mocks/metrics"
 	"github.com/saremox/redis-operator/service/k8s"
 )
 
@@ -357,6 +359,26 @@ func TestPodServiceDeleteWithUID(t *testing.T) {
 
 	err := service.DeletePodWithUID(testns, "testpod1", "uid1")
 	assert.True(t, kubeerrors.IsNotFound(err), err)
+}
+
+func TestPodServiceGetPod(t *testing.T) {
+	testns := "testns"
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "testpod", Namespace: testns, UID: "uid1"}}
+	mcli := kubernetes.NewClientset(pod)
+	rec := &mmetrics.Recorder{}
+	rec.On("RecordK8sOperation", testns, "Pod", "testpod", "GET", metrics.SUCCESS, metrics.NOT_APPLICABLE).Once()
+	rec.On("RecordK8sOperation", testns, "Pod", "missing", "GET", metrics.FAIL, metrics.K8S_NOT_FOUND).Once()
+	service := k8s.NewPodService(mcli, log.Dummy, rec)
+
+	got, err := service.GetPod(testns, "testpod")
+	require.NoError(t, err)
+	assert.Equal(t, pod, got)
+
+	got, err = service.GetPod(testns, "missing")
+	assert.True(t, kubeerrors.IsNotFound(err), err)
+	assert.Nil(t, got)
+
+	rec.AssertExpectations(t)
 }
 
 func TestPodServiceList(t *testing.T) {
