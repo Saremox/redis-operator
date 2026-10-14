@@ -148,7 +148,7 @@ With the Helm chart, set the flags in `image.cli_args`. The chart sets `--listen
 | `--disconnect-clients-on-demotion` | `true` | Close the `normal` and `pubsub` client connections of a master when it becomes a replica. See [Usage](#usage). |
 | `--enable-pprof` | `false` | Serve the Go profiler. See [Operator metrics](#operator-metrics). |
 | `--k8s-cli-burstable-limit` | `100` | The number of requests that the Kubernetes client can send at once without a delay. After such a burst, the client sends at the rate of `--k8s-cli-qps-limit`. With `--k8s-cli-qps-limit` above 0, a value of 0 or less stops the operator at start. |
-| `--k8s-cli-qps-limit` | `100` | The maximum mean number of requests in each second that the Kubernetes client sends. The client delays the requests above this rate. |
+| `--k8s-cli-qps-limit` | `100` | The maximum mean number of requests in each second that the Kubernetes client sends. The client delays the requests above this rate. A value of 0 gives 5 requests in each second for each API group. A negative value disables the limit. |
 | `--kubeconfig` | `$HOME/.kube/config` | The kubeconfig file. The operator reads it only with `--development`. |
 | `--listen-address` | `:9710` | The address of the HTTP server for the metrics. |
 | `--log-level` | `info` | The log level: `panic`, `fatal`, `error`, `warn`, `info`, `debug` or `trace`. The operator ignores the case and also accepts `warning`. With another value, the operator stops at start with exit code 1. |

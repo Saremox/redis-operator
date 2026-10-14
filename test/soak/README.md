@@ -322,9 +322,9 @@ step.
 
 `image_upgrade` follows an edge from the current version. The tester
 observes a change along an `unknown` or `fail` edge for the timeout of the
-kind. If a pod on the new version logs that it could not load the data,
-the tester observes the change for one more minute only. It then judges
-the change:
+kind. If a pod on the new version logs a failed load of the data, the
+tester observes the change for at most one more minute. The timeout of
+the kind still applies. It then judges the change:
 
 - `ok`: it converged.
 - `failed_safe`: it did not converge, but the rollout stopped. The single
