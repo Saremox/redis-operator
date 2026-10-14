@@ -22,6 +22,15 @@ import (
 
 const autoscaleEffective = int64(2 << 30)
 
+var autoscaleLimits = rfservice.AutoscalerLimits{Spec: 1 << 30, Effective: autoscaleEffective}
+
+// useAutoscaler gives rt mode Auto with the effective limit autoscaleEffective.
+func useAutoscaler(rt *rolloutTest) {
+	rt.rf.Spec.Redis.Autoscaling = &redisfailoverv1.AutoscalingSettings{Mode: redisfailoverv1.AutoscalingModeAuto}
+	rt.handler.autoscaleReads.Store(failoverKey(rt.rf), autoscaleRead{spec: 1 << 30, effective: autoscaleEffective})
+	rt.k8s.On("GetStatefulSet", "testns", "rfr-test").Maybe().Return(&appsv1.StatefulSet{Status: appsv1.StatefulSetStatus{UpdateRevision: "new"}}, nil)
+}
+
 // newStaleRolloutTest is a rolloutTest with synced, ready pods, where only
 // the pod stale is on the old revision.
 func newStaleRolloutTest(t *testing.T, stale string, sentinel bool) *rolloutTest {
@@ -58,10 +67,10 @@ func TestUpdateRedisesPodsKeepsAPodOfAnAutoscalerRevision(t *testing.T) {
 		for path, p := range paths {
 			t.Run(name+", "+path+", autoscaler revision", func(t *testing.T) {
 				rt := newStaleRolloutTest(t, p.pod, p.sentinel)
-				rt.handler.autoscaleReads.Store(failoverKey(rt.rf), autoscaleRead{spec: 1 << 30, effective: autoscaleEffective})
+				useAutoscaler(rt)
 				result := refusal
 				result.AutoscalerRevision = true
-				rt.heal.On("ResizePodInPlace", rt.rf, p.pod, "new", autoscaleEffective).Once().Return(result, nil)
+				rt.heal.On("ResizePodInPlace", rt.rf, p.pod, "new", autoscaleLimits).Once().Return(result, nil)
 
 				rt.update("")
 				rt.heal.AssertExpectations(t)
@@ -76,7 +85,7 @@ func TestUpdateRedisesPodsKeepsAPodOfAnAutoscalerRevision(t *testing.T) {
 
 			t.Run(name+", "+path+", user revision", func(t *testing.T) {
 				rt := newStaleRolloutTest(t, p.pod, p.sentinel)
-				rt.heal.On("ResizePodInPlace", rt.rf, p.pod, "new", int64(0)).Once().Return(refusal, nil)
+				rt.heal.On("ResizePodInPlace", rt.rf, p.pod, "new", rfservice.AutoscalerLimits{}).Once().Return(refusal, nil)
 				if refusal.Action == rfservice.ResizeRecreate {
 					switch {
 					case p.pod == "rfr-test-1" || p.sentinel:
@@ -108,27 +117,34 @@ func TestUpdateRedisesPodsKeepsAPodOfAnAutoscalerRevision(t *testing.T) {
 // pod, also on an autoscaler revision.
 func TestUpdateRedisesPodsActsOnOtherClassesOfAnAutoscalerRevision(t *testing.T) {
 	rt := newStaleRolloutTest(t, "rfr-test-1", false)
-	rt.handler.autoscaleReads.Store(failoverKey(rt.rf), autoscaleRead{spec: 1 << 30, effective: autoscaleEffective})
-	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new", autoscaleEffective).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeWaiting, Class: rfservice.ResizeTransient, Message: "resizing pod rfr-test-1 in place", AutoscalerRevision: true}, nil)
+	useAutoscaler(rt)
+	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new", autoscaleLimits).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeWaiting, Class: rfservice.ResizeTransient, Message: "resizing pod rfr-test-1 in place", AutoscalerRevision: true}, nil)
 	assert.Equal(t, "resizing pod rfr-test-1 in place", rt.update(""))
 	rt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
 
-	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new", autoscaleEffective).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate, Class: rfservice.ResizeUserRevision}, nil)
+	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new", autoscaleLimits).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate, Class: rfservice.ResizeUserRevision}, nil)
 	rt.heal.On("DeletePod", "rfr-test-1", rt.rf).Once().Return(nil)
 	rt.update("")
 	rt.heal.AssertExpectations(t)
-	_, ok := rt.handler.autoscaleRollout.Load(failoverKey(rt.rf))
-	assert.False(t, ok)
+	v, _ := rt.handler.autoscaleRollout.Load(failoverKey(rt.rf))
+	assert.Nil(t, v.(autoscaleRollout).refusal)
 }
 
-func TestAutoscalerLimit(t *testing.T) {
+func TestAutoscalerLimits(t *testing.T) {
 	h := NewRedisFailoverHandler(Config{}, nil, nil, nil, nil, metrics.Dummy, log.Dummy)
-	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"}}
-	assert.Zero(t, h.autoscalerLimit(rf))
+	rf := autoscaleRolloutRF(redisfailoverv1.AutoscalingModeAuto)
+	assert.Zero(t, h.autoscalerLimits(rf))
 	h.autoscaleReads.Store(failoverKey(rf), autoscaleRead{spec: 1 << 30, effective: 1 << 30})
-	assert.Zero(t, h.autoscalerLimit(rf))
+	assert.Zero(t, h.autoscalerLimits(rf))
 	h.autoscaleReads.Store(failoverKey(rf), autoscaleRead{spec: 1 << 30, effective: autoscaleEffective})
-	assert.Equal(t, autoscaleEffective, h.autoscalerLimit(rf))
+	assert.Equal(t, autoscaleLimits, h.autoscalerLimits(rf))
+
+	// Mode Recommend can keep a frozen effective limit, but it makes no step.
+	for _, mode := range []string{"", redisfailoverv1.AutoscalingModeOff, redisfailoverv1.AutoscalingModeRecommend} {
+		rf := autoscaleRolloutRF(mode)
+		h.autoscaleReads.Store(failoverKey(rf), autoscaleRead{spec: 1 << 30, effective: autoscaleEffective})
+		assert.Zero(t, h.autoscalerLimits(rf), mode)
+	}
 }
 
 // redisPod is a ready redis pod on revision rev that runs with the memory
@@ -264,13 +280,14 @@ func TestUpdateRedisesPodsRecordsTheAutoscaleRollout(t *testing.T) {
 	rt.pods[0] = redisPod("rfr-test-0", "new", "2Gi")
 	rt.pods[0].Status.PodIP = "10.0.0.1"
 	rt.pods[1].Labels[appsv1.ControllerRevisionHashLabelKey] = "old"
-	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new", autoscaleEffective).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate, Class: rfservice.ResizePermanent, Message: "resize infeasible", AutoscalerRevision: true}, nil)
+	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new", autoscaleLimits).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate, Class: rfservice.ResizePermanent, Message: "resize infeasible", AutoscalerRevision: true}, nil)
 
 	rt.update("")
 	v, _ := rt.handler.autoscaleRollout.Load(failoverKey(rt.rf))
 	assert.Equal(t, autoscaleRollout{anyApplied: true, refusal: &resizeRefusal{pod: "rfr-test-1", class: rfservice.ResizePermanent, message: "resize infeasible"}}, v)
 
-	// The next call starts without the refusal.
+	// The next reconcile starts without the refusal.
+	rt.handler.autoscaleRollout.Delete(failoverKey(rt.rf))
 	rt.pods[1] = redisPod("rfr-test-1", "new", "2Gi")
 	rt.pods[1].Status.PodIP = "10.0.0.2"
 	rt.update("")
@@ -278,23 +295,45 @@ func TestUpdateRedisesPodsRecordsTheAutoscaleRollout(t *testing.T) {
 	assert.Equal(t, autoscaleRollout{settled: true, applied: true, anyApplied: true}, v)
 
 	ssErr = errors.New("boom")
+	rt.handler.autoscaleRollout.Delete(failoverKey(rt.rf))
 	rt.rf.Status = redisfailoverv1.RedisFailoverStatus{}
 	assert.ErrorIs(t, rt.handler.UpdateRedisesPods(rt.rf), ssErr)
 	_, ok := rt.handler.autoscaleRollout.Load(failoverKey(rt.rf))
 	assert.False(t, ok)
 }
 
-// The mocks fail a call that the test does not expect. In mode Recommend with
-// the spec limit, the rollout makes the API calls of an instance without
-// autoscaling.
-func TestUpdateRedisesPodsWithTheSpecLimit(t *testing.T) {
-	rt := newStaleRolloutTest(t, "rfr-test-1", false)
-	rt.rf.Spec.Redis.Autoscaling = &redisfailoverv1.AutoscalingSettings{Mode: redisfailoverv1.AutoscalingModeRecommend}
-	rt.handler.autoscaleReads.Store(failoverKey(rt.rf), autoscaleRead{spec: 1 << 30, effective: 1 << 30})
-	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new", int64(0)).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate, Class: rfservice.ResizePermanent}, nil)
-	rt.heal.On("DeletePod", "rfr-test-1", rt.rf).Once().Return(nil)
-	rt.update("")
-	rt.heal.AssertExpectations(t)
-	_, ok := rt.handler.autoscaleRollout.Load(failoverKey(rt.rf))
+// The mocks fail a call that the test does not expect. In mode Recommend,
+// also with a frozen effective limit, the rollout takes the user path and
+// makes the API calls of an instance without autoscaling.
+func TestUpdateRedisesPodsInModeRecommend(t *testing.T) {
+	for name, effective := range map[string]int64{"spec limit": 1 << 30, "frozen effective limit": autoscaleEffective} {
+		t.Run(name, func(t *testing.T) {
+			rt := newStaleRolloutTest(t, "rfr-test-1", false)
+			rt.rf.Spec.Redis.Autoscaling = &redisfailoverv1.AutoscalingSettings{Mode: redisfailoverv1.AutoscalingModeRecommend}
+			rt.handler.autoscaleReads.Store(failoverKey(rt.rf), autoscaleRead{spec: 1 << 30, effective: effective})
+			rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new", rfservice.AutoscalerLimits{}).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate, Class: rfservice.ResizePermanent}, nil)
+			rt.heal.On("DeletePod", "rfr-test-1", rt.rf).Once().Return(nil)
+			rt.update("")
+			rt.heal.AssertExpectations(t)
+			_, ok := rt.handler.autoscaleRollout.Load(failoverKey(rt.rf))
+			assert.False(t, ok)
+		})
+	}
+}
+
+// A reconcile that ends before UpdateRedisesPods leaves no rollout result of
+// an earlier reconcile.
+func TestCheckAndHealDropsTheAutoscaleRollout(t *testing.T) {
+	rf := autoscaleRolloutRF("")
+	rf.Spec.Auth.SecretPath = "auth"
+	fail := errors.New("boom")
+	mk := &mK8SService.Services{}
+	mk.On("GetSecret", "testns", "auth").Return(nil, fail)
+	mk.On("UpdateRedisFailoverStatus", mock.Anything, "testns", rf, mock.Anything).Maybe().Return()
+	h := NewRedisFailoverHandler(Config{}, nil, nil, nil, mk, metrics.Dummy, log.Dummy)
+	h.autoscaleRollout.Store(failoverKey(rf), autoscaleRollout{settled: true})
+
+	assert.ErrorIs(t, h.CheckAndHeal(rf), fail)
+	_, ok := h.autoscaleRollout.Load(failoverKey(rf))
 	assert.False(t, ok)
 }

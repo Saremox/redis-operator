@@ -115,7 +115,7 @@ func TestUpdateRedisesPodsReportsAStalledRollout(t *testing.T) {
 	time.Sleep(2 * rolloutStallTimeout)
 	rt.synced = true
 	rt.pods[1].Status.Conditions = podReady
-	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-0", "new", int64(0)).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
+	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-0", "new", rfservice.AutoscalerLimits{}).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
 	rt.check.On("GetBestReplicaForPromotion", rt.rf).Once().Return(&rfservice.ReplicaInfo{IP: "10.0.0.2", PodName: "rfr-test-1", Synced: true}, nil)
 	rt.heal.On("HandOverMaster", "10.0.0.1", "10.0.0.2", rt.rf).Once().Return(rfservice.HandoverDone, nil)
 	rt.heal.On("PromoteBestReplica", "10.0.0.2", rt.rf).Once().Return(nil)
@@ -183,7 +183,7 @@ func TestUpdateRedisesPodsResetsTheWaitOnAReplacedStaleReplica(t *testing.T) {
 
 	// The revert puts the unsynced replica on a stale revision.
 	rt.pods[1].Labels[appsv1.ControllerRevisionHashLabelKey] = "old"
-	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new", int64(0)).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
+	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new", rfservice.AutoscalerLimits{}).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
 	rt.heal.On("DeletePod", "rfr-test-1", rt.rf).Once().Return(nil)
 	assert.Empty(t, rt.update(""))
 	_, tracked := rt.handler.rolloutWaits.Load(key)

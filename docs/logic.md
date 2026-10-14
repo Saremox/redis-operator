@@ -35,7 +35,7 @@ Operator-managed mode and Sentinel mode need a quorum (a majority) of the pods t
 
 A pod rollout replaces one stale pod in each reconcile: the replicas first, the master last. Before each replacement, the operator waits until the last replaced pod is ready and each replica on the new revision is in sync. A stale replica that is not in sync has no data to lose, so the operator replaces it first and does not wait for its sync. When only the container resources change and the kubelet allows it, the operator resizes the pod in place. With `redis.maxMemory`, a lowered memory limit holds the rollout until the `maxmemory` and the memory in use of the master fit the new limit.
 
-A stale pod that the scheduler cannot place stays Pending, because the StatefulSet uses the `OnDelete` update strategy. Its `PodScheduled` condition is `False` with the reason `Unschedulable`. When the running pods are on the new revision, the operator deletes such a pod if none of its containers started. The pod has no data, and its PVC stays. The StatefulSet then creates the pod on the new revision.
+A stale pod stays Pending when the scheduler cannot place it: its `PodScheduled` condition is `False` with the reason `Unschedulable`. The StatefulSet uses the `OnDelete` update strategy, so it does not replace such a pod. The operator deletes such a pod if none of its containers started. It waits until the running pods are on the new revision and each pod on the new revision is ready. The pod has no data in memory, and its PVC stays. The StatefulSet then creates the pod on the new revision.
 
 ### Operator-managed mode
 

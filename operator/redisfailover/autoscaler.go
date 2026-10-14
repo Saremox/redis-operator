@@ -86,19 +86,23 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 	return read, nil
 }
 
-// autoscalerLimit returns the effective memory limit of this reconcile when
-// it differs from the spec limit, or 0. Only such a limit makes autoscaler
-// revisions.
-func (r *RedisFailoverHandler) autoscalerLimit(rf *redisfailoverv1.RedisFailover) int64 {
+// autoscalerLimits returns the memory limits of this reconcile in mode Auto
+// when the effective limit differs from the spec limit. Only then a revision
+// can be a step of the autoscaler. In the other modes, a frozen effective
+// limit makes no step, so each revision takes the user path.
+func (r *RedisFailoverHandler) autoscalerLimits(rf *redisfailoverv1.RedisFailover) rfservice.AutoscalerLimits {
+	if !rf.AutoscalingEnabled() || rf.Spec.Redis.Autoscaling.Mode != redisfailoverv1.AutoscalingModeAuto {
+		return rfservice.AutoscalerLimits{}
+	}
 	v, ok := r.autoscaleReads.Load(failoverKey(rf))
 	if !ok {
-		return 0
+		return rfservice.AutoscalerLimits{}
 	}
 	read := v.(autoscaleRead)
 	if read.effective == read.spec {
-		return 0
+		return rfservice.AutoscalerLimits{}
 	}
-	return read.effective
+	return rfservice.AutoscalerLimits{Spec: read.spec, Effective: read.effective}
 }
 
 // autoscaleRollout is what UpdateRedisesPods found for the memory autoscaler

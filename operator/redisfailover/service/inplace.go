@@ -41,6 +41,14 @@ const (
 	ResizePermanent ResizeClass = "Permanent"
 )
 
+// AutoscalerLimits are the memory limits of the redis container in mode Auto.
+// The zero value means that no step of the autoscaler is possible.
+type AutoscalerLimits struct {
+	// Spec is the limit of redis.resources, and Effective the limit of the
+	// pods when it differs from Spec, or 0.
+	Spec, Effective int64
+}
+
 // ResizeResult is the outcome of ResizePodInPlace.
 type ResizeResult struct {
 	Action ResizeAction
@@ -84,9 +92,8 @@ func rejectedByResourceLimits(err error) bool {
 // The kubelet applies the resize without restarting the containers; once the
 // applied resources match, the pod's revision label is updated, which
 // UpdateRedisesPods then treats as up to date. The StatefulSet uses OnDelete,
-// so its controller never replaces the relabelled pod. effective is the
-// memory limit of the autoscaler when it differs from the spec limit, or 0.
-func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover, podName, updateRevision string, effective int64) (ResizeResult, error) {
+// so its controller never replaces the relabelled pod.
+func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover, podName, updateRevision string, limits AutoscalerLimits) (ResizeResult, error) {
 	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).WithField("pod", podName)
 	autoscaler := false
 	result := func(action ResizeAction, class ResizeClass, message string) (ResizeResult, error) {
@@ -105,7 +112,7 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 	}
 	unsupported := func() (ResizeResult, error) {
 		var err error
-		if autoscaler, err = r.isAutoscalerRevision(rf, podName, updateRevision, effective); err != nil {
+		if autoscaler, err = r.isAutoscalerRevision(rf, podName, updateRevision, limits); err != nil {
 			return ResizeResult{}, err
 		}
 		return result(ResizeRecreate, ResizePermanent, "")
@@ -132,7 +139,7 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 	if reason != "" {
 		return recreate(ResizePermanent, reason)
 	}
-	autoscaler = autoscalerRevision(current, update, effective)
+	autoscaler = autoscalerRevision(current, update, limits)
 	desired, reason, class, err := r.inPlaceResources(rf, pod, current, update, support)
 	if err != nil {
 		return ResizeResult{}, err
@@ -290,8 +297,8 @@ func (r *RedisFailoverHealer) markResizeRequested(rf *redisfailoverv1.RedisFailo
 
 // isAutoscalerRevision reads the revisions for autoscalerRevision. It reads
 // nothing without an effective limit.
-func (r *RedisFailoverHealer) isAutoscalerRevision(rf *redisfailoverv1.RedisFailover, podName, updateRevision string, effective int64) (bool, error) {
-	if effective == 0 {
+func (r *RedisFailoverHealer) isAutoscalerRevision(rf *redisfailoverv1.RedisFailover, podName, updateRevision string, limits AutoscalerLimits) (bool, error) {
+	if limits.Effective == 0 {
 		return false, nil
 	}
 	pod, err := r.k8sService.GetPod(rf.Namespace, podName)
@@ -302,15 +309,17 @@ func (r *RedisFailoverHealer) isAutoscalerRevision(rf *redisfailoverv1.RedisFail
 	if current == nil || err != nil {
 		return false, err
 	}
-	return autoscalerRevision(current, update, effective), nil
+	return autoscalerRevision(current, update, limits), nil
 }
 
 // autoscalerRevision reports whether update is a step of the memory
 // autoscaler from current. effectiveRF changes only the memory limit of the
-// redis container, and a memory request equal to that limit. Without the
-// effective limit in update, the change is a change of the spec.
-func autoscalerRevision(current, update *corev1.PodTemplateSpec, effective int64) bool {
-	if effective == 0 {
+// redis container, and a memory request equal to that limit. A step only
+// raises the limit to the effective limit, from the spec limit or an earlier
+// effective limit. Another limit change also holds a change of the user, for
+// example a lower memoryMax, or a pod revision from before a raise of the spec.
+func autoscalerRevision(current, update *corev1.PodTemplateSpec, limits AutoscalerLimits) bool {
+	if limits.Effective == 0 {
 		return false
 	}
 	current = current.DeepCopy()
@@ -320,7 +329,7 @@ func autoscalerRevision(current, update *corev1.PodTemplateSpec, effective int64
 	}
 	cl, cok := c.Resources.Limits[corev1.ResourceMemory]
 	ul, uok := u.Resources.Limits[corev1.ResourceMemory]
-	if !cok || !uok || ul.Value() != effective {
+	if !cok || !uok || ul.Value() != limits.Effective || cl.Value() >= ul.Value() || cl.Value() < limits.Spec {
 		return false
 	}
 	cr, cok := c.Resources.Requests[corev1.ResourceMemory]

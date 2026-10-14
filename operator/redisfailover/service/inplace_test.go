@@ -94,12 +94,11 @@ func runResize(t *testing.T, c resizeCase, setup func(ms *mK8SService.Services))
 // call that redisSetup does not expect.
 func runResizeWithRedis(t *testing.T, rf *redisfailoverv1.RedisFailover, c resizeCase, setup func(ms *mK8SService.Services), redisSetup func(mr *mRedisService.Client)) (ResizeResult, *mK8SService.Services, *mRedisService.Client, error) {
 	t.Helper()
-	return runResizeEffective(t, rf, c, 0, setup, redisSetup)
+	return runResizeEffective(t, rf, c, AutoscalerLimits{}, setup, redisSetup)
 }
 
-// runResizeEffective is runResizeWithRedis with an effective limit of the
-// autoscaler.
-func runResizeEffective(t *testing.T, rf *redisfailoverv1.RedisFailover, c resizeCase, effective int64, setup func(ms *mK8SService.Services), redisSetup func(mr *mRedisService.Client)) (ResizeResult, *mK8SService.Services, *mRedisService.Client, error) {
+// runResizeEffective is runResizeWithRedis with the limits of the autoscaler.
+func runResizeEffective(t *testing.T, rf *redisfailoverv1.RedisFailover, c resizeCase, limits AutoscalerLimits, setup func(ms *mK8SService.Services), redisSetup func(mr *mRedisService.Client)) (ResizeResult, *mK8SService.Services, *mRedisService.Client, error) {
 	t.Helper()
 	ms := &mK8SService.Services{}
 	mr := &mRedisService.Client{}
@@ -114,7 +113,7 @@ func runResizeEffective(t *testing.T, rf *redisfailoverv1.RedisFailover, c resiz
 	if setup != nil {
 		setup(ms)
 	}
-	result, err := NewRedisFailoverHealer(ms, mr, log.Dummy).ResizePodInPlace(rf, resizePod, "new", effective)
+	result, err := NewRedisFailoverHealer(ms, mr, log.Dummy).ResizePodInPlace(rf, resizePod, "new", limits)
 	return result, ms, mr, err
 }
 
@@ -405,7 +404,7 @@ func TestResizePodInPlaceRecreatesWithoutRevisionsOrSupport(t *testing.T) {
 	t.Run("disabled", func(t *testing.T) {
 		rf := rf.DeepCopy()
 		rf.Spec.Redis.InPlaceResize = "Disabled"
-		result, err := NewRedisFailoverHealer(&mK8SService.Services{}, nil, log.Dummy).ResizePodInPlace(rf, resizePod, "new", 0)
+		result, err := NewRedisFailoverHealer(&mK8SService.Services{}, nil, log.Dummy).ResizePodInPlace(rf, resizePod, "new", AutoscalerLimits{})
 		assert.NoError(t, err)
 		assert.Equal(t, ResizeRecreate, result.Action)
 	})
@@ -415,7 +414,7 @@ func TestResizePodInPlaceRecreatesWithoutRevisionsOrSupport(t *testing.T) {
 		ms.On("PodResizeSupport").Return(fullSupport, nil)
 		ms.On("GetPod", "testns", resizePod).Return(stalePod(old, old), nil)
 		ms.On("GetControllerRevision", "testns", "old").Return(nil, apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "controllerrevisions"}, "old", errors.New("rbac")))
-		result, err := NewRedisFailoverHealer(ms, nil, log.Dummy).ResizePodInPlace(rf, resizePod, "new", 0)
+		result, err := NewRedisFailoverHealer(ms, nil, log.Dummy).ResizePodInPlace(rf, resizePod, "new", AutoscalerLimits{})
 		assert.NoError(t, err)
 		assert.Equal(t, ResizeRecreate, result.Action)
 	})
@@ -432,7 +431,7 @@ func TestResizePodInPlaceRecreatesWithoutRevisionsOrSupport(t *testing.T) {
 					ms.On("GetControllerRevision", "testns", rev).Return(revision(rev, podTemplate(old)), nil)
 				}
 			}
-			result, err := NewRedisFailoverHealer(ms, nil, log.Dummy).ResizePodInPlace(rf, resizePod, "new", 0)
+			result, err := NewRedisFailoverHealer(ms, nil, log.Dummy).ResizePodInPlace(rf, resizePod, "new", AutoscalerLimits{})
 			assert.NoError(t, err)
 			assert.Equal(t, ResizeRecreate, result.Action)
 		})
@@ -830,7 +829,7 @@ func TestAutoscalerRevision(t *testing.T) {
 		}
 		return podTemplate(r)
 	}
-	effective := int64(2 << 30)
+	effective := AutoscalerLimits{Spec: 1 << 30, Effective: 2 << 30}
 	image := memory("", "2Gi")
 	image.Spec.Containers[0].Image = "redis:8"
 	cpu := memory("", "2Gi")
@@ -843,14 +842,18 @@ func TestAutoscalerRevision(t *testing.T) {
 	noRedis.Spec.Containers[0].Name = "other"
 	tests := map[string]struct {
 		current, update corev1.PodTemplateSpec
-		effective       int64
+		limits          AutoscalerLimits
 		want            bool
 	}{
 		"memory limit":                      {memory("", "1Gi"), memory("", "2Gi"), effective, true},
+		"from an earlier effective limit":   {memory("", "1536Mi"), memory("", "2Gi"), effective, true},
+		"memoryMax lowered":                 {memory("", "2Gi"), memory("", "1536Mi"), AutoscalerLimits{Spec: 1 << 30, Effective: 1536 << 20}, false},
+		"same limit":                        {memory("", "2Gi"), memory("", "2Gi"), effective, false},
+		"pod revision below the spec limit": {memory("", "512Mi"), memory("", "2Gi"), effective, false},
 		"memory request equal to the limit": {memory("1Gi", "1Gi"), memory("2Gi", "2Gi"), effective, true},
 		"memory request below the limit":    {memory("512Mi", "1Gi"), memory("512Mi", "2Gi"), effective, true},
-		"no autoscaler state":               {memory("", "1Gi"), memory("", "2Gi"), 0, false},
-		"limit other than effective":        {memory("", "1Gi"), memory("", "2Gi"), 3 << 30, false},
+		"no autoscaler state":               {memory("", "1Gi"), memory("", "2Gi"), AutoscalerLimits{}, false},
+		"limit other than effective":        {memory("", "1Gi"), memory("", "2Gi"), AutoscalerLimits{Spec: 1 << 30, Effective: 3 << 30}, false},
 		"image change":                      {memory("", "1Gi"), image, effective, false},
 		"cpu change":                        {memory("", "1Gi"), cpu, effective, false},
 		"exporter change":                   {memory("", "1Gi"), exporter, effective, false},
@@ -865,7 +868,7 @@ func TestAutoscalerRevision(t *testing.T) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			current := test.current.DeepCopy()
-			assert.Equal(t, test.want, autoscalerRevision(&test.current, &test.update, test.effective))
+			assert.Equal(t, test.want, autoscalerRevision(&test.current, &test.update, test.limits))
 			assert.Equal(t, current, &test.current)
 		})
 	}
@@ -875,19 +878,22 @@ func TestAutoscalerRevision(t *testing.T) {
 // refuses each resize. Without an effective limit, it reads nothing more.
 func TestResizePodInPlaceReportsAnAutoscalerRevision(t *testing.T) {
 	old, new := resources("1", "1Gi"), resources("1", "2Gi")
-	effective := int64(2 << 30)
+	effective := AutoscalerLimits{Spec: 1 << 30, Effective: 2 << 30}
 	infeasible := resizeCase{fullSupport, podTemplate(old), podTemplate(new), stalePod(new, old, condition(corev1.PodResizePending, corev1.PodReasonInfeasible, 0))}
 	disabled := resizeRF()
 	disabled.Spec.Redis.InPlaceResize = "Disabled"
 	tests := map[string]struct {
-		rf        *redisfailoverv1.RedisFailover
-		c         resizeCase
-		effective int64
-		setup     func(ms *mK8SService.Services)
-		want      bool
+		rf     *redisfailoverv1.RedisFailover
+		c      resizeCase
+		limits AutoscalerLimits
+		setup  func(ms *mK8SService.Services)
+		want   bool
 	}{
-		"infeasible":                       {resizeRF(), infeasible, effective, nil, true},
-		"infeasible without autoscaler":    {resizeRF(), infeasible, 0, nil, false},
+		"infeasible":                    {resizeRF(), infeasible, effective, nil, true},
+		"infeasible without autoscaler": {resizeRF(), infeasible, AutoscalerLimits{}, nil, false},
+		// A lower memoryMax is a change of the user, so the pod takes the
+		// user path and is recreated.
+		"memoryMax lowered before 1.35":    {resizeRF(), resizeCase{k8s.PodResizeSupport{Supported: true}, podTemplate(new), podTemplate(resources("1", "1536Mi")), podFrom(podTemplate(new))}, AutoscalerLimits{Spec: 1 << 30, Effective: 1536 << 20}, nil, false},
 		"disabled":                         {disabled, infeasible, effective, nil, true},
 		"unsupported cluster":              {resizeRF(), resizeCase{k8s.PodResizeSupport{}, infeasible.old, infeasible.new, infeasible.pod}, effective, nil, true},
 		"disabled, revision not available": {disabled, infeasible, effective, revisionNotFound("old"), false},
@@ -895,7 +901,7 @@ func TestResizePodInPlaceReportsAnAutoscalerRevision(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			result, _, _, err := runResizeEffective(t, test.rf, test.c, test.effective, test.setup, nil)
+			result, _, _, err := runResizeEffective(t, test.rf, test.c, test.limits, test.setup, nil)
 			assert.NoError(t, err)
 			assert.Equal(t, ResizeRecreate, result.Action)
 			assert.Equal(t, ResizePermanent, result.Class)

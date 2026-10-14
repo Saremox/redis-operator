@@ -268,9 +268,9 @@ func (_m *RedisFailoverHeal) PromoteBestReplica(newMasterIP string, rFailover *v
 	return r0
 }
 
-// ResizePodInPlace provides a mock function with given fields: rFailover, podName, updateRevision, effective
-func (_m *RedisFailoverHeal) ResizePodInPlace(rFailover *v1.RedisFailover, podName string, updateRevision string, effective int64) (service.ResizeResult, error) {
-	ret := _m.Called(rFailover, podName, updateRevision, effective)
+// ResizePodInPlace provides a mock function with given fields: rFailover, podName, updateRevision, limits
+func (_m *RedisFailoverHeal) ResizePodInPlace(rFailover *v1.RedisFailover, podName string, updateRevision string, limits service.AutoscalerLimits) (service.ResizeResult, error) {
+	ret := _m.Called(rFailover, podName, updateRevision, limits)
 
 	if len(ret) == 0 {
 		panic("no return value specified for ResizePodInPlace")
@@ -278,17 +278,17 @@ func (_m *RedisFailoverHeal) ResizePodInPlace(rFailover *v1.RedisFailover, podNa
 
 	var r0 service.ResizeResult
 	var r1 error
-	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, string, int64) (service.ResizeResult, error)); ok {
-		return rf(rFailover, podName, updateRevision, effective)
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, string, service.AutoscalerLimits) (service.ResizeResult, error)); ok {
+		return rf(rFailover, podName, updateRevision, limits)
 	}
-	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, string, int64) service.ResizeResult); ok {
-		r0 = rf(rFailover, podName, updateRevision, effective)
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, string, service.AutoscalerLimits) service.ResizeResult); ok {
+		r0 = rf(rFailover, podName, updateRevision, limits)
 	} else {
 		r0 = ret.Get(0).(service.ResizeResult)
 	}
 
-	if rf, ok := ret.Get(1).(func(*v1.RedisFailover, string, string, int64) error); ok {
-		r1 = rf(rFailover, podName, updateRevision, effective)
+	if rf, ok := ret.Get(1).(func(*v1.RedisFailover, string, string, service.AutoscalerLimits) error); ok {
+		r1 = rf(rFailover, podName, updateRevision, limits)
 	} else {
 		r1 = ret.Error(1)
 	}

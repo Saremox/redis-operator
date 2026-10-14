@@ -88,7 +88,8 @@ type RedisFailoverHandler struct {
 	// of the current reconcile found, so the autoscaler needs no extra call.
 	autoscaleMasters sync.Map
 	// autoscaleRollout holds, per namespace/name, the autoscaleRollout that
-	// UpdateRedisesPods found in the current reconcile.
+	// UpdateRedisesPods found in the current reconcile. CheckAndHeal deletes
+	// it at its start, so a reconcile without UpdateRedisesPods has none.
 	autoscaleRollout sync.Map
 	// autoscaleSamples holds, per namespace/name, the last autoscaleSample.
 	autoscaleSamples sync.Map
