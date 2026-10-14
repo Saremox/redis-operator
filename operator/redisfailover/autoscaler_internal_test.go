@@ -1049,3 +1049,39 @@ func TestAutoscaleWritesTheBoundOfASpecChange(t *testing.T) {
 	assert.Empty(t, rf.Status.Autoscaling.EffectiveMemory)
 	at.mrec.AssertExpectations(t)
 }
+
+// A spec change that ends the effective limit is written also when no sample
+// is due. Otherwise a spec lowered again before the next sample gets the
+// effective limit back. Reconciles without a change write nothing.
+func TestAutoscaleWritesTheBoundWithoutASample(t *testing.T) {
+	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
+	f := at.fakeStateStore(t)
+	f.stored = at.stateConfigMap(encodeState(t, autoscale.State{
+		Version: autoscale.StateVersion, Workload: "Store", RunID: "run1", Limit: 1280 * mib, LastSample: autoscaleT0.Unix(),
+		Effective: 1280 * mib, SpecLimit: 1024 * mib, Phase: autoscale.PhaseDone,
+	}))
+	at.mrec.On("SetAutoscaler", "testns", "test", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	setSpec := func(limit string) {
+		at.rf.Spec.Redis.Resources.Limits[corev1.ResourceMemory] = resource.MustParse(limit)
+	}
+
+	setSpec("1536Mi")
+	at.now = autoscaleT0.Add(20 * time.Second)
+	at.handle(t, redisfailoverv1.AutoscalingStatus{})
+
+	require.Equal(t, 1, f.updates)
+	assert.Zero(t, decodeState(t, f.stored).Effective)
+	at.mrfc.AssertNotCalled(t, "GetAutoscalerInfo", mock.Anything, mock.Anything)
+
+	setSpec("1Gi")
+	at.now = autoscaleT0.Add(40 * time.Second)
+	read, err := at.h.readAutoscale(at.rf)
+	require.NoError(t, err)
+	assert.Equal(t, 1024*mib, read.effective)
+
+	at.handle(t, redisfailoverv1.AutoscalingStatus{})
+	at.now = autoscaleT0.Add(50 * time.Second)
+	at.handle(t, redisfailoverv1.AutoscalingStatus{})
+	assert.Equal(t, 1, f.updates, "no write without a change")
+	assert.Zero(t, f.creates)
+}

@@ -141,11 +141,15 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 	if last.sampled && last.version == version {
 		state = last.state
 	}
+	unbound := state
 	if state.Version == 0 && limit != read.spec {
 		// The write of the state keeps the limit that readAutoscale froze.
-		state.Effective, state.SpecLimit = limit, read.spec
+		state.Version, state.Effective, state.SpecLimit = autoscale.StateVersion, limit, read.spec
 	}
 	state = autoscale.Bound(state, read.spec, maxLimit)
+	// The next reconcile gives the pods the limit of the stored state, so a
+	// change of the limit cannot wait for the next sample.
+	limitChanged := state != unbound
 	// A leftover state, for example of a mode change to Off that the status
 	// did not show, must not give a recommendation of an earlier time.
 	state = autoscale.Expire(state, now)
@@ -179,6 +183,8 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 			// reads this state from the ConfigMap.
 			errs = append(errs, r.writeAutoscaleState(rf, cm, state))
 		}
+	} else if limitChanged {
+		errs = append(errs, r.writeAutoscaleState(rf, cm, state))
 	}
 
 	rf.Status.Autoscaling = autoscale.ReportStep(autoscale.Report(state, limit, maxLimit), state, read.spec, limit)
