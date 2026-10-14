@@ -40,7 +40,7 @@ func NewServiceAccountService(kubeClient kubernetes.Interface, logger log.Logger
 }
 
 // GetServiceAccount returns the named ServiceAccount.
-func (s *ServiceAccountService) GetServiceAccount(namespace string, name string) (*corev1.ServiceAccount, error) {
+func (s *ServiceAccountService) GetServiceAccount(namespace, name string) (*corev1.ServiceAccount, error) {
 	serviceAccount, err := s.kubeClient.CoreV1().ServiceAccounts(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "ServiceAccount", name, "GET", err, s.metricsRecorder)
 	if err != nil {
@@ -102,7 +102,7 @@ func (s *ServiceAccountService) CreateOrUpdateServiceAccount(namespace string, s
 }
 
 // DeleteServiceAccount deletes the named ServiceAccount.
-func (s *ServiceAccountService) DeleteServiceAccount(namespace string, name string) error {
+func (s *ServiceAccountService) DeleteServiceAccount(namespace, name string) error {
 	err := s.kubeClient.CoreV1().ServiceAccounts(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 	recordMetrics(namespace, "ServiceAccount", name, "DELETE", err, s.metricsRecorder)
 	return err

@@ -126,7 +126,7 @@ func autoscalingPatch(a redisfailoverv1.AutoscalingStatus) any {
 // PatchRedisFailoverFinalizers implements the RedisFailover interface. A JSON
 // merge patch replaces the full finalizers array, so the caller gives the
 // full list, not only the changed finalizer.
-func (r *RedisFailoverService) PatchRedisFailoverFinalizers(ctx context.Context, namespace string, name string, finalizers []string, opts metav1.PatchOptions) error {
+func (r *RedisFailoverService) PatchRedisFailoverFinalizers(ctx context.Context, namespace, name string, finalizers []string, opts metav1.PatchOptions) error {
 	if finalizers == nil {
 		finalizers = []string{}
 	}

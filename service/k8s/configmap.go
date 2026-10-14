@@ -40,7 +40,7 @@ func NewConfigMapService(kubeClient kubernetes.Interface, logger log.Logger, met
 }
 
 // GetConfigMap returns the named ConfigMap.
-func (p *ConfigMapService) GetConfigMap(namespace string, name string) (*corev1.ConfigMap, error) {
+func (p *ConfigMapService) GetConfigMap(namespace, name string) (*corev1.ConfigMap, error) {
 	configMap, err := p.kubeClient.CoreV1().ConfigMaps(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	// The name can come from the RedisFailover spec, so it is not a metric label.
 	recordMetrics(namespace, "ConfigMap", metrics.NOT_APPLICABLE, "GET", err, p.metricsRecorder)
@@ -101,7 +101,7 @@ func (p *ConfigMapService) CreateOrUpdateConfigMap(namespace string, configMap *
 }
 
 // DeleteConfigMap deletes the named ConfigMap.
-func (p *ConfigMapService) DeleteConfigMap(namespace string, name string) error {
+func (p *ConfigMapService) DeleteConfigMap(namespace, name string) error {
 	err := p.kubeClient.CoreV1().ConfigMaps(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 	recordMetrics(namespace, "ConfigMap", name, "DELETE", err, p.metricsRecorder)
 	return err

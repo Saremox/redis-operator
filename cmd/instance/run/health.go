@@ -105,7 +105,7 @@ type InstanceManagerStatus struct {
 }
 
 // NewHealthServer creates a new health server.
-func NewHealthServer(port int, redisPort string, redisPassword string) *HealthServer {
+func NewHealthServer(port int, redisPort, redisPassword string) *HealthServer {
 	return &HealthServer{
 		port:          port,
 		redisAddr:     "127.0.0.1",

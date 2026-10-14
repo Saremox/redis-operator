@@ -40,7 +40,7 @@ func NewServiceService(kubeClient kubernetes.Interface, logger log.Logger, metri
 }
 
 // GetService returns the named Service.
-func (s *ServiceService) GetService(namespace string, name string) (*corev1.Service, error) {
+func (s *ServiceService) GetService(namespace, name string) (*corev1.Service, error) {
 	service, err := s.kubeClient.CoreV1().Services(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "Service", name, "GET", err, s.metricsRecorder)
 	if err != nil {
@@ -136,7 +136,7 @@ func mergeImmutableServiceFields(stored, desired *corev1.Service) {
 }
 
 // DeleteService deletes the named Service with foreground propagation.
-func (s *ServiceService) DeleteService(namespace string, name string) error {
+func (s *ServiceService) DeleteService(namespace, name string) error {
 	propagation := metav1.DeletePropagationForeground
 	err := s.kubeClient.CoreV1().Services(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{PropagationPolicy: &propagation})
 	recordMetrics(namespace, "Service", name, "DELETE", err, s.metricsRecorder)

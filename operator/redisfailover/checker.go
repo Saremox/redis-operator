@@ -2018,7 +2018,7 @@ func getRedisPort(p int32) string {
 	return strconv.Itoa(int(p))
 }
 
-func setRedisCheckerMetrics(metricsClient metrics.Recorder, mode /* redis or sentinel? */ string, rfNamespace string, rfName string, property string, IP string, err error) {
+func setRedisCheckerMetrics(metricsClient metrics.Recorder, mode /* redis or sentinel? */, rfNamespace, rfName, property, IP string, err error) {
 	switch mode {
 	case "sentinel":
 		if err != nil {

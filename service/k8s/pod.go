@@ -69,7 +69,7 @@ func NewPodService(kubeClient kubernetes.Interface, logger log.Logger, metricsRe
 }
 
 // GetPod returns the named pod.
-func (p *PodService) GetPod(namespace string, name string) (*corev1.Pod, error) {
+func (p *PodService) GetPod(namespace, name string) (*corev1.Pod, error) {
 	pod, err := p.kubeClient.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "Pod", name, "GET", err, p.metricsRecorder)
 	if err != nil {
@@ -80,7 +80,7 @@ func (p *PodService) GetPod(namespace string, name string) (*corev1.Pod, error) 
 
 // DeletePod deletes the named pod. Use DeletePodWithUID when a pod with the
 // same name must stay.
-func (p *PodService) DeletePod(namespace string, name string) error {
+func (p *PodService) DeletePod(namespace, name string) error {
 	err := p.kubeClient.CoreV1().Pods(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 	recordMetrics(namespace, "Pod", name, "DELETE", err, p.metricsRecorder)
 	return err
@@ -89,7 +89,7 @@ func (p *PodService) DeletePod(namespace string, name string) error {
 // DeletePodWithUID deletes the pod only while it has the UID uid. A pod
 // created again with the same name stays, and the delete fails with a
 // Conflict.
-func (p *PodService) DeletePodWithUID(namespace string, name string, uid types.UID) error {
+func (p *PodService) DeletePodWithUID(namespace, name string, uid types.UID) error {
 	err := p.kubeClient.CoreV1().Pods(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
 	recordMetrics(namespace, "Pod", name, "DELETE", err, p.metricsRecorder)
 	return err
