@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -348,22 +349,62 @@ func TestCheckAndHealDeletesAnUnschedulableStalePod(t *testing.T) {
 	}
 }
 
-func TestCheckAndHealReturnsAnErrorOfTheStalePodStep(t *testing.T) {
+// An error of the step is a warning only. The gate on the running pods then
+// decides as without the step, so a webhook that denies the delete does not
+// block the election.
+func TestCheckAndHealGoesOnAfterAnErrorOfTheStalePodStep(t *testing.T) {
 	fail := errors.New("boom")
+	notFound := apierrors.NewNotFound(corev1.Resource("pods"), "rfr-test-0")
+	denied := apierrors.NewForbidden(corev1.Resource("pods"), "rfr-test-0", errors.New("denied by a webhook"))
 	for name, change := range map[string]func(pt *pendingTest){
 		"pods":        func(pt *pendingTest) { pt.podsErr = fail },
 		"StatefulSet": func(pt *pendingTest) { pt.ssErr = fail },
-		"delete":      func(pt *pendingTest) { pt.heal.On("DeletePod", "rfr-test-0", pt.rf).Once().Return(fail) },
+		"delete denied": func(pt *pendingTest) {
+			pt.heal.On("DeletePod", "rfr-test-0", pt.rf).Once().Return(denied)
+		},
+		"pod deleted by another client": func(pt *pendingTest) {
+			pt.heal.On("DeletePod", "rfr-test-0", pt.rf).Once().Return(notFound)
+		},
 	} {
-		t.Run(name, func(t *testing.T) {
-			pt := newPendingTest("sentinel", 1, unschedulablePod())
+		for mode := range pendingModes {
+			t.Run(name+" in "+mode, func(t *testing.T) {
+				pt := newPendingTest(mode, 1, unschedulablePod())
+				change(pt)
+				assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+				assert.Equal(t, redisfailoverv1.NotHealthyState, pt.rf.Status.State)
+				assert.Equal(t, pt.gateMessage(), pt.rf.Status.Message)
+				pt.check.AssertExpectations(t)
+				pt.heal.AssertExpectations(t)
+			})
+		}
+	}
+}
+
+// With 3 replicas, one Pending pod leaves a quorum running. The step deletes
+// the stale pod, and the reconcile goes on to the next gate.
+func TestCheckAndHealGoesOnWithAQuorumAndAPendingPod(t *testing.T) {
+	for _, mode := range []string{"sentinel", "operator-managed"} {
+		t.Run(mode, func(t *testing.T) {
+			pt := newPendingTest(mode, 3, unschedulablePod())
+			for i := 1; i < 3; i++ {
+				pt.pods[i].Status.Phase = corev1.PodRunning
+			}
+			fail := errors.New("no masters")
 			pt.check.ExpectedCalls = nil
 			pt.check.On("IsRedisRunning", pt.rf).Once().Return(false)
-			change(pt)
-			assert.ErrorIs(t, pt.handler.CheckAndHeal(pt.rf), fail)
-			assert.Equal(t, "unable to replace a stale pending redis pod", pt.rf.Status.Message)
+			pt.check.On("IsRedisRunningQuorum", pt.rf).Once().Return(true)
+			pt.heal.On("DeletePod", "rfr-test-0", pt.rf).Once().Return(nil)
+			if mode == "sentinel" {
+				pt.check.On("IsSentinelRunningQuorum", pt.rf).Once().Return(false)
+				assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
+				assert.Equal(t, "sentinel quorum not running", pt.rf.Status.Message)
+			} else {
+				pt.heal.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
+				pt.check.On("GetNumberMasters", pt.rf).Once().Return(0, fail)
+				assert.ErrorIs(t, pt.handler.CheckAndHeal(pt.rf), fail)
+			}
 			pt.check.AssertExpectations(t)
-			pt.check.AssertNotCalled(t, "IsRedisRunningQuorum", mock.Anything)
+			pt.heal.AssertExpectations(t)
 		})
 	}
 }
@@ -444,9 +485,7 @@ func TestCheckAndHealMakesNoExtraCallsWhenAllRun(t *testing.T) {
 			pt := newPendingTest(mode, 1, unschedulablePod())
 			pt.check.ExpectedCalls = nil
 			pt.check.On("IsRedisRunning", pt.rf).Once().Return(true)
-			running, err := pt.handler.redisPodsRunning(pt.rf)
-			assert.NoError(t, err)
-			assert.True(t, running)
+			assert.True(t, pt.handler.redisPodsRunning(pt.rf))
 			pt.k8s.AssertNotCalled(t, "GetStatefulSetPods", mock.Anything, mock.Anything)
 			pt.k8s.AssertNotCalled(t, "GetStatefulSet", mock.Anything, mock.Anything)
 			pt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)

@@ -348,9 +348,9 @@ func (r *RedisFailoverHandler) redisPodNamesByIP(rf *redisfailoverv1.RedisFailov
 //
 // The step runs in each mode before the gates on the running pods. A stale
 // Pending pod leaves fewer pods running than a quorum with one or two
-// replicas, and bootstrapping needs all pods. Thus the gates end the reconcile
-// before the rollout, and the only pod of a failover with one replica stays
-// Pending for ever.
+// replicas, and bootstrapping needs all pods. Without the step, the gates end
+// each reconcile before the rollout, and the only pod of a failover with one
+// replica stays Pending for ever.
 //
 // The step needs no quorum and no wait for the last replacement. The pod is
 // Pending, the scheduler did not place it, and no container of it started, so
@@ -359,17 +359,29 @@ func (r *RedisFailoverHandler) redisPodNamesByIP(rf *redisfailoverv1.RedisFailov
 // the StatefulSet creates the replacement on the update revision, so the step
 // does not delete the replacement again.
 //
-// With all pods running, the step makes no API call beyond the gate.
-func (r *RedisFailoverHandler) redisPodsRunning(rf *redisfailoverv1.RedisFailover) (bool, error) {
+// An error of the step is a warning only, so that the gates and the heal steps
+// after them run as without the step. A webhook can deny the delete, for
+// example. With all pods running, the step makes no API call beyond the gate.
+func (r *RedisFailoverHandler) redisPodsRunning(rf *redisfailoverv1.RedisFailover) bool {
 	if r.rfChecker.IsRedisRunning(rf) {
-		return true, nil
+		return true
 	}
+	logger := r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name)
 	pod, err := r.unschedulableStalePod(rf)
-	if err != nil || pod == "" {
-		return false, err
+	if err != nil {
+		logger.Warningf("unable to look for a stale redis pod that the scheduler cannot place: %v", err)
+		return false
 	}
-	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("pod", pod).Infof("deleting the stale redis pod %s, which the scheduler cannot place", pod)
-	return false, r.rfHealer.DeletePod(pod, rf)
+	if pod == "" {
+		return false
+	}
+	logger = logger.WithField("pod", pod)
+	logger.Infof("deleting the stale redis pod %s, which the scheduler cannot place", pod)
+	// Another client can delete the pod first.
+	if err := r.rfHealer.DeletePod(pod, rf); err != nil && !apierrors.IsNotFound(err) {
+		logger.Warningf("unable to delete the stale redis pod %s: %v", pod, err)
+	}
+	return false
 }
 
 // unschedulableStalePod returns a pod on a stale revision that the scheduler
@@ -933,14 +945,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 
 	// The password skips the pods that do not run, so a stale Pending pod
 	// does not hold it.
-	allRunning, err := r.redisPodsRunning(rf)
-	if err != nil {
-		rf.Status = redisfailoverv1.RedisFailoverStatus{
-			State:   redisfailoverv1.NotHealthyState,
-			Message: "unable to replace a stale pending redis pod",
-		}
-		return err
-	}
+	allRunning := r.redisPodsRunning(rf)
 
 	if rf.Bootstrapping() {
 		return r.checkAndHealBootstrapMode(rf, allRunning)
