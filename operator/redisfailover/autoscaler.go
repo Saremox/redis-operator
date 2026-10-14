@@ -94,11 +94,11 @@ func (r *RedisFailoverHandler) autoscalerLimits(rf *redisfailoverv1.RedisFailove
 	if !rf.AutoscalingEnabled() || rf.Spec.Redis.Autoscaling.Mode != redisfailoverv1.AutoscalingModeAuto {
 		return rfservice.AutoscalerLimits{}
 	}
-	v, ok := r.autoscaleReads.Load(failoverKey(rf))
+	v, _ := r.autoscaleReads.Load(failoverKey(rf))
+	read, ok := v.(autoscaleRead)
 	if !ok {
 		return rfservice.AutoscalerLimits{}
 	}
-	read := v.(autoscaleRead)
 	if read.effective == read.spec {
 		return rfservice.AutoscalerLimits{}
 	}
@@ -201,10 +201,9 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 	limit := read.effective
 	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
 	now := r.now()
-	var last autoscaleSample
-	if v, ok := r.autoscaleSamples.Load(key); ok {
-		last = v.(autoscaleSample)
-	} else {
+	sample, _ := r.autoscaleSamples.Load(key)
+	last, found := sample.(autoscaleSample)
+	if !found {
 		last.ratio = stored.Window.PeakRatio
 	}
 	// While the writes fail, each sample must continue from the last sample

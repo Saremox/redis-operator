@@ -485,6 +485,10 @@ func (m *Mutator) lossless(p plan, s state) bool {
 		return volumes && waits
 	case config.ImageUpgrade:
 		return volumes && waits && p.edge != nil && p.edge.edge.Expect == config.ExpectOK
+	case config.SentinelReplicas, config.RedisResources, config.KillMasterForce, config.KillReplica,
+		config.KillSentinel, config.RedisMemory, config.MaxMemoryPolicy, config.MaxMemoryPercent,
+		config.FillBurst, config.SentinelImageUpgrade, config.Reset, config.SentinelResetKillMaster:
+		return false
 	}
 	return false
 }
@@ -505,6 +509,12 @@ func (m *Mutator) plan(r *rand.Rand, kind config.Kind, s state) plan {
 			why, m.resetWhy = m.resetWhy, ""
 		}
 		return m.planReset(s, why)
+	case config.RedisReplicas, config.SentinelReplicas, config.RedisResources, config.KillMaster,
+		config.KillMasterForce, config.KillReplica, config.KillSentinel, config.RedisMemory,
+		config.MaxMemoryPolicy, config.MaxMemoryPercent, config.FillBurst, config.PasswordRotate,
+		config.AuthAdd, config.AuthRemove, config.SentinelToggle, config.PasswordRotateOffline,
+		config.PasswordRotateOfflineForget:
+		// newPlan plans these kinds.
 	}
 	return newPlan(r, kind, m.in.Mutations, s, m.observer.Master(), m.data)
 }

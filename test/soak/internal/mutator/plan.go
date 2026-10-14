@@ -170,6 +170,11 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 			fetch:     fetchOpts{sentinelObjects: true},
 			converged: toggleConverged(want, s.rf.Spec.Sentinel.Replicas, s.rf.Spec.Redis.Replicas),
 		}
+	case config.RedisMemory, config.MaxMemoryPolicy, config.MaxMemoryPercent, config.FillBurst,
+		config.ImageUpgrade, config.SentinelImageUpgrade, config.Reset, config.SentinelImageFlip,
+		config.SentinelResetKillMaster:
+		// The maxMemory switch below plans the maxMemory kinds. Mutator.plan
+		// plans the other kinds.
 	}
 	mm := s.rf.Spec.Redis.MaxMemory
 	if mm == nil {
@@ -225,6 +230,12 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 				return podsReady("redis", s.redis, replicas)
 			},
 		}
+	case config.RedisReplicas, config.SentinelReplicas, config.RedisResources, config.KillMaster,
+		config.KillMasterForce, config.KillReplica, config.KillSentinel, config.PasswordRotate,
+		config.AuthAdd, config.AuthRemove, config.SentinelToggle, config.PasswordRotateOffline,
+		config.PasswordRotateOfflineForget, config.ImageUpgrade, config.SentinelImageUpgrade,
+		config.Reset, config.SentinelImageFlip, config.SentinelResetKillMaster:
+		// The first switch or Mutator.plan plans these kinds.
 	}
 	return skipped(kind, "unknown kind")
 }
@@ -351,6 +362,12 @@ func planAuth(kind config.Kind, s state) plan {
 		} else {
 			p.restore = &restore{secretChange: secretChange{name: path, password: s.password}}
 		}
+	case config.RedisReplicas, config.SentinelReplicas, config.RedisResources, config.KillMaster,
+		config.KillMasterForce, config.KillReplica, config.KillSentinel, config.RedisMemory,
+		config.MaxMemoryPolicy, config.MaxMemoryPercent, config.FillBurst, config.SentinelToggle,
+		config.ImageUpgrade, config.SentinelImageUpgrade, config.Reset, config.SentinelImageFlip,
+		config.SentinelResetKillMaster:
+		// newPlan calls planAuth for the auth kinds only.
 	}
 	p.fetch = fetchOpts{password: &password, sentinelMaster: s.rf.SentinelEnabled()}
 	p.converged = authConverged(templateChecksum(s), s.rf.Spec.Redis.Replicas)
