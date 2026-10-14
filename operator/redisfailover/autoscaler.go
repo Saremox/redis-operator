@@ -565,7 +565,6 @@ func (r *RedisFailoverHandler) stepObservation(rf *redisfailoverv1.RedisFailover
 	// Without a complete rollout result, for example after a HoldRollout, a
 	// lost quorum or a missing pod, only the timeout acts. A pod can have
 	// applied the step, so only a list of the pods allows a revert.
-	o.AnyApplied = true
 	if state.Phase != autoscale.PhaseApplying || now.Unix()-state.StartedAt < int64(autoscale.ApplyTimeout/time.Second) {
 		return o, nil, nil
 	}
