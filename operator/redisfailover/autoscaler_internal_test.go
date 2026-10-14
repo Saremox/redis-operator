@@ -68,6 +68,9 @@ func newAutoscaleTest(t *testing.T, mode string) *autoscaleTest {
 	at.mrec.On("SetAutoscalerPhase", "testns", "test", mock.Anything).Maybe()
 	at.h = NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, at.mrfc, &mRFService.RedisFailoverHeal{}, at.mk, at.mrec, at.logger)
 	at.h.now = func() time.Time { return at.now }
+	// The first read of the live StatefulSet after an operator start has
+	// its own tests.
+	at.h.autoscaleLiveRead.Store(failoverKey(rf), true)
 	return at
 }
 
@@ -771,7 +774,8 @@ func encodeState(t *testing.T, s autoscale.State) string {
 }
 
 // Ensure writes the pods with the effective limit, so Handle reads the state
-// before Ensure. Without autoscaling, Handle reads nothing.
+// before Ensure. Without autoscaling, Handle reads the ConfigMap one time
+// after the operator start, for a leftover state.
 func TestHandleReadsTheAutoscalerStateBeforeEnsure(t *testing.T) {
 	stop := errors.New("stop")
 	tests := []struct {
@@ -795,7 +799,11 @@ func TestHandleReadsTheAutoscalerStateBeforeEnsure(t *testing.T) {
 			mrfs := &mRFService.RedisFailoverClient{}
 			mrfs.On("EnsureNotPresentRedisService", mock.Anything).Maybe().Run(func(mock.Arguments) { calls = append(calls, "Ensure") }).Return(stop)
 			at.h.rfService = mrfs
-			at.mrec.On("SetClusterError", "testns", "test")
+			if at.rf.AutoscalingEnabled() {
+				at.mrec.On("SetClusterError", "testns", "test").Once()
+			} else {
+				at.mrec.On("SetClusterError", "testns", "test").Times(2)
+			}
 
 			err := at.h.Handle(context.Background(), at.rf)
 			require.EqualError(t, err, test.wantErr)

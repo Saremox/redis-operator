@@ -148,12 +148,76 @@ func TestAutoscaleTimeoutRevertsAStepThatNoPodApplied(t *testing.T) {
 	assert.Equal(t, autoscale.ReasonReverted+": "+autoscale.RefusalTimeout, st.status.Reason)
 	st.heal.AssertExpectations(t)
 
-	t.Run("without a complete rollout result: hold", func(t *testing.T) {
-		st := newStepTest(t, stored)
-		st.mrec.On("CountAutoscalerStep", "testns", "test", metrics.AutoscalerStepHeld).Once()
-		st.reconcile(t, nil)
-		assert.Equal(t, []string{"Ensure 1280Mi", "write Held 1280Mi"}, st.calls)
-	})
+	// Without a rollout result, for example with a lost quorum, the
+	// operator lists the pods. Only pods that no node can hold allow a
+	// revert.
+	step := func(name string, phase corev1.PodPhase, limit string) corev1.Pod {
+		pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name}, Status: corev1.PodStatus{Phase: phase}}
+		pod.Spec.Containers = []corev1.Container{{Name: "redis", Resources: memoryLimit(limit)}}
+		if phase == corev1.PodPending {
+			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonUnschedulable}}
+		} else {
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "redis", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}
+		}
+		return pod
+	}
+	terminating := step("rfr-test-0", corev1.PodRunning, "1Gi")
+	terminating.DeletionTimestamp = &metav1.Time{Time: stepNow}
+	unplaced := step("rfr-test-0", corev1.PodPending, "1280Mi")
+	unplaced.Annotations = map[string]string{"redisfailovers.databases.spotahome.com/resize-requested-at": "2026-01-01T00:00:00Z"}
+	tests := map[string]struct {
+		replicas int32
+		pods     []corev1.Pod
+		err      error
+		want     []string
+	}{
+		"a pod is missing":                          {2, []corev1.Pod{step("rfr-test-0", corev1.PodRunning, "1Gi")}, nil, []string{"Ensure 1280Mi", "write Held 1280Mi"}},
+		"a pod terminates":                          {1, []corev1.Pod{terminating}, nil, []string{"Ensure 1280Mi", "write Held 1280Mi"}},
+		"a pod of the step runs":                    {1, []corev1.Pod{step("rfr-test-0", corev1.PodRunning, "1280Mi")}, nil, []string{"Ensure 1280Mi", "write Held 1280Mi"}},
+		"a pod of the step starts":                  {1, []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "rfr-test-0"}, Spec: unplaced.Spec}}, nil, []string{"Ensure 1280Mi", "write Held 1280Mi"}},
+		"a list error":                              {1, nil, errors.New("timeout"), []string{"Ensure 1280Mi", "write Held 1280Mi"}},
+		"the only pod of the step cannot be placed": {1, []corev1.Pod{unplaced}, nil, []string{"Ensure 1280Mi", "clear rfr-test-0", "write Reverted 0", "requeue testns/test 0s"}},
+	}
+	for name, test := range tests {
+		t.Run("without a rollout result, "+name, func(t *testing.T) {
+			st := newStepTest(t, stored)
+			st.rf.Spec.Redis.Replicas = test.replicas
+			st.pods, st.podsErr = test.pods, test.err
+			st.heal.On("ClearResizeRequested", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+				st.calls = append(st.calls, "clear "+args.String(1))
+			}).Return(nil)
+			st.mrec.On("CountAutoscalerStep", "testns", "test", mock.Anything).Once()
+			st.reconcile(t, nil)
+			assert.Equal(t, test.want, st.calls)
+		})
+	}
+}
+
+// A revert after the timeout waits while the resize request of a pod cannot
+// be removed, and holds the step when the wait continues. A pod that is gone
+// has no request.
+func TestAutoscaleHoldsAStepThatTheOperatorCannotRevert(t *testing.T) {
+	gone := apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, "rfr-test-1")
+	for name, test := range map[string]struct {
+		err  error
+		want string
+	}{
+		"webhook denies":  {errors.New("denied by webhook"), "write Held 1280Mi"},
+		"the pod is gone": {gone, "write Reverted 0"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stored := applying()
+			stored.StartedAt = stepNow.Add(-autoscale.ApplyTimeout).Unix()
+			st := newStepTest(t, stored)
+			st.heal.On("ClearResizeRequested", mock.Anything, "rfr-test-1").Return(test.err)
+			st.mrec.On("CountAutoscalerStep", "testns", "test", mock.Anything).Once()
+			st.reconcile(t, &autoscaleRollout{complete: true, requested: []string{"rfr-test-1"}, updateRevision: "rev1"})
+			assert.Equal(t, test.want, st.calls[1])
+			if test.want == "write Held 1280Mi" {
+				assert.Equal(t, autoscale.ReasonHeld+": "+autoscale.RefusalClear, st.status.Reason)
+			}
+		})
+	}
 }
 
 // A refusal outside a step holds the rollout of a change of the spec, and
@@ -250,12 +314,101 @@ func TestReadAutoscaleKeepsAnExpiredRevert(t *testing.T) {
 	at.rf.Spec.Redis.Autoscaling.Mode = redisfailoverv1.AutoscalingModeAuto
 	at.mk.On("GetConfigMap", "testns", autoscaleCM).Once().Return(at.stateConfigMap(encodeState(t, reverted)), nil)
 	at.mk.On("GetStatefulSet", "testns", "rfr-test").Once().Return(redisStatefulSet("1280Mi"), nil)
+	at.rf.Spec.Redis.Replicas = 1
+	at.mk.On("GetStatefulSetPods", "testns", "rfr-test").Once().Return(&corev1.PodList{Items: []corev1.Pod{redisPod("rfr-test-0", "old", "1152Mi")}}, nil)
 
 	read, err := at.h.readAutoscale(at.rf)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1152*mib, read.effective)
 	assert.Equal(t, autoscale.PhaseReverted, read.state.Phase)
+}
+
+// Before Ensure applies a revert, the operator lists the pods again. A pod
+// that runs or starts from the template of the step holds the step, also
+// after an operator outage.
+func TestReadAutoscaleHoldsARevertThatEnsureDidNotApply(t *testing.T) {
+	reverted := applying()
+	reverted.Phase, reverted.Effective, reverted.Refusal = autoscale.PhaseReverted, 0, autoscale.RefusalTimeout
+	running := redisPod("rfr-test-1", "new", "1280Mi")
+	pending := startingPod("new", "1280Mi")
+	tests := map[string]struct {
+		state    func(s autoscale.State) autoscale.State
+		pods     []corev1.Pod
+		listed   bool
+		held     bool
+		listErr  error
+		expiries bool
+	}{
+		"a pod of the step runs":   {pods: []corev1.Pod{running}, listed: true, held: true},
+		"a pod of the step starts": {pods: []corev1.Pod{pending}, listed: true, held: true},
+		"no pod of the step":       {pods: []corev1.Pod{redisPod("rfr-test-1", "old", "1Gi")}, listed: true},
+		"after an outage":          {pods: []corev1.Pod{running}, listed: true, held: true, expiries: true},
+		"list error":               {listErr: errors.New("timeout"), listed: true},
+		"Ensure applied the revert": {state: func(s autoscale.State) autoscale.State {
+			s.RevertApplied = true
+			return s
+		}, pods: []corev1.Pod{running}},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := reverted
+			if test.state != nil {
+				s = test.state(s)
+			}
+			if test.expiries {
+				s.LastSample = autoscaleT0.Add(-time.Hour).Unix()
+			}
+			at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
+			at.rf.Spec.Redis.Autoscaling.Mode = redisfailoverv1.AutoscalingModeAuto
+			at.rf.Spec.Redis.Replicas = 1
+			at.mk.On("GetConfigMap", "testns", autoscaleCM).Once().Return(at.stateConfigMap(encodeState(t, s)), nil)
+			at.mk.On("GetStatefulSetPods", "testns", "rfr-test").Return(&corev1.PodList{Items: test.pods}, test.listErr)
+			at.mk.On("GetStatefulSet", "testns", "rfr-test").Maybe().Return(redisStatefulSet("1280Mi"), nil)
+
+			read, err := at.h.readAutoscale(at.rf)
+
+			if test.listErr != nil {
+				require.ErrorIs(t, err, test.listErr)
+				return
+			}
+			require.NoError(t, err)
+			if test.held {
+				assert.Equal(t, autoscale.PhaseHeld, read.state.Phase)
+				assert.Equal(t, autoscale.RefusalStepPod, read.state.Refusal)
+				assert.Equal(t, 1280*mib, read.effective)
+				assert.True(t, read.resumed, "the autoscaler writes it")
+			} else {
+				assert.Equal(t, autoscale.PhaseReverted, read.state.Phase)
+				assert.Equal(t, 1024*mib, read.effective)
+			}
+			if !test.listed {
+				at.mk.AssertNotCalled(t, "GetStatefulSetPods", mock.Anything, mock.Anything)
+			}
+		})
+	}
+}
+
+// The autoscaler marks a revert that Ensure applied, so later reconciles do
+// not list the pods.
+func TestAutoscaleMarksAnAppliedRevert(t *testing.T) {
+	reverted := applying()
+	reverted.Phase, reverted.Effective, reverted.RetryAt = autoscale.PhaseReverted, 0, stepNow.Add(time.Hour).Unix()
+	st := newStepTest(t, reverted)
+
+	st.reconcile(t, &autoscaleRollout{complete: true, applied: true, updateRevision: "rev0"})
+	require.True(t, decodeState(t, st.store.stored).RevertApplied)
+	st.reconcile(t, &autoscaleRollout{complete: true, applied: true, updateRevision: "rev0"})
+
+	assert.Equal(t, []string{"Ensure 1Gi", "write Reverted 0", "Ensure 1Gi"}, st.calls)
+	st.mk.AssertNumberOfCalls(t, "GetStatefulSetPods", 1)
+
+	t.Run("not without Handle", func(t *testing.T) {
+		st := newStepTest(t, reverted)
+		st.rf.Status.Autoscaling = redisfailoverv1.AutoscalingStatus{}
+		st.h.autoscale(st.rf, redisfailoverv1.AutoscalingStatus{})
+		assert.Zero(t, st.store.updates)
+	})
 }
 
 func TestUnplaceable(t *testing.T) {

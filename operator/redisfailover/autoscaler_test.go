@@ -99,6 +99,8 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 					autoscaleStep(t, mk, mrfh, rf, master, &step)
 				}
 				if autoscaling == v1.AutoscalingModeRecommend {
+					// The first read after the operator start for a missing state.
+					mk.On("GetStatefulSet", rf.Namespace, "rfr-"+rf.Name).Once().Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "statefulsets"}, "rfr-"+rf.Name))
 					mk.On("GetConfigMap", rf.Namespace, "rfa-"+rf.Name).Once().Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "rfa-"+rf.Name))
 					mk.On("CreateConfigMap", rf.Namespace, mock.Anything).Once().Return(nil)
 					mrfc.On("GetAutoscalerInfo", rf, master).Once().Return(&redis.AutoscalerInfo{
@@ -128,12 +130,11 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 	}
 }
 
-// TestHandleAutoscalingAPICalls runs a full healthy reconcile. Recommend makes
-// the API calls of the autoscaler without the seam: one state read, before
-// Ensure, and the state write. It reads no StatefulSet. Without autoscaling,
-// the first reconcile looks for a leftover state, and makes no INFO call.
-// Validate accepts mode Auto, which reads the StatefulSet for a state that is
-// missing, and for the rollout result.
+// TestHandleAutoscalingAPICalls runs the first full healthy reconcile after an
+// operator start. Recommend reads the state before Ensure and writes it. For
+// the missing state, it reads the StatefulSet one time. Without autoscaling,
+// the reconcile looks for a leftover state, and makes no INFO call. Validate
+// accepts mode Auto, which also reads the StatefulSet for the rollout result.
 func TestHandleAutoscalingAPICalls(t *testing.T) {
 	const master = "10.0.0.1"
 	for _, autoscaling := range []string{"unset", v1.AutoscalingModeOff, v1.AutoscalingModeRecommend, v1.AutoscalingModeAuto} {
@@ -178,7 +179,7 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 			want := map[string][]string{
 				"unset":                     {"GetConfigMap", "Ensure"},
 				v1.AutoscalingModeOff:       {"GetConfigMap", "Ensure"},
-				v1.AutoscalingModeRecommend: {"GetConfigMap", "Ensure", "CreateConfigMap"},
+				v1.AutoscalingModeRecommend: {"GetConfigMap", "GetStatefulSet", "Ensure", "CreateConfigMap"},
 				v1.AutoscalingModeAuto:      {"GetConfigMap", "GetStatefulSet", "Ensure", "GetStatefulSet", "CreateConfigMap"},
 			}[autoscaling]
 			if rf.AutoscalingEnabled() {
@@ -186,6 +187,11 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 				mrfc.On("GetAutoscalerInfo", rf, master).Once().Return(&redis.AutoscalerInfo{
 					UsedMemory: 100 << 20, MaxMemory: 768 << 20, UptimeSeconds: 3600, RunID: "run1", Role: "master",
 				}, nil)
+			}
+			if autoscaling == v1.AutoscalingModeRecommend {
+				// One read of the StatefulSet for a missing state after the
+				// operator start.
+				mk.On("GetStatefulSet", rf.Namespace, "rfr-"+rf.Name).Once().Run(record("GetStatefulSet")).Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "statefulsets"}, "rfr-"+rf.Name))
 			}
 			if autoscaling == v1.AutoscalingModeAuto {
 				rf.Spec.Redis.MaxMemory = &v1.MaxMemorySettings{}
@@ -197,7 +203,7 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 			require.NoError(t, handler.Handle(context.Background(), rf))
 
 			assert.Equal(t, want, calls)
-			if autoscaling != v1.AutoscalingModeAuto {
+			if !rf.AutoscalingEnabled() {
 				mk.AssertNotCalled(t, "GetStatefulSet", mock.Anything, mock.Anything)
 			}
 			mk.AssertExpectations(t)

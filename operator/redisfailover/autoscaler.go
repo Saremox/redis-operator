@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -74,6 +75,9 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 		read.blocked = autoscale.ReasonNewerState
 		read.err = fmt.Errorf("the state ConfigMap has version %d, this operator reads version %d", read.state.Version, autoscale.StateVersion)
 	case read.state.Version != 0:
+		if err := r.holdUnappliedRevert(rf, &read, spec, maxLimit); err != nil {
+			return read, err
+		}
 		// No operator sampled an expired state for MaxStateAge. Its Effective
 		// can be a leftover of an earlier mode Auto, or of a step whose
 		// template never reached the pods. Only the template shows the limit
@@ -93,15 +97,37 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 	// In mode Recommend, only an effective limit in the status shows that a
 	// step of an earlier mode Auto changed the pods. Thus an instance without
 	// a step makes no extra call.
-	if rf.Spec.Redis.Autoscaling.Mode != redisfailoverv1.AutoscalingModeAuto && rf.Status.Autoscaling.EffectiveMemory == "" {
+	// A status without it, for example after a restore, gets one read after
+	// each operator start.
+	_, looked := r.autoscaleLiveRead.Load(failoverKey(rf))
+	if rf.Spec.Redis.Autoscaling.Mode != redisfailoverv1.AutoscalingModeAuto && rf.Status.Autoscaling.EffectiveMemory == "" && looked {
 		return read, nil
 	}
 	live, err := r.liveRedisMemoryLimit(rf, spec)
 	if err != nil {
 		return read, err
 	}
+	r.autoscaleLiveRead.Store(failoverKey(rf), true)
 	read.effective = max(spec, min(live, maxLimit))
 	return read, nil
+}
+
+// holdUnappliedRevert checks a Reverted state that Ensure did not apply. The
+// StatefulSet can have created a pod from the template of the step since the
+// revert, for example while the operator was down. Ensure would then make
+// that pod stale and larger than the template, so the step is held.
+func (r *RedisFailoverHandler) holdUnappliedRevert(rf *redisfailoverv1.RedisFailover, read *autoscaleRead, spec, maxLimit int64) error {
+	s := read.state
+	if s.Phase != autoscale.PhaseReverted || s.RevertApplied || s.To <= autoscale.EffectiveLimit(s, spec, maxLimit) {
+		return nil
+	}
+	applied, _, err := r.stepPodsApplied(rf, s.To)
+	if err != nil || !applied {
+		return err
+	}
+	s.Phase, s.Refusal, s.Effective = autoscale.PhaseHeld, autoscale.RefusalStepPod, s.To
+	read.state, read.resumed = autoscale.Bound(s, spec, maxLimit), true
+	return nil
 }
 
 // autoscaleStateExpired reports whether the last sample of the state, or of
@@ -141,10 +167,17 @@ func (r *RedisFailoverHandler) autoscalerLimits(rf *redisfailoverv1.RedisFailove
 	if !ok {
 		return rfservice.AutoscalerLimits{}
 	}
-	if read.effective == read.spec {
-		return rfservice.AutoscalerLimits{}
+	var limits rfservice.AutoscalerLimits
+	if read.effective != read.spec {
+		limits.Spec, limits.Effective = read.spec, read.effective
 	}
-	return rfservice.AutoscalerLimits{Spec: read.spec, Effective: read.effective}
+	// The last step keeps the pods of its template in each phase, also after
+	// the back-off of a revert. A change of the spec after the step makes
+	// each revision a change of the user, also a lower limit.
+	if s := read.state; s.Generation == rf.Generation {
+		limits.Step = s.To
+	}
+	return limits
 }
 
 // autoscaleStepping reports whether the autoscaler makes steps in this
@@ -181,8 +214,9 @@ type autoscaleRollout struct {
 	applied, anyApplied bool
 	// refusal is the permanent refusal of a resize to an autoscaler revision.
 	refusal *resizeRefusal
-	// complete is true when the other fields describe all pods. A revert
-	// needs it, because an error can end the rollout after a refusal.
+	// complete is true when the other fields describe all pods, and no pod
+	// is missing or terminating. A revert needs it, because an error can end
+	// the rollout after a refusal.
 	complete bool
 	// requested holds the pods with an in-place resize that the kubelet did
 	// not apply yet.
@@ -191,6 +225,9 @@ type autoscaleRollout struct {
 	vpa bool
 	// updateRevision is the update revision of the StatefulSet.
 	updateRevision string
+	// restartOnResize is true when the redis container of a pod or of the
+	// template restarts on a memory resize.
+	restartOnResize bool
 }
 
 // vpaAnnotations are the pod annotations of the VerticalPodAutoscaler
@@ -226,41 +263,91 @@ func (r *RedisFailoverHandler) recordAutoscaleRollout(rf *redisfailoverv1.RedisF
 		return err
 	}
 	limit := rf.Spec.Redis.Resources.Limits.Memory().Value()
-	complete := len(pods.Items) >= int(rf.Spec.Redis.Replicas)
+	// A missing or terminating pod comes back from the template of the
+	// StatefulSet, and the result cannot tell which template that is.
+	rollout.complete = len(pods.Items) >= int(rf.Spec.Redis.Replicas) && !slices.ContainsFunc(pods.Items, func(p corev1.Pod) bool { return p.DeletionTimestamp != nil })
 	observed := ss.Status.ObservedGeneration >= ss.Generation
-	rollout.settled = complete && !waits && rollout.refusal == nil && observed
-	rollout.applied = complete && observed
-	rollout.complete, rollout.updateRevision = true, ss.Status.UpdateRevision
+	rollout.settled = rollout.complete && !waits && rollout.refusal == nil && observed
+	rollout.applied = rollout.complete && observed
+	rollout.updateRevision = ss.Status.UpdateRevision
+	rollout.restartOnResize = restartsOnMemoryResize(ss.Spec.Template.Spec.Containers)
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		updated := pod.Labels[appsv1.ControllerRevisionHashLabelKey] == ss.Status.UpdateRevision
-		if pod.DeletionTimestamp != nil || !updated || rfservice.ResizeRequested(pod) || !util.PodIsReady(pod) {
+		requested := rfservice.ResizeRequested(pod)
+		if requested && updated && observed && rfservice.AppliedRedisMemoryLimit(pod) >= limit {
+			// The rollout moved the pod after the resize, and the removal of
+			// the request failed. Nothing else removes it, and it would hold
+			// each later step.
+			requested = r.rfHealer.ClearResizeRequested(rf, pod.Name) != nil
+		}
+		if !updated || requested || !util.PodIsReady(pod) {
 			rollout.settled = false
 		}
-		if !updated {
-			rollout.applied = false
-		}
-		// A pod that the StatefulSet created from the template of the step
-		// gets the limit when it starts. A revert would make it stale and
-		// larger than the template. A pod that no node can hold has no data.
-		if updated && rfservice.RequestedRedisMemoryLimit(pod) >= limit && !unplaceable(pod) {
-			rollout.anyApplied = true
-		}
-		if rfservice.ResizeRequested(pod) {
+		if requested {
 			rollout.requested = append(rollout.requested, pod.Name)
 		}
+		if !updated || rfservice.AppliedRedisMemoryLimit(pod) < limit {
+			rollout.applied = false
+		}
+		rollout.anyApplied = rollout.anyApplied || stepPod(pod, limit)
 		for _, a := range vpaAnnotations {
 			_, found := pod.Annotations[a]
 			rollout.vpa = rollout.vpa || found
 		}
-		if rfservice.AppliedRedisMemoryLimit(pod) >= limit {
-			rollout.anyApplied = true
-		} else {
-			rollout.applied = false
-		}
+		rollout.restartOnResize = rollout.restartOnResize || restartsOnMemoryResize(pod.Spec.Containers)
 	}
 	r.autoscaleRollout.Store(key, rollout)
 	return nil
+}
+
+// stepPod reports whether pod applied the memory limit to, or starts with
+// it. A revert would make such a pod larger than the template. A pod that no
+// node can hold has no data.
+func stepPod(pod *corev1.Pod, to int64) bool {
+	applied := rfservice.AppliedRedisMemoryLimit(pod)
+	return applied >= to || applied == 0 && rfservice.RequestedRedisMemoryLimit(pod) >= to && !unplaceable(pod)
+}
+
+// stepPodsApplied lists the pods for a revert without the rollout result of
+// this reconcile. It reports whether a pod is missing, terminates or is a
+// stepPod, and returns the pods with a resize request.
+func (r *RedisFailoverHandler) stepPodsApplied(rf *redisfailoverv1.RedisFailover, to int64) (bool, []string, error) {
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return true, nil, err
+	}
+	if len(pods.Items) < int(rf.Spec.Redis.Replicas) {
+		return true, nil, nil
+	}
+	var requested []string
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.DeletionTimestamp != nil || stepPod(pod, to) {
+			return true, nil, nil
+		}
+		if rfservice.ResizeRequested(pod) {
+			requested = append(requested, pod.Name)
+		}
+	}
+	return false, requested, nil
+}
+
+// restartsOnMemoryResize reports whether the redis container restarts on a
+// change of its memory, for example after a mutating webhook. A step would
+// then restart Redis.
+func restartsOnMemoryResize(containers []corev1.Container) bool {
+	for _, c := range containers {
+		if c.Name != "redis" {
+			continue
+		}
+		for _, p := range c.ResizePolicy {
+			if p.ResourceName == corev1.ResourceMemory && p.RestartPolicy == corev1.RestartContainer {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // logResizeRefusal logs a refusal at Warning when it differs from the last
@@ -352,6 +439,10 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 		state.Frozen = false
 	}
 	state = autoscale.Bound(state, read.spec, maxLimit)
+	if ok && read.state.Phase == autoscale.PhaseReverted && !read.state.RevertApplied && state.Phase == autoscale.PhaseReverted {
+		// Ensure of this reconcile applied the limit before the step.
+		state.RevertApplied = true
+	}
 	// The next reconcile gives the pods the limit of the stored state, so a
 	// change of the limit cannot wait for the next sample.
 	write := state != unbound || read.resumed
@@ -428,22 +519,7 @@ func (r *RedisFailoverHandler) planStep(rf *redisfailoverv1.RedisFailover, read 
 	auto := rf.Spec.Redis.Autoscaling.Mode == redisfailoverv1.AutoscalingModeAuto
 	v, _ := r.autoscaleRollout.Load(failoverKey(rf))
 	rollout, _ := v.(autoscaleRollout)
-	o := autoscale.Observation{Now: now, Spec: read.spec, Max: rf.Spec.Redis.Autoscaling.MemoryMax.Value(), Generation: rf.Generation}
-	// Without the rollout of this reconcile, for example after a HoldRollout
-	// or an early end of the checks, nothing is known: only the timeout acts.
-	if rollout.complete {
-		o.Settled = auto && rollout.settled && rf.Status.State == redisfailoverv1.HealthyState
-		o.Applied, o.AnyApplied = rollout.applied, rollout.anyApplied
-		if rollout.refusal != nil {
-			o.Refusal = rollout.refusal.String()
-		} else {
-			// The next refusal is a change, also when its text is the same.
-			r.autoscaleRefusalLogged.Delete(failoverKey(rf))
-		}
-	} else {
-		// A pod can have applied the step, so the timeout holds it.
-		o.AnyApplied = true
-	}
+	o, requested, listErr := r.stepObservation(rf, read, state, rollout, now)
 	next, action := autoscale.Plan(state, o)
 	var wait string
 	var err error
@@ -456,16 +532,57 @@ func (r *RedisFailoverHandler) planStep(rf *redisfailoverv1.RedisFailover, read 
 	if action == autoscale.ActionRevert {
 		// With the annotation, a later step to the same limit on a pod that
 		// still requests it times out at once.
-		for _, pod := range rollout.requested {
-			if err := r.rfHealer.ClearResizeRequested(rf, pod); err != nil {
-				return state, autoscale.ActionNone, "", fmt.Errorf("the revert of the autoscaler step waits: %w", err)
+		if clearErr := r.clearResizeRequests(rf, requested); clearErr != nil {
+			if now.Unix()-state.StartedAt < int64(autoscale.ApplyTimeout/time.Second) {
+				return state, autoscale.ActionNone, "", fmt.Errorf("the revert of the autoscaler step waits: %w", clearErr)
 			}
+			// A revert that never ends would keep the step in Applying.
+			state.Phase, state.Refusal = autoscale.PhaseHeld, autoscale.RefusalClear
+			return state, autoscale.ActionHold, "", fmt.Errorf("the autoscaler holds the step: %w", clearErr)
 		}
 	}
 	if auto && wait == "" {
 		wait = autoscale.WaitReason(next, o)
 	}
-	return next, action, wait, err
+	return next, action, wait, errors.Join(listErr, err)
+}
+
+// stepObservation returns the observation of Plan, and the pods with a
+// resize request for a revert.
+func (r *RedisFailoverHandler) stepObservation(rf *redisfailoverv1.RedisFailover, read autoscaleRead, state autoscale.State, rollout autoscaleRollout, now time.Time) (autoscale.Observation, []string, error) {
+	o := autoscale.Observation{Now: now, Spec: read.spec, Max: rf.Spec.Redis.Autoscaling.MemoryMax.Value(), Generation: rf.Generation}
+	if rollout.complete {
+		o.Settled = rf.Spec.Redis.Autoscaling.Mode == redisfailoverv1.AutoscalingModeAuto && rollout.settled && rf.Status.State == redisfailoverv1.HealthyState
+		o.Applied, o.AnyApplied = rollout.applied, rollout.anyApplied
+		if rollout.refusal != nil {
+			o.Refusal = rollout.refusal.String()
+		} else {
+			// The next refusal is a change, also when its text is the same.
+			r.autoscaleRefusalLogged.Delete(failoverKey(rf))
+		}
+		return o, rollout.requested, nil
+	}
+	// Without a complete rollout result, for example after a HoldRollout, a
+	// lost quorum or a missing pod, only the timeout acts. A pod can have
+	// applied the step, so only a list of the pods allows a revert.
+	o.AnyApplied = true
+	if state.Phase != autoscale.PhaseApplying || now.Unix()-state.StartedAt < int64(autoscale.ApplyTimeout/time.Second) {
+		return o, nil, nil
+	}
+	applied, requested, err := r.stepPodsApplied(rf, state.To)
+	o.AnyApplied = applied
+	return o, requested, err
+}
+
+// clearResizeRequests removes the resize request of each pod. A pod that is
+// gone has no request.
+func (r *RedisFailoverHandler) clearResizeRequests(rf *redisfailoverv1.RedisFailover, pods []string) error {
+	for _, pod := range pods {
+		if err := r.rfHealer.ClearResizeRequested(rf, pod); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // refusalReason returns the status reason of a refusal of this reconcile, or
@@ -492,6 +609,8 @@ func (r *RedisFailoverHandler) stepBlocked(rf *redisfailoverv1.RedisFailover, ro
 		return autoscale.ReasonCustomMaxMemory, nil
 	case rollout.vpa:
 		return autoscale.ReasonVPA, nil
+	case rollout.restartOnResize:
+		return autoscale.ReasonRestartOnResize, nil
 	}
 	support, err := r.k8sservice.PodResizeSupport()
 	if err != nil {
@@ -643,6 +762,7 @@ func (r *RedisFailoverHandler) forgetAutoscaler(key string) {
 	r.autoscaleLogged.Delete(key)
 	r.autoscaleRefusalLogged.Delete(key)
 	r.autoscaleOff.Delete(key)
+	r.autoscaleLiveRead.Delete(key)
 }
 
 // logAutoscale logs an error at Warning when it differs from the last one,

@@ -213,11 +213,12 @@ func TestRecordAutoscaleRollout(t *testing.T) {
 			return []corev1.Pod{redisPod("rfr-test-0", "old", "1Gi"), redisPod("rfr-test-1", "old", "1Gi")}
 		}), observed: 2, want: want{false, false, false}},
 		"a pod not ready":   {pods: pods(func(p []corev1.Pod) []corev1.Pod { p[1].Status.Conditions = nil; return p }), observed: 2, want: want{false, true, true}},
-		"a terminating pod": {pods: pods(func(p []corev1.Pod) []corev1.Pod { p[1].DeletionTimestamp = &metav1.Time{Time: time.Now()}; return p }), observed: 2, want: want{false, true, true}},
+		"a terminating pod": {pods: pods(func(p []corev1.Pod) []corev1.Pod { p[1].DeletionTimestamp = &metav1.Time{Time: time.Now()}; return p }), observed: 2, want: want{false, false, true}},
 		"a resize not applied yet": {pods: pods(func(p []corev1.Pod) []corev1.Pod {
+			p[1] = redisPod("rfr-test-1", "old", "1Gi")
 			p[1].Annotations = map[string]string{"redisfailovers.databases.spotahome.com/resize-requested-at": "2026-01-01T00:00:00Z"}
 			return p
-		}), observed: 2, want: want{false, true, true}},
+		}), observed: 2, want: want{false, false, true}},
 		"a pending pod of the update": {pods: pods(func(p []corev1.Pod) []corev1.Pod { p[1].Status = corev1.PodStatus{Phase: corev1.PodPending}; return p }), observed: 2, want: want{false, false, true}},
 	}
 	for name, test := range tests {

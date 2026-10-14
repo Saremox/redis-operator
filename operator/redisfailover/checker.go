@@ -476,6 +476,9 @@ func (r *RedisFailoverHandler) resizeInPlace(rf *redisfailoverv1.RedisFailover, 
 		refusal := &resizeRefusal{pod: pod, class: result.Class, message: result.Message}
 		r.autoscaleRollout.Store(failoverKey(rf), autoscaleRollout{refusal: refusal})
 		r.logResizeRefusal(rf, refusal)
+		// The rollout holds also a change of the spec, so the message shows
+		// it. The state stays, because the master serves the clients.
+		rf.Status.Message = "rollout holds " + refusal.String()
 		return false, nil
 	}
 	return result.Action == rfservice.ResizeRecreate, nil

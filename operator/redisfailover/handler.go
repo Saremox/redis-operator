@@ -102,7 +102,10 @@ type RedisFailoverHandler struct {
 	// autoscaleOff holds, per namespace/name, true after a reconcile without
 	// autoscaling found no state ConfigMap.
 	autoscaleOff sync.Map
-	now          func() time.Time
+	// autoscaleLiveRead holds, per namespace/name, true after a read of the
+	// StatefulSet for a state without a limit.
+	autoscaleLiveRead sync.Map
+	now               func() time.Time
 	// requeue is nil until New connects the controller.
 	requeue func(key string, after time.Duration)
 }

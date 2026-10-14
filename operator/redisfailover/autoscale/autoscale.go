@@ -126,6 +126,9 @@ type State struct {
 	// after the state was lost. The cause of the lost state is not known, so
 	// no step starts until the spec changes at Generation.
 	Frozen bool `json:"frozen,omitempty"`
+	// RevertApplied marks a Reverted state that Ensure applied. Until then,
+	// the StatefulSet can create pods from the template of the step.
+	RevertApplied bool `json:"revertApplied,omitempty"`
 }
 
 // Expire discards the decision values of a state with a last sample older than

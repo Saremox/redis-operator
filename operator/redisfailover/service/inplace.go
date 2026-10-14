@@ -47,6 +47,10 @@ type AutoscalerLimits struct {
 	// Spec is the limit of redis.resources, and Effective the limit of the
 	// pods when it differs from Spec, or 0.
 	Spec, Effective int64
+	// Step is the limit of the last autoscaler step while no change of the
+	// spec followed it, or 0. A pod with this limit on a revision before a
+	// revert keeps it.
+	Step int64
 }
 
 // ResizeResult is the outcome of ResizePodInPlace.
@@ -138,8 +142,22 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 		return ResizeResult{}, err
 	}
 	if reason != "" {
-		autoscaler = limits.Effective != 0
+		autoscaler = limits.Effective != 0 || limits.Step != 0
 		return recreate(ResizePermanent, reason)
+	}
+	if limits.Step != 0 && autoscalerRevision(update, current, AutoscalerLimits{Effective: limits.Step}) {
+		// The StatefulSet created the pod from the template of a step, and
+		// the update revision has the limit before it, for example after a
+		// revert. A resize or a recreate would shrink the pod, so it only
+		// moves to the update revision with its larger limit.
+		if err := r.k8sService.UpdatePodLabels(rf.Namespace, podName, map[string]string{appsv1.ControllerRevisionHashLabelKey: updateRevision}); err != nil {
+			return ResizeResult{}, err
+		}
+		if err := r.ClearResizeRequested(rf, podName); err != nil {
+			return ResizeResult{}, err
+		}
+		logger.Infof("Kept the memory limit of the autoscaler step on the pod")
+		return result(ResizeDone, "", "")
 	}
 	autoscaler = autoscalerRevision(current, update, limits)
 	desired, reason, class, err := r.inPlaceResources(rf, pod, current, update, support)

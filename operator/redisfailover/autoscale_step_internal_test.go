@@ -36,6 +36,9 @@ type stepTest struct {
 	heal   *mRFService.RedisFailoverHeal
 	calls  []string
 	status redisfailoverv1.AutoscalingStatus
+	// pods and podsErr are the answer to a list of the pods.
+	pods    []corev1.Pod
+	podsErr error
 }
 
 func newStepTest(t *testing.T, stored autoscale.State) *stepTest {
@@ -55,6 +58,10 @@ func newStepTest(t *testing.T, stored autoscale.State) *stepTest {
 		st.calls = append(st.calls, fmt.Sprintf("requeue %s %s", key, after))
 	}
 	at.mrec.On("SetAutoscaler", "testns", "test", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	at.rf.Spec.Redis.Replicas = 0
+	at.mk.On("GetStatefulSetPods", "testns", "rfr-test").Maybe().Return(func(string, string) (*corev1.PodList, error) {
+		return &corev1.PodList{Items: st.pods}, st.podsErr
+	})
 	return st
 }
 
@@ -155,6 +162,7 @@ func TestAutoscaleChecksBeforeAStep(t *testing.T) {
 		"no maxMemory":           {change: func(st *stepTest, _ *autoscaleRollout) { st.rf.Spec.Redis.MaxMemory = nil }, reason: autoscale.ReasonNoManagedMaxMemory},
 		"customConfig maxmemory": {change: func(st *stepTest, _ *autoscaleRollout) { st.rf.Spec.Redis.CustomConfig = []string{"maxmemory 100mb"} }, reason: autoscale.ReasonCustomMaxMemory},
 		"VerticalPodAutoscaler":  {change: func(_ *stepTest, r *autoscaleRollout) { r.vpa = true }, reason: autoscale.ReasonVPA},
+		"restart on a resize":    {change: func(_ *stepTest, r *autoscaleRollout) { r.restartOnResize = true }, reason: autoscale.ReasonRestartOnResize},
 		"Kubernetes 1.32": {change: func(st *stepTest, _ *autoscaleRollout) {
 			st.mk.On("PodResizeSupport").Return(k8s.PodResizeSupport{}, nil).Twice()
 		}, reason: autoscale.ReasonNoInPlaceResize},
@@ -222,7 +230,8 @@ func TestAutoscaleRevertsAStep(t *testing.T) {
 		st.reconcile(t, refused())
 		st.reconcile(t, &autoscaleRollout{complete: true, applied: true, updateRevision: "rev0"})
 
-		assert.Equal(t, []string{"Ensure 1280Mi", "clear rfr-test-1", "write Reverted 0", "requeue testns/test 0s", "Ensure 1Gi"}, st.calls)
+		// The second reconcile marks the revert that Ensure applied.
+		assert.Equal(t, []string{"Ensure 1280Mi", "clear rfr-test-1", "write Reverted 0", "requeue testns/test 0s", "Ensure 1Gi", "write Reverted 0"}, st.calls)
 		assert.Equal(t, autoscale.PhaseReverted, st.status.Phase)
 		assert.Equal(t, autoscale.ReasonReverted+": pod rfr-test-1: resize infeasible: no node", st.status.Reason)
 		assert.Equal(t, stepNow.Add(time.Hour).UTC().Truncate(time.Minute).Format(time.RFC3339), st.status.RetryAfter)
@@ -347,7 +356,7 @@ func TestAutoscaleUserChangeDuringAStep(t *testing.T) {
 		st.mrec.On("CountAutoscalerStep", "testns", "test", metrics.AutoscalerStepDone).Once()
 		rf, err := st.h.withEffectiveLimit(st.rf)
 		require.NoError(t, err)
-		assert.Equal(t, rfservice.AutoscalerLimits{Spec: 1024 * mib, Effective: 1280 * mib}, st.h.autoscalerLimits(rf), "the step keeps its pods")
+		assert.Equal(t, rfservice.AutoscalerLimits{Spec: 1024 * mib, Effective: 1280 * mib, Step: 1280 * mib}, st.h.autoscalerLimits(rf), "the step keeps its pods")
 
 		st.reconcile(t, &autoscaleRollout{complete: true, applied: true, anyApplied: true, updateRevision: "rev1"})
 

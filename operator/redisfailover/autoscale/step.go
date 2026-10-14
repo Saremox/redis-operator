@@ -37,8 +37,18 @@ const (
 	ApplyTimeout = 15 * time.Minute
 )
 
-// RefusalTimeout is the refusal of a step that did not end in ApplyTimeout.
-const RefusalTimeout = "the step did not end in 15 minutes"
+// The refusals that the operator gives itself.
+const (
+	// RefusalTimeout is the refusal of a step that did not end in
+	// ApplyTimeout.
+	RefusalTimeout = "the step did not end in 15 minutes"
+	// RefusalClear holds a step that the operator cannot revert, because it
+	// cannot remove the resize request of a pod.
+	RefusalClear = "the operator cannot remove the resize request of a pod"
+	// RefusalStepPod holds a revert that Ensure did not apply, because a pod
+	// runs or starts from the template of the step.
+	RefusalStepPod = "a pod runs or starts with the limit of the step"
+)
 
 // The reasons in the status of mode Auto. A reason with a refusal adds the
 // refusal that the state holds, so the text changes only at a transition.
@@ -57,6 +67,7 @@ const (
 	ReasonInPlaceDisabled     = "a step needs redis.inPlaceResize Enabled"
 	ReasonNoRevisionAccess    = "a step needs the permission to get controllerrevisions"
 	ReasonVPA                 = "a VerticalPodAutoscaler changes the redis pods"
+	ReasonRestartOnResize     = "a step needs a redis container without the memory resizePolicy RestartContainer"
 	ReasonCustomMaxMemory     = "a step needs a maxmemory that the operator manages, not customConfig"
 	ReasonNoManagedMaxMemory  = "a step needs redis.maxMemory"
 	ReasonPreconditionUnknown = "a step waits, because a check before the step failed"
@@ -261,7 +272,7 @@ func (s State) done(now int64) State {
 }
 
 func (s State) revert(o Observation, now int64) State {
-	s.Phase, s.Refusal = PhaseReverted, o.Refusal
+	s.Phase, s.Refusal, s.RevertApplied = PhaseReverted, o.Refusal, false
 	s.Effective = s.From
 	if s.Effective <= o.Spec {
 		s.Effective = 0
