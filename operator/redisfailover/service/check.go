@@ -279,7 +279,7 @@ func (e *WrongMasterError) local() bool {
 
 // podErrorLogf logs at Debug for a pod that is not Ready, because such a pod
 // usually restarts.
-func podErrorLogf(logger log.Logger, pod *corev1.Pod) func(string, ...interface{}) {
+func podErrorLogf(logger log.Logger, pod *corev1.Pod) func(string, ...any) {
 	logger = logger.WithField("pod", pod.Name)
 	if util.PodIsReady(pod) {
 		return logger.Warningf

@@ -10,19 +10,19 @@ type dummy struct {
 	ControllerRecorder
 }
 
-func (d *dummy) SetClusterOK(namespace string, name string)    {}
-func (d *dummy) SetClusterError(namespace string, name string) {}
-func (d *dummy) DeleteCluster(namespace string, name string)   {}
-func (d *dummy) SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32, effectiveBytes int64) {
+func (d *dummy) SetClusterOK(_, _ string)    {}
+func (d *dummy) SetClusterError(_, _ string) {}
+func (d *dummy) DeleteCluster(_, _ string)   {}
+func (d *dummy) SetAutoscaler(_, _ string, _ int64, _ float64, _ int32, _ int64) {
 }
-func (d *dummy) DeleteAutoscaler(namespace string, name string) {}
-func (d *dummy) RecordEnsureOperation(objectNamespace string, objectName string, objectKind string, resourceName string, status string) {
+func (d *dummy) DeleteAutoscaler(_, _ string) {}
+func (d *dummy) RecordEnsureOperation(_, _, _, _, _ string) {
 }
-func (d *dummy) RecordRedisCheck(namespace string, resource string, indicator string, instance string, status string) {
+func (d *dummy) RecordRedisCheck(_, _, _, _, _ string) {
 }
-func (d *dummy) RecordSentinelCheck(namespace string, resource string, indicator string, instance string, status string) {
+func (d *dummy) RecordSentinelCheck(_, _, _, _, _ string) {
 }
-func (d dummy) RecordK8sOperation(namespace string, kind string, object string, operation string, status string, err string) {
+func (d dummy) RecordK8sOperation(_, _, _, _, _, _ string) {
 }
-func (d dummy) RecordRedisOperation(kind string, IP string, operation string, status string, err string) {
+func (d dummy) RecordRedisOperation(_, _, _, _, _ string) {
 }

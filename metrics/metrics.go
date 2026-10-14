@@ -255,23 +255,23 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 }
 
 // SetClusterOK sets cluster_ok to 1.
-func (r recorder) SetClusterOK(namespace string, name string) {
+func (r recorder) SetClusterOK(namespace, name string) {
 	r.clusterOK.WithLabelValues(namespace, name).Set(1)
 }
 
 // SetClusterError sets cluster_ok to 0.
-func (r recorder) SetClusterError(namespace string, name string) {
+func (r recorder) SetClusterError(namespace, name string) {
 	r.clusterOK.WithLabelValues(namespace, name).Set(0)
 }
 
 // DeleteCluster deletes the cluster_ok series of a deleted RedisFailover, so
 // the metric does not report a cluster that no longer exists.
-func (r recorder) DeleteCluster(namespace string, name string) {
+func (r recorder) DeleteCluster(namespace, name string) {
 	r.clusterOK.DeleteLabelValues(namespace, name)
 	r.DeleteAutoscaler(namespace, name)
 }
 
-func (r recorder) SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32, effectiveBytes int64) {
+func (r recorder) SetAutoscaler(namespace, name string, recommendedBytes int64, usedRatio float64, highWindows int32, effectiveBytes int64) {
 	r.recommendedMemory.WithLabelValues(namespace, name).Set(float64(recommendedBytes))
 	r.memoryUsedRatio.WithLabelValues(namespace, name).Set(usedRatio)
 	r.highWindows.WithLabelValues(namespace, name).Set(float64(highWindows))
@@ -279,41 +279,41 @@ func (r recorder) SetAutoscaler(namespace string, name string, recommendedBytes 
 	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", name)
 }
 
-func (r recorder) DeleteAutoscaler(namespace string, name string) {
+func (r recorder) DeleteAutoscaler(namespace, name string) {
 	r.recommendedMemory.DeleteLabelValues(namespace, name)
 	r.memoryUsedRatio.DeleteLabelValues(namespace, name)
 	r.highWindows.DeleteLabelValues(namespace, name)
 	r.effectiveMemory.DeleteLabelValues(namespace, name)
 }
 
-func (r recorder) RecordEnsureOperation(objectNamespace string, objectName string, objectKind string, resourceName string, status string) {
+func (r recorder) RecordEnsureOperation(objectNamespace, objectName, objectKind, resourceName, status string) {
 	r.ensureResource.WithLabelValues(objectNamespace, objectName, objectKind, resourceName, status).Add(1)
 	updateResourceMetricLastUpdatedTracker(objectNamespace, objectKind, objectName)
 }
 
-func (r recorder) RecordRedisCheck(namespace string, resource string, indicator /* aspect of redis that is unhealthy */ string, instance string, status string) {
+func (r recorder) RecordRedisCheck(namespace, resource, indicator /* aspect of redis that is unhealthy */, instance, status string) {
 	r.redisCheck.WithLabelValues(namespace, resource, indicator, instance, status).Add(1)
 	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", resource)
 	updateCheckMetricLastUpdatedTracker("redis", namespace, resource, indicator, instance)
 }
 
-func (r recorder) RecordSentinelCheck(namespace string, resource string, indicator /* aspect of sentinel that is unhealthy */ string, instance string, status string) {
+func (r recorder) RecordSentinelCheck(namespace, resource, indicator /* aspect of sentinel that is unhealthy */, instance, status string) {
 	r.sentinelCheck.WithLabelValues(namespace, resource, indicator, instance, status).Add(1)
 	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", resource)
 	updateCheckMetricLastUpdatedTracker("sentinel", namespace, resource, indicator, instance)
 }
 
-func (r recorder) RecordK8sOperation(namespace string, kind string, name string, operation string, status string, err string) {
+func (r recorder) RecordK8sOperation(namespace, kind, name, operation, status, err string) {
 	r.k8sServiceOperations.WithLabelValues(namespace, kind, name, operation, status, err).Add(1)
 	updateResourceMetricLastUpdatedTracker(namespace, kind, name)
 }
 
-func (r recorder) RecordRedisOperation(kind /* redis or sentinel */ string, IP string, operation string, status string, err string) {
+func (r recorder) RecordRedisOperation(kind /* redis or sentinel */, IP, operation, status, err string) {
 	r.redisOperations.WithLabelValues(kind, IP, operation, status, err).Add(1)
 	updateInstanceMetricLastUpdatedTracker(IP)
 }
 
-func updateResourceMetricLastUpdatedTracker(namespace string, kind string, name string) {
+func updateResourceMetricLastUpdatedTracker(namespace, kind, name string) {
 	mutex.Lock()
 	resourceMetricLastUpdated[fmt.Sprintf("%v/%v/%v", namespace, kind, name)] = time.Now()
 	mutex.Unlock()
@@ -325,7 +325,7 @@ func updateInstanceMetricLastUpdatedTracker(IP string) {
 	mutex.Unlock()
 }
 
-func updateCheckMetricLastUpdatedTracker(kind string, namespace string, resource string, indicator string, instance string) {
+func updateCheckMetricLastUpdatedTracker(kind, namespace, resource, indicator, instance string) {
 	key := strings.Join([]string{kind, namespace, resource, indicator, instance}, "/")
 	mutex.Lock()
 	checkMetricLastUpdated[key] = checkMetricInfo{
@@ -390,7 +390,7 @@ func removeStaleMetrics() {
 	}
 }
 
-func getLabelsOfStaleMetrics() (kubernetesResourceBasedLabels []prometheus.Labels, customResourceBasedLabels []prometheus.Labels, ipBasedLabels []prometheus.Labels) {
+func getLabelsOfStaleMetrics() (kubernetesResourceBasedLabels, customResourceBasedLabels, ipBasedLabels []prometheus.Labels) {
 
 	kubernetesResourceBasedLabels = []prometheus.Labels{}
 	customResourceBasedLabels = []prometheus.Labels{}

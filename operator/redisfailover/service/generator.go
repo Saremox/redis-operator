@@ -16,7 +16,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/operator/redisfailover/util"
@@ -550,7 +549,7 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 					PriorityClassName:             rf.Spec.Redis.PriorityClassName,
 					ServiceAccountName:            rf.Spec.Redis.ServiceAccountName,
 					AutomountServiceAccountToken:  automountServiceAccountToken(rf.Spec.Redis.ServiceAccountName),
-					EnableServiceLinks:            ptr.To(false),
+					EnableServiceLinks:            new(false),
 					TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
 					Containers: []corev1.Container{
 						{
@@ -742,7 +741,7 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 					PriorityClassName:            rf.Spec.Sentinel.PriorityClassName,
 					ServiceAccountName:           serviceAccountName,
 					AutomountServiceAccountToken: automountServiceAccountToken(rf.Spec.Sentinel.ServiceAccountName),
-					EnableServiceLinks:           ptr.To(false),
+					EnableServiceLinks:           new(false),
 					InitContainers: []corev1.Container{
 						{
 							Name:            "sentinel-config-copy",
@@ -892,7 +891,7 @@ func generateSentinelServiceAccount(rf *redisfailoverv1.RedisFailover, labels ma
 	}
 }
 
-func generatePodDisruptionBudget(name string, namespace string, labels map[string]string, ownerRefs []metav1.OwnerReference, minAvailable intstr.IntOrString, selectorLabels map[string]string) *policyv1.PodDisruptionBudget {
+func generatePodDisruptionBudget(name, namespace string, labels map[string]string, ownerRefs []metav1.OwnerReference, minAvailable intstr.IntOrString, selectorLabels map[string]string) *policyv1.PodDisruptionBudget {
 	return &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            name,
@@ -1048,12 +1047,12 @@ func getAffinity(affinity *corev1.Affinity, labels map[string]string) *corev1.Af
 // any field the user set on secctx taking precedence. A partial user context
 // only overrides the fields it specifies instead of dropping all the defaults.
 func getSecurityContext(secctx *corev1.PodSecurityContext) *corev1.PodSecurityContext {
-	defaultUserAndGroup := ptr.To(int64(1000))
+	defaultUserAndGroup := new(int64(1000))
 
 	result := &corev1.PodSecurityContext{
 		RunAsUser:    defaultUserAndGroup,
 		RunAsGroup:   defaultUserAndGroup,
-		RunAsNonRoot: ptr.To(true),
+		RunAsNonRoot: new(true),
 		FSGroup:      defaultUserAndGroup,
 		SeccompProfile: &corev1.SeccompProfile{
 			Type: corev1.SeccompProfileTypeRuntimeDefault,
@@ -1136,16 +1135,16 @@ func getContainerSecurityContext(secctx *corev1.SecurityContext) *corev1.Securit
 			"ALL",
 		},
 	}
-	defaultUserAndGroup := ptr.To(int64(1000))
+	defaultUserAndGroup := new(int64(1000))
 
 	result := &corev1.SecurityContext{
 		Capabilities:             capabilities,
-		Privileged:               ptr.To(false),
+		Privileged:               new(false),
 		RunAsUser:                defaultUserAndGroup,
 		RunAsGroup:               defaultUserAndGroup,
-		RunAsNonRoot:             ptr.To(true),
-		ReadOnlyRootFilesystem:   ptr.To(true),
-		AllowPrivilegeEscalation: ptr.To(false),
+		RunAsNonRoot:             new(true),
+		ReadOnlyRootFilesystem:   new(true),
+		AllowPrivilegeEscalation: new(false),
 	}
 	if secctx == nil {
 		return result
@@ -1181,7 +1180,7 @@ func getContainerSecurityContext(secctx *corev1.SecurityContext) *corev1.Securit
 // API. A user who sets a service account may need its token in a sidecar.
 func automountServiceAccountToken(serviceAccountName string) *bool {
 	if serviceAccountName == "" {
-		return ptr.To(false)
+		return new(false)
 	}
 	return nil
 }

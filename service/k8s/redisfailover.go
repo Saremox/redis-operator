@@ -74,8 +74,8 @@ func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, na
 	// UpdatePodAnnotations, which do the same for their merge patches): every
 	// value here is a string, an integer, nil or a map of them, and
 	// json.Marshal cannot fail on such a map.
-	patch := map[string]interface{}{
-		"status": map[string]interface{}{
+	patch := map[string]any{
+		"status": map[string]any{
 			"state":       rf.Status.State,
 			"lastChanged": rf.Status.LastChanged,
 			"message":     rf.Status.Message,
@@ -96,21 +96,21 @@ func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, na
 // autoscalingPatch returns null for an empty status, which removes the
 // field. A merge patch keeps each nested field that it omits, so an empty
 // field is null and not left out.
-func autoscalingPatch(a redisfailoverv1.AutoscalingStatus) interface{} {
+func autoscalingPatch(a redisfailoverv1.AutoscalingStatus) any {
 	if a == (redisfailoverv1.AutoscalingStatus{}) {
 		return nil
 	}
-	orNil := func(v string) interface{} {
+	orNil := func(v string) any {
 		if v == "" {
 			return nil
 		}
 		return v
 	}
-	var highWindows interface{}
+	var highWindows any
 	if a.HighWindows != 0 {
 		highWindows = a.HighWindows
 	}
-	return map[string]interface{}{
+	return map[string]any{
 		"workload":          orNil(a.Workload),
 		"recommendedMemory": orNil(a.RecommendedMemory),
 		"reason":            orNil(a.Reason),
@@ -126,12 +126,12 @@ func autoscalingPatch(a redisfailoverv1.AutoscalingStatus) interface{} {
 // PatchRedisFailoverFinalizers implements the RedisFailover interface. A JSON
 // merge patch replaces the full finalizers array, so the caller gives the
 // full list, not only the changed finalizer.
-func (r *RedisFailoverService) PatchRedisFailoverFinalizers(ctx context.Context, namespace string, name string, finalizers []string, opts metav1.PatchOptions) error {
+func (r *RedisFailoverService) PatchRedisFailoverFinalizers(ctx context.Context, namespace, name string, finalizers []string, opts metav1.PatchOptions) error {
 	if finalizers == nil {
 		finalizers = []string{}
 	}
-	patch := map[string]interface{}{
-		"metadata": map[string]interface{}{
+	patch := map[string]any{
+		"metadata": map[string]any{
 			"finalizers": finalizers,
 		},
 	}

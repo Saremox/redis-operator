@@ -69,7 +69,7 @@ func NewPodService(kubeClient kubernetes.Interface, logger log.Logger, metricsRe
 }
 
 // GetPod returns the named pod.
-func (p *PodService) GetPod(namespace string, name string) (*corev1.Pod, error) {
+func (p *PodService) GetPod(namespace, name string) (*corev1.Pod, error) {
 	pod, err := p.kubeClient.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "Pod", name, "GET", err, p.metricsRecorder)
 	if err != nil {
@@ -80,7 +80,7 @@ func (p *PodService) GetPod(namespace string, name string) (*corev1.Pod, error) 
 
 // DeletePod deletes the named pod. Use DeletePodWithUID when a pod with the
 // same name must stay.
-func (p *PodService) DeletePod(namespace string, name string) error {
+func (p *PodService) DeletePod(namespace, name string) error {
 	err := p.kubeClient.CoreV1().Pods(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 	recordMetrics(namespace, "Pod", name, "DELETE", err, p.metricsRecorder)
 	return err
@@ -89,7 +89,7 @@ func (p *PodService) DeletePod(namespace string, name string) error {
 // DeletePodWithUID deletes the pod only while it has the UID uid. A pod
 // created again with the same name stays, and the delete fails with a
 // Conflict.
-func (p *PodService) DeletePodWithUID(namespace string, name string, uid types.UID) error {
+func (p *PodService) DeletePodWithUID(namespace, name string, uid types.UID) error {
 	err := p.kubeClient.CoreV1().Pods(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
 	recordMetrics(namespace, "Pod", name, "DELETE", err, p.metricsRecorder)
 	return err
@@ -112,8 +112,8 @@ func (p *PodService) UpdatePodLabels(namespace, podName string, labels map[strin
 	}
 	p.logger.WithField("namespace", namespace).WithField("pod", podName).Infof("Update pod label, labels: %v", labels)
 
-	patch := map[string]interface{}{
-		"metadata": map[string]interface{}{
+	patch := map[string]any{
+		"metadata": map[string]any{
 			"labels": labels,
 		},
 	}
@@ -139,8 +139,8 @@ func (p *PodService) UpdatePodLabels(namespace, podName string, labels map[strin
 func (p *PodService) UpdatePodAnnotations(namespace, podName string, annotations map[string]string) error {
 	p.logger.WithField("namespace", namespace).WithField("pod", podName).Infof("Update pod annotations, annotations: %v", annotations)
 
-	patch := map[string]interface{}{
-		"metadata": map[string]interface{}{
+	patch := map[string]any{
+		"metadata": map[string]any{
 			"annotations": annotations,
 		},
 	}
@@ -159,9 +159,9 @@ func (p *PodService) UpdatePodAnnotations(namespace, podName string, annotations
 func (p *PodService) RemovePodAnnotation(namespace, podName, key string) error {
 	p.logger.WithField("namespace", namespace).WithField("pod", podName).Infof("Remove pod annotation, annotation: %s", key)
 
-	patch := map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"annotations": map[string]interface{}{key: nil},
+	patch := map[string]any{
+		"metadata": map[string]any{
+			"annotations": map[string]any{key: nil},
 		},
 	}
 	payloadBytes, _ := json.Marshal(patch)
@@ -182,11 +182,11 @@ func (p *PodService) ResizePod(namespace, podName string, resources map[string]c
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	containers := make([]map[string]interface{}, 0, len(resources))
+	containers := make([]map[string]any, 0, len(resources))
 	for _, name := range names {
-		containers = append(containers, map[string]interface{}{"name": name, "resources": resources[name]})
+		containers = append(containers, map[string]any{"name": name, "resources": resources[name]})
 	}
-	payloadBytes, _ := json.Marshal(map[string]interface{}{"spec": map[string]interface{}{"containers": containers}})
+	payloadBytes, _ := json.Marshal(map[string]any{"spec": map[string]any{"containers": containers}})
 	_, err := p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.StrategicMergePatchType, payloadBytes, metav1.PatchOptions{}, "resize")
 	recordMetrics(namespace, "Pod", podName, "RESIZE", err, p.metricsRecorder)
 	return err

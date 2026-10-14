@@ -178,7 +178,7 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 
 // redisErrorLogf logs at Warning when the pod does not answer or loads its
 // dataset, because a later reconcile repeats the change.
-func redisErrorLogf(logger log.Logger, err error) func(string, ...interface{}) {
+func redisErrorLogf(logger log.Logger, err error) func(string, ...any) {
 	if redis.IsUnreachableError(err) || strings.HasPrefix(err.Error(), "LOADING") {
 		return logger.Warningf
 	}
@@ -324,7 +324,7 @@ func (r *RedisFailoverHealer) SetExternalMasterOnAll(masterIP, masterPort string
 }
 
 // NewSentinelMonitor changes the master that Sentinel has to monitor.
-func (r *RedisFailoverHealer) NewSentinelMonitor(ip string, monitor string, rf *redisfailoverv1.RedisFailover) error {
+func (r *RedisFailoverHealer) NewSentinelMonitor(ip, monitor string, rf *redisfailoverv1.RedisFailover) error {
 	quorum := strconv.Itoa(int(getQuorum(rf)))
 
 	password, err := k8s.GetRedisPassword(r.k8sService, rf)
@@ -337,7 +337,7 @@ func (r *RedisFailoverHealer) NewSentinelMonitor(ip string, monitor string, rf *
 }
 
 // NewSentinelMonitorWithPort changes the master that Sentinel has to monitor by the provided IP and Port.
-func (r *RedisFailoverHealer) NewSentinelMonitorWithPort(ip string, monitor string, monitorPort string, rf *redisfailoverv1.RedisFailover) error {
+func (r *RedisFailoverHealer) NewSentinelMonitorWithPort(ip, monitor, monitorPort string, rf *redisfailoverv1.RedisFailover) error {
 	quorum := strconv.Itoa(int(getQuorum(rf)))
 
 	password, err := k8s.GetRedisPassword(r.k8sService, rf)

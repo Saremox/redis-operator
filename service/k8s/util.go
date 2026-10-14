@@ -80,7 +80,7 @@ func GetRedisPassword(s Services, rf *redisfailoverv1.RedisFailover) (string, er
 	return "", fmt.Errorf("secret \"%s\" does not have a password field", rf.Spec.Auth.SecretPath)
 }
 
-func recordMetrics(namespace string, kind string, object string, operation string, err error, metricsRecorder metrics.Recorder) {
+func recordMetrics(namespace, kind, object, operation string, err error, metricsRecorder metrics.Recorder) {
 	if nil == err {
 		metricsRecorder.RecordK8sOperation(namespace, kind, object, operation, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	} else if errors.IsForbidden(err) {

@@ -356,7 +356,7 @@ func (c *client) MonitorRedisWithPort(ip, monitor, port, quorum, password string
 	return nil
 }
 
-func (c *client) MakeMaster(ip string, port string, password string) error {
+func (c *client) MakeMaster(ip, port, password string) error {
 	if ip == "" {
 		return errNoIP
 	}
@@ -528,10 +528,10 @@ func flagsDown(flags string) bool {
 
 // sentinelReplicaIPs reads the "ip" field of each replica in a SENTINEL
 // REPLICAS reply. Each replica is a flat array of field names and values.
-func sentinelReplicaIPs(res []interface{}) ([]string, error) {
+func sentinelReplicaIPs(res []any) ([]string, error) {
 	ips := make([]string, 0, len(res))
 	for _, entry := range res {
-		fields, ok := entry.([]interface{})
+		fields, ok := entry.([]any)
 		if !ok {
 			return nil, fmt.Errorf("unexpected SENTINEL REPLICAS entry %v", entry)
 		}
@@ -678,7 +678,7 @@ func (c *client) SentinelCheckQuorum(ip string) error {
 	}
 
 }
-func (c *client) SetCustomRedisConfig(ip string, port string, configs []string, password string) error {
+func (c *client) SetCustomRedisConfig(ip, port string, configs []string, password string) error {
 	if ip == "" {
 		return errNoIP
 	}
@@ -735,7 +735,7 @@ func (c *client) applyACLLoad(rClient *rediscli.Client) error {
 	return nil
 }
 
-func (c *client) applyRedisConfig(parameter string, value string, rClient *rediscli.Client) error {
+func (c *client) applyRedisConfig(parameter, value string, rClient *rediscli.Client) error {
 	result := rClient.ConfigSet(context.TODO(), parameter, value)
 	if nil != result.Err() {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.APPLY_REDIS_CONFIG, metrics.FAIL, getRedisError(result.Err()))
@@ -745,7 +745,7 @@ func (c *client) applyRedisConfig(parameter string, value string, rClient *redis
 	return result.Err()
 }
 
-func (c *client) applySentinelConfig(parameter string, value string, rClient *rediscli.Client) error {
+func (c *client) applySentinelConfig(parameter, value string, rClient *rediscli.Client) error {
 	cmd := rediscli.NewStatusCmd(context.TODO(), "SENTINEL", "set", masterName, parameter, value)
 	err := rClient.Process(context.TODO(), cmd)
 	if err != nil {
@@ -766,7 +766,7 @@ func addrHost(addr string) string {
 	return host
 }
 
-func (c *client) getConfigParameters(config string) (parameter string, value string, err error) {
+func (c *client) getConfigParameters(config string) (parameter, value string, err error) {
 	s := strings.Split(config, " ")
 	if len(s) < 2 {
 		return "", "", fmt.Errorf("configuration '%s' malformed", config)

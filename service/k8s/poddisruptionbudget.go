@@ -39,7 +39,7 @@ func NewPodDisruptionBudgetService(kubeClient kubernetes.Interface, logger log.L
 }
 
 // GetPodDisruptionBudget returns the named PodDisruptionBudget.
-func (p *PodDisruptionBudgetService) GetPodDisruptionBudget(namespace string, name string) (*policyv1.PodDisruptionBudget, error) {
+func (p *PodDisruptionBudgetService) GetPodDisruptionBudget(namespace, name string) (*policyv1.PodDisruptionBudget, error) {
 	podDisruptionBudget, err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "PodDisruptionBudget", name, "GET", err, p.metricsRecorder)
 	if err != nil {
@@ -101,7 +101,7 @@ func (p *PodDisruptionBudgetService) CreateOrUpdatePodDisruptionBudget(namespace
 }
 
 // DeletePodDisruptionBudget deletes the named PodDisruptionBudget.
-func (p *PodDisruptionBudgetService) DeletePodDisruptionBudget(namespace string, name string) error {
+func (p *PodDisruptionBudgetService) DeletePodDisruptionBudget(namespace, name string) error {
 	err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 	recordMetrics(namespace, "PodDisruptionBudget", name, "DELETE", err, p.metricsRecorder)
 	return err

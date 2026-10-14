@@ -301,7 +301,7 @@ func (r *RedisFailoverKubeClient) EnsureRedisSlaveService(rf *redisfailoverv1.Re
 // ensurePodDisruptionBudget creates or updates a PDB for the given component.
 // replicas must be the replica count of the component being protected (not a different component).
 // minAvailableOverride, when non-nil, replaces the replicas-derived default.
-func (r *RedisFailoverKubeClient) ensurePodDisruptionBudget(rf *redisfailoverv1.RedisFailover, name string, component string, minAvailableOverride *intstr.IntOrString, labels map[string]string, ownerRefs []metav1.OwnerReference, replicas int32) error {
+func (r *RedisFailoverKubeClient) ensurePodDisruptionBudget(rf *redisfailoverv1.RedisFailover, name, component string, minAvailableOverride *intstr.IntOrString, labels map[string]string, ownerRefs []metav1.OwnerReference, replicas int32) error {
 	name = generateName(name, rf.Name)
 	namespace := rf.Namespace
 
@@ -347,7 +347,7 @@ func (r *RedisFailoverKubeClient) cleanupError(rf *redisfailoverv1.RedisFailover
 	return err
 }
 
-func (r *RedisFailoverKubeClient) setEnsureOperationMetrics(objectNamespace string, objectName string, objectKind string, ownerName string, err error) {
+func (r *RedisFailoverKubeClient) setEnsureOperationMetrics(objectNamespace, objectName, objectKind, ownerName string, err error) {
 	if nil != err {
 		r.metricsClient.RecordEnsureOperation(objectNamespace, objectName, objectKind, ownerName, metrics.FAIL)
 		return

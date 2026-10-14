@@ -13,34 +13,34 @@ type Level string
 
 // Logger is an interface that needs to be implemented in order to log.
 type Logger interface {
-	Debug(...interface{})
-	Debugln(...interface{})
-	Debugf(string, ...interface{})
+	Debug(...any)
+	Debugln(...any)
+	Debugf(string, ...any)
 
-	Info(...interface{})
-	Infoln(...interface{})
-	Infof(string, ...interface{})
+	Info(...any)
+	Infoln(...any)
+	Infof(string, ...any)
 
-	Warn(...interface{})
-	Warnln(...interface{})
-	Warnf(string, ...interface{})
-	Warningf(string, ...interface{})
+	Warn(...any)
+	Warnln(...any)
+	Warnf(string, ...any)
+	Warningf(string, ...any)
 
-	Error(...interface{})
-	Errorln(...interface{})
-	Errorf(string, ...interface{})
+	Error(...any)
+	Errorln(...any)
+	Errorf(string, ...any)
 
-	Fatal(...interface{})
-	Fatalln(...interface{})
-	Fatalf(string, ...interface{})
+	Fatal(...any)
+	Fatalln(...any)
+	Fatalf(string, ...any)
 
-	Panic(...interface{})
-	Panicln(...interface{})
-	Panicf(string, ...interface{})
+	Panic(...any)
+	Panicln(...any)
+	Panicf(string, ...any)
 
-	With(key string, value interface{}) Logger
-	WithField(key string, value interface{}) Logger
-	WithFields(values map[string]interface{}) Logger
+	With(key string, value any) Logger
+	WithField(key string, value any) Logger
+	WithFields(values map[string]any) Logger
 	Set(level Level) error
 }
 
@@ -48,88 +48,88 @@ type logger struct {
 	entry *logrus.Entry
 }
 
-func (l logger) Debug(args ...interface{}) {
+func (l logger) Debug(args ...any) {
 	l.sourced().Debug(args...)
 }
 
-func (l logger) Debugln(args ...interface{}) {
+func (l logger) Debugln(args ...any) {
 	l.sourced().Debugln(args...)
 }
 
-func (l logger) Debugf(format string, args ...interface{}) {
+func (l logger) Debugf(format string, args ...any) {
 	l.sourced().Debugf(format, args...)
 }
 
-func (l logger) Info(args ...interface{}) {
+func (l logger) Info(args ...any) {
 	l.sourced().Info(args...)
 }
 
-func (l logger) Infoln(args ...interface{}) {
+func (l logger) Infoln(args ...any) {
 	l.sourced().Infoln(args...)
 }
 
-func (l logger) Infof(format string, args ...interface{}) {
+func (l logger) Infof(format string, args ...any) {
 	l.sourced().Infof(format, args...)
 }
 
-func (l logger) Warn(args ...interface{}) {
+func (l logger) Warn(args ...any) {
 	l.sourced().Warn(args...)
 }
 
-func (l logger) Warnln(args ...interface{}) {
+func (l logger) Warnln(args ...any) {
 	l.sourced().Warnln(args...)
 }
 
-func (l logger) Warnf(format string, args ...interface{}) {
+func (l logger) Warnf(format string, args ...any) {
 	l.sourced().Warnf(format, args...)
 }
 
-func (l logger) Warningf(format string, args ...interface{}) {
+func (l logger) Warningf(format string, args ...any) {
 	l.sourced().Warnf(format, args...)
 }
 
-func (l logger) Error(args ...interface{}) {
+func (l logger) Error(args ...any) {
 	l.sourced().Error(args...)
 }
 
-func (l logger) Errorln(args ...interface{}) {
+func (l logger) Errorln(args ...any) {
 	l.sourced().Errorln(args...)
 }
 
-func (l logger) Errorf(format string, args ...interface{}) {
+func (l logger) Errorf(format string, args ...any) {
 	l.sourced().Errorf(format, args...)
 }
 
-func (l logger) Fatal(args ...interface{}) {
+func (l logger) Fatal(args ...any) {
 	l.sourced().Fatal(args...)
 }
 
-func (l logger) Fatalln(args ...interface{}) {
+func (l logger) Fatalln(args ...any) {
 	l.sourced().Fatalln(args...)
 }
 
-func (l logger) Fatalf(format string, args ...interface{}) {
+func (l logger) Fatalf(format string, args ...any) {
 	l.sourced().Fatalf(format, args...)
 }
-func (l logger) Panic(args ...interface{}) {
+func (l logger) Panic(args ...any) {
 	l.sourced().Panic(args...)
 }
-func (l logger) Panicln(args ...interface{}) {
+func (l logger) Panicln(args ...any) {
 	l.sourced().Panicln(args...)
 }
-func (l logger) Panicf(format string, args ...interface{}) {
+func (l logger) Panicf(format string, args ...any) {
 	l.sourced().Panicf(format, args...)
 }
 
-func (l logger) With(key string, value interface{}) Logger {
+func (l logger) With(key string, value any) Logger {
 	return &logger{l.entry.WithField(key, value)}
 }
 
-func (l logger) WithField(key string, value interface{}) Logger {
+func (l logger) WithField(key string, value any) Logger {
 	return &logger{l.entry.WithField(key, value)}
 }
 
-func (l logger) WithFields(values map[string]interface{}) Logger {
+func (l logger) WithFields(values map[string]any) Logger {
 	return &logger{l.entry.WithFields(logrus.Fields(values))}
 }
 
@@ -169,89 +169,89 @@ func Base() Logger {
 
 // Debug and the other package log functions use the base logger and add the
 // call site as the src field.
-func Debug(args ...interface{}) {
+func Debug(args ...any) {
 	baseLogger.sourced().Debug(args...)
 }
 
 // Debugln is Debug, but it always adds a space between the arguments.
-func Debugln(args ...interface{}) {
+func Debugln(args ...any) {
 	baseLogger.sourced().Debugln(args...)
 }
 
 // Debugf is Debug with a fmt.Sprintf format.
-func Debugf(format string, args ...interface{}) {
+func Debugf(format string, args ...any) {
 	baseLogger.sourced().Debugf(format, args...)
 }
 
 // Info logs the arguments at the info level.
-func Info(args ...interface{}) {
+func Info(args ...any) {
 	baseLogger.sourced().Info(args...)
 }
 
 // Infoln is Info, but it always adds a space between the arguments.
-func Infoln(args ...interface{}) {
+func Infoln(args ...any) {
 	baseLogger.sourced().Infoln(args...)
 }
 
 // Infof is Info with a fmt.Sprintf format.
-func Infof(format string, args ...interface{}) {
+func Infof(format string, args ...any) {
 	baseLogger.sourced().Infof(format, args...)
 }
 
 // Warn logs the arguments at the warning level.
-func Warn(args ...interface{}) {
+func Warn(args ...any) {
 	baseLogger.sourced().Warn(args...)
 }
 
 // Warnln is Warn, but it always adds a space between the arguments.
-func Warnln(args ...interface{}) {
+func Warnln(args ...any) {
 	baseLogger.sourced().Warnln(args...)
 }
 
 // Warnf is Warn with a fmt.Sprintf format.
-func Warnf(format string, args ...interface{}) {
+func Warnf(format string, args ...any) {
 	baseLogger.sourced().Warnf(format, args...)
 }
 
 // Error logs the arguments at the error level.
-func Error(args ...interface{}) {
+func Error(args ...any) {
 	baseLogger.sourced().Error(args...)
 }
 
 // Errorln is Error, but it always adds a space between the arguments.
-func Errorln(args ...interface{}) {
+func Errorln(args ...any) {
 	baseLogger.sourced().Errorln(args...)
 }
 
 // Errorf is Error with a fmt.Sprintf format.
-func Errorf(format string, args ...interface{}) {
+func Errorf(format string, args ...any) {
 	baseLogger.sourced().Errorf(format, args...)
 }
 
 // Fatal logs the arguments at the fatal level, then stops the process with
 // exit code 1.
-func Fatal(args ...interface{}) {
+func Fatal(args ...any) {
 	baseLogger.sourced().Fatal(args...)
 }
 
 // Fatalln is Fatal, but it always adds a space between the arguments.
-func Fatalln(args ...interface{}) {
+func Fatalln(args ...any) {
 	baseLogger.sourced().Fatalln(args...)
 }
 
 // Fatalf is Fatal with a fmt.Sprintf format.
-func Fatalf(format string, args ...interface{}) {
+func Fatalf(format string, args ...any) {
 	baseLogger.sourced().Fatalf(format, args...)
 }
 
 // With returns a child of the base logger that adds the key and the value as a
 // field to each message.
-func With(key string, value interface{}) Logger {
+func With(key string, value any) Logger {
 	return baseLogger.With(key, value)
 }
 
 // WithField is the same as With.
-func WithField(key string, value interface{}) Logger {
+func WithField(key string, value any) Logger {
 	return baseLogger.WithField(key, value)
 }
 
@@ -261,16 +261,16 @@ func Set(level Level) error {
 }
 
 // Panic logs the arguments at the panic level, then panics.
-func Panic(args ...interface{}) {
+func Panic(args ...any) {
 	baseLogger.sourced().Panic(args...)
 }
 
 // Panicln is Panic, but it always adds a space between the arguments.
-func Panicln(args ...interface{}) {
+func Panicln(args ...any) {
 	baseLogger.sourced().Panicln(args...)
 }
 
 // Panicf is Panic with a fmt.Sprintf format.
-func Panicf(format string, args ...interface{}) {
+func Panicf(format string, args ...any) {
 	baseLogger.sourced().Panicf(format, args...)
 }

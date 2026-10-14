@@ -107,7 +107,7 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 		}
 		return result(ResizeRecreate, class, reason)
 	}
-	waiting := func(class ResizeClass, format string, args ...interface{}) (ResizeResult, error) {
+	waiting := func(class ResizeClass, format string, args ...any) (ResizeResult, error) {
 		return result(ResizeWaiting, class, fmt.Sprintf(format, args...))
 	}
 	unsupported := func() (ResizeResult, error) {
