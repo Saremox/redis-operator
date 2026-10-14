@@ -457,18 +457,22 @@ The operator writes the step to the ConfigMap `rfa-<NAME>` first. The next recon
 - `Reverted`: the cluster refused the resize before a pod applied it, for example a ResourceQuota, a LimitRange or a node without enough memory. The operator also reverts a step that no pod applied in 15 minutes, for example because no node can hold the pod. The StatefulSet gets the limit before the step. `retryAfter` shows the end of the back-off.
 - `Held`: the cluster refused the resize after a pod applied it. Or the step did not end in 15 minutes, and a revert is not safe. The operator does not lower the limit of a pod, so it keeps the larger limit and starts no further step. The phase changes to `Done` when each pod runs with the larger limit, for example after a pod restart.
 
-A revert is not safe when a pod applied the step, or runs or starts from the template of the step. A missing or terminating pod also blocks a revert, because the StatefulSet can create it from that template. The operator checks the pods again before the StatefulSet gets the limit before the step. It also holds a step when it cannot remove the resize request of a pod for 15 minutes. A pod that no node can hold blocks no revert, because it has no data.
+A revert is not safe when a pod applied the step, or runs or starts from the template of the step. A missing or terminating pod also blocks a revert, because the StatefulSet can create it from that template. A pod that no node can hold blocks no revert, because it has no data. The operator also holds a step when it cannot remove the resize request of a pod within 30 minutes after the start of the step.
+
+Before the StatefulSet gets the limit before the step, the operator checks the pods again. Then only an existing pod of the step holds the step. A missing pod does not, because a quota can refuse it at the limit of the step.
 
 The reason of `Reverted` and `Held` gives the pod and the refusal. Alert on `redis_operator_controller_autoscaler_step_phase` equal to `4`. In the other phases, the reason also shows a refused resize. An example is a change of the spec while the operator cannot read a revision.
 
-A pod can run with a larger limit than the StatefulSet. This happens when the kubelet applies a resize after a revert, or on Kubernetes 1.33 and 1.34, which cannot lower a limit in place. The operator does not change such a pod. A pod that the StatefulSet created from the template of the step also keeps its limit, until a change of the spec. `maxmemory` follows the smallest pod, so the larger pod is safe.
+A pod can run with a larger limit than the StatefulSet. This happens when the kubelet applies a resize after a revert, or on Kubernetes 1.33 and 1.34, which cannot lower a limit in place. The operator does not change such a pod. A pod that the StatefulSet created from the template of the last step also keeps its limit. The rollout only moves its revision label. `maxmemory` follows the smallest pod, so the larger pod is safe.
+
+`effectiveMemory` shows the limit of the StatefulSet, so it can be lower than the limit of such a pod. To give such a pod the smaller limit, set `memoryMax` below the limit of the pod, or set mode `Off`. A spec limit at the limit of the pod also ends the rule.
 
 Changes of the user:
 
 - A spec limit above the effective limit ends the step. The pods get the spec limit as for each change of the resources.
 - A spec limit below the effective limit does not change the pods. The reason then contains `redis.resources.limits.memory is below effectiveMemory`.
 - A `memoryMax` below the effective limit lowers the limit of the pods to `memoryMax`. This is a change of the user: Kubernetes 1.35 lowers it in place, and older versions recreate the pods.
-- Mode `Recommend` keeps the effective limit, and completes a step that is `Applying` or `Held`. It starts no step.
+- Mode `Recommend` keeps the effective limit, and completes a step that is `Applying` or `Held`. It starts no step. The status shows no phase of an earlier step.
 - Mode `Off` gives the pods the spec limit. This lowers the limit as above. To keep the limit, pin it first.
 - A ConfigMap `rfa-<NAME>` that is lost or not valid gives the limit of the live StatefulSet. No step starts until the next change of the spec. Mode `Recommend` also keeps that limit when `status.autoscaling.effectiveMemory` is set.
 - A ConfigMap `rfa-<NAME>` of another owner or of a newer operator version also gives the limit of the live StatefulSet. The operator does not change that ConfigMap and starts no step.

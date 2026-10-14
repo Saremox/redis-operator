@@ -47,9 +47,11 @@ While the statefulset status does not show the generation of its template, the r
 
 In mode `Auto`, a step of the autoscaler changes only the memory limit of the redis container. The rollout resizes such a pod in place and never recreates it. This is also true when the cluster refuses the resize or the operator cannot read a revision. It keeps the refusal for step 9, and the status shows it. A change of the spec in the same revision takes the normal rollout.
 
-A revert to the limit before the step happens only while no pod applied the step. Also, no pod may run or start from the template of the step. No pod may be missing or terminating, because the StatefulSet can create it from that template. The revert first removes the annotation of the open resize request from the pods. Otherwise the operator holds the step and does not lower the limit of a pod. It also holds the step when it cannot remove an annotation for 15 minutes.
+A revert to the limit before the step happens only while no pod applied the step. Also, no pod may run or start from the template of the step. No pod may be missing or terminating, because the StatefulSet can create it from that template. The revert first removes the annotation of the open resize request from the pods. Otherwise the operator holds the step and does not lower the limit of a pod. It also holds the step when it cannot remove an annotation within 30 minutes after the start of the step.
 
-Before Ensure applies a revert, step 5 lists the pods again, also after an operator outage. A pod of the step then holds the step. A pod that the StatefulSet created from the template of the step after the revert keeps its larger limit. The rollout only moves its revision label. A change of the spec ends this rule.
+Before Ensure applies a revert, step 5 lists the pods again, also after an operator outage. An existing pod of the step then holds the step. A missing pod or a missing statefulset does not. A pod that the StatefulSet created from the template of the last step keeps its larger limit. The rollout only moves its revision label. This rule ends with a `memoryMax` below that limit, a spec limit at that limit, or mode `Off`.
+
+When the spec of a pod requests the limit of a step since a revert, the next step writes the request time again. Otherwise a deferred resize times out at once.
 
 A pod on the update revision that keeps an annotation of a resize request loses it, because nothing else removes it. A step does not start when the redis container restarts on a memory resize.
 
