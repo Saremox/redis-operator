@@ -71,8 +71,7 @@ type RedisSettings struct {
 	// ImagePullPolicy applies to the Redis container and to the init
 	// container that removes RDB tempfiles. Defaults to Always.
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
-	// Replicas is the number of Redis pods: one master and its replicas.
-	// Defaults to 3.
+	// Replicas is the number of Redis pods. Defaults to 3.
 	Replicas int32 `json:"replicas,omitempty"`
 	// Port is the Redis port in each pod and in the Services rfrm-<NAME> and
 	// rfrs-<NAME>. Defaults to 6379.
@@ -80,15 +79,15 @@ type RedisSettings struct {
 	// Resources are the compute resources of the Redis container. maxMemory
 	// and autoscaling use its memory limit.
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
-	// Env adds environment variables to the Redis container. The variables
-	// REDIS_ADDR, REDIS_PORT, REDIS_USER and REDIS_PASSWORD of the operator
-	// replace a variable with the same name. Do not set REDIS_PASSWORD here:
+	// Env adds environment variables to the Redis container. The operator
+	// variables REDIS_ADDR, REDIS_PORT, REDIS_USER and, with auth.secretPath,
+	// REDIS_PASSWORD replace a variable with the same name. Do not set REDIS_PASSWORD here:
 	// without auth.secretPath, the pod scripts use it as the password.
 	Env []corev1.EnvVar `json:"env,omitempty"`
 	// CustomConfig is a list of "parameter value" entries. The operator
-	// applies each entry with CONFIG SET on each Redis, so a change restarts
-	// no pod. Do not set port, bind or dir, because the operator controls
-	// them.
+	// applies each entry with CONFIG SET on each Redis, and sends ACL LOAD for
+	// aclfile, so a change restarts no pod. Do not set port, bind or dir,
+	// because the operator controls them.
 	CustomConfig []string `json:"customConfig,omitempty"`
 	// CustomCommandRenames writes rename-command entries to redis.conf.
 	// Validation rejects a rename of a command that the RedisFailover needs.
@@ -108,7 +107,7 @@ type RedisSettings struct {
 	// probe, unless customStartupProbe is set.
 	StartupConfigMap string `json:"startupConfigMap,omitempty"`
 	// Storage configures the data volume at /data. Without a value, it is an
-	// emptyDir, so the data of a pod is lost when Kubernetes deletes the pod.
+	// emptyDir, so Kubernetes deletes the data with the pod.
 	Storage RedisStorage `json:"storage,omitempty"`
 	// InitContainers run after the init container that removes RDB tempfiles.
 	// The operator adds REDIS_ADDR, REDIS_PORT, REDIS_USER and, with
@@ -138,16 +137,17 @@ type RedisSettings struct {
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 	// Tolerations are the tolerations of the Redis pods.
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
-	// TopologySpreadConstraints spread the Redis pods across zones or nodes.
+	// TopologySpreadConstraints are the topology spread constraints of the
+	// Redis pods.
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 	// NodeSelector limits the Redis pods to the nodes with these labels.
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
-	// PodAnnotations are added to the Redis pods. The operator also sets the
-	// annotation redisfailovers.databases.spotahome.com/secret-checksum, so
+	// PodAnnotations are annotations that the operator adds to the Redis pods.
+	// The operator also sets the annotation redisfailovers.databases.spotahome.com/secret-checksum, so
 	// that a password change restarts the pods.
 	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
-	// ServiceAnnotations are added to the Services rfr-<NAME>, rfrm-<NAME> and
-	// rfrs-<NAME>. On rfr-<NAME>, they replace a default prometheus.io
+	// ServiceAnnotations are annotations that the operator adds to the
+	// Services rfr-<NAME>, rfrm-<NAME> and rfrs-<NAME>. On rfr-<NAME>, they replace a default prometheus.io
 	// annotation with the same key.
 	ServiceAnnotations map[string]string `json:"serviceAnnotations,omitempty"`
 	// HostNetwork runs the Redis pods in the network namespace of the node.
@@ -174,7 +174,7 @@ type RedisSettings struct {
 	CustomLivenessProbe *corev1.Probe `json:"customLivenessProbe,omitempty"`
 	// CustomReadinessProbe replaces the default readiness probe of the Redis
 	// container. The default probe keeps a replica not ready while it syncs
-	// with the master.
+	// with the master, or has no master.
 	CustomReadinessProbe *corev1.Probe `json:"customReadinessProbe,omitempty"`
 	// CustomStartupProbe is the startup probe of the Redis container. Without
 	// it, the container has a startup probe only with startupConfigMap.
@@ -304,14 +304,16 @@ type SentinelSettings struct {
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 	// Tolerations are the tolerations of the Sentinel pods.
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
-	// TopologySpreadConstraints spread the Sentinel pods across zones or
-	// nodes.
+	// TopologySpreadConstraints are the topology spread constraints of the
+	// Sentinel pods.
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 	// NodeSelector limits the Sentinel pods to the nodes with these labels.
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
-	// PodAnnotations are added to the Sentinel pods.
+	// PodAnnotations are annotations that the operator adds to the Sentinel
+	// pods.
 	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
-	// ServiceAnnotations are added to the Sentinel Service rfs-<NAME>.
+	// ServiceAnnotations are annotations that the operator adds to the
+	// Sentinel Service rfs-<NAME>.
 	ServiceAnnotations map[string]string `json:"serviceAnnotations,omitempty"`
 	// InitContainers run after the init container that copies sentinel.conf.
 	InitContainers []corev1.Container `json:"initContainers,omitempty"`
@@ -399,7 +401,8 @@ type Exporter struct {
 	Args []string `json:"args,omitempty"`
 	// Env adds environment variables to the exporter container. In the Redis
 	// exporter, a REDIS_USER or REDIS_PASSWORD entry replaces the value of
-	// the operator.
+	// the operator. The variables of the operator replace other entries with
+	// the same name.
 	Env []corev1.EnvVar `json:"env,omitempty"`
 	// Resources replace the default resources of the exporter container:
 	// requests of 10m CPU and 50Mi memory, limits of 1000m CPU and 100Mi
@@ -433,7 +436,8 @@ type RedisStorage struct {
 	EmptyDir *corev1.EmptyDirVolumeSource `json:"emptyDir,omitempty"`
 	// PersistentVolumeClaim is the volume claim template of the Redis
 	// StatefulSet. The operator increases the storage request of the PVCs to
-	// a larger request here. It does not make a PVC smaller.
+	// a larger request here. It does not make a PVC smaller. The operator
+	// ignores other changes to the claim.
 	PersistentVolumeClaim *EmbeddedPersistentVolumeClaim `json:"persistentVolumeClaim,omitempty"`
 }
 
@@ -491,7 +495,6 @@ type RedisFailoverList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata"`
 
-	// Items are the RedisFailovers of the list.
 	Items []RedisFailover `json:"items"`
 }
 

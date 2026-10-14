@@ -1302,9 +1302,9 @@ spec:
                   customConfig:
                     description: |-
                       CustomConfig is a list of "parameter value" entries. The operator
-                      applies each entry with CONFIG SET on each Redis, so a change restarts
-                      no pod. Do not set port, bind or dir, because the operator controls
-                      them.
+                      applies each entry with CONFIG SET on each Redis, and sends ACL LOAD for
+                      aclfile, so a change restarts no pod. Do not set port, bind or dir,
+                      because the operator controls them.
                     items:
                       type: string
                     type: array
@@ -1477,7 +1477,7 @@ spec:
                     description: |-
                       CustomReadinessProbe replaces the default readiness probe of the Redis
                       container. The default probe keeps a replica not ready while it syncs
-                      with the master.
+                      with the master, or has no master.
                     properties:
                       exec:
                         description: Exec specifies a command to execute in the container.
@@ -1815,9 +1815,9 @@ spec:
                     type: string
                   env:
                     description: |-
-                      Env adds environment variables to the Redis container. The variables
-                      REDIS_ADDR, REDIS_PORT, REDIS_USER and REDIS_PASSWORD of the operator
-                      replace a variable with the same name. Do not set REDIS_PASSWORD here:
+                      Env adds environment variables to the Redis container. The operator
+                      variables REDIS_ADDR, REDIS_PORT, REDIS_USER and, with auth.secretPath,
+                      REDIS_PASSWORD replace a variable with the same name. Do not set REDIS_PASSWORD here:
                       without auth.secretPath, the pod scripts use it as the password.
                     items:
                       description: EnvVar represents an environment variable present
@@ -2188,7 +2188,8 @@ spec:
                         description: |-
                           Env adds environment variables to the exporter container. In the Redis
                           exporter, a REDIS_USER or REDIS_PASSWORD entry replaces the value of
-                          the operator.
+                          the operator. The variables of the operator replace other entries with
+                          the same name.
                         items:
                           description: EnvVar represents an environment variable present
                             in a Container.
@@ -7787,8 +7788,8 @@ spec:
                     additionalProperties:
                       type: string
                     description: |-
-                      PodAnnotations are added to the Redis pods. The operator also sets the
-                      annotation redisfailovers.databases.spotahome.com/secret-checksum, so
+                      PodAnnotations are annotations that the operator adds to the Redis pods.
+                      The operator also sets the annotation redisfailovers.databases.spotahome.com/secret-checksum, so
                       that a password change restarts the pods.
                     type: object
                   podDisruptionBudgetMinAvailable:
@@ -7818,9 +7819,8 @@ spec:
                       does not create the PriorityClass.
                     type: string
                   replicas:
-                    description: |-
-                      Replicas is the number of Redis pods: one master and its replicas.
-                      Defaults to 3.
+                    description: Replicas is the number of Redis pods. Defaults to
+                      3.
                     format: int32
                     type: integer
                   resources:
@@ -8126,8 +8126,8 @@ spec:
                     additionalProperties:
                       type: string
                     description: |-
-                      ServiceAnnotations are added to the Services rfr-<NAME>, rfrm-<NAME> and
-                      rfrs-<NAME>. On rfr-<NAME>, they replace a default prometheus.io
+                      ServiceAnnotations are annotations that the operator adds to the
+                      Services rfr-<NAME>, rfrm-<NAME> and rfrs-<NAME>. On rfr-<NAME>, they replace a default prometheus.io
                       annotation with the same key.
                     type: object
                   shutdownConfigMap:
@@ -8146,7 +8146,7 @@ spec:
                   storage:
                     description: |-
                       Storage configures the data volume at /data. Without a value, it is an
-                      emptyDir, so the data of a pod is lost when Kubernetes deletes the pod.
+                      emptyDir, so Kubernetes deletes the data with the pod.
                     properties:
                       emptyDir:
                         description: |-
@@ -8197,7 +8197,8 @@ spec:
                         description: |-
                           PersistentVolumeClaim is the volume claim template of the Redis
                           StatefulSet. The operator increases the storage request of the PVCs to
-                          a larger request here. It does not make a PVC smaller.
+                          a larger request here. It does not make a PVC smaller. The operator
+                          ignores other changes to the claim.
                         properties:
                           apiVersion:
                             description: |-
@@ -8737,8 +8738,9 @@ spec:
                       type: object
                     type: array
                   topologySpreadConstraints:
-                    description: TopologySpreadConstraints spread the Redis pods across
-                      zones or nodes.
+                    description: |-
+                      TopologySpreadConstraints are the topology spread constraints of the
+                      Redis pods.
                     items:
                       description: TopologySpreadConstraint specifies how to spread
                         matching pods among the given topology.
@@ -11131,7 +11133,8 @@ spec:
                         description: |-
                           Env adds environment variables to the exporter container. In the Redis
                           exporter, a REDIS_USER or REDIS_PASSWORD entry replaces the value of
-                          the operator.
+                          the operator. The variables of the operator replace other entries with
+                          the same name.
                         items:
                           description: EnvVar represents an environment variable present
                             in a Container.
@@ -16692,7 +16695,9 @@ spec:
                   podAnnotations:
                     additionalProperties:
                       type: string
-                    description: PodAnnotations are added to the Sentinel pods.
+                    description: |-
+                      PodAnnotations are annotations that the operator adds to the Sentinel
+                      pods.
                     type: object
                   podDisruptionBudgetMinAvailable:
                     anyOf:
@@ -17015,8 +17020,9 @@ spec:
                   serviceAnnotations:
                     additionalProperties:
                       type: string
-                    description: ServiceAnnotations are added to the Sentinel Service
-                      rfs-<NAME>.
+                    description: |-
+                      ServiceAnnotations are annotations that the operator adds to the
+                      Sentinel Service rfs-<NAME>.
                     type: object
                   startupConfigMap:
                     description: |-
@@ -17116,8 +17122,8 @@ spec:
                     type: array
                   topologySpreadConstraints:
                     description: |-
-                      TopologySpreadConstraints spread the Sentinel pods across zones or
-                      nodes.
+                      TopologySpreadConstraints are the topology spread constraints of the
+                      Sentinel pods.
                     items:
                       description: TopologySpreadConstraint specifies how to spread
                         matching pods among the given topology.
