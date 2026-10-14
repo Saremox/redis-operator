@@ -1,6 +1,6 @@
 module github.com/saremox/redis-operator
 
-go 1.26.8
+go 1.26.9
 
 require (
 	github.com/go-redis/redis/v8 v8.11.5
