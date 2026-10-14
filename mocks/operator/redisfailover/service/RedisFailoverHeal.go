@@ -104,6 +104,24 @@ func (_m *RedisFailoverHeal) ApplySentinelPassword(rFailover *v1.RedisFailover, 
 	return r0, r1
 }
 
+// ClearResizeRequested provides a mock function with given fields: rFailover, podName
+func (_m *RedisFailoverHeal) ClearResizeRequested(rFailover *v1.RedisFailover, podName string) error {
+	ret := _m.Called(rFailover, podName)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ClearResizeRequested")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string) error); ok {
+		r0 = rf(rFailover, podName)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // DeletePod provides a mock function with given fields: podName, rFailover
 func (_m *RedisFailoverHeal) DeletePod(podName string, rFailover *v1.RedisFailover) error {
 	ret := _m.Called(podName, rFailover)
@@ -250,9 +268,9 @@ func (_m *RedisFailoverHeal) PromoteBestReplica(newMasterIP string, rFailover *v
 	return r0
 }
 
-// ResizePodInPlace provides a mock function with given fields: rFailover, podName, updateRevision
-func (_m *RedisFailoverHeal) ResizePodInPlace(rFailover *v1.RedisFailover, podName string, updateRevision string) (service.ResizeResult, error) {
-	ret := _m.Called(rFailover, podName, updateRevision)
+// ResizePodInPlace provides a mock function with given fields: rFailover, podName, updateRevision, effective
+func (_m *RedisFailoverHeal) ResizePodInPlace(rFailover *v1.RedisFailover, podName string, updateRevision string, effective int64) (service.ResizeResult, error) {
+	ret := _m.Called(rFailover, podName, updateRevision, effective)
 
 	if len(ret) == 0 {
 		panic("no return value specified for ResizePodInPlace")
@@ -260,17 +278,17 @@ func (_m *RedisFailoverHeal) ResizePodInPlace(rFailover *v1.RedisFailover, podNa
 
 	var r0 service.ResizeResult
 	var r1 error
-	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, string) (service.ResizeResult, error)); ok {
-		return rf(rFailover, podName, updateRevision)
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, string, int64) (service.ResizeResult, error)); ok {
+		return rf(rFailover, podName, updateRevision, effective)
 	}
-	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, string) service.ResizeResult); ok {
-		r0 = rf(rFailover, podName, updateRevision)
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover, string, string, int64) service.ResizeResult); ok {
+		r0 = rf(rFailover, podName, updateRevision, effective)
 	} else {
 		r0 = ret.Get(0).(service.ResizeResult)
 	}
 
-	if rf, ok := ret.Get(1).(func(*v1.RedisFailover, string, string) error); ok {
-		r1 = rf(rFailover, podName, updateRevision)
+	if rf, ok := ret.Get(1).(func(*v1.RedisFailover, string, string, int64) error); ok {
+		r1 = rf(rFailover, podName, updateRevision, effective)
 	} else {
 		r1 = ret.Error(1)
 	}

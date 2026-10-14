@@ -2673,7 +2673,7 @@ func TestUpdate(t *testing.T) {
 					// master is deleted later and only after the sentinel gate, so
 					// its DeletePod expectation is set in the master block below.
 					if pod.pod.Labels[appsv1.ControllerRevisionHashLabelKey] != test.ssVersion && !pod.master {
-						mrfh.On("ResizePodInPlace", rf, pod.pod.Name, mock.Anything).Once().Return(rfservice.ResizeResult{}, nil)
+						mrfh.On("ResizePodInPlace", rf, pod.pod.Name, mock.Anything, int64(0)).Once().Return(rfservice.ResizeResult{}, nil)
 						mrfh.On("DeletePod", pod.pod.Name, rf).Once().Return(nil)
 						next = false
 						break
@@ -2696,7 +2696,7 @@ func TestUpdate(t *testing.T) {
 							// An in-place resize is tried first; before recreating the
 							// master the operator checks every sentinel has a quorum of
 							// the slaves in memory.
-							mrfh.On("ResizePodInPlace", rf, "master", mock.Anything).Once().Return(rfservice.ResizeResult{}, nil)
+							mrfh.On("ResizePodInPlace", rf, "master", mock.Anything, int64(0)).Once().Return(rfservice.ResizeResult{}, nil)
 							mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{"sentinel0"}, nil)
 							if test.sentinelSlavesShort {
 								mrfc.On("CheckSentinelSlavesNumberQuorumInMemory", "sentinel0", rf).Once().Return(errors.New("redis slaves in sentinel memory below quorum"))
@@ -2754,7 +2754,7 @@ func TestUpdateRedisesPodsOperatorManagedModeSkipsSentinelGate(t *testing.T) {
 	mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
 	mrfc.On("GetRedisesMasterPod", rf).Once().Return("master", nil)
 	mrfc.On("GetRedisRevisionHash", "master", rf).Once().Return("9", nil) // stale
-	mrfh.On("ResizePodInPlace", rf, "master", mock.Anything).Once().Return(rfservice.ResizeResult{}, nil)
+	mrfh.On("ResizePodInPlace", rf, "master", mock.Anything, int64(0)).Once().Return(rfservice.ResizeResult{}, nil)
 	mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{IP: "1.1.1.2", Synced: true}, nil)
 	mrfh.On("HandOverMaster", "1.1.1.1", "1.1.1.2", rf).Once().Return(rfservice.HandoverDone, nil)
 	mrfh.On("PromoteBestReplica", "1.1.1.2", rf).Once().Return(nil)
@@ -2823,7 +2823,7 @@ func TestUpdateRedisesPodsHandsTheMasterRoleOver(t *testing.T) {
 			mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
 			mrfc.On("GetRedisesMasterPod", rf).Once().Return("master", nil)
 			mrfc.On("GetRedisRevisionHash", "master", rf).Once().Return("9", nil)
-			mrfh.On("ResizePodInPlace", rf, "master", "10").Once().Return(rfservice.ResizeResult{}, nil)
+			mrfh.On("ResizePodInPlace", rf, "master", "10", int64(0)).Once().Return(rfservice.ResizeResult{}, nil)
 			if test.sentinel {
 				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{"11.0.0.1"}, nil)
 				mrfc.On("CheckSentinelSlavesNumberQuorumInMemory", "11.0.0.1", rf).Once().Return(nil)
@@ -2920,7 +2920,7 @@ func TestUpdateRedisesPodsErrorBranches(t *testing.T) {
 				mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("1", nil)
 				mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{"slave1"}, nil)
 				mrfc.On("GetRedisRevisionHash", "slave1", rf).Once().Return("stale", nil)
-				mrfh.On("ResizePodInPlace", rf, "slave1", mock.Anything).Once().Return(rfservice.ResizeResult{}, nil)
+				mrfh.On("ResizePodInPlace", rf, "slave1", mock.Anything, int64(0)).Once().Return(rfservice.ResizeResult{}, nil)
 				mrfh.On("DeletePod", "slave1", rf).Once().Return(errors.New("delete err"))
 			},
 		},
@@ -2944,7 +2944,7 @@ func TestUpdateRedisesPodsErrorBranches(t *testing.T) {
 				mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
 				mrfc.On("GetRedisesMasterPod", rf).Once().Return(master, nil)
 				mrfc.On("GetRedisRevisionHash", master, rf).Once().Return("stale", nil)
-				mrfh.On("ResizePodInPlace", rf, master, mock.Anything).Once().Return(rfservice.ResizeResult{}, nil)
+				mrfh.On("ResizePodInPlace", rf, master, mock.Anything, int64(0)).Once().Return(rfservice.ResizeResult{}, nil)
 				mrfc.On("GetSentinelsIPs", rf).Once().Return(nil, errors.New("sentinels ips err"))
 			},
 		},
@@ -2959,7 +2959,7 @@ func TestUpdateRedisesPodsErrorBranches(t *testing.T) {
 				mrfc.On("GetRedisRevisionHash", master, rf).Once().Return("stale", nil)
 				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{"sentinel0"}, nil)
 				mrfc.On("CheckSentinelSlavesNumberQuorumInMemory", "sentinel0", rf).Once().Return(nil)
-				mrfh.On("ResizePodInPlace", rf, master, mock.Anything).Once().Return(rfservice.ResizeResult{}, nil)
+				mrfh.On("ResizePodInPlace", rf, master, mock.Anything, int64(0)).Once().Return(rfservice.ResizeResult{}, nil)
 				mrfh.On("DeletePod", master, rf).Once().Return(errors.New("delete master err"))
 			},
 		},
@@ -3075,7 +3075,7 @@ func TestUpdateRedisesPodsWaitsForTheLastReplacement(t *testing.T) {
 				mrfc.On("GetRedisRevisionHash", stale, rf).Once().Return("old", nil)
 				mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: test.pods}, test.podsErr)
 				if test.wantDelete {
-					mrfh.On("ResizePodInPlace", rf, stale, mock.Anything).Once().Return(rfservice.ResizeResult{}, nil)
+					mrfh.On("ResizePodInPlace", rf, stale, mock.Anything, int64(0)).Once().Return(rfservice.ResizeResult{}, nil)
 					if stale == "slave" {
 						mrfh.On("DeletePod", stale, rf).Once().Return(nil)
 					} else {
@@ -3381,7 +3381,7 @@ func TestUpdateRedisesPodsResizesInPlace(t *testing.T) {
 				}
 				mrfc.On("GetRedisRevisionHash", stale, rf).Once().Return("old", nil)
 				// No DeletePod or sentinel expectations: calling them would panic the mock.
-				mrfh.On("ResizePodInPlace", rf, stale, "new").Once().Return(rfservice.ResizeResult{Action: action, Message: "resizing"}, nil)
+				mrfh.On("ResizePodInPlace", rf, stale, "new", int64(0)).Once().Return(rfservice.ResizeResult{Action: action, Message: "resizing"}, nil)
 
 				handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, settledK8sServices(), metrics.Dummy, log.Dummy)
 				assert.NoError(t, handler.UpdateRedisesPods(rf))
@@ -3407,7 +3407,7 @@ func TestUpdateRedisesPodsResizeError(t *testing.T) {
 	mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("new", nil)
 	mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{"slave"}, nil)
 	mrfc.On("GetRedisRevisionHash", "slave", rf).Once().Return("old", nil)
-	mrfh.On("ResizePodInPlace", rf, "slave", "new").Once().Return(rfservice.ResizeResult{}, errors.New("resize err"))
+	mrfh.On("ResizePodInPlace", rf, "slave", "new", int64(0)).Once().Return(rfservice.ResizeResult{}, errors.New("resize err"))
 
 	handler := rfOperator.NewRedisFailoverHandler(generateConfig(), &mRFService.RedisFailoverClient{}, mrfc, mrfh, settledK8sServices(), metrics.Dummy, log.Dummy)
 	assert.EqualError(t, handler.UpdateRedisesPods(rf), "resize err")
@@ -3577,7 +3577,7 @@ func TestUpdateRedisesPodsReplacesUnsyncedStaleReplicas(t *testing.T) {
 			}
 			mk.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Maybe().Return(&corev1.PodList{Items: pods}, nil)
 			// The mock panics on any other DeletePod.
-			mrfh.On("ResizePodInPlace", rf, mock.Anything, "new").Maybe().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
+			mrfh.On("ResizePodInPlace", rf, mock.Anything, "new", int64(0)).Maybe().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
 			if test.wantDelete != "" {
 				mrfh.On("DeletePod", test.wantDelete, rf).Once().Return(nil)
 			}

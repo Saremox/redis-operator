@@ -345,7 +345,7 @@ func (r *RedisFailoverHandler) redisPodNamesByIP(rf *redisfailoverv1.RedisFailov
 // resizeInPlace tries to move a stale pod to the update revision without
 // recreating it. It reports whether the pod has to be recreated instead.
 func (r *RedisFailoverHandler) resizeInPlace(rf *redisfailoverv1.RedisFailover, pod, updateRevision string) (bool, error) {
-	result, err := r.rfHealer.ResizePodInPlace(rf, pod, updateRevision)
+	result, err := r.rfHealer.ResizePodInPlace(rf, pod, updateRevision, 0)
 	if err != nil {
 		return false, err
 	}
