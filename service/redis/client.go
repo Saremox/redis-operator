@@ -528,10 +528,10 @@ func flagsDown(flags string) bool {
 
 // sentinelReplicaIPs reads the "ip" field of each replica in a SENTINEL
 // REPLICAS reply. Each replica is a flat array of field names and values.
-func sentinelReplicaIPs(res []interface{}) ([]string, error) {
+func sentinelReplicaIPs(res []any) ([]string, error) {
 	ips := make([]string, 0, len(res))
 	for _, entry := range res {
-		fields, ok := entry.([]interface{})
+		fields, ok := entry.([]any)
 		if !ok {
 			return nil, fmt.Errorf("unexpected SENTINEL REPLICAS entry %v", entry)
 		}

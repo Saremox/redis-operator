@@ -7,70 +7,70 @@ var Dummy = DummyLogger{}
 type DummyLogger struct{}
 
 // Debug discards the message.
-func (l DummyLogger) Debug(...interface{}) {}
+func (l DummyLogger) Debug(...any) {}
 
 // Debugln discards the message.
-func (l DummyLogger) Debugln(...interface{}) {}
+func (l DummyLogger) Debugln(...any) {}
 
 // Debugf discards the message.
-func (l DummyLogger) Debugf(string, ...interface{}) {}
+func (l DummyLogger) Debugf(string, ...any) {}
 
 // Info discards the message.
-func (l DummyLogger) Info(...interface{}) {}
+func (l DummyLogger) Info(...any) {}
 
 // Infoln discards the message.
-func (l DummyLogger) Infoln(...interface{}) {}
+func (l DummyLogger) Infoln(...any) {}
 
 // Infof discards the message.
-func (l DummyLogger) Infof(string, ...interface{}) {}
+func (l DummyLogger) Infof(string, ...any) {}
 
 // Warn discards the message.
-func (l DummyLogger) Warn(...interface{}) {}
+func (l DummyLogger) Warn(...any) {}
 
 // Warnln discards the message.
-func (l DummyLogger) Warnln(...interface{}) {}
+func (l DummyLogger) Warnln(...any) {}
 
 // Warnf discards the message.
-func (l DummyLogger) Warnf(string, ...interface{}) {}
+func (l DummyLogger) Warnf(string, ...any) {}
 
 // Warningf discards the message.
-func (l DummyLogger) Warningf(format string, args ...interface{}) {}
+func (l DummyLogger) Warningf(format string, args ...any) {}
 
 // Error discards the message.
-func (l DummyLogger) Error(...interface{}) {}
+func (l DummyLogger) Error(...any) {}
 
 // Errorln discards the message.
-func (l DummyLogger) Errorln(...interface{}) {}
+func (l DummyLogger) Errorln(...any) {}
 
 // Errorf discards the message.
-func (l DummyLogger) Errorf(string, ...interface{}) {}
+func (l DummyLogger) Errorf(string, ...any) {}
 
 // Fatal discards the message and does not stop the process.
-func (l DummyLogger) Fatal(...interface{}) {}
+func (l DummyLogger) Fatal(...any) {}
 
 // Fatalln discards the message and does not stop the process.
-func (l DummyLogger) Fatalln(...interface{}) {}
+func (l DummyLogger) Fatalln(...any) {}
 
 // Fatalf discards the message and does not stop the process.
-func (l DummyLogger) Fatalf(string, ...interface{}) {}
+func (l DummyLogger) Fatalf(string, ...any) {}
 
 // Panic discards the message and does not panic.
-func (l DummyLogger) Panic(...interface{}) {}
+func (l DummyLogger) Panic(...any) {}
 
 // Panicln discards the message and does not panic.
-func (l DummyLogger) Panicln(...interface{}) {}
+func (l DummyLogger) Panicln(...any) {}
 
 // Panicf discards the message and does not panic.
-func (l DummyLogger) Panicf(string, ...interface{}) {}
+func (l DummyLogger) Panicf(string, ...any) {}
 
 // With returns the same DummyLogger, because it keeps no fields.
-func (l DummyLogger) With(key string, value interface{}) Logger { return l }
+func (l DummyLogger) With(key string, value any) Logger { return l }
 
 // WithField returns the same DummyLogger, because it keeps no fields.
-func (l DummyLogger) WithField(key string, value interface{}) Logger { return l }
+func (l DummyLogger) WithField(key string, value any) Logger { return l }
 
 // WithFields returns the same DummyLogger, because it keeps no fields.
-func (l DummyLogger) WithFields(values map[string]interface{}) Logger { return l }
+func (l DummyLogger) WithFields(values map[string]any) Logger { return l }
 
 // Set ignores the level and always returns nil.
 func (l DummyLogger) Set(level Level) error { return nil }

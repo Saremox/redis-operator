@@ -112,8 +112,8 @@ func (p *PodService) UpdatePodLabels(namespace, podName string, labels map[strin
 	}
 	p.logger.WithField("namespace", namespace).WithField("pod", podName).Infof("Update pod label, labels: %v", labels)
 
-	patch := map[string]interface{}{
-		"metadata": map[string]interface{}{
+	patch := map[string]any{
+		"metadata": map[string]any{
 			"labels": labels,
 		},
 	}
@@ -139,8 +139,8 @@ func (p *PodService) UpdatePodLabels(namespace, podName string, labels map[strin
 func (p *PodService) UpdatePodAnnotations(namespace, podName string, annotations map[string]string) error {
 	p.logger.WithField("namespace", namespace).WithField("pod", podName).Infof("Update pod annotations, annotations: %v", annotations)
 
-	patch := map[string]interface{}{
-		"metadata": map[string]interface{}{
+	patch := map[string]any{
+		"metadata": map[string]any{
 			"annotations": annotations,
 		},
 	}
@@ -159,9 +159,9 @@ func (p *PodService) UpdatePodAnnotations(namespace, podName string, annotations
 func (p *PodService) RemovePodAnnotation(namespace, podName, key string) error {
 	p.logger.WithField("namespace", namespace).WithField("pod", podName).Infof("Remove pod annotation, annotation: %s", key)
 
-	patch := map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"annotations": map[string]interface{}{key: nil},
+	patch := map[string]any{
+		"metadata": map[string]any{
+			"annotations": map[string]any{key: nil},
 		},
 	}
 	payloadBytes, _ := json.Marshal(patch)
@@ -182,11 +182,11 @@ func (p *PodService) ResizePod(namespace, podName string, resources map[string]c
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	containers := make([]map[string]interface{}, 0, len(resources))
+	containers := make([]map[string]any, 0, len(resources))
 	for _, name := range names {
-		containers = append(containers, map[string]interface{}{"name": name, "resources": resources[name]})
+		containers = append(containers, map[string]any{"name": name, "resources": resources[name]})
 	}
-	payloadBytes, _ := json.Marshal(map[string]interface{}{"spec": map[string]interface{}{"containers": containers}})
+	payloadBytes, _ := json.Marshal(map[string]any{"spec": map[string]any{"containers": containers}})
 	_, err := p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.StrategicMergePatchType, payloadBytes, metav1.PatchOptions{}, "resize")
 	recordMetrics(namespace, "Pod", podName, "RESIZE", err, p.metricsRecorder)
 	return err

@@ -178,7 +178,7 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 
 // redisErrorLogf logs at Warning when the pod does not answer or loads its
 // dataset, because a later reconcile repeats the change.
-func redisErrorLogf(logger log.Logger, err error) func(string, ...interface{}) {
+func redisErrorLogf(logger log.Logger, err error) func(string, ...any) {
 	if redis.IsUnreachableError(err) || strings.HasPrefix(err.Error(), "LOADING") {
 		return logger.Warningf
 	}
