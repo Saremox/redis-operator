@@ -128,6 +128,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - name: gofmt
+        # golangci-lint runs no formatter without a config file. This step
+        # also reads the files of test/soak.
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then echo "$files"; exit 1; fi
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:

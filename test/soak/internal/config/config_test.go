@@ -225,9 +225,9 @@ func TestInvalidData(t *testing.T) {
 		"memory below 64Mi":                 instance("noeviction", "{fill: {}}", "{kinds: {redis_memory: 1}, redisMemory: {min: 32, max: 128}}"),
 		"one policy":                        instance("noeviction", "{fill: {}}", "{kinds: {maxmemory_policy: 1}, maxMemoryPolicies: [noeviction]}"),
 		// maxmemory_policy picks a policy other than the current one.
-		"same policy twice":        instance("noeviction", "{fill: {}}", "{kinds: {maxmemory_policy: 1}, maxMemoryPolicies: [noeviction, noeviction]}"),
-		"bad policy":               instance("noeviction", "{fill: {}}", "{kinds: {maxmemory_policy: 1}, maxMemoryPolicies: [noeviction, lru]}"),
-		"percent above 95":         instance("noeviction", "{fill: {}}", "{kinds: {maxmemory_percent: 1}, maxMemoryPercent: {min: 10, max: 99}}"),
+		"same policy twice": instance("noeviction", "{fill: {}}", "{kinds: {maxmemory_policy: 1}, maxMemoryPolicies: [noeviction, noeviction]}"),
+		"bad policy":        instance("noeviction", "{fill: {}}", "{kinds: {maxmemory_policy: 1}, maxMemoryPolicies: [noeviction, lru]}"),
+		"percent above 95":  instance("noeviction", "{fill: {}}", "{kinds: {maxmemory_percent: 1}, maxMemoryPercent: {min: 10, max: 99}}"),
 		// A fork of the burst data (128Mi * 40%) twice plus 32Mi is above 128Mi.
 		"no room for a fork": instance("noeviction", "{fill: {}}",
 			"{kinds: {redis_memory: 1, maxmemory_percent: 1, fill_burst: 1}, redisMemory: {min: 128, max: 256}, maxMemoryPercent: {min: 10, max: 40}}"),
