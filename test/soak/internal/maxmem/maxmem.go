@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 )
@@ -95,7 +96,7 @@ func Expect(rf *redisfailoverv1.RedisFailover, message string, pods []Pod) (want
 // Smallest is the smallest limit maxmemory follows: each pod's, capped by
 // the configured one.
 func Smallest(rf *redisfailoverv1.RedisFailover, pods []Pod) int64 {
-	spec := rf.Spec.Redis.Resources.Limits.Memory().Value()
+	spec := memoryLimit(rf)
 	var smallest int64
 	for _, p := range pods {
 		limit := spec
@@ -110,6 +111,15 @@ func Smallest(rf *redisfailoverv1.RedisFailover, pods []Pod) int64 {
 		return spec
 	}
 	return smallest
+}
+
+// memoryLimit is the memory limit of the redis container in the StatefulSet: the
+// effective limit of the autoscaler when the status gives one, else the spec.
+func memoryLimit(rf *redisfailoverv1.RedisFailover) int64 {
+	if q, err := resource.ParseQuantity(rf.Status.Autoscaling.EffectiveMemory); err == nil {
+		return q.Value()
+	}
+	return rf.Spec.Redis.Resources.Limits.Memory().Value()
 }
 
 // Kept parses a status message of a kept maxmemory into the kept value and

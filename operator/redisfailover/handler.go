@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -79,6 +81,9 @@ type RedisFailoverHandler struct {
 	// sentinelResets holds, per namespace/name, the time of the last SENTINEL
 	// RESET or SENTINEL MONITOR of each Sentinel IP.
 	sentinelResets sync.Map
+	// autoscaleReads holds, per namespace/name, the autoscaleRead of the
+	// current reconcile.
+	autoscaleReads sync.Map
 	// autoscaleMasters holds, per namespace/name, the master that the checks
 	// of the current reconcile found, so the autoscaler needs no extra call.
 	autoscaleMasters sync.Map
@@ -166,6 +171,18 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 		return err
 	}
 
+	if rf.AutoscalingEnabled() {
+		// Ensure must not write the pods with the spec limit when the
+		// autoscaler applied a larger one.
+		read, err := r.readAutoscale(rf)
+		if err != nil {
+			r.mClient.SetClusterError(rf.Namespace, rf.Name)
+			return fmt.Errorf("autoscaler state: %w", err)
+		}
+		r.autoscaleReads.Store(failoverKey(rf), read)
+		rf = effectiveRF(rf, read.effective)
+	}
+
 	// The owner references make the RedisFailover the owner of the objects
 	// managed by this handler.
 	oRefs := r.createOwnerReferences(rf)
@@ -188,6 +205,25 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 
 	r.mClient.SetClusterOK(rf.Namespace, rf.Name)
 	return nil
+}
+
+// effectiveRF returns rf with the effective memory limit of the redis
+// container, for Ensure and the checks. Validate reads the spec before. It
+// returns rf itself for the spec limit, so the generated objects stay equal.
+func effectiveRF(rf *redisfailoverv1.RedisFailover, effective int64) *redisfailoverv1.RedisFailover {
+	limit := rf.Spec.Redis.Resources.Limits.Memory()
+	if !rf.AutoscalingEnabled() || effective == limit.Value() {
+		return rf
+	}
+	rf = rf.DeepCopy()
+	resources := &rf.Spec.Redis.Resources
+	value := *resource.NewQuantity(effective, resource.BinarySI)
+	// Only a request equal to the limit follows it, so the QoS class stays.
+	if request, ok := resources.Requests[corev1.ResourceMemory]; ok && request.Cmp(*limit) == 0 {
+		resources.Requests[corev1.ResourceMemory] = value
+	}
+	resources.Limits[corev1.ResourceMemory] = value
+	return rf
 }
 
 // getLabels merges the static operator labels, the name label and the labels

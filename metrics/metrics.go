@@ -115,7 +115,7 @@ type Recorder interface {
 	DeleteCluster(namespace string, name string)
 
 	// SetAutoscaler sets the gauges of the memory autoscaler.
-	SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32)
+	SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32, effectiveBytes int64)
 	// DeleteAutoscaler deletes the series of SetAutoscaler, for example when
 	// the autoscaler mode changes to Off.
 	DeleteAutoscaler(namespace string, name string)
@@ -136,6 +136,7 @@ type recorder struct {
 	recommendedMemory    *prometheus.GaugeVec
 	memoryUsedRatio      *prometheus.GaugeVec
 	highWindows          *prometheus.GaugeVec
+	effectiveMemory      *prometheus.GaugeVec
 	ensureResource       *prometheus.CounterVec
 	redisCheck           *prometheus.CounterVec
 	sentinelCheck        *prometheus.CounterVec
@@ -173,6 +174,13 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		Subsystem: promControllerSubsystem,
 		Name:      "autoscaler_high_windows",
 		Help:      "Number of consecutive 5-minute windows with high memory use.",
+	}, []string{"namespace", "name"})
+
+	effectiveMemory := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: promControllerSubsystem,
+		Name:      "autoscaler_effective_memory_bytes",
+		Help:      "Memory limit of the redis container that the operator applies: the limit of redis.resources, or a larger limit of the autoscaler.",
 	}, []string{"namespace", "name"})
 
 	ensureResource := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -218,6 +226,7 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		recommendedMemory:    recommendedMemory,
 		memoryUsedRatio:      memoryUsedRatio,
 		highWindows:          highWindows,
+		effectiveMemory:      effectiveMemory,
 		ensureResource:       ensureResource,
 		redisCheck:           redisCheck,
 		sentinelCheck:        sentinelCheck,
@@ -232,6 +241,7 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		r.recommendedMemory,
 		r.memoryUsedRatio,
 		r.highWindows,
+		r.effectiveMemory,
 		r.ensureResource,
 		r.redisCheck,
 		r.sentinelCheck,
@@ -261,10 +271,11 @@ func (r recorder) DeleteCluster(namespace string, name string) {
 	r.DeleteAutoscaler(namespace, name)
 }
 
-func (r recorder) SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32) {
+func (r recorder) SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32, effectiveBytes int64) {
 	r.recommendedMemory.WithLabelValues(namespace, name).Set(float64(recommendedBytes))
 	r.memoryUsedRatio.WithLabelValues(namespace, name).Set(usedRatio)
 	r.highWindows.WithLabelValues(namespace, name).Set(float64(highWindows))
+	r.effectiveMemory.WithLabelValues(namespace, name).Set(float64(effectiveBytes))
 	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", name)
 }
 
@@ -272,6 +283,7 @@ func (r recorder) DeleteAutoscaler(namespace string, name string) {
 	r.recommendedMemory.DeleteLabelValues(namespace, name)
 	r.memoryUsedRatio.DeleteLabelValues(namespace, name)
 	r.highWindows.DeleteLabelValues(namespace, name)
+	r.effectiveMemory.DeleteLabelValues(namespace, name)
 }
 
 func (r recorder) RecordEnsureOperation(objectNamespace string, objectName string, objectKind string, resourceName string, status string) {
@@ -352,6 +364,7 @@ func removeStaleMetrics() {
 				metricsDeletedCount += recorder.recommendedMemory.DeletePartialMatch(labelWithName)
 				metricsDeletedCount += recorder.memoryUsedRatio.DeletePartialMatch(labelWithName)
 				metricsDeletedCount += recorder.highWindows.DeletePartialMatch(labelWithName)
+				metricsDeletedCount += recorder.effectiveMemory.DeletePartialMatch(labelWithName)
 			}
 			for _, label := range ipBasedLabels {
 				metricsDeletedCount += recorder.redisOperations.DeletePartialMatch(label)

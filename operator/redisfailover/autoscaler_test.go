@@ -1,6 +1,7 @@
 package redisfailover_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -105,5 +106,70 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 				mrfc.AssertExpectations(t)
 			})
 		}
+	}
+}
+
+// TestHandleAutoscalingAPICalls runs a full healthy reconcile. Recommend makes
+// the API calls of the autoscaler without the seam: one state read, before
+// Ensure, and the state write. It reads no StatefulSet.
+func TestHandleAutoscalingAPICalls(t *testing.T) {
+	const master = "10.0.0.1"
+	for _, autoscaling := range []string{"unset", v1.AutoscalingModeOff, v1.AutoscalingModeRecommend} {
+		t.Run(autoscaling, func(t *testing.T) {
+			rf := generateRF(false, false)
+			rf.Finalizers = []string{"redisfailovers.databases.spotahome.com/finalizer"}
+			rf.Spec.Sentinel.Enabled = ptr.To(false)
+			rf.Spec.Redis.Resources.Limits = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}
+			if autoscaling != "unset" {
+				max := resource.MustParse("2Gi")
+				rf.Spec.Redis.Autoscaling = &v1.AutoscalingSettings{Mode: autoscaling, MemoryMax: &max}
+			}
+			var calls []string
+			record := func(name string) func(mock.Arguments) {
+				return func(mock.Arguments) { calls = append(calls, name) }
+			}
+			mk := settledK8sServices()
+			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+			mrfs := &mRFService.RedisFailoverClient{}
+			mrfs.On("EnsureNotPresentRedisService", rf).Once().Run(record("Ensure")).Return(nil)
+			mrfs.On("EnsureNotPresentSentinelResources", rf).Once().Return(nil)
+			for _, ensure := range []string{"EnsureRedisMasterService", "EnsureRedisSlaveService", "EnsureRedisShutdownConfigMap", "EnsureRedisReadinessConfigMap", "EnsureRedisConfigMap", "EnsureRedisStatefulset"} {
+				mrfs.On(ensure, rf, mock.Anything, mock.Anything).Once().Return(nil)
+			}
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfh := &mRFService.RedisFailoverHeal{}
+			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
+			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
+			mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
+			mrfc.On("IsRedisRunningQuorum", rf).Return(true)
+			mrfc.On("GetNumberMasters", rf).Return(1, nil)
+			mrfc.On("CheckMasterHealth", rf).Return(true, master, nil)
+			mrfc.On("CheckAllSlavesFromMaster", master, rf).Return(nil)
+			mrfc.On("GetRedisesIPs", rf).Return([]string{master}, nil)
+			mrfh.On("SetRedisCustomConfig", master, rf).Return(nil)
+			mrfc.On("GetMasterIP", rf).Return(master, nil)
+			mrfc.On("GetStatefulSetUpdateRevision", rf).Return("1", nil)
+			mrfc.On("GetRedisesSlavesPods", rf).Return([]string{}, nil)
+			mrfc.On("GetRedisesMasterPod", rf).Return(master, nil)
+			mrfc.On("GetRedisRevisionHash", master, rf).Return("1", nil)
+			want := []string{"Ensure"}
+			if autoscaling == v1.AutoscalingModeRecommend {
+				want = []string{"GetConfigMap", "Ensure", "CreateConfigMap"}
+				mk.On("GetConfigMap", rf.Namespace, "rfa-"+rf.Name).Once().Run(record("GetConfigMap")).Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "rfa-"+rf.Name))
+				mk.On("CreateConfigMap", rf.Namespace, mock.Anything).Once().Run(record("CreateConfigMap")).Return(nil)
+				mrfc.On("GetAutoscalerInfo", rf, master).Once().Return(&redis.AutoscalerInfo{
+					UsedMemory: 100 << 20, MaxMemory: 768 << 20, UptimeSeconds: 3600, RunID: "run1", Role: "master",
+				}, nil)
+			}
+			handler := rfOperator.NewRedisFailoverHandler(generateConfig(), mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
+
+			assert.NoError(t, handler.Handle(context.Background(), rf))
+
+			assert.Equal(t, want, calls)
+			mk.AssertNotCalled(t, "GetStatefulSet", mock.Anything, mock.Anything)
+			mk.AssertExpectations(t)
+			mrfs.AssertExpectations(t)
+			mrfc.AssertExpectations(t)
+		})
 	}
 }

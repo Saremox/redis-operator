@@ -1,6 +1,7 @@
 package service
 
 import (
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -24,4 +25,15 @@ func GenerateAutoscalerStateConfigMap(rf *redisfailoverv1.RedisFailover, labels 
 		},
 		Data: map[string]string{AutoscalerStateKey: state},
 	}
+}
+
+// TemplateRedisMemoryLimit returns the memory limit of the redis container in
+// the pod template of ss, or 0 without one.
+func TemplateRedisMemoryLimit(ss *appsv1.StatefulSet) int64 {
+	for _, c := range ss.Spec.Template.Spec.Containers {
+		if c.Name == redisContainerName {
+			return c.Resources.Limits.Memory().Value()
+		}
+	}
+	return 0
 }
