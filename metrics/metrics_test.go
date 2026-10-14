@@ -141,7 +141,7 @@ func TestPrometheusMetrics(t *testing.T) {
 
 // TestRecorderRecordMethods exercises every Record* method of the real
 // Recorder implementation and asserts the underlying prometheus metric was
-// actually mutated (and not just that the call didn't panic).
+// actually mutated (and not just that the call did not panic).
 func TestRecorderRecordMethods(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	rec := NewRecorder("record_test", reg)
@@ -252,7 +252,7 @@ func TestGetLabelsOfStaleMetrics(t *testing.T) {
 	assert.False(t, stillTrackedInstance, "stale instance entry should have been removed from the tracker")
 	assert.True(t, freshStillTracked, "fresh entry should still be tracked")
 
-	// Clean up so the fresh entry doesn't leak staleness into other tests.
+	// Clean up so the fresh entry does not leak staleness into other tests.
 	mutex.Lock()
 	delete(resourceMetricLastUpdated, freshResourceKey)
 	mutex.Unlock()
@@ -296,7 +296,7 @@ func TestRemoveStaleMetrics(t *testing.T) {
 
 // TestDummyRecorder exercises every method of the no-op Dummy recorder used
 // as a test double elsewhere in the codebase. None of them are expected to
-// do anything observable, so this only asserts they don't panic.
+// do anything observable, so this only asserts they do not panic.
 func TestDummyRecorder(t *testing.T) {
 	assert.NotPanics(t, func() {
 		Dummy.SetClusterOK("ns", "name")

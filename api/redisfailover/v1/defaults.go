@@ -16,8 +16,12 @@ const (
 	defaultRedisPort             = 6379
 	defaultMaxMemoryPercent      = 75
 	defaultMaxMemoryPolicy       = "noeviction"
-	HealthyState                 = "Healthy"
-	NotHealthyState              = "NotHealthy"
+	// HealthyState is the status.state of a RedisFailover that passed each check.
+	HealthyState = "Healthy"
+	// NotHealthyState is the status.state of a RedisFailover that failed a
+	// check or the validation, or that has an object name conflict. The
+	// status.message usually gives the reason.
+	NotHealthyState = "NotHealthy"
 )
 
 // The Sentinel timeouts that apply when sentinel.customConfig does not set them.

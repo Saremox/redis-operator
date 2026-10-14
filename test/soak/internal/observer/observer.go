@@ -36,6 +36,7 @@ const (
 	sentinelMasterName = "mymaster"
 )
 
+// Observer checks the invariants of one instance.
 type Observer struct {
 	in       config.Instance
 	versions *config.Config
@@ -96,6 +97,7 @@ type Observer struct {
 	windowOpen prometheus.Gauge
 }
 
+// New returns the Observer of an instance.
 func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs versioned.Interface, a *auth.Source, lock *global.Lock, m *metrics.Metrics, log *slog.Logger) *Observer {
 	labels := prometheus.Labels{"rf": in.Name, "namespace": in.Namespace, "mode": string(in.Mode)}
 	o := &Observer{
@@ -275,6 +277,8 @@ func (o *Observer) Failovers() <-chan string {
 	return o.failoverCh
 }
 
+// Run collects and checks a snapshot of the instance at each
+// observer.interval, until ctx is done.
 func (o *Observer) Run(ctx context.Context) {
 	t := time.NewTicker(o.interval)
 	defer t.Stop()

@@ -13,7 +13,10 @@ import (
 )
 
 const (
-	PathRFRM     = "rfrm"
+	// PathRFRM reaches the master through the rfrm-<name> Service.
+	PathRFRM = "rfrm"
+	// PathSentinel reaches the master through a client that asks the Sentinels
+	// for the master.
 	PathSentinel = "sentinel"
 	// PathRFRS reaches a bootstrapping instance's pods, which are all
 	// replicas, through the rfrs-<name> Service.

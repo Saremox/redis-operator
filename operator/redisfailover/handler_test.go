@@ -28,7 +28,7 @@ import (
 const redisFailoverFinalizerMirror = "redisfailovers.databases.spotahome.com/finalizer"
 
 // fakeRecorder wraps metrics.Dummy (whose concrete type is unexported, so it
-// can't be embedded directly) and records DeleteCluster calls, which is the
+// cannot be embedded directly) and records DeleteCluster calls, which is the
 // one signal these tests need to observe.
 type fakeRecorder struct {
 	metrics.Recorder
@@ -95,7 +95,7 @@ func TestHandleSkipReconcileAnnotation(t *testing.T) {
 			config := generateConfig()
 			mk := noAppliedSecret(&mK8SService.Services{})
 			// CheckAndHeal always defers updateStatus, on every return path;
-			// only reached when reconciliation isn't skipped, hence Maybe().
+			// only reached when reconciliation is not skipped, hence Maybe().
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe().Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
 			mrfh := &mRFService.RedisFailoverHeal{}
@@ -187,7 +187,7 @@ func TestHandleValidateError(t *testing.T) {
 	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
 
-	// Finalizer registration runs before Validate(), so it's still expected
+	// Finalizer registration runs before Validate(), so it is still expected
 	// even though this RF fails validation.
 	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Twice().Return(nil)
 	// The status shows the error, because the last status is not correct.
@@ -280,7 +280,7 @@ func TestHandleCheckAndHealError(t *testing.T) {
 	assert := assert.New(t)
 
 	// Operator-managed mode (sentinel disabled), not bootstrapping: the
-	// minimal Ensure() call graph (see TestEnsure "don't use exporter" case,
+	// minimal Ensure() call graph (see TestEnsure `don't use exporter` case,
 	// with sentinels also disabled).
 	rf := generateRF(false, false)
 	rf.Spec.Sentinel.Enabled = ptr.To(false)
@@ -441,7 +441,7 @@ func TestHandleGetLabelsWhitelistFiltering(t *testing.T) {
 }
 
 // TestHandleAddsFinalizerOnFreshRF verifies that Handle registers
-// redisFailoverFinalizer on a RedisFailover that doesn't yet have it, adding
+// redisFailoverFinalizer on a RedisFailover that does not yet have it, adding
 // it to whatever finalizers were already present rather than replacing them.
 func TestHandleAddsFinalizerOnFreshRF(t *testing.T) {
 	assert := assert.New(t)

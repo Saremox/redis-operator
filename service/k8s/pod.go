@@ -21,7 +21,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// Pod the Pod service that knows how to interact with k8s to manage them
+// Pod the Pod service that knows how to interact with k8s to manage them.
 type Pod interface {
 	GetPod(namespace string, name string) (*corev1.Pod, error)
 	DeletePod(namespace string, name string) error
@@ -68,6 +68,7 @@ func NewPodService(kubeClient kubernetes.Interface, logger log.Logger, metricsRe
 	}
 }
 
+// GetPod returns the named pod.
 func (p *PodService) GetPod(namespace string, name string) (*corev1.Pod, error) {
 	pod, err := p.kubeClient.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "Pod", name, "GET", err, p.metricsRecorder)
@@ -77,6 +78,8 @@ func (p *PodService) GetPod(namespace string, name string) (*corev1.Pod, error) 
 	return pod, err
 }
 
+// DeletePod deletes the named pod. Use DeletePodWithUID when a pod with the
+// same name must stay.
 func (p *PodService) DeletePod(namespace string, name string) error {
 	err := p.kubeClient.CoreV1().Pods(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 	recordMetrics(namespace, "Pod", name, "DELETE", err, p.metricsRecorder)
@@ -92,6 +95,7 @@ func (p *PodService) DeletePodWithUID(namespace string, name string, uid types.U
 	return err
 }
 
+// ListPods returns all the pods of the namespace.
 func (p *PodService) ListPods(namespace string) (*corev1.PodList, error) {
 	pods, err := p.kubeClient.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{})
 	recordMetrics(namespace, "Pod", metrics.NOT_APPLICABLE, "LIST", err, p.metricsRecorder)

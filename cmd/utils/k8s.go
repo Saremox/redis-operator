@@ -36,7 +36,7 @@ func LoadKubernetesConfig(flags *CMDFlags) (*rest.Config, error) {
 	return cfg, nil
 }
 
-// CreateKubernetesClients create the clients to connect to kubernetes
+// CreateKubernetesClients create the clients to connect to kubernetes.
 func CreateKubernetesClients(flags *CMDFlags) (kubernetes.Interface, redisfailoverclientset.Interface, metadata.Interface, error) {
 	config, err := LoadKubernetesConfig(flags)
 	if err != nil {

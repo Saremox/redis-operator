@@ -88,7 +88,7 @@ func TestProviderFollowsTheSecret(t *testing.T) {
 		t.Error("the old password still works")
 	}
 
-	// A read from before a change can't undo it; a new RedisFailover can.
+	// A read from before a change cannot undo it; a new RedisFailover can.
 	src.Update(rf("a", 1, ""))
 	if src.SecretPath() != "x-auth" {
 		t.Errorf("an older generation changed the secretPath")

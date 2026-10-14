@@ -3762,7 +3762,7 @@ func TestRedisReadinessScript(t *testing.T) {
 				start := time.Now()
 				out, err := cmd.CombinedOutput()
 				assert.Equal(t, test.ready, err == nil, "ready.sh output: %s", out)
-				// The kubelet's probe timeout is 5s, and some runtimes don't
+				// The kubelet's probe timeout is 5s, and some runtimes do not
 				// enforce it while a child still holds the output open.
 				assert.Less(t, time.Since(start), 5*time.Second, "ready.sh must finish within the probe timeout")
 			})

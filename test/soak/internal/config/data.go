@@ -23,6 +23,7 @@ type Data struct {
 	Ledger *Ledger `json:"ledger"`
 }
 
+// Fill sets the amount of data that the filler keeps in an instance.
 type Fill struct {
 	// Percent of maxmemory the filler keeps used_memory at, on instances
 	// with maxmemory.

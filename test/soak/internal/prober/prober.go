@@ -44,6 +44,7 @@ const EventNone = "none"
 // Clients are the client styles every path is probed with.
 var Clients = []Client{Pooled, Retrying, Fresh, Follower}
 
+// Prober probes one path of an instance with one client style.
 type Prober struct {
 	path     Path
 	client   Client
@@ -70,6 +71,7 @@ type Prober struct {
 	waitAcked      prometheus.Gauge
 }
 
+// New returns the Prober of a path and a client style.
 func New(in config.Instance, path Path, client Client, probe config.Probe, a *auth.Source, m *metrics.Metrics, log *slog.Logger) *Prober {
 	labels := prometheus.Labels{
 		"rf":        in.Name,
@@ -102,6 +104,7 @@ func New(in config.Instance, path Path, client Client, probe config.Probe, a *au
 	return p
 }
 
+// Run probes the path at each probe interval until ctx is done.
 func (p *Prober) Run(ctx context.Context) {
 	var pooled *redis.Client
 	var password string

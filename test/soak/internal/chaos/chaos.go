@@ -54,6 +54,7 @@ type Instance struct {
 	Data Data
 }
 
+// Lane runs the chaos actions for all instances, one action at a time.
 type Lane struct {
 	cfg       config.Chaos
 	operator  config.Operator

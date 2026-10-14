@@ -196,7 +196,7 @@ chaos:
 		t.Errorf("%d operator_down series", n)
 	}
 
-	// An operator on no configured version isn't upgraded.
+	// An operator on no configured version is not upgraded.
 	if _, err := kube.AppsV1().Deployments("redis-operator").Update(context.Background(), deployment("redis-operator:c", 1, 1, 1, true), metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}

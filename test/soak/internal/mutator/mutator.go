@@ -74,6 +74,7 @@ type Data interface {
 	Writable(ctx context.Context) error
 }
 
+// Mutator changes one instance, one mutation at a time.
 type Mutator struct {
 	in       config.Instance
 	cfg      config.Mutation
@@ -192,6 +193,8 @@ func (m *Mutator) Current() string {
 	return ""
 }
 
+// Run waits for the data fill, then runs one mutation at a time until ctx is
+// done or mutation.stopAfter passes.
 func (m *Mutator) Run(ctx context.Context) {
 	started := time.Now()
 	stop := started.Add(m.cfg.StopAfter.Duration)

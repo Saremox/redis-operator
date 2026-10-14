@@ -27,7 +27,7 @@ type CMDFlags struct {
 	EnablePprof                 bool
 }
 
-// Init initializes and parse the flags
+// Init initializes and parse the flags.
 func (c *CMDFlags) Init() {
 	kubehome := filepath.Join(homedir.HomeDir(), ".kube", "config")
 	// register flags
@@ -52,7 +52,7 @@ func (c *CMDFlags) Init() {
 	}
 }
 
-// ToRedisOperatorConfig convert the flags to redisfailover config
+// ToRedisOperatorConfig convert the flags to redisfailover config.
 func (c *CMDFlags) ToRedisOperatorConfig() redisfailover.Config {
 	return redisfailover.Config{
 		ListenAddress:            c.ListenAddr,

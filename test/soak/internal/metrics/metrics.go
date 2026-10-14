@@ -15,6 +15,7 @@ const namespace = "redis_soak"
 // instanceLabels start every per-instance label set.
 var instanceLabels = []string{"rf", "namespace", "mode"}
 
+// Metrics holds the metrics of the tester.
 type Metrics struct {
 	ProbeTotal     *prometheus.CounterVec
 	ProbeDuration  *prometheus.HistogramVec

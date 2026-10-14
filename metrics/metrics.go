@@ -19,7 +19,7 @@ func init() {
 	go removeStaleMetrics()
 }
 
-// variables for setting various indicator labels
+// variables for setting various indicator labels.
 const (
 	SUCCESS                                = "SUCCESS"
 	FAIL                                   = "FAIL"
@@ -43,7 +43,7 @@ const (
 	// MASTER_HANDOVER_ABORTED counts a FAILOVER of the rollout that Redis or
 	// the operator aborted.
 	MASTER_HANDOVER_ABORTED = "MASTER_HANDOVER_ABORTED"
-	// redis connection related errors
+	// redis connection related errors.
 	WRONG_PASSWORD_USED = "WRONG_PASSWORD_USED"
 	NOAUTH              = "AUTH_CREDENTIALS_NOT_PROVIDED"
 	NOPERM              = "REDIS_USER_DOES_NOT_HAVE_PERMISSIONS"

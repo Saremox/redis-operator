@@ -101,7 +101,7 @@ type RedisFailoverHandler struct {
 	requeue func(key string, after time.Duration)
 }
 
-// NewRedisFailoverHandler returns a new RF handler
+// NewRedisFailoverHandler returns a new RF handler.
 func NewRedisFailoverHandler(config Config, rfService rfservice.RedisFailoverClient, rfChecker rfservice.RedisFailoverCheck, rfHealer rfservice.RedisFailoverHeal, k8sservice k8s.Services, mClient metrics.Recorder, logger log.Logger) *RedisFailoverHandler {
 	return &RedisFailoverHandler{
 		config:     config,

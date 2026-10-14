@@ -47,7 +47,7 @@ type HealthServer struct {
 	redisReady   atomic.Bool
 }
 
-// HealthResponse is the response for /healthz endpoint
+// HealthResponse is the response for /healthz endpoint.
 type HealthResponse struct {
 	Status        string `json:"status"`
 	RedisPID      int    `json:"redis_pid,omitempty"`
@@ -55,7 +55,7 @@ type HealthResponse struct {
 	Error         string `json:"error,omitempty"`
 }
 
-// ReadyResponse is the response for /readyz endpoint
+// ReadyResponse is the response for /readyz endpoint.
 type ReadyResponse struct {
 	Status               string `json:"status"`
 	Role                 string `json:"role,omitempty"`
@@ -65,14 +65,14 @@ type ReadyResponse struct {
 	Error                string `json:"error,omitempty"`
 }
 
-// StatusResponse is the detailed response for /status endpoint
+// StatusResponse is the detailed response for /status endpoint.
 type StatusResponse struct {
 	Redis           RedisStatus           `json:"redis"`
 	Replication     ReplicationStatus     `json:"replication"`
 	InstanceManager InstanceManagerStatus `json:"instance_manager"`
 }
 
-// RedisStatus contains Redis server status
+// RedisStatus contains Redis server status.
 type RedisStatus struct {
 	PID                  int    `json:"pid"`
 	Role                 string `json:"role"`
@@ -84,7 +84,7 @@ type RedisStatus struct {
 	AOFRewriteInProgress bool   `json:"aof_rewrite_in_progress"`
 }
 
-// ReplicationStatus contains replication information
+// ReplicationStatus contains replication information.
 type ReplicationStatus struct {
 	Role                 string `json:"role"`
 	ConnectedSlaves      int    `json:"connected_slaves,omitempty"`
@@ -96,7 +96,7 @@ type ReplicationStatus struct {
 	MasterReplOffset     int64  `json:"master_repl_offset,omitempty"`
 }
 
-// InstanceManagerStatus contains instance manager status
+// InstanceManagerStatus contains instance manager status.
 type InstanceManagerStatus struct {
 	Version            string `json:"version"`
 	UptimeSeconds      int64  `json:"uptime_seconds"`
@@ -104,7 +104,7 @@ type InstanceManagerStatus struct {
 	HealthPort         int    `json:"health_port"`
 }
 
-// NewHealthServer creates a new health server
+// NewHealthServer creates a new health server.
 func NewHealthServer(port int, redisPort string, redisPassword string) *HealthServer {
 	return &HealthServer{
 		port:          port,
@@ -116,14 +116,14 @@ func NewHealthServer(port int, redisPort string, redisPassword string) *HealthSe
 	}
 }
 
-// SetRedisPID updates the Redis process ID
+// SetRedisPID updates the Redis process ID.
 func (h *HealthServer) SetRedisPID(pid int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.redisPid = pid
 }
 
-// SetCleanupDone marks startup cleanup as complete
+// SetCleanupDone marks startup cleanup as complete.
 func (h *HealthServer) SetCleanupDone(done bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -178,7 +178,7 @@ func (h *HealthServer) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop gracefully stops the health server
+// Stop gracefully stops the health server.
 func (h *HealthServer) Stop(ctx context.Context) error {
 	if h.server != nil {
 		if err := h.server.Shutdown(ctx); err != nil {
@@ -193,7 +193,7 @@ func (h *HealthServer) Stop(ctx context.Context) error {
 	return nil
 }
 
-// runHealthChecker periodically checks Redis health and caches the results
+// runHealthChecker periodically checks Redis health and caches the results.
 func (h *HealthServer) runHealthChecker(ctx context.Context) {
 	ticker := time.NewTicker(healthCheckInterval)
 	defer ticker.Stop()
@@ -208,7 +208,7 @@ func (h *HealthServer) runHealthChecker(ctx context.Context) {
 	}
 }
 
-// updateHealthStatus checks Redis and updates cached status
+// updateHealthStatus checks Redis and updates cached status.
 func (h *HealthServer) updateHealthStatus(ctx context.Context) {
 	checkCtx, cancel := context.WithTimeout(ctx, redisCommandTimeout)
 	defer cancel()
@@ -253,7 +253,7 @@ func (h *HealthServer) updateHealthStatus(ctx context.Context) {
 	h.redisReady.Store(ready)
 }
 
-// handleHealthz handles the /healthz liveness endpoint
+// handleHealthz handles the /healthz liveness endpoint.
 func (h *HealthServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -285,7 +285,7 @@ func (h *HealthServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// handleReadyz handles the /readyz readiness endpoint
+// handleReadyz handles the /readyz readiness endpoint.
 func (h *HealthServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -330,7 +330,7 @@ func (h *HealthServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// handleStatus handles the /status detailed status endpoint
+// handleStatus handles the /status detailed status endpoint.
 func (h *HealthServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -379,7 +379,7 @@ func (h *HealthServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// parseRedisInfo parses Redis INFO command output into a map
+// parseRedisInfo parses Redis INFO command output into a map.
 func parseRedisInfo(info string) map[string]string {
 	result := make(map[string]string)
 	lines := splitLines(info)
@@ -402,7 +402,7 @@ func parseRedisInfo(info string) map[string]string {
 	return result
 }
 
-// splitLines splits a string by newlines
+// splitLines splits a string by newlines.
 func splitLines(s string) []string {
 	var lines []string
 	start := 0
@@ -427,7 +427,7 @@ func splitLines(s string) []string {
 	return lines
 }
 
-// indexByte returns the index of the first occurrence of c in s, or -1
+// indexByte returns the index of the first occurrence of c in s, or -1.
 func indexByte(s string, c byte) int {
 	for i := 0; i < len(s); i++ {
 		if s[i] == c {

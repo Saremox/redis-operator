@@ -24,7 +24,7 @@ import (
 
 const (
 	redisConfigurationVolumeName = "redis-config"
-	// Template used to build the Redis configuration
+	// Template used to build the Redis configuration.
 	redisConfigTemplate = `slaveof 127.0.0.1 {{.Spec.Redis.Port}}
 port {{.Spec.Redis.Port}}
 tcp-keepalive 60

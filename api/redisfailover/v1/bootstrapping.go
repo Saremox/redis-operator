@@ -46,6 +46,7 @@ func (r *RedisFailover) GetFailoverTimeout() metav1.Duration {
 	return *r.Spec.Sentinel.FailoverTimeout
 }
 
+// GetFailoverTimeoutDuration is GetFailoverTimeout as a time.Duration.
 func (r *RedisFailover) GetFailoverTimeoutDuration() time.Duration {
 	return r.GetFailoverTimeout().Duration
 }

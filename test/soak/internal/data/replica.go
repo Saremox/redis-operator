@@ -56,6 +56,8 @@ type Replica struct {
 	verified   *prometheus.CounterVec
 }
 
+// NewReplica returns the Replica of a bootstrap instance. It verifies the pods
+// against the ledger of source.
 func NewReplica(in config.Instance, cfg *config.Config, source *Data, pods Pods, a *auth.Source, m *metrics.Metrics, log *slog.Logger) *Replica {
 	labels := prometheus.Labels{"rf": in.Name, "namespace": in.Namespace, "mode": string(in.Mode)}
 	h := fnv.New64a()
@@ -76,9 +78,14 @@ func NewReplica(in config.Instance, cfg *config.Config, source *Data, pods Pods,
 	return r
 }
 
+// Filled always reports true for a read-only instance.
 func (r *Replica) Filled() bool { return true }
-func (r *Replica) Begin()       {}
-func (r *Replica) Refill()      {}
+
+// Begin does nothing for a read-only instance.
+func (r *Replica) Begin() {}
+
+// Refill does nothing for a read-only instance.
+func (r *Replica) Refill() {}
 
 // Verify checks the pods. A pod that caught up holds every write of the
 // source, so each loss is unexpected, whatever the event.
@@ -86,14 +93,18 @@ func (r *Replica) Verify(ctx context.Context, event string, step int, _ bool) (i
 	return verifyAfter(ctx, r.requests, &request{ctx: ctx, event: event, step: step})
 }
 
+// Burst does not start on a read-only instance, and returns the reason.
 func (r *Replica) Burst(context.Context, time.Duration) (string, error) {
 	return "read-only instance", nil
 }
 
+// Writable returns an error, because the instance is read-only.
 func (r *Replica) Writable(context.Context) error {
 	return errors.New("read-only instance")
 }
 
+// Run verifies the pods at each Verify request and one time in each
+// bootstrapInterval, until ctx is done.
 func (r *Replica) Run(ctx context.Context) {
 	t := time.NewTicker(bootstrapInterval)
 	defer t.Stop()

@@ -551,7 +551,7 @@ func TestSetMasterOnAllRejectsIPNotOwnedByRF(t *testing.T) {
 	rf := generateRF()
 
 	// None of this RedisFailover's own pods have this IP: it could be a stale
-	// value resolved earlier in the reconcile that's since been reassigned to
+	// value resolved earlier in the reconcile that has since been reassigned to
 	// an unrelated pod, possibly in a different namespace/RedisFailover. See
 	// https://github.com/spotahome/redis-operator/issues/698.
 	pods := &corev1.PodList{
@@ -930,7 +930,7 @@ func TestPromoteBestReplicaRejectsIPNotOwnedByRF(t *testing.T) {
 	assert := assert.New(t)
 	rf := generateRF()
 
-	// newMasterIP isn't a pod of this RedisFailover: refuse to promote it
+	// newMasterIP is not a pod of this RedisFailover: refuse to promote it
 	// rather than blindly issuing MakeMaster against a possibly-foreign
 	// instance. See https://github.com/spotahome/redis-operator/issues/698.
 	newMasterIP := "9.9.9.9"

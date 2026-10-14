@@ -73,6 +73,7 @@ func (v OperatorVersion) Repository() string {
 	return repo
 }
 
+// Tag returns the tag of the image, with the digest when the image has one.
 func (v OperatorVersion) Tag() string {
 	_, tag := splitImage(v.Image)
 	if _, digest, ok := strings.Cut(v.Image, "@"); ok {

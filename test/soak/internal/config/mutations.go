@@ -11,6 +11,7 @@ import (
 // Kind is a kind of mutation, the value of the kind label.
 type Kind string
 
+// The mutation kinds. The value of a kind is its key in mutations.kinds.
 const (
 	RedisReplicas    Kind = "redis_replicas"
 	SentinelReplicas Kind = "sentinel_replicas"
@@ -110,6 +111,7 @@ type Range struct {
 	Max int64 `json:"max"`
 }
 
+// Set reports whether the range is not the zero Range.
 func (r Range) Set() bool { return r != Range{} }
 
 // Resources bounds the redis container's requests and limits: cpu in
@@ -120,6 +122,8 @@ type Resources struct {
 	Limits   ResourceRanges `json:"limits"`
 }
 
+// ResourceRanges bounds the cpu and the memory of the requests or of the
+// limits.
 type ResourceRanges struct {
 	CPU    Range `json:"cpu"`
 	Memory Range `json:"memory"`

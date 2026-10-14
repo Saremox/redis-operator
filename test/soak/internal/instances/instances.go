@@ -74,6 +74,7 @@ type Instance struct {
 	log  *slog.Logger
 }
 
+// New loads the template of the instance and returns the Instance.
 func New(in config.Instance, kube kubernetes.Interface, rfs versioned.Interface, log *slog.Logger) (*Instance, error) {
 	t, err := LoadTemplate(in.Template, in.Name)
 	if err != nil {

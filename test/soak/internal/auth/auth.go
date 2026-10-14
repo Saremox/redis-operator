@@ -28,6 +28,8 @@ type Source struct {
 	secretPath string
 }
 
+// New returns a Source that reads Secrets with lookup. Update gives it the
+// Secret to read.
 func New(lookup Lookup) *Source {
 	return &Source{lookup: lookup}
 }
