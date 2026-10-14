@@ -3,6 +3,7 @@ package redisfailover
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -214,10 +215,15 @@ func (c *rfController) secretEventHandler() cache.ResourceEventHandler {
 	return cache.ResourceEventHandlerFuncs{
 		AddFunc: enqueue,
 		UpdateFunc: func(old, obj any) {
-			// A relist sends unchanged Secrets again.
-			if old.(*metav1.PartialObjectMetadata).ResourceVersion != obj.(*metav1.PartialObjectMetadata).ResourceVersion {
-				enqueue(obj)
+			// A relist sends unchanged Secrets again. The handler queues an
+			// object of an unknown type, because no version can show that it
+			// did not change.
+			oldMeta, oldOK := old.(*metav1.PartialObjectMetadata)
+			newMeta, newOK := obj.(*metav1.PartialObjectMetadata)
+			if oldOK && newOK && oldMeta.ResourceVersion == newMeta.ResourceVersion {
+				return
 			}
+			enqueue(obj)
 		},
 		DeleteFunc: enqueue,
 	}
@@ -333,8 +339,12 @@ func (c *rfController) process(ctx context.Context, key string) (err error) {
 		c.handler.Forget(key)
 		return nil
 	}
+	object, ok := obj.(runtime.Object)
+	if !ok {
+		return fmt.Errorf("object %s is a %T, not a runtime.Object", key, obj)
+	}
 	// The handler changes the object, and the informer cache shares it.
-	return c.handler.Handle(ctx, obj.(runtime.Object).DeepCopyObject())
+	return c.handler.Handle(ctx, object.DeepCopyObject())
 }
 
 // newPodListWatch lists and watches the pods of every RedisFailover.

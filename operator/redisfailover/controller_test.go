@@ -268,6 +268,28 @@ func TestRFControllerSecretEventHandler(t *testing.T) {
 	assert.Empty(t, queued())
 }
 
+// An update of another type has no version to compare, so the handler
+// queues it.
+func TestRFControllerSecretEventHandlerQueuesAnUpdateOfAnotherType(t *testing.T) {
+	c, err := newRFController(&recordingHandler{}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	require.NoError(t, err)
+	withAuth := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}
+	withAuth.Spec.Auth.SecretPath = "auth"
+	require.NoError(t, c.rfInformer.GetIndexer().Add(withAuth))
+	objectMeta := metav1.ObjectMeta{Name: "auth", Namespace: "ns", ResourceVersion: "1"}
+	partial := &metav1.PartialObjectMetadata{ObjectMeta: objectMeta}
+	secret := &corev1.Secret{ObjectMeta: objectMeta}
+	h := c.secretEventHandler()
+
+	for _, update := range [][2]any{{partial, secret}, {secret, partial}} {
+		h.OnUpdate(update[0], update[1])
+		require.Equal(t, 1, c.queue.Len())
+		key, _ := c.queue.Get()
+		c.queue.Done(key)
+		assert.Equal(t, "ns/rf", key)
+	}
+}
+
 func TestRFControllerWithoutSecretWatch(t *testing.T) {
 	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)
 	rf := redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}
@@ -549,6 +571,19 @@ func TestRFControllerForgetsDeletedRedisFailovers(t *testing.T) {
 	assert.NoError(t, c.process(context.Background(), "ns/gone"))
 	assert.Zero(t, h.count())
 	assert.Equal(t, []string{"ns/gone"}, h.forgotten())
+}
+
+func TestRFControllerProcessRejectsAnObjectOfAnotherType(t *testing.T) {
+	h := &recordingHandler{}
+	c, err := newRFController(h, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	require.NoError(t, err)
+	require.NoError(t, c.rfInformer.GetIndexer().Add(&metav1.ObjectMeta{Name: "rf", Namespace: "ns"}))
+
+	err = c.process(context.Background(), "ns/rf")
+
+	require.EqualError(t, err, "object ns/rf is a *v1.ObjectMeta, not a runtime.Object")
+	assert.Zero(t, h.count())
+	assert.Empty(t, h.forgotten())
 }
 
 func TestRFControllerKeepsLiveRedisFailovers(t *testing.T) {

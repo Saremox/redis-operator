@@ -256,6 +256,8 @@ func (r *RedisFailoverHandler) handOverMaster(rf *redisfailoverv1.RedisFailover,
 		}
 		r.retryHandover(rf, next, fmt.Sprintf("the master refused the handover of the master role to pod %s (%d of %d)", best.PodName, next.refusals, handoverMaxRefusals))
 		return true, nil
+	case rfservice.HandoverDone:
+		// The target is the master. The code after the switch continues.
 	}
 	r.handoverRetries.Delete(key)
 	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.MASTER_HANDOVER_ABORTED, metrics.NOT_APPLICABLE, nil)
@@ -542,8 +544,9 @@ func (r *RedisFailoverHandler) reportRolloutWait(rf *redisfailoverv1.RedisFailov
 		r.rolloutWaits.Delete(key)
 		return
 	}
-	if v, ok := r.rolloutWaits.Load(key); ok && v.(rolloutWait).uid == wait.uid {
-		wait.since = v.(rolloutWait).since
+	v, _ := r.rolloutWaits.Load(key)
+	if last, ok := v.(rolloutWait); ok && last.uid == wait.uid {
+		wait.since = last.since
 	} else {
 		wait.since = time.Now()
 		r.rolloutWaits.Store(key, *wait)
@@ -823,7 +826,8 @@ type appliedSecretLog struct {
 func (r *RedisFailoverHandler) logAppliedSecretError(rf *redisfailoverv1.RedisFailover, read bool, msg string, err error) {
 	logger := r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name)
 	logged := appliedSecretLog{read: read, err: err.Error()}
-	if last, ok := r.appliedSecretLogged.Swap(passwordKey(rf), logged); ok && last.(appliedSecretLog).err == logged.err {
+	prev, _ := r.appliedSecretLogged.Swap(passwordKey(rf), logged)
+	if last, ok := prev.(appliedSecretLog); ok && last.err == logged.err {
 		logger.Debugf("%s: %v", msg, err)
 		return
 	}
@@ -834,7 +838,8 @@ func (r *RedisFailoverHandler) logAppliedSecretError(rf *redisfailoverv1.RedisFa
 // same error logs a Warning again. A read does not show that a write works.
 func (r *RedisFailoverHandler) forgetAppliedSecretLog(rf *redisfailoverv1.RedisFailover, read bool) {
 	key := passwordKey(rf)
-	if v, ok := r.appliedSecretLogged.Load(key); ok && (!read || v.(appliedSecretLog).read) {
+	v, _ := r.appliedSecretLogged.Load(key)
+	if last, ok := v.(appliedSecretLog); ok && (!read || last.read) {
 		r.appliedSecretLogged.CompareAndDelete(key, v)
 	}
 }
@@ -1858,9 +1863,10 @@ func (r *RedisFailoverHandler) startSentinelHeal(rf *redisfailoverv1.RedisFailov
 		resets:      map[string]time.Time{},
 		unreachable: map[string]bool{},
 	}
-	if last, ok := r.sentinelResets.Load(heal.key); ok {
+	v, _ := r.sentinelResets.Load(heal.key)
+	if last, ok := v.(map[string]time.Time); ok {
 		now := r.now()
-		for sip, at := range last.(map[string]time.Time) {
+		for sip, at := range last {
 			if now.Sub(at) < sentinelResetHoldOff {
 				heal.resets[sip] = at
 			}
