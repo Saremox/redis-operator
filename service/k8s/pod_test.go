@@ -56,10 +56,10 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.UpdatePodLabels(testns, "testpod", map[string]string{"role": "master"})
-		assertTest.NoError(err)
+		require.NoError(t, err)
 
 		got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.Equal("master", got.Labels["role"])
 	})
 
@@ -83,10 +83,10 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 			"role":  "master",
 			"ready": "true",
 		})
-		assertTest.NoError(err)
+		require.NoError(t, err)
 
 		got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.Equal("master", got.Labels["role"])
 		assertTest.Equal("true", got.Labels["ready"])
 	})
@@ -118,10 +118,10 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.UpdatePodLabels(testns, "testpod", map[string]string{"app.kubernetes.io/component": "sentinel"})
-		assertTest.NoError(err)
+		require.NoError(t, err)
 
 		got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.Equal("sentinel", got.Labels["app.kubernetes.io/component"])
 		assertTest.Equal("slave", got.Labels["role"])
 	})
@@ -139,10 +139,10 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.UpdatePodLabels(testns, "nolabelspod", map[string]string{"role": "master"})
-		assertTest.NoError(err)
+		require.NoError(t, err)
 
 		got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "nolabelspod", metav1.GetOptions{})
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.Equal(map[string]string{"role": "master"}, got.Labels)
 	})
 
@@ -161,11 +161,11 @@ func TestPodServiceUpdatePodLabels(t *testing.T) {
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		for _, empty := range []map[string]string{nil, {}} {
-			assertTest.NoError(service.UpdatePodLabels(testns, "testpod", empty))
+			require.NoError(t, service.UpdatePodLabels(testns, "testpod", empty))
 		}
 
 		got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.Equal(labels, got.Labels)
 	})
 }
@@ -301,7 +301,7 @@ func TestPodServiceUpdatePodLabelsLogLevel(t *testing.T) {
 			service := k8s.NewPodService(mcli, levelLogger{levels: &levels}, metrics.Dummy)
 
 			err := service.UpdatePodLabels("testns", "testpod", map[string]string{"role": "master"})
-			assert.Error(t, err)
+			require.Error(t, err)
 			assert.Equal(t, []string{test.expLevel}, levels)
 		})
 	}
@@ -323,11 +323,11 @@ func TestPodServiceDelete(t *testing.T) {
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.DeletePod(testns, "testpod1")
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.Equal([]kubetesting.Action{newPodDeleteAction(testns, "testpod1")}, mcli.Actions())
 
 		_, getErr := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod1", metav1.GetOptions{})
-		assertTest.Error(getErr)
+		require.Error(t, getErr)
 		assertTest.True(kubeerrors.IsNotFound(getErr))
 	})
 
@@ -338,7 +338,7 @@ func TestPodServiceDelete(t *testing.T) {
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.DeletePod(testns, "does-not-exist")
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.True(kubeerrors.IsNotFound(err))
 	})
 }
@@ -352,7 +352,7 @@ func TestPodServiceDeleteWithUID(t *testing.T) {
 	mcli := kubernetes.NewClientset(pod)
 	service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
-	assert.NoError(t, service.DeletePodWithUID(testns, "testpod1", "uid1"))
+	require.NoError(t, service.DeletePodWithUID(testns, "testpod1", "uid1"))
 	uid := types.UID("uid1")
 	want := kubetesting.NewDeleteActionWithOptions(podsGroup, testns, "testpod1", metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
 	assert.Equal(t, []kubetesting.Action{want}, mcli.Actions())
@@ -394,7 +394,7 @@ func TestPodServiceList(t *testing.T) {
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		list, err := service.ListPods(testns)
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.Len(list.Items, 2)
 		names := []string{list.Items[0].Name, list.Items[1].Name}
 		assertTest.ElementsMatch([]string{"p1", "p2"}, names)
@@ -411,7 +411,7 @@ func TestPodServiceList(t *testing.T) {
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
 		list, err := service.ListPods(testns)
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.Empty(list.Items)
 		assertTest.Equal([]kubetesting.Action{newPodListAction(testns)}, mcli.Actions())
 	})
@@ -441,10 +441,10 @@ func TestPodServiceUpdatePodAnnotations(t *testing.T) {
 			mcli := kubernetes.NewClientset(pod)
 			service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
-			assert.NoError(t, service.UpdatePodAnnotations(testns, "testpod", map[string]string{"safe-to-evict": "false"}))
+			require.NoError(t, service.UpdatePodAnnotations(testns, "testpod", map[string]string{"safe-to-evict": "false"}))
 
 			got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, test.expected, got.Annotations)
 		})
 	}
@@ -462,10 +462,10 @@ func TestPodServiceRemovePodAnnotation(t *testing.T) {
 	mcli := kubernetes.NewClientset(pod)
 	service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
 
-	assert.NoError(t, service.RemovePodAnnotation(testns, "testpod", "safe-to-evict"))
+	require.NoError(t, service.RemovePodAnnotation(testns, "testpod", "safe-to-evict"))
 
 	got, err := mcli.CoreV1().Pods(testns).Get(context.TODO(), "testpod", metav1.GetOptions{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"other": "kept"}, got.Annotations)
 
 	err = service.RemovePodAnnotation(testns, "missing", "safe-to-evict")

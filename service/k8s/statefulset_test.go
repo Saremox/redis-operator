@@ -11,6 +11,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	kubeerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -98,7 +99,7 @@ func TestStatefulSetServiceGetStatefulSetPods(t *testing.T) {
 			service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
 
 			podList, err := service.GetStatefulSetPods(testns, stsName)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, []string{podMaster.Name}, podNames(podList))
 		})
 	}
@@ -130,13 +131,13 @@ func TestStatefulSetServiceGetStatefulSetPods(t *testing.T) {
 
 	t.Run("returns only the pods that the StatefulSet owns", func(t *testing.T) {
 		podList, err := service.GetStatefulSetPods(testns, stsName)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.ElementsMatch(t, []string{podMaster.Name, podHighOrdinal.Name}, podNames(podList))
 	})
 
 	t.Run("propagates the error when the StatefulSet itself does not exist", func(t *testing.T) {
 		podList, err := service.GetStatefulSetPods(testns, "does-not-exist")
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.Nil(t, podList)
 	})
 
@@ -147,7 +148,7 @@ func TestStatefulSetServiceGetStatefulSetPods(t *testing.T) {
 		})
 
 		podList, err := k8s.NewStatefulSetService(failing, log.Dummy, metrics.Dummy).GetStatefulSetPods(testns, stsName)
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.Nil(t, podList)
 	})
 
@@ -160,7 +161,7 @@ func TestStatefulSetServiceGetStatefulSetPods(t *testing.T) {
 		mcli := kubernetes.NewClientset(emptySelectorSts, owned, podMaster, labelsOnly)
 
 		podList, err := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy).GetStatefulSetPods(testns, "empty")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, []string{"empty-0"}, podNames(podList))
 	})
 }
@@ -257,7 +258,7 @@ func TestStatefulSetServiceGetCreateOrUpdate(t *testing.T) {
 			if test.expErr {
 				assertTest.Error(err)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 				// Check calls to kubernetes.
 				assertTest.Equal(test.expActions, mcli.Actions())
 			}
@@ -284,7 +285,7 @@ func TestStatefulSetServiceGetCreateOrUpdate(t *testing.T) {
 			)
 			service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
 			err := service.CreateOrUpdateStatefulSet(testns, pvcStatefulSet("1Gi", owners))
-			assertTest.NoError(err)
+			require.NoError(t, err)
 			assertPVCStorage(t, mcli, "data-rfr-test-0", "1Gi")
 			assertPVCStorage(t, mcli, "data-rfr-test-1", "1Gi")
 			assertPVCStorage(t, mcli, "data-rfr-other-0", "0.5Gi")
@@ -637,7 +638,7 @@ func TestStatefulSetServiceCreateOrUpdatePVCs(t *testing.T) {
 				assert.Error(err)
 				return
 			}
-			assert.NoError(err)
+			require.NoError(t, err)
 			for name, storage := range test.expStorage {
 				assertPVCStorage(t, mcli, name, storage)
 			}
@@ -773,7 +774,7 @@ func TestStatefulSetServiceObjectUpToDate(t *testing.T) {
 			mcli := kubernetes.NewClientset(stored)
 
 			service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
-			assert.NoError(service.CreateOrUpdateStatefulSet(testns, test.desired.DeepCopy()))
+			require.NoError(t, service.CreateOrUpdateStatefulSet(testns, test.desired.DeepCopy()))
 
 			updates := 0
 			for _, a := range mcli.Actions() {
@@ -802,10 +803,10 @@ func TestStatefulSetServiceDeleteStatefulSet(t *testing.T) {
 		service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.DeleteStatefulSet(testns, "teststatefulset")
-		assertTest.NoError(err)
+		require.NoError(t, err)
 
 		_, err = mcli.AppsV1().StatefulSets(testns).Get(context.TODO(), "teststatefulset", metav1.GetOptions{})
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.True(kubeerrors.IsNotFound(err))
 	})
 
@@ -816,7 +817,7 @@ func TestStatefulSetServiceDeleteStatefulSet(t *testing.T) {
 		service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.DeleteStatefulSet(testns, "does-not-exist")
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.True(kubeerrors.IsNotFound(err))
 	})
 }
@@ -833,6 +834,6 @@ func TestStatefulSetServiceListStatefulSets(t *testing.T) {
 	service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
 
 	list, err := service.ListStatefulSets(testns)
-	assertTest.NoError(err)
+	require.NoError(t, err)
 	assertTest.Len(list.Items, 2)
 }

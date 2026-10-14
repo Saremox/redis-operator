@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -44,7 +45,7 @@ func TestRedisFailoverServiceListRedisFailovers(t *testing.T) {
 	service := k8s.NewRedisFailoverService(crdcli, log.Dummy, metrics.Dummy)
 
 	list, err := service.ListRedisFailovers(context.TODO(), testns, metav1.ListOptions{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, list)
 	assert.Len(t, list.Items, 2)
 
@@ -64,7 +65,7 @@ func TestRedisFailoverServiceWatchRedisFailovers(t *testing.T) {
 	service := k8s.NewRedisFailoverService(crdcli, log.Dummy, metrics.Dummy)
 
 	watcher, err := service.WatchRedisFailovers(context.TODO(), testns, metav1.ListOptions{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, watcher)
 	watcher.Stop()
 }
@@ -96,7 +97,7 @@ func TestRedisFailoverServiceUpdateRedisFailoverStatus(t *testing.T) {
 		})
 
 		got, err := crdcli.DatabasesV1().RedisFailovers(testns).Get(context.TODO(), "rf1", metav1.GetOptions{})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, redisfailoverv1.HealthyState, got.Status.State)
 	})
 
@@ -152,7 +153,7 @@ func TestRedisFailoverServiceUpdateRedisFailoverStatus(t *testing.T) {
 		})
 
 		got, err := crdcli.DatabasesV1().RedisFailovers(testns).Get(context.TODO(), "rf-tricky", metav1.GetOptions{})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, trickyRF.Status.Message, got.Status.Message)
 	})
 }
@@ -169,7 +170,7 @@ func TestRedisFailoverServiceUpdateRedisFailoverStatusAutoscaling(t *testing.T) 
 		rf.Status = redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.HealthyState, Autoscaling: status}
 		service.UpdateRedisFailoverStatus(context.TODO(), "testns", rf, metav1.PatchOptions{})
 		got, err := crdcli.DatabasesV1().RedisFailovers("testns").Get(context.TODO(), "rf1", metav1.GetOptions{})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		var body string
 		for _, action := range crdcli.Actions() {
 			if p, ok := action.(kubetesting.PatchAction); ok {
@@ -207,7 +208,7 @@ func TestRedisFailoverServiceLogsTheRedisFailover(t *testing.T) {
 	service := k8s.NewRedisFailoverService(crdcli, fieldLogger{lines: &lines}, metrics.Dummy)
 
 	service.UpdateRedisFailoverStatus(context.TODO(), "testns", rf, metav1.PatchOptions{})
-	assert.Error(t, service.PatchRedisFailoverFinalizers(context.TODO(), "testns", "rf1", nil, metav1.PatchOptions{}))
+	require.Error(t, service.PatchRedisFailoverFinalizers(context.TODO(), "testns", "rf1", nil, metav1.PatchOptions{}))
 
 	assert.Equal(t, []string{
 		"error: service=k8s.redisfailover redisfailover=rf1 namespace=testns Error while patching RedisFailover status: forbidden",
@@ -232,10 +233,10 @@ func TestRedisFailoverServicePatchRedisFailoverFinalizers(t *testing.T) {
 
 		err := service.PatchRedisFailoverFinalizers(context.TODO(), testns, rf.Name,
 			[]string{"some.other/finalizer", "redisfailovers.databases.spotahome.com/finalizer"}, metav1.PatchOptions{})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		got, err := crdcli.DatabasesV1().RedisFailovers(testns).Get(context.TODO(), rf.Name, metav1.GetOptions{})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, []string{"some.other/finalizer", "redisfailovers.databases.spotahome.com/finalizer"}, got.Finalizers)
 	})
 
@@ -244,10 +245,10 @@ func TestRedisFailoverServicePatchRedisFailoverFinalizers(t *testing.T) {
 		service := k8s.NewRedisFailoverService(crdcli, log.Dummy, metrics.Dummy)
 
 		err := service.PatchRedisFailoverFinalizers(context.TODO(), testns, rf.Name, nil, metav1.PatchOptions{})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		got, err := crdcli.DatabasesV1().RedisFailovers(testns).Get(context.TODO(), rf.Name, metav1.GetOptions{})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Empty(t, got.Finalizers)
 	})
 

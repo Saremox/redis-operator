@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -75,7 +76,7 @@ func TestValidateMaxMemory(t *testing.T) {
 				assert.ErrorContains(t, err, test.expectedError)
 				return
 			}
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, MaxMemorySettings{Percent: 75, Policy: "noeviction"}, *rf.Spec.Redis.MaxMemory)
 		})
 	}

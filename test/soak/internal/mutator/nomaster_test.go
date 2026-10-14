@@ -500,28 +500,37 @@ func TestNoMasterRecovery(t *testing.T) {
 		{"no change", "3", func(*testing.T, *Mutator, *calls) {}, pathUnknown, epochUnchanged, false},
 		{"a Sentinel does not answer after", "3", func(_ *testing.T, _ *Mutator, r *calls) { delete(r.epochs, "127.0.0.3") }, pathUnknown, epochUnread, false},
 		{"a Sentinel answers no epoch after", "3", func(_ *testing.T, _ *Mutator, r *calls) { r.setEpoch("127.0.0.3", "") }, pathUnknown, epochUnread, false},
-		{"operator election from epoch 0", "0", func(t *testing.T, m *Mutator, _ *calls) { setStatus(t, m, "x", electionMessage) }, pathOperator, epochUnchanged, true},
+		{"operator election from epoch 0", "0", func(t *testing.T, m *Mutator, _ *calls) {
+			t.Helper()
+			setStatus(t, m, "x", electionMessage)
+		}, pathOperator, epochUnchanged, true},
 		{"the election message is replaced", "0", func(t *testing.T, m *Mutator, _ *calls) {
+			t.Helper()
 			setStatus(t, m, "x", "no master, waiting for the Sentinel failover")
 			setStatus(t, m, "x", electionMessage)
 			setStatus(t, m, "x", "")
 		}, pathOperator, epochUnchanged, true},
 		{"the election message and a rise", "3", func(t *testing.T, m *Mutator, r *calls) {
+			t.Helper()
 			setStatus(t, m, "x", electionMessage)
 			setEpochs(r, "4")
 		}, pathOperator, epochRose, true},
 		{"the election message and no epoch read", "3", func(t *testing.T, m *Mutator, r *calls) {
+			t.Helper()
 			setStatus(t, m, "x", electionMessage)
 			delete(r.epochs, "127.0.0.1")
 		}, pathOperator, epochUnread, true},
 		{"another message and a rise", "3", func(t *testing.T, m *Mutator, r *calls) {
+			t.Helper()
 			setStatus(t, m, "x", "no master, waiting for the Sentinel failover")
 			setEpochs(r, "4")
 		}, pathSentinel, epochRose, false},
 		{"another message and no change", "0", func(t *testing.T, m *Mutator, _ *calls) {
+			t.Helper()
 			setStatus(t, m, "x", "no master, waiting for the Sentinel failover")
 		}, pathUnknown, epochUnchanged, false},
 		{"the message of another RedisFailover", "0", func(t *testing.T, m *Mutator, _ *calls) {
+			t.Helper()
 			setStatus(t, m, "other", electionMessage)
 		}, pathUnknown, epochUnchanged, false},
 	}

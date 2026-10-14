@@ -163,7 +163,7 @@ func TestCreateOrUpdateChecksTheController(t *testing.T) {
 					return
 				}
 				var other *k8s.ControlledByOtherError
-				require.True(t, errors.As(err, &other))
+				require.ErrorAs(t, err, &other)
 				assert.Equal(t, kind.kind, other.Kind)
 				assert.Equal(t, ownershipName, other.Name)
 				assert.Equal(t, "RedisFailover", other.OwnerKind)
@@ -190,7 +190,7 @@ func TestCreateOrUpdateComparesTheKindOfTheController(t *testing.T) {
 			err := kind.apply(c, kind.object("new", controllerRef("foo", "1")))
 
 			var other *k8s.ControlledByOtherError
-			assert.True(t, errors.As(err, &other))
+			require.ErrorAs(t, err, &other)
 			assert.Equal(t, "old", kind.label(c))
 		})
 	}
@@ -206,7 +206,7 @@ func TestCreateOrUpdateStatefulSetChecksTheControllerBeforeTheClaims(t *testing.
 	err := service.CreateOrUpdateStatefulSet(ownershipNS, pvcStatefulSet("1Gi", owners))
 
 	var other *k8s.ControlledByOtherError
-	require.True(t, errors.As(err, &other))
+	require.ErrorAs(t, err, &other)
 	assertPVCStorage(t, mcli, "data-rfr-test-0", "0.5Gi")
 }
 

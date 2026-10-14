@@ -153,31 +153,31 @@ func TestRecorderRecordMethods(t *testing.T) {
 	t.Run("RecordEnsureOperation", func(t *testing.T) {
 		rec.RecordEnsureOperation("ns", "obj", KIND_REDIS, "res", SUCCESS)
 		val := testutil.ToFloat64(concrete.ensureResource.WithLabelValues("ns", "obj", KIND_REDIS, "res", SUCCESS))
-		assert.Equal(t, float64(1), val)
+		assert.InDelta(t, float64(1), val, 0)
 	})
 
 	t.Run("RecordRedisCheck", func(t *testing.T) {
 		rec.RecordRedisCheck("ns", "res", REDIS_REPLICA_MISMATCH, "inst", FAIL)
 		val := testutil.ToFloat64(concrete.redisCheck.WithLabelValues("ns", "res", REDIS_REPLICA_MISMATCH, "inst", FAIL))
-		assert.Equal(t, float64(1), val)
+		assert.InDelta(t, float64(1), val, 0)
 	})
 
 	t.Run("RecordSentinelCheck", func(t *testing.T) {
 		rec.RecordSentinelCheck("ns", "res", SENTINEL_NOT_READY, "inst", FAIL)
 		val := testutil.ToFloat64(concrete.sentinelCheck.WithLabelValues("ns", "res", SENTINEL_NOT_READY, "inst", FAIL))
-		assert.Equal(t, float64(1), val)
+		assert.InDelta(t, float64(1), val, 0)
 	})
 
 	t.Run("RecordK8sOperation", func(t *testing.T) {
 		rec.RecordK8sOperation("ns", "Pod", "name", "create", SUCCESS, "")
 		val := testutil.ToFloat64(concrete.k8sServiceOperations.WithLabelValues("ns", "Pod", "name", "create", SUCCESS, ""))
-		assert.Equal(t, float64(1), val)
+		assert.InDelta(t, float64(1), val, 0)
 	})
 
 	t.Run("RecordRedisOperation", func(t *testing.T) {
 		rec.RecordRedisOperation("redis", "10.0.0.5", GET_SLAVE_OF, SUCCESS, "")
 		val := testutil.ToFloat64(concrete.redisOperations.WithLabelValues("redis", "10.0.0.5", GET_SLAVE_OF, SUCCESS, ""))
-		assert.Equal(t, float64(1), val)
+		assert.InDelta(t, float64(1), val, 0)
 	})
 }
 
@@ -275,7 +275,7 @@ func TestRemoveStaleMetrics(t *testing.T) {
 	rec.RecordRedisOperation("redis", "10.0.0.20", GET_SLAVE_OF, SUCCESS, "")
 
 	// Sanity check the metrics are present before GC runs.
-	assert.Equal(t, float64(1), testutil.ToFloat64(concrete.k8sServiceOperations.WithLabelValues("ns3", "Pod", "obj3", "create", SUCCESS, "")))
+	assert.InDelta(t, float64(1), testutil.ToFloat64(concrete.k8sServiceOperations.WithLabelValues("ns3", "Pod", "obj3", "create", SUCCESS, "")), 0)
 
 	old := time.Now().Add(-2 * metricsGCIntervalMinutes * time.Minute)
 	mutex.Lock()
@@ -319,10 +319,10 @@ func TestAutoscalerMetrics(t *testing.T) {
 	rec.SetAutoscaler("ns", "b", 0, 0.5, 0, 1)
 	rec.SetAutoscaler("ns", "c", 0, 0.5, 0, 1)
 
-	assert.Equal(t, 1342177280.0, testutil.ToFloat64(rec.recommendedMemory.WithLabelValues("ns", "a")))
-	assert.Equal(t, 0.912, testutil.ToFloat64(rec.memoryUsedRatio.WithLabelValues("ns", "a")))
-	assert.Equal(t, 2.0, testutil.ToFloat64(rec.highWindows.WithLabelValues("ns", "a")))
-	assert.Equal(t, 1073741824.0, testutil.ToFloat64(rec.effectiveMemory.WithLabelValues("ns", "a")))
+	assert.InDelta(t, 1342177280.0, testutil.ToFloat64(rec.recommendedMemory.WithLabelValues("ns", "a")), 0)
+	assert.InDelta(t, 0.912, testutil.ToFloat64(rec.memoryUsedRatio.WithLabelValues("ns", "a")), 0)
+	assert.InDelta(t, 2.0, testutil.ToFloat64(rec.highWindows.WithLabelValues("ns", "a")), 0)
+	assert.InDelta(t, 1073741824.0, testutil.ToFloat64(rec.effectiveMemory.WithLabelValues("ns", "a")), 0)
 
 	// DeleteAutoscaler is for a mode change to Off, and DeleteCluster for a
 	// deleted RedisFailover.

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	kubeerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -124,7 +125,7 @@ func TestServiceServiceGetCreateOrUpdate(t *testing.T) {
 			if test.expErr {
 				assertTest.Error(err)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 				// Check calls to kubernetes.
 				assertTest.Equal(test.expActions, mcli.Actions())
 			}
@@ -191,7 +192,7 @@ func TestCreateOrUpdateServicePreservesImmutableFields(t *testing.T) {
 	svc := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
 	err := svc.CreateOrUpdateService(testns, desiredService)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, "42", updatedService.ResourceVersion, "ResourceVersion must be preserved")
 	assert.Equal(t, "10.0.0.1", updatedService.Spec.ClusterIP, "clusterIP must be preserved")
 	assert.Equal(t, []string{"10.0.0.1"}, updatedService.Spec.ClusterIPs, "clusterIPs must be preserved")
@@ -248,7 +249,7 @@ func TestCreateOrUpdateServicePreservesHealthCheckNodePort(t *testing.T) {
 	svc := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
 	err := svc.CreateOrUpdateService(testns, desiredService)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, int32(32100), updatedService.Spec.HealthCheckNodePort, "healthCheckNodePort must be preserved")
 	assert.Equal(t, "10.0.0.2", updatedService.Spec.ClusterIP, "clusterIP must be preserved")
 }
@@ -340,7 +341,7 @@ func TestServiceServiceObjectUpToDate(t *testing.T) {
 			mcli := kubernetes.NewClientset(stored)
 
 			service := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
-			assert.NoError(service.CreateOrUpdateService(testns, test.desired.DeepCopy()))
+			require.NoError(t, service.CreateOrUpdateService(testns, test.desired.DeepCopy()))
 
 			updates := 0
 			for _, a := range mcli.Actions() {
@@ -370,7 +371,7 @@ func TestServiceServiceCreateOrUpdateServiceGetError(t *testing.T) {
 
 	svc := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
 	err := svc.CreateOrUpdateService(testns, service)
-	assertTest.Error(err)
+	require.Error(t, err)
 	assertTest.Equal([]kubetesting.Action{newServiceGetAction(testns, service.Name)}, mcli.Actions())
 }
 
@@ -390,10 +391,10 @@ func TestServiceServiceDeleteService(t *testing.T) {
 		service := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.DeleteService(testns, "testsvc")
-		assertTest.NoError(err)
+		require.NoError(t, err)
 
 		_, err = mcli.CoreV1().Services(testns).Get(context.TODO(), "testsvc", metav1.GetOptions{})
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.True(kubeerrors.IsNotFound(err))
 	})
 
@@ -404,7 +405,7 @@ func TestServiceServiceDeleteService(t *testing.T) {
 		service := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.DeleteService(testns, "does-not-exist")
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.True(kubeerrors.IsNotFound(err))
 	})
 }
@@ -421,6 +422,6 @@ func TestServiceServiceListServices(t *testing.T) {
 	service := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
 
 	list, err := service.ListServices(testns)
-	assertTest.NoError(err)
+	require.NoError(t, err)
 	assertTest.Len(list.Items, 2)
 }

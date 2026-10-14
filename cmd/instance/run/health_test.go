@@ -391,7 +391,7 @@ func TestHealthServerStartStop(t *testing.T) {
 
 	// Start should not error (even without Redis)
 	err := h.Start(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Stop should not error
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)

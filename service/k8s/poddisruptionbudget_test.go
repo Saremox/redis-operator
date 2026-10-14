@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	policyv1 "k8s.io/api/policy/v1"
 	kubeerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -124,7 +125,7 @@ func TestPodDisruptionBudgetServiceGetCreateOrUpdate(t *testing.T) {
 			if test.expErr {
 				assertTest.Error(err)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 				// Check calls to kubernetes.
 				assertTest.Equal(test.expActions, mcli.Actions())
 			}
@@ -185,7 +186,7 @@ func TestPodDisruptionBudgetServiceObjectUpToDate(t *testing.T) {
 			mcli := kubernetes.NewClientset(stored)
 
 			service := k8s.NewPodDisruptionBudgetService(mcli, log.Dummy, metrics.Dummy)
-			assert.NoError(service.CreateOrUpdatePodDisruptionBudget(testns, test.desired.DeepCopy()))
+			require.NoError(t, service.CreateOrUpdatePodDisruptionBudget(testns, test.desired.DeepCopy()))
 
 			updates := 0
 			for _, a := range mcli.Actions() {
@@ -244,9 +245,9 @@ func TestPodDisruptionBudgetServiceUpdate(t *testing.T) {
 			err := service.UpdatePodDisruptionBudget(testns, testPodDisruptionBudget)
 
 			if test.expErr {
-				assertTest.Error(err)
+				require.Error(t, err)
 			} else {
-				assertTest.NoError(err)
+				require.NoError(t, err)
 			}
 			assertTest.Equal(test.expActions, mcli.Actions())
 		})
@@ -269,11 +270,11 @@ func TestPodDisruptionBudgetServiceDelete(t *testing.T) {
 		service := k8s.NewPodDisruptionBudgetService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.DeletePodDisruptionBudget(testns, "testpodDisruptionBudget1")
-		assertTest.NoError(err)
+		require.NoError(t, err)
 		assertTest.Equal([]kubetesting.Action{newPodDisruptionBudgetDeleteAction(testns, "testpodDisruptionBudget1")}, mcli.Actions())
 
 		_, getErr := mcli.PolicyV1().PodDisruptionBudgets(testns).Get(context.TODO(), "testpodDisruptionBudget1", metav1.GetOptions{})
-		assertTest.Error(getErr)
+		require.Error(t, getErr)
 		assertTest.True(kubeerrors.IsNotFound(getErr))
 	})
 
@@ -284,7 +285,7 @@ func TestPodDisruptionBudgetServiceDelete(t *testing.T) {
 		service := k8s.NewPodDisruptionBudgetService(mcli, log.Dummy, metrics.Dummy)
 
 		err := service.DeletePodDisruptionBudget(testns, "does-not-exist")
-		assertTest.Error(err)
+		require.Error(t, err)
 		assertTest.True(kubeerrors.IsNotFound(err))
 	})
 }
