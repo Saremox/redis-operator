@@ -34,7 +34,7 @@ func (l DummyLogger) Warnln(...any) {}
 func (l DummyLogger) Warnf(string, ...any) {}
 
 // Warningf discards the message.
-func (l DummyLogger) Warningf(format string, args ...any) {}
+func (l DummyLogger) Warningf(string, ...any) {}
 
 // Error discards the message.
 func (l DummyLogger) Error(...any) {}
@@ -64,13 +64,13 @@ func (l DummyLogger) Panicln(...any) {}
 func (l DummyLogger) Panicf(string, ...any) {}
 
 // With returns the same DummyLogger, because it keeps no fields.
-func (l DummyLogger) With(key string, value any) Logger { return l }
+func (l DummyLogger) With(string, any) Logger { return l }
 
 // WithField returns the same DummyLogger, because it keeps no fields.
-func (l DummyLogger) WithField(key string, value any) Logger { return l }
+func (l DummyLogger) WithField(string, any) Logger { return l }
 
 // WithFields returns the same DummyLogger, because it keeps no fields.
-func (l DummyLogger) WithFields(values map[string]any) Logger { return l }
+func (l DummyLogger) WithFields(map[string]any) Logger { return l }
 
 // Set ignores the level and always returns nil.
-func (l DummyLogger) Set(level Level) error { return nil }
+func (l DummyLogger) Set(Level) error { return nil }

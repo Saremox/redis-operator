@@ -156,7 +156,7 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 		}
 		want := s.rf.Spec.Sentinel.Replicas
 		pod := s.sentinels[r.IntN(len(s.sentinels))]
-		return planKill(kind, pod, r.Float64() < m.ForceDeleteProbability, func(name string, uid types.UID) func(state) error {
+		return planKill(kind, pod, r.Float64() < m.ForceDeleteProbability, func(_ string, uid types.UID) func(state) error {
 			return sentinelPodReplaced(uid, want)
 		})
 	case config.PasswordRotate, config.AuthAdd, config.AuthRemove, config.PasswordRotateOffline, config.PasswordRotateOfflineForget:

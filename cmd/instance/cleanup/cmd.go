@@ -45,7 +45,7 @@ This command removes all the .rdb files in the data directory, except the
 	return cmd
 }
 
-func runCleanup(cmd *cobra.Command, args []string) error {
+func runCleanup(_ *cobra.Command, _ []string) error {
 	info, err := os.Stat(dataDir)
 	if err != nil {
 		if os.IsNotExist(err) {

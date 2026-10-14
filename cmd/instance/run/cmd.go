@@ -80,7 +80,7 @@ does not restart Redis: when Redis exits, the manager exits too.`,
 	return cmd
 }
 
-func runInstance(cmd *cobra.Command, args []string) error {
+func runInstance(_ *cobra.Command, _ []string) error {
 	fmt.Println("redis-instance: starting instance manager (CNPG-style)")
 	fmt.Printf("redis-instance: PID %d running as process manager\n", os.Getpid())
 
@@ -122,7 +122,7 @@ func runInstance(cmd *cobra.Command, args []string) error {
 // runProcessLoop starts Redis and returns when Redis exits, or after the
 // shutdown on a signal. Each branch returns, so the loop does not restart
 // Redis.
-func runProcessLoop(ctx context.Context, cancel context.CancelFunc, reaper *zombieReaper) error {
+func runProcessLoop(ctx context.Context, _ context.CancelFunc, reaper *zombieReaper) error {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 	defer signal.Stop(sigChan)
