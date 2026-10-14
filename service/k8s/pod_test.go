@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	kubernetes "k8s.io/client-go/kubernetes/fake"
 	kubetesting "k8s.io/client-go/testing"
 
@@ -338,6 +339,24 @@ func TestPodServiceDelete(t *testing.T) {
 		assertTest.Error(err)
 		assertTest.True(kubeerrors.IsNotFound(err))
 	})
+}
+
+// The API server refuses the delete when the UID differs, so a pod created
+// again with the same name stays. The fake clientset does not check the
+// precondition, so the test checks the request.
+func TestPodServiceDeleteWithUID(t *testing.T) {
+	testns := "testns"
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "testpod1", Namespace: testns, UID: "uid1"}}
+	mcli := kubernetes.NewClientset(pod)
+	service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)
+
+	assert.NoError(t, service.DeletePodWithUID(testns, "testpod1", "uid1"))
+	uid := types.UID("uid1")
+	want := kubetesting.NewDeleteActionWithOptions(podsGroup, testns, "testpod1", metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
+	assert.Equal(t, []kubetesting.Action{want}, mcli.Actions())
+
+	err := service.DeletePodWithUID(testns, "testpod1", "uid1")
+	assert.True(t, kubeerrors.IsNotFound(err), err)
 }
 
 func TestPodServiceList(t *testing.T) {

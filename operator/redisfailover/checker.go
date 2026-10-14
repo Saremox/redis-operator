@@ -372,24 +372,29 @@ func (r *RedisFailoverHandler) redisPodsRunning(rf *redisfailoverv1.RedisFailove
 		logger.Warningf("unable to look for a stale redis pod that the scheduler cannot place: %v", err)
 		return false
 	}
-	if pod == "" {
+	if pod == nil {
 		return false
 	}
-	logger = logger.WithField("pod", pod)
-	logger.Infof("deleting the stale redis pod %s, which the scheduler cannot place", pod)
-	// Another client can delete the pod first.
-	if err := r.rfHealer.DeletePod(pod, rf); err != nil && !apierrors.IsNotFound(err) {
-		logger.Warningf("unable to delete the stale redis pod %s: %v", pod, err)
+	logger = logger.WithField("pod", pod.Name)
+	logger.Infof("deleting the stale redis pod %s, which the scheduler cannot place", pod.Name)
+	// Another client can delete the pod first, and the StatefulSet can create
+	// it again with the same name. The UID keeps the delete off the new pod.
+	err = r.k8sservice.DeletePodWithUID(rf.Namespace, pod.Name, pod.UID)
+	switch {
+	case apierrors.IsNotFound(err) || apierrors.IsConflict(err):
+		logger.Debugf("the stale redis pod %s is gone already: %v", pod.Name, err)
+	case err != nil:
+		logger.Warningf("unable to delete the stale redis pod %s: %v", pod.Name, err)
 	}
 	return false
 }
 
 // unschedulableStalePod returns a pod on a stale revision that the scheduler
-// cannot place and that never started a container, or "".
-func (r *RedisFailoverHandler) unschedulableStalePod(rf *redisfailoverv1.RedisFailover) (string, error) {
+// cannot place and that never started a container, or nil.
+func (r *RedisFailoverHandler) unschedulableStalePod(rf *redisfailoverv1.RedisFailover) (*corev1.Pod, error) {
 	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var candidates []*corev1.Pod
 	for i := range pods.Items {
@@ -411,24 +416,24 @@ func (r *RedisFailoverHandler) unschedulableStalePod(rf *redisfailoverv1.RedisFa
 		}
 	}
 	if len(candidates) == 0 {
-		return "", nil
+		return nil, nil
 	}
 	// Before the StatefulSet controller sees a change of the spec, the update
 	// revision in the status is the one before. A pod that the controller
 	// created on the new revision would then look stale.
 	ss, err := r.k8sservice.GetStatefulSet(rf.Namespace, rfservice.GetRedisName(rf))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if ss == nil || ss.Status.UpdateRevision == "" || ss.Status.ObservedGeneration < ss.Generation {
-		return "", nil
+		return nil, nil
 	}
 	for _, pod := range candidates {
 		if pod.Labels[appsv1.ControllerRevisionHashLabelKey] != ss.Status.UpdateRevision {
-			return pod.Name, nil
+			return pod, nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 // resizeInPlace tries to move a stale pod to the update revision without

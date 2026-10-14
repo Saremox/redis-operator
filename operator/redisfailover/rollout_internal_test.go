@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -278,6 +279,7 @@ type pendingTest struct {
 	check   *mRFService.RedisFailoverCheck
 	heal    *mRFService.RedisFailoverHeal
 	k8s     *mK8SService.Services
+	logger  *warnLogger
 	handler *RedisFailoverHandler
 }
 
@@ -290,11 +292,12 @@ func newPendingTest(mode string, replicas int32, first corev1.Pod) *pendingTest 
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"},
 			Spec:       redisfailoverv1.RedisFailoverSpec{Redis: redisfailoverv1.RedisSettings{Replicas: replicas}},
 		},
-		pods:  []corev1.Pod{first},
-		ss:    &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Generation: 2}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 2, UpdateRevision: "new"}},
-		check: &mRFService.RedisFailoverCheck{},
-		heal:  &mRFService.RedisFailoverHeal{},
-		k8s:   noAppliedSecret(&mK8SService.Services{}),
+		pods:   []corev1.Pod{first},
+		ss:     &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Generation: 2}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 2, UpdateRevision: "new"}},
+		check:  &mRFService.RedisFailoverCheck{},
+		heal:   &mRFService.RedisFailoverHeal{},
+		k8s:    noAppliedSecret(&mK8SService.Services{}),
+		logger: &warnLogger{},
 	}
 	pendingModes[mode](pt.rf)
 	for i := int32(1); i < replicas; i++ {
@@ -305,10 +308,10 @@ func newPendingTest(mode string, replicas int32, first corev1.Pod) *pendingTest 
 	}
 	pt.heal.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 	pt.heal.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
-	pt.k8s.On("GetStatefulSetPods", "testns", "rfr-test").Return(func(string, string) (*corev1.PodList, error) {
+	pt.k8s.On("GetStatefulSetPods", "testns", "rfr-test").Maybe().Return(func(string, string) (*corev1.PodList, error) {
 		return &corev1.PodList{Items: pt.pods}, pt.podsErr
 	})
-	pt.k8s.On("GetStatefulSet", "testns", "rfr-test").Return(func(string, string) (*appsv1.StatefulSet, error) {
+	pt.k8s.On("GetStatefulSet", "testns", "rfr-test").Maybe().Return(func(string, string) (*appsv1.StatefulSet, error) {
 		return pt.ss, pt.ssErr
 	})
 	pt.k8s.On("UpdateRedisFailoverStatus", mock.Anything, "testns", pt.rf, mock.Anything).Maybe().Return()
@@ -316,8 +319,14 @@ func newPendingTest(mode string, replicas int32, first corev1.Pod) *pendingTest 
 	if !pt.rf.Bootstrapping() {
 		pt.check.On("IsRedisRunningQuorum", pt.rf).Once().Return(false)
 	}
-	pt.handler = NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, pt.check, pt.heal, pt.k8s, metrics.Dummy, log.Dummy)
+	pt.handler = NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, pt.check, pt.heal, pt.k8s, metrics.Dummy, pt.logger)
 	return pt
+}
+
+// expectDelete expects the delete of the stale pod rfr-test-0 with the UID
+// of the listed pod, and returns err.
+func (pt *pendingTest) expectDelete(err error) {
+	pt.k8s.On("DeletePodWithUID", "testns", "rfr-test-0", types.UID("p")).Once().Return(err)
 }
 
 // gateMessage is the status message of a reconcile that the gate on the
@@ -338,11 +347,11 @@ func TestCheckAndHealDeletesAnUnschedulableStalePod(t *testing.T) {
 		for _, replicas := range []int32{1, 2} {
 			t.Run(fmt.Sprintf("%s with %d replicas", mode, replicas), func(t *testing.T) {
 				pt := newPendingTest(mode, replicas, unschedulablePod())
-				pt.heal.On("DeletePod", "rfr-test-0", pt.rf).Once().Return(nil)
+				pt.expectDelete(nil)
 				assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
 				assert.Equal(t, redisfailoverv1.NotHealthyState, pt.rf.Status.State)
 				assert.Equal(t, pt.gateMessage(), pt.rf.Status.Message)
-				pt.heal.AssertExpectations(t)
+				pt.k8s.AssertExpectations(t)
 				pt.check.AssertExpectations(t)
 			})
 		}
@@ -354,27 +363,34 @@ func TestCheckAndHealDeletesAnUnschedulableStalePod(t *testing.T) {
 // block the election.
 func TestCheckAndHealGoesOnAfterAnErrorOfTheStalePodStep(t *testing.T) {
 	fail := errors.New("boom")
-	notFound := apierrors.NewNotFound(corev1.Resource("pods"), "rfr-test-0")
-	denied := apierrors.NewForbidden(corev1.Resource("pods"), "rfr-test-0", errors.New("denied by a webhook"))
-	for name, change := range map[string]func(pt *pendingTest){
-		"pods":        func(pt *pendingTest) { pt.podsErr = fail },
-		"StatefulSet": func(pt *pendingTest) { pt.ssErr = fail },
-		"delete denied": func(pt *pendingTest) {
-			pt.heal.On("DeletePod", "rfr-test-0", pt.rf).Once().Return(denied)
-		},
-		"pod deleted by another client": func(pt *pendingTest) {
-			pt.heal.On("DeletePod", "rfr-test-0", pt.rf).Once().Return(notFound)
-		},
-	} {
+	pods := corev1.Resource("pods")
+	tests := map[string]struct {
+		change  func(pt *pendingTest)
+		warning bool
+	}{
+		"pods":        {func(pt *pendingTest) { pt.podsErr = fail }, true},
+		"StatefulSet": {func(pt *pendingTest) { pt.ssErr = fail }, true},
+		"delete denied": {func(pt *pendingTest) {
+			pt.expectDelete(apierrors.NewForbidden(pods, "rfr-test-0", errors.New("denied by a webhook")))
+		}, true},
+		// The pod is gone, or the StatefulSet created it again with another
+		// UID. Both are no failure of the step.
+		"pod deleted by another client": {func(pt *pendingTest) { pt.expectDelete(apierrors.NewNotFound(pods, "rfr-test-0")) }, false},
+		"pod created again": {func(pt *pendingTest) {
+			pt.expectDelete(apierrors.NewConflict(pods, "rfr-test-0", errors.New("the UID in the precondition does not match")))
+		}, false},
+	}
+	for name, test := range tests {
 		for mode := range pendingModes {
 			t.Run(name+" in "+mode, func(t *testing.T) {
 				pt := newPendingTest(mode, 1, unschedulablePod())
-				change(pt)
+				test.change(pt)
 				assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
 				assert.Equal(t, redisfailoverv1.NotHealthyState, pt.rf.Status.State)
 				assert.Equal(t, pt.gateMessage(), pt.rf.Status.Message)
+				assert.Equal(t, test.warning, len(pt.logger.warnings) == 1, pt.logger.warnings)
 				pt.check.AssertExpectations(t)
-				pt.heal.AssertExpectations(t)
+				pt.k8s.AssertExpectations(t)
 			})
 		}
 	}
@@ -393,7 +409,7 @@ func TestCheckAndHealGoesOnWithAQuorumAndAPendingPod(t *testing.T) {
 			pt.check.ExpectedCalls = nil
 			pt.check.On("IsRedisRunning", pt.rf).Once().Return(false)
 			pt.check.On("IsRedisRunningQuorum", pt.rf).Once().Return(true)
-			pt.heal.On("DeletePod", "rfr-test-0", pt.rf).Once().Return(nil)
+			pt.expectDelete(nil)
 			if mode == "sentinel" {
 				pt.check.On("IsSentinelRunningQuorum", pt.rf).Once().Return(false)
 				assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
@@ -404,7 +420,7 @@ func TestCheckAndHealGoesOnWithAQuorumAndAPendingPod(t *testing.T) {
 				assert.ErrorIs(t, pt.handler.CheckAndHeal(pt.rf), fail)
 			}
 			pt.check.AssertExpectations(t)
-			pt.heal.AssertExpectations(t)
+			pt.k8s.AssertExpectations(t)
 		})
 	}
 }
@@ -444,7 +460,7 @@ func TestCheckAndHealKeepsOtherPendingPods(t *testing.T) {
 				pt := newPendingTest(mode, 1, first)
 				assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
 				assert.Equal(t, pt.gateMessage(), pt.rf.Status.Message)
-				pt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+				pt.k8s.AssertNotCalled(t, "DeletePodWithUID", mock.Anything, mock.Anything, mock.Anything)
 				pt.check.AssertExpectations(t)
 			})
 		}
@@ -461,7 +477,7 @@ func TestCheckAndHealKeepsOtherPendingPods(t *testing.T) {
 			pt := newPendingTest("sentinel", 1, unschedulablePod())
 			pt.ss = ss
 			assert.NoError(t, pt.handler.CheckAndHeal(pt.rf))
-			pt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+			pt.k8s.AssertNotCalled(t, "DeletePodWithUID", mock.Anything, mock.Anything, mock.Anything)
 			pt.check.AssertExpectations(t)
 		})
 	}
@@ -488,7 +504,7 @@ func TestCheckAndHealMakesNoExtraCallsWhenAllRun(t *testing.T) {
 			assert.True(t, pt.handler.redisPodsRunning(pt.rf))
 			pt.k8s.AssertNotCalled(t, "GetStatefulSetPods", mock.Anything, mock.Anything)
 			pt.k8s.AssertNotCalled(t, "GetStatefulSet", mock.Anything, mock.Anything)
-			pt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+			pt.k8s.AssertNotCalled(t, "DeletePodWithUID", mock.Anything, mock.Anything, mock.Anything)
 			pt.check.AssertExpectations(t)
 		})
 	}
