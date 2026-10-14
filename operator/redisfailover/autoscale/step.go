@@ -40,6 +40,25 @@ const (
 // RefusalTimeout is the refusal of a step that did not end in ApplyTimeout.
 const RefusalTimeout = "the step did not end in 15 minutes"
 
+// The reasons in the status of mode Auto. A reason with a refusal adds the
+// refusal that the state holds, so the text changes only at a transition.
+const (
+	ReasonHeld     = "the step is held"
+	ReasonReverted = "the step was reverted"
+	ReasonFrozen   = "the state ConfigMap was lost, so the limit stays at the StatefulSet limit until a change of the RedisFailover spec"
+	// The reasons that a recommended step does not start.
+	ReasonNotSettled          = "a step waits until the rollout is complete and the RedisFailover is Healthy"
+	ReasonCooldown            = "a step waits for the cooldown after the last step"
+	ReasonBudget              = "a step waits, because 6 steps in 24 hours is the maximum"
+	ReasonNoInPlaceResize     = "a step needs an in-place resize, which needs Kubernetes 1.33 or later"
+	ReasonInPlaceDisabled     = "a step needs redis.inPlaceResize Enabled"
+	ReasonNoRevisionAccess    = "a step needs the permission to get controllerrevisions"
+	ReasonVPA                 = "a VerticalPodAutoscaler changes the redis pods"
+	ReasonCustomMaxMemory     = "a step needs a maxmemory that the operator manages, not customConfig"
+	ReasonNoManagedMaxMemory  = "a step needs redis.maxMemory"
+	ReasonPreconditionUnknown = "a step waits, because a check before the step failed"
+)
+
 // NoteSpecBelowEffective is added to the reason after a user lowered the
 // spec limit below the effective limit. The pods keep the effective limit.
 const NoteSpecBelowEffective = "redis.resources.limits.memory is below effectiveMemory"
@@ -63,13 +82,16 @@ type Observation struct {
 	Spec, Max int64
 	// Generation is the metadata.generation of the RedisFailover.
 	Generation int64
-	// Settled is true when the RedisFailover is Healthy and all pods are
-	// Ready and on the update revision.
+	// Settled is true when the RedisFailover is Healthy, all pods are Ready
+	// and on the update revision, and the checks before a step passed.
 	Settled bool
-	// Applied is true when all pods are on the update revision and have an
-	// applied memory limit of at least To.
+	// Applied is true when all pods have an applied memory limit of at least
+	// To. The revision label does not count: the kubelet applies the limit
+	// before the rollout moves the label, and a revert would then shrink the
+	// pod.
 	Applied bool
-	// AnyApplied is true when a pod has an applied memory limit of To.
+	// AnyApplied is true when a pod has an applied memory limit of at least
+	// To.
 	AnyApplied bool
 	// Refusal is the reason of a permanent refusal of a resize, or "".
 	Refusal string
@@ -100,6 +122,23 @@ func Bound(s State, spec, maxLimit int64) State {
 	return s
 }
 
+// Resume sets Effective to live, the memory limit of the pods, in the bounds
+// of Bound. A change ends a step that is not done, because its template did
+// not reach the pods.
+func Resume(s State, live, spec, maxLimit int64) State {
+	e := max(spec, min(live, maxLimit))
+	if e == spec {
+		e = 0
+	}
+	if e != s.Effective {
+		s.Effective, s.SpecLimit = e, spec
+		if s.Phase == PhaseApplying || s.Phase == PhaseHeld {
+			s.Phase, s.Refusal = PhaseIdle, ""
+		}
+	}
+	return s
+}
+
 // Plan returns the next state of the step lifecycle and the transition. A
 // step starts only from Recommended, so the dwell of Observe applies.
 func Plan(s State, o Observation) (State, Action) {
@@ -107,6 +146,13 @@ func Plan(s State, o Observation) (State, Action) {
 	s = Bound(s.rebase(now), o.Spec, o.Max)
 	if s.Phase == "" {
 		s.Phase = PhaseIdle
+	}
+	if s.Frozen {
+		if o.Generation == s.Generation {
+			return s, ActionNone
+		}
+		// The user saw the frozen limit and changed the spec.
+		s.Frozen = false
 	}
 	if s.Reverts != 0 && o.Generation != s.Generation {
 		// A user change can remove the cause of the refusal.
@@ -154,16 +200,7 @@ func Plan(s State, o Observation) (State, Action) {
 func (s State) start(o Observation, now int64) (State, Action) {
 	from := EffectiveLimit(s, o.Spec, o.Max)
 	to := min(s.Recommended, o.Max)
-	cooldown := Cooldown
-	if s.Reason == ReasonUrgent || s.Reason == ReasonOOM {
-		cooldown = UrgentCooldown
-	}
-	switch {
-	case !o.Settled || to <= from:
-		return s, ActionNone
-	case s.DoneAt != 0 && now-s.DoneAt < seconds(cooldown):
-		return s, ActionNone
-	case s.Steps[0] != 0 && now-s.Steps[0] < seconds(BudgetPeriod):
+	if to <= from || s.startWait(o, now) != "" {
 		return s, ActionNone
 	}
 	s.Phase, s.From, s.To, s.Effective, s.SpecLimit = PhaseApplying, from, to, to, o.Spec
@@ -171,6 +208,33 @@ func (s State) start(o Observation, now int64) (State, Action) {
 	copy(s.Steps[:], s.Steps[1:])
 	s.Steps[StepBudget-1] = now
 	return s, ActionStart
+}
+
+// startWait returns why a step cannot start now, or "".
+func (s State) startWait(o Observation, now int64) string {
+	cooldown := Cooldown
+	if s.Reason == ReasonUrgent || s.Reason == ReasonOOM {
+		cooldown = UrgentCooldown
+	}
+	switch {
+	case !o.Settled:
+		return ReasonNotSettled
+	case s.DoneAt != 0 && now-s.DoneAt < seconds(cooldown):
+		return ReasonCooldown
+	case s.Steps[0] != 0 && now-s.Steps[0] < seconds(BudgetPeriod):
+		return ReasonBudget
+	}
+	return ""
+}
+
+// WaitReason returns why the state of Plan starts no step for its
+// recommendation, or "". The status shows it in place of the reason of the
+// recommendation.
+func WaitReason(s State, o Observation) string {
+	if s.Frozen || s.Phase != "" && s.Phase != PhaseIdle && s.Phase != PhaseDone || min(s.Recommended, o.Max) <= EffectiveLimit(s, o.Spec, o.Max) {
+		return ""
+	}
+	return s.startWait(o, o.Now.Unix())
 }
 
 // done ends a step. The windows and the OOM baseline start again, because
@@ -223,6 +287,14 @@ func (s State) rebase(now int64) State {
 // is the memory limit of the pods.
 func ReportStep(st redisfailoverv1.AutoscalingStatus, s State, spec, limit int64) redisfailoverv1.AutoscalingStatus {
 	st.Phase = s.Phase
+	switch {
+	case s.Frozen:
+		st.Reason = ReasonFrozen
+	case s.Phase == PhaseHeld:
+		st.Reason = ReasonHeld + ": " + s.Refusal
+	case s.Phase == PhaseReverted:
+		st.Reason = ReasonReverted + ": " + s.Refusal
+	}
 	if limit != spec {
 		st.EffectiveMemory = formatQuantity(limit)
 		if s.SpecLimit > spec {

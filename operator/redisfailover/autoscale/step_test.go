@@ -439,3 +439,92 @@ func TestStateRoundTrip(t *testing.T) {
 	moved.Steps[0] = 1
 	assert.True(t, moved.NeedsWrite(s), "a change of the steps")
 }
+
+// A frozen limit starts no step until the spec changes.
+func TestPlanFrozen(t *testing.T) {
+	s := recommending()
+	s.Effective, s.Frozen, s.Generation = 1100*mi, true, 1
+
+	got, action := Plan(s, obs(time.Hour))
+	assert.Equal(t, ActionNone, action)
+	assert.True(t, got.Frozen)
+	assert.Equal(t, ReasonFrozen, ReportStep(redisfailoverv1.AutoscalingStatus{Reason: ReasonSustained}, got, gi, 1100*mi).Reason)
+	assert.Empty(t, WaitReason(got, obs(time.Hour)), "the frozen reason has priority")
+
+	o := obs(time.Hour)
+	o.Generation = 2
+	got, action = Plan(s, o)
+	assert.Equal(t, ActionStart, action)
+	assert.False(t, got.Frozen)
+	assert.Equal(t, 1100*mi, got.From)
+}
+
+func TestWaitReason(t *testing.T) {
+	notSettled := obs(0)
+	notSettled.Settled = false
+	budget := recommending()
+	for i := range StepBudget {
+		budget.Steps[i] = at(time.Duration(i) * time.Minute)
+	}
+	reverted := recommending()
+	reverted.Phase = PhaseReverted
+	applied := recommending()
+	applied.Effective = 1280 * mi
+	tests := map[string]struct {
+		s    State
+		o    Observation
+		want string
+	}{
+		"no recommendation":            {known(), notSettled, ""},
+		"limit has the recommendation": {applied, notSettled, ""},
+		"not settled":                  {recommending(), notSettled, ReasonNotSettled},
+		"cooldown":                     {done(t, ReasonSustained), obs(time.Minute), ReasonCooldown},
+		"budget":                       {budget, obs(time.Hour), ReasonBudget},
+		"step can start":               {recommending(), obs(0), ""},
+		"reverted":                     {reverted, notSettled, ""},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, test.want, WaitReason(test.s, test.o))
+		})
+	}
+}
+
+func TestReportStepRefusal(t *testing.T) {
+	st := redisfailoverv1.AutoscalingStatus{Reason: ReasonLow}
+	for phase, reason := range map[string]string{PhaseHeld: ReasonHeld, PhaseReverted: ReasonReverted} {
+		s := State{Phase: phase, Refusal: "pod rfr-test-1: resize infeasible"}
+		assert.Equal(t, reason+": pod rfr-test-1: resize infeasible", ReportStep(st, s, gi, gi).Reason, phase)
+	}
+}
+
+func TestResume(t *testing.T) {
+	s := applying(t)
+	tests := map[string]struct {
+		live      int64
+		effective int64
+		phase     string
+	}{
+		"template has the step":          {1280 * mi, 1280 * mi, PhaseApplying},
+		"template before the step":       {gi, 0, PhaseIdle},
+		"template between":               {1100 * mi, 1100 * mi, PhaseIdle},
+		"template above memoryMax":       {8 * gi, 4 * gi, PhaseIdle},
+		"template below the spec":        {512 * mi, 0, PhaseIdle},
+		"template larger than Effective": {1536 * mi, 1536 * mi, PhaseIdle},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := Resume(s, test.live, gi, 4*gi)
+			assert.Equal(t, test.effective, got.Effective)
+			assert.Equal(t, test.phase, got.Phase)
+		})
+	}
+
+	held := s
+	held.Phase, held.Refusal = PhaseHeld, "quota"
+	got := Resume(held, gi, gi, 4*gi)
+	assert.Equal(t, PhaseIdle, got.Phase)
+	assert.Empty(t, got.Refusal)
+	doneStep := State{Phase: PhaseDone, Effective: 1280 * mi}
+	assert.Equal(t, PhaseDone, Resume(doneStep, gi, gi, 4*gi).Phase, "a done step keeps its phase")
+}

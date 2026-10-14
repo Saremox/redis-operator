@@ -122,6 +122,10 @@ type State struct {
 	// Steps holds the start times of the last StepBudget steps, the oldest
 	// first. An array keeps State comparable with ==.
 	Steps [StepBudget]int64 `json:"steps,omitzero"`
+	// Frozen marks an Effective that mode Auto took from the StatefulSet
+	// after the state was lost. The cause of the lost state is not known, so
+	// no step starts until the spec changes at Generation.
+	Frozen bool `json:"frozen,omitempty"`
 }
 
 // Expire discards the decision values of a state with a last sample older than
