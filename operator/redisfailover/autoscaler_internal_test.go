@@ -625,13 +625,14 @@ func TestForgetDropsTheAutoscalerState(t *testing.T) {
 	key := failoverKey(at.rf)
 	at.h.autoscaleReads.Store(key, autoscaleRead{})
 	at.h.autoscaleMasters.Store(key, autoscaleMaster)
+	at.h.autoscaleRollout.Store(key, autoscaleRollout{settled: true})
 	at.h.autoscaleSamples.Store(key, autoscaleSample{at: autoscaleT0})
 	at.h.autoscaleLogged.Store(key, "error")
 	at.mrec.On("DeleteCluster", "testns", "test").Once()
 
 	at.h.Forget(key)
 
-	for _, m := range []interface{ Load(any) (any, bool) }{&at.h.autoscaleReads, &at.h.autoscaleMasters, &at.h.autoscaleSamples, &at.h.autoscaleLogged} {
+	for _, m := range []interface{ Load(any) (any, bool) }{&at.h.autoscaleReads, &at.h.autoscaleMasters, &at.h.autoscaleRollout, &at.h.autoscaleSamples, &at.h.autoscaleLogged} {
 		_, ok := m.Load(key)
 		assert.False(t, ok)
 	}

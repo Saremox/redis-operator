@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -13,6 +14,7 @@ import (
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/operator/redisfailover/autoscale"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
+	"github.com/saremox/redis-operator/operator/redisfailover/util"
 )
 
 // errForeignState is the error for a state ConfigMap that another object
@@ -82,6 +84,79 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 	}
 	read.effective = max(spec, min(rfservice.TemplateRedisMemoryLimit(ss), maxLimit))
 	return read, nil
+}
+
+// autoscalerLimit returns the effective memory limit of this reconcile when
+// it differs from the spec limit, or 0. Only such a limit makes autoscaler
+// revisions.
+func (r *RedisFailoverHandler) autoscalerLimit(rf *redisfailoverv1.RedisFailover) int64 {
+	v, ok := r.autoscaleReads.Load(failoverKey(rf))
+	if !ok {
+		return 0
+	}
+	read := v.(autoscaleRead)
+	if read.effective == read.spec {
+		return 0
+	}
+	return read.effective
+}
+
+// autoscaleRollout is what UpdateRedisesPods found for the memory autoscaler
+// in the current reconcile.
+type autoscaleRollout struct {
+	// settled is true when the rollout waits on nothing, the StatefulSet
+	// controller observed the latest template, and each pod is ready on the
+	// update revision.
+	settled bool
+	// applied is true when each pod runs with the effective memory limit or
+	// a larger one, and anyApplied when one pod does.
+	applied, anyApplied bool
+	// refusal is the permanent refusal of a resize to an autoscaler revision.
+	refusal *resizeRefusal
+}
+
+// resizeRefusal is a permanent refusal of the in-place resize of pod.
+type resizeRefusal struct {
+	pod     string
+	class   rfservice.ResizeClass
+	message string
+}
+
+// recordAutoscaleRollout completes the autoscaleRollout of mode Auto. It
+// reads the StatefulSet and its pods, so the other modes do not call it.
+func (r *RedisFailoverHandler) recordAutoscaleRollout(rf *redisfailoverv1.RedisFailover, waits bool) error {
+	if !rf.AutoscalingEnabled() || rf.Spec.Redis.Autoscaling.Mode != redisfailoverv1.AutoscalingModeAuto {
+		return nil
+	}
+	key := failoverKey(rf)
+	v, _ := r.autoscaleRollout.Load(key)
+	rollout, _ := v.(autoscaleRollout)
+	name := rfservice.GetRedisName(rf)
+	ss, err := r.k8sservice.GetStatefulSet(rf.Namespace, name)
+	if err != nil {
+		return err
+	}
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, name)
+	if err != nil {
+		return err
+	}
+	limit := rf.Spec.Redis.Resources.Limits.Memory().Value()
+	complete := len(pods.Items) >= int(rf.Spec.Redis.Replicas)
+	rollout.settled = complete && !waits && rollout.refusal == nil && ss.Status.ObservedGeneration >= ss.Generation
+	rollout.applied = complete
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.DeletionTimestamp != nil || pod.Labels[appsv1.ControllerRevisionHashLabelKey] != ss.Status.UpdateRevision || rfservice.ResizeRequested(pod) || !util.PodIsReady(pod) {
+			rollout.settled = false
+		}
+		if rfservice.AppliedRedisMemoryLimit(pod) >= limit {
+			rollout.anyApplied = true
+		} else {
+			rollout.applied = false
+		}
+	}
+	r.autoscaleRollout.Store(key, rollout)
+	return nil
 }
 
 // autoscale runs the memory autoscaler after the checks and sets
@@ -275,6 +350,7 @@ func (r *RedisFailoverHandler) stopAutoscaler(rf *redisfailoverv1.RedisFailover,
 func (r *RedisFailoverHandler) forgetAutoscaler(key string) {
 	r.autoscaleReads.Delete(key)
 	r.autoscaleMasters.Delete(key)
+	r.autoscaleRollout.Delete(key)
 	r.autoscaleSamples.Delete(key)
 	r.autoscaleLogged.Delete(key)
 }

@@ -31,6 +31,7 @@ type rolloutTest struct {
 	podsErr error
 	check   *mRFService.RedisFailoverCheck
 	heal    *mRFService.RedisFailoverHeal
+	k8s     *mK8SService.Services
 	handler *RedisFailoverHandler
 }
 
@@ -83,6 +84,7 @@ func newRolloutTest(t *testing.T) *rolloutTest {
 	mk.On("GetStatefulSetPods", "testns", "rfr-test").Return(func(string, string) (*corev1.PodList, error) {
 		return &corev1.PodList{Items: rt.pods}, rt.podsErr
 	})
+	rt.k8s = mk
 	rt.handler = NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, rt.heal, mk, metrics.Dummy, log.Dummy)
 	return rt
 }

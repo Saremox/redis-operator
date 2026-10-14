@@ -730,7 +730,7 @@ func (r *RedisFailoverChecker) GetRedisRevisionHash(podName string, rFailover *r
 
 	// A pod being resized in place is on no revision until the resize is
 	// applied, even when its label matches again, for example after a revert.
-	if pod.Annotations[resizeRequestedAnnotation] != "" {
+	if ResizeRequested(pod) {
 		return "", nil
 	}
 

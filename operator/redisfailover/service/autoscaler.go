@@ -37,3 +37,27 @@ func TemplateRedisMemoryLimit(ss *appsv1.StatefulSet) int64 {
 	}
 	return 0
 }
+
+// AppliedRedisMemoryLimit returns the memory limit of the redis container
+// that the kubelet reports as applied. A kubelet without in-place resize
+// reports none, and then a running container has the limit of the pod spec.
+// Without a report, it returns 0 for a container that does not run.
+func AppliedRedisMemoryLimit(pod *corev1.Pod) int64 {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name != redisContainerName {
+			continue
+		}
+		if cs.Resources != nil {
+			return cs.Resources.Limits.Memory().Value()
+		}
+		if cs.State.Running == nil {
+			return 0
+		}
+		for _, c := range pod.Spec.Containers {
+			if c.Name == redisContainerName {
+				return c.Resources.Limits.Memory().Value()
+			}
+		}
+	}
+	return 0
+}

@@ -278,6 +278,12 @@ func podMemoryLimit(pod *corev1.Pod, desired map[string]corev1.ResourceRequireme
 	return max(total, init) + pod.Spec.Overhead.Memory().Value()
 }
 
+// ResizeRequested reports whether the pod has an in-place resize that the
+// kubelet did not apply yet.
+func ResizeRequested(pod *corev1.Pod) bool {
+	return pod.Annotations[resizeRequestedAnnotation] != ""
+}
+
 func (r *RedisFailoverHealer) markResizeRequested(rf *redisfailoverv1.RedisFailover, podName string) error {
 	return r.k8sService.UpdatePodAnnotations(rf.Namespace, podName, map[string]string{resizeRequestedAnnotation: time.Now().UTC().Format(time.RFC3339)})
 }

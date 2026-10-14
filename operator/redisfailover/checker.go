@@ -31,9 +31,11 @@ import (
 // update revision of the StatefulSet.
 func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailover) (err error) {
 	var wait *rolloutWait
+	r.autoscaleRollout.Delete(failoverKey(rf))
 	defer func() {
 		if err == nil {
 			r.reportRolloutWait(rf, wait)
+			err = r.recordAutoscaleRollout(rf, wait != nil)
 		}
 	}()
 
@@ -345,12 +347,18 @@ func (r *RedisFailoverHandler) redisPodNamesByIP(rf *redisfailoverv1.RedisFailov
 // resizeInPlace tries to move a stale pod to the update revision without
 // recreating it. It reports whether the pod has to be recreated instead.
 func (r *RedisFailoverHandler) resizeInPlace(rf *redisfailoverv1.RedisFailover, pod, updateRevision string) (bool, error) {
-	result, err := r.rfHealer.ResizePodInPlace(rf, pod, updateRevision, 0)
+	result, err := r.rfHealer.ResizePodInPlace(rf, pod, updateRevision, r.autoscalerLimit(rf))
 	if err != nil {
 		return false, err
 	}
 	if result.Action == rfservice.ResizeWaiting && result.Message != "" {
 		rf.Status.Message = result.Message
+	}
+	// A recreate restarts Redis for a change that no user made. The
+	// autoscaler reverts or holds the step instead.
+	if result.AutoscalerRevision && result.Class == rfservice.ResizePermanent {
+		r.autoscaleRollout.Store(failoverKey(rf), autoscaleRollout{refusal: &resizeRefusal{pod: pod, class: result.Class, message: result.Message}})
+		return false, nil
 	}
 	return result.Action == rfservice.ResizeRecreate, nil
 }

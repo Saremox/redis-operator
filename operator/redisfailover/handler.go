@@ -87,6 +87,9 @@ type RedisFailoverHandler struct {
 	// autoscaleMasters holds, per namespace/name, the master that the checks
 	// of the current reconcile found, so the autoscaler needs no extra call.
 	autoscaleMasters sync.Map
+	// autoscaleRollout holds, per namespace/name, the autoscaleRollout that
+	// UpdateRedisesPods found in the current reconcile.
+	autoscaleRollout sync.Map
 	// autoscaleSamples holds, per namespace/name, the last autoscaleSample.
 	autoscaleSamples sync.Map
 	// autoscaleLogged holds, per namespace/name, the last autoscaler error
