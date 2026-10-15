@@ -299,7 +299,9 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	// second. WAIT does not help: it waits only for the commands of its own
 	// connection, so on a new connection it returns at once. The wait stops 8s
 	// before the deadline. Then one failover request fits, and two fit when
-	// INFO answers.
+	// INFO answers. When the master lookups used this time, the script does
+	// not wait: a lookup that finds the master ends before 8s, so one failover
+	// request still fits.
 	//
 	// Without the pause, a failover loses writes, so the script asks for none.
 	// Then Redis 7 and later pause the writes on SIGTERM and wait for the
@@ -355,10 +357,12 @@ if [ "$master" = "$self" ]; then
   if [ "$paused" != "OK" ]; then
   	echo "shutdown.sh: could not pause the writes, so no failover is requested (stale REDIS_PASSWORD, or Redis before 6.2): $paused" >&2
   else
-  	behind=$(replicas_behind)
+  	behind=""
   	while [ "$behind" != 0 ] && [ "$(date +%%s)" -lt "$((deadline - 8))" ]; do
-  		sleep 0.1
   		behind=$(replicas_behind)
+  		if [ "$behind" != 0 ]; then
+  			sleep 0.1
+  		fi
   	done
   	if [ "$behind" != 0 ]; then
   		echo "shutdown.sh: not all online replicas confirmed the writes, the failover can lose writes (replicas behind: ${behind:-unknown})" >&2

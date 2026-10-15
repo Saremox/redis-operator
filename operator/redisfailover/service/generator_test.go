@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -3428,7 +3429,9 @@ func TestRedisShutdownScriptEndsInsideGracePeriod(t *testing.T) {
 	// refuses a password other than FAKE_REQUIREPASS as redis-cli does. Its
 	// INFO shows one online replica behind the master for the first
 	// FAKE_BEHIND calls, or FAKE_INFO. The first FAKE_FAILOVER_HANGS failover
-	// requests hang, and the next ones answer after FAKE_FAILOVER_DELAY.
+	// requests hang, and the next ones answer after FAKE_FAILOVER_DELAY. The
+	// same applies to the master lookups with FAKE_LOOKUP_HANGS and
+	// FAKE_LOOKUP_DELAY. FAKE_INFO_HANGS=1 makes INFO hang.
 	fakeCLI := `#!/bin/sh
 echo "auth=$REDISCLI_AUTH $*" >>"$FAKE_LOG"
 case "$*" in
@@ -3446,6 +3449,7 @@ case "$*" in
 *"-h "*) ;;
 *"CLIENT PAUSE"*) echo "${FAKE_PAUSE:-OK}"; exit 0 ;;
 *"INFO replication"*)
+	[ "$FAKE_INFO_HANGS" = 1 ] && exec sleep 30
 	if [ -n "$FAKE_INFO" ]; then
 		printf '%b\n' "$FAKE_INFO"
 		exit 0
@@ -3463,7 +3467,11 @@ esac
 [ "$FAKE_FROZEN" = 1 ] && exec sleep 30
 case "$*" in
 *get-master-addr-by-name*)
-	if [ "$FAKE_STUCK" != 1 ] && [ "$(grep -c get-master-addr-by-name "$FAKE_LOG")" -gt 1 ]; then
+	n=$(grep -c get-master-addr-by-name "$FAKE_LOG")
+	hangs=${FAKE_LOOKUP_HANGS:-0}
+	[ "$n" -le "$hangs" ] && exec sleep 30
+	[ "$n" -eq $((hangs + 1)) ] && [ -n "$FAKE_LOOKUP_DELAY" ] && sleep "$FAKE_LOOKUP_DELAY"
+	if [ "$FAKE_STUCK" != 1 ] && [ "$n" -gt $((hangs + 1)) ]; then
 		echo '"10.0.0.2","6379"'
 	else
 		echo '"10.0.0.1","6379"'
@@ -3497,8 +3505,10 @@ esac
 		// wait for the replicas. wantCalls then has one INFO call.
 		manyInfo   bool
 		wantOutput string
-		minTime    time.Duration
-		maxTime    time.Duration
+		// minPause is the smallest CLIENT PAUSE time in ms, 17000 if unset.
+		minPause int
+		minTime  time.Duration
+		maxTime  time.Duration
 	}{
 		{
 			name: "master moves",
@@ -3548,6 +3558,19 @@ esac
 			wantOutput: "shutdown.sh: sentinel did not accept the failover after 2 attempts",
 			minTime:    8 * time.Second,
 			maxTime:    13 * time.Second,
+		},
+		{
+			// The master lookups use the time of the wait for the replicas.
+			// Then the script asks for the failover without the wait, and
+			// does not call INFO, which can hang for 2s.
+			name: "slow lookups",
+			env:  []string{"FAKE_LOOKUP_HANGS=2", "FAKE_LOOKUP_DELAY=1.5", "FAKE_INFO_HANGS=1"},
+			wantCalls: append([]string{lookup, lookup, lookup, "auth= -p 6379 CLIENT PAUSE <ms> WRITE"},
+				moved...),
+			wantOutput: "(replicas behind: unknown)",
+			minPause:   10000,
+			minTime:    7 * time.Second,
+			maxTime:    12 * time.Second,
 		},
 		{
 			name:       "info fails",
@@ -3669,7 +3692,7 @@ esac
 					// The pause ends 6s after the 12s deadline.
 					ms, err := strconv.Atoi(m[1])
 					require.NoError(t, err)
-					assert.GreaterOrEqual(t, ms, 17000)
+					assert.GreaterOrEqual(t, ms, cmp.Or(test.minPause, 17000))
 					assert.LessOrEqual(t, ms, 18000)
 					calls[i] = pause.ReplaceAllString(call, "CLIENT PAUSE <ms> WRITE")
 				}
