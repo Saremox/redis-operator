@@ -231,6 +231,13 @@ func TestPodSeriesKeepTheNameAcrossIPs(t *testing.T) {
 	assert.InDelta(t, 2, testutil.ToFloat64(rec.redisCheck.WithLabelValues("ns7", "rf7", SLAVE_WRONG_MASTER, "rfr-rf7-0", STATUS_HEALTHY)), 0)
 	assert.Equal(t, 1, testutil.CollectAndCount(rec.sentinelCheck))
 	assert.InDelta(t, 2, testutil.ToFloat64(rec.sentinelCheck.WithLabelValues("ns7", "rf7", SENTINEL_WRONG_MASTER, "rfr-rf7-0", STATUS_HEALTHY)), 0)
+
+	// The label name pod_name does not collide with the target labels pod and
+	// instance.
+	podName := prometheus.Labels{"pod_name": "rfr-rf7-0"}
+	assert.Equal(t, 1, rec.redisOperations.DeletePartialMatch(podName))
+	assert.Equal(t, 1, rec.redisCheck.DeletePartialMatch(podName))
+	assert.Equal(t, 1, rec.sentinelCheck.DeletePartialMatch(podName))
 }
 
 // Two RedisFailovers with the same name in two namespaces have pods with the

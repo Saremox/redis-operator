@@ -242,15 +242,15 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		Namespace: namespace,
 		Subsystem: promControllerSubsystem,
 		Name:      "redis_checks_total",
-		Help:      "Number of checks of the Redis pods, by indicator and status (HEALTHY or UNHEALTHY). The instance is the pod name, or NA for a check of the RedisFailover.",
-	}, []string{"namespace", "resource", "indicator", "instance", "status"})
+		Help:      "Number of checks of the Redis pods, by indicator and status (HEALTHY or UNHEALTHY). The pod_name is the pod name, or NA for a check of the RedisFailover.",
+	}, []string{"namespace", "resource", "indicator", "pod_name", "status"})
 
 	sentinelCheck := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Subsystem: promControllerSubsystem,
 		Name:      "sentinel_checks_total",
-		Help:      "Number of checks of the Sentinel pods, by indicator and status (HEALTHY or UNHEALTHY). The instance is the pod name, or NA for a check of the RedisFailover.",
-	}, []string{"namespace", "resource", "indicator", "instance", "status"})
+		Help:      "Number of checks of the Sentinel pods, by indicator and status (HEALTHY or UNHEALTHY). The pod_name is the pod name, or NA for a check of the RedisFailover.",
+	}, []string{"namespace", "resource", "indicator", "pod_name", "status"})
 
 	redisOperations := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
