@@ -41,11 +41,14 @@ const (
 	ResizePermanent ResizeClass = "Permanent"
 )
 
-// AutoscalerLimits are the memory limits of the redis container in mode Auto.
-// The zero value means that no step of the autoscaler is possible.
+// AutoscalerLimits are the memory limits of the redis container with
+// autoscaling. The zero value means that no step of the autoscaler is
+// possible.
 type AutoscalerLimits struct {
-	// Spec is the limit of redis.resources, and Effective the limit of the
-	// pods when it differs from Spec, or 0.
+	// Effective is the limit of the pods, or 0. Spec is the limit of
+	// redis.resources, the limit before the step when the spec limit is at
+	// the target of the step, or 0 without a known state. Only a revision to
+	// an Effective above Spec can be a step.
 	Spec, Effective int64
 	// Step is the limit of the last autoscaler step while no change of the
 	// spec followed it, or 0. A pod with this limit on a revision before a
@@ -354,9 +357,10 @@ func (r *RedisFailoverHealer) isAutoscalerRevision(rf *redisfailoverv1.RedisFail
 // autoscalerRevision reports whether update is a step of the memory
 // autoscaler from current. effectiveRF changes only the memory limit of the
 // redis container, and a memory request equal to that limit. A step only
-// raises the limit to the effective limit, from the spec limit or an earlier
-// effective limit. Another limit change also holds a change of the user, for
-// example a lower memoryMax, or a pod revision from before a raise of the spec.
+// raises the limit to an effective limit above the spec limit. A lower limit
+// holds a change of the user, for example a lower memoryMax. A raise of the
+// spec below the effective limit does not change the template, so a pod from
+// before it keeps the step.
 func autoscalerRevision(current, update *corev1.PodTemplateSpec, limits AutoscalerLimits) bool {
 	if limits.Effective == 0 {
 		return false
@@ -368,7 +372,7 @@ func autoscalerRevision(current, update *corev1.PodTemplateSpec, limits Autoscal
 	}
 	cl, cok := c.Resources.Limits[corev1.ResourceMemory]
 	ul, uok := u.Resources.Limits[corev1.ResourceMemory]
-	if !cok || !uok || ul.Value() != limits.Effective || cl.Value() >= ul.Value() || cl.Value() < limits.Spec {
+	if !cok || !uok || ul.Value() != limits.Effective || ul.Value() <= limits.Spec || cl.Value() >= ul.Value() {
 		return false
 	}
 	cr, cok := c.Resources.Requests[corev1.ResourceMemory]
