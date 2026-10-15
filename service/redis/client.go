@@ -171,7 +171,7 @@ func (c *client) GetNumberSentinelsInMemory(ip string) (int32, error) {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, metrics.REGEX_NOT_FOUND)
 		return 0, errors.New("sentinel regex not found")
 	}
-	nSentinels, err := strconv.Atoi(match[1])
+	nSentinels, err := strconv.ParseUint(match[1], 10, 64)
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, metrics.MISC)
 		return 0, err
@@ -211,7 +211,7 @@ func (c *client) GetNumberSentinelSlavesInMemory(ip string) (int32, error) {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, metrics.REGEX_NOT_FOUND)
 		return 0, errors.New("slaves regex not found")
 	}
-	nSlaves, err := strconv.Atoi(match[1])
+	nSlaves, err := strconv.ParseUint(match[1], 10, 64)
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, metrics.MISC)
 		return 0, err

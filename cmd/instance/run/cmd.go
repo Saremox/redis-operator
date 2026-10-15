@@ -135,9 +135,10 @@ func runProcessLoop(ctx context.Context, _ context.CancelFunc, reaper *zombieRea
 			redisArgs = append(redisArgs, "--requirepass", pw, "--masterauth", pw)
 		}
 		// The reaper reaps Redis, so nothing calls redisCmd.Wait. Thus the
-		// command has no context: CommandContext needs Wait to stop its watch
+		// command gets no cancel: CommandContext needs Wait to stop its watch
 		// goroutine, and shutdownRedis already handles ctx cancellation.
-		redisCmd := exec.Command(redisCommand, redisArgs...)
+		redisCmd := exec.CommandContext(context.WithoutCancel(ctx), redisCommand, redisArgs...) // #nosec G204 G702 -- the binary sets the command, and the pod spec sets the arguments.
+
 		redisCmd.Stdout = os.Stdout
 		redisCmd.Stderr = os.Stderr
 		redisCmd.Stdin = os.Stdin

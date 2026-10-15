@@ -109,7 +109,7 @@ func (r *leaseRunner) Run(ctx context.Context, f func(context.Context) error) er
 	}
 	stopElection()
 	<-electionDone
-	r.release()
+	r.release(ctx)
 	return err
 }
 
@@ -136,9 +136,10 @@ func (r *leaseRunner) lead(ctx, leaderCtx context.Context, f func(context.Contex
 }
 
 // release gives up the lease if this instance holds it, so another replica
-// takes over at once instead of waiting for it to expire.
-func (r *leaseRunner) release() {
-	ctx, cancel := context.WithTimeout(context.Background(), r.renewDeadline)
+// takes over at once instead of waiting for it to expire. It also runs on
+// shutdown, after ctx is done, so it keeps only the values of ctx.
+func (r *leaseRunner) release(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.renewDeadline)
 	defer cancel()
 	current, _, err := r.lock.Get(ctx)
 	if apierrors.IsNotFound(err) || (err == nil && current.HolderIdentity != r.lock.Identity()) {

@@ -58,7 +58,8 @@ func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, me
 	if err != nil {
 		return nil, err
 	}
-	rfHandler.requeue = c.enqueueAfter
+	// The handler requeues from checks that have no context.
+	rfHandler.requeue = func(key string, after time.Duration) { c.enqueueAfter(context.Background(), key, after) }
 	return c, nil
 }
 
