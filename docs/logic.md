@@ -95,6 +95,9 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
 - Stale Redis pods get the new statefulset revision. The operator deletes the master pod only when every Sentinel knows a quorum of the replicas. Otherwise, Sentinel has no replica to promote.
 - While the master pod stops, the operator does not check or reset the Sentinels. A reset at that time can leave Sentinel with no replica to promote. The status is `NotHealthy` while it waits.
 - All Sentinels monitor the same Redis master.
+  - While a Sentinel has the flag `failover_in_progress`, the operator does not change any Sentinel. A `SENTINEL MONITOR` or `SENTINEL RESET` ends the failover in that Sentinel. The Sentinels can then go back to the old master and fail over a second time. Then the promoted replica loses its writes.
+  - Only the Sentinel that leads the failover has the flag. Thus the operator reads the flag of each Sentinel before the first new monitor.
+  - The wait ends after the `failover-timeout` of that Sentinel (default 10s). Then the operator heals the Sentinels, so a failover that does not end does not stop the heal.
 - Each Sentinel knows the correct number of Sentinels and replicas. If not, the operator resets that Sentinel. A pod that does not run, for example a Pending pod, is no reason for a reset, because a reset does not add it.
 - After a reset or a new monitor, the Sentinel needs some seconds to find the other Sentinels and the replicas again. A failover cannot start in that time, so the operator does not reset it again in the next 25 seconds. The operator keeps this time in memory only, so a restart of the operator ends the wait.
 - Sentinel has the custom configuration.

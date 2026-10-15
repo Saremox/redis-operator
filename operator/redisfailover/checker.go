@@ -1238,6 +1238,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	// Read it again only when a Sentinel needs a fix, and only one time.
 	sentinelMonitorMaster := master
 	masterRefreshed := false
+	failoverChecked := false
 	for _, sip := range sentinels {
 		err = r.rfChecker.CheckSentinelMonitor(sip, sentinelMonitorMaster, port)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
@@ -1267,6 +1268,12 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 					}
 				}
 			}
+			if !failoverChecked {
+				failoverChecked = true
+				if r.waitForSentinelFailover(rf, sentinels, heal) {
+					return nil
+				}
+			}
 			if err := r.rfHealer.NewSentinelMonitor(sip, sentinelMonitorMaster, rf); err != nil {
 				if heal.skip(sip, err) {
 					continue
@@ -1278,6 +1285,9 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 			}
 			heal.resets[sip] = r.now()
 		}
+	}
+	if !failoverChecked {
+		r.sentinelFailovers.Delete(failoverKey(rf))
 	}
 	return r.checkAndHealSentinels(rf, sentinels, heal)
 }
@@ -1736,6 +1746,7 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 		}
 		heal := r.startSentinelHeal(rf)
 		defer r.saveSentinelResets(heal, sentinels)
+		failoverChecked := false
 		for _, sip := range sentinels {
 			err = r.rfChecker.CheckSentinelMonitor(sip, bootstrapSettings.Host, bootstrapSettings.Port)
 			setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
@@ -1744,6 +1755,12 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 			}
 			if err != nil {
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Fixing sentinel not monitoring expected master: %s", err.Error())
+				if !failoverChecked {
+					failoverChecked = true
+					if r.waitForSentinelFailover(rf, sentinels, heal) {
+						return nil
+					}
+				}
 				if err := r.rfHealer.NewSentinelMonitorWithPort(sip, bootstrapSettings.Host, bootstrapSettings.Port, rf); err != nil {
 					if heal.skip(sip, err) {
 						continue
@@ -1756,6 +1773,9 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 				}
 				heal.resets[sip] = r.now()
 			}
+		}
+		if !failoverChecked {
+			r.sentinelFailovers.Delete(failoverKey(rf))
 		}
 		return r.checkAndHealSentinels(rf, sentinels, heal)
 	}
@@ -1983,6 +2003,52 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 		return errors.New(msg)
 	}
 	return nil
+}
+
+// waitForSentinelFailover reports whether the operator must not change the
+// Sentinels, because a Sentinel leads a failover. SENTINEL REMOVE, MONITOR and
+// RESET end the failover in the leader. The Sentinels can then go back to the
+// old master and fail over a second time, and the promoted replica loses its
+// writes. The wait ends after the failover-timeout of the leader.
+func (r *RedisFailoverHandler) waitForSentinelFailover(rf *redisfailoverv1.RedisFailover, sentinels []string, heal *sentinelHeal) bool {
+	leader := ""
+	var timeout time.Duration
+	for _, sip := range sentinels {
+		if heal.unreachable[sip] {
+			continue
+		}
+		// A Sentinel that gives no answer gets the heal without a wait.
+		inProgress, t, err := r.rfChecker.SentinelFailoverInProgress(sip)
+		if err != nil || !inProgress {
+			continue
+		}
+		leader = sip
+		timeout = max(timeout, t)
+	}
+	if leader == "" {
+		r.sentinelFailovers.Delete(heal.key)
+		return false
+	}
+	if timeout == 0 {
+		timeout = redisfailoverv1.DefaultSentinelFailoverTimeoutMilliseconds * time.Millisecond
+	}
+	now := r.now()
+	v, waited := r.sentinelFailovers.LoadOrStore(heal.key, now)
+	since, _ := v.(time.Time)
+	elapsed := now.Sub(since)
+	if elapsed >= timeout {
+		heal.logger.Warningf("Sentinel %s leads a failover for %s, longer than its failover-timeout %s, so the operator heals the Sentinels", leader, elapsed.Round(time.Second), timeout)
+		return false
+	}
+	logf := heal.logger.Infof
+	if waited {
+		logf = heal.logger.Debugf
+	}
+	logf("Sentinel %s leads a failover, so the operator does not change the Sentinels until the failover ends", leader)
+	if r.requeue != nil {
+		r.requeue(heal.key, timeout-elapsed)
+	}
+	return true
 }
 
 // sentinelResetHoldOff is shorter than the default resync interval of 30
