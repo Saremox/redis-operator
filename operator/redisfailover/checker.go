@@ -945,6 +945,11 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 // CheckAndHeal checks the state of the RedisFailover and heals each check
 // that fails. It writes the status one time, at the end.
 func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) error {
+	return r.checkAndHeal(context.Background(), rf)
+}
+
+// checkAndHeal is CheckAndHeal with the context for the status write.
+func (r *RedisFailoverHandler) checkAndHeal(ctx context.Context, rf *redisfailoverv1.RedisFailover) error {
 
 	observed := rf.Status
 	r.autoscaleRollout.Delete(failoverKey(rf))
@@ -961,14 +966,14 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 				Message:     "internal error, see the operator log",
 				Autoscaling: observed.Autoscaling,
 			}
-			updateStatus(r.k8sservice, rf, observed)
+			updateStatus(ctx, r.k8sservice, rf, observed)
 			r.mClient.SetClusterError(rf.Namespace, rf.Name)
 			panic(p)
 		}
 		// The checks replace rf.Status as a whole, so the autoscaler sets
 		// its part last.
 		r.autoscale(rf, observed.Autoscaling)
-		updateStatus(r.k8sservice, rf, observed)
+		updateStatus(ctx, r.k8sservice, rf, observed)
 	}()
 
 	// Every check below authenticates, so a changed password goes first.
@@ -2067,7 +2072,7 @@ func setRedisCheckerMetrics(metricsClient metrics.Recorder, mode /* redis or sen
 // State and Message, so LastChanged comes from the observed status unless the
 // state changed. An unchanged status is not written, which saves one API call
 // on each resync and pod event.
-func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, observed redisfailoverv1.RedisFailoverStatus) {
+func updateStatus(ctx context.Context, k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, observed redisfailoverv1.RedisFailoverStatus) {
 	if observed.State != rf.Status.State {
 		rf.Status.LastChanged = time.Now().Format(time.RFC3339)
 	} else {
@@ -2076,5 +2081,5 @@ func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, ob
 	if rf.Status == observed {
 		return
 	}
-	k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
+	k8sservice.UpdateRedisFailoverStatus(ctx, rf.Namespace, rf, metav1.PatchOptions{})
 }
