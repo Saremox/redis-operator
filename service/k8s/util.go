@@ -5,6 +5,7 @@ import (
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -91,5 +92,15 @@ func recordMetrics(namespace, kind, object, operation string, err error, metrics
 		metricsRecorder.RecordK8sOperation(namespace, kind, object, operation, metrics.FAIL, metrics.K8S_NOT_FOUND)
 	} else {
 		metricsRecorder.RecordK8sOperation(namespace, kind, object, operation, metrics.FAIL, metrics.K8S_MISC)
+	}
+}
+
+// setPodIPs gives the pod IPs to the metrics. The operator sends the Redis and
+// Sentinel commands only to the IPs of these pod lists.
+func setPodIPs(pods []corev1.Pod, metricsRecorder metrics.Recorder) {
+	for i := range pods {
+		if ip := pods[i].Status.PodIP; ip != "" {
+			metricsRecorder.SetPodIP(pods[i].Namespace, pods[i].Name, ip)
+		}
 	}
 }

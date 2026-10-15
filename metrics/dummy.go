@@ -28,3 +28,5 @@ func (d dummy) RecordK8sOperation(_, _, _, _, _, _ string) {
 }
 func (d dummy) RecordRedisOperation(_, _, _, _, _ string) {
 }
+func (d dummy) SetPodIP(_, _, _ string) {
+}

@@ -195,3 +195,105 @@ func TestRemoveStaleMetricsDeletesStaleResourceInEachRecorder(t *testing.T) {
 		return true
 	}, 3*time.Second, 50*time.Millisecond, "expected removeStaleMetrics to delete the series of the stale RedisFailover in each recorder")
 }
+
+// resetPods empties the IP map and the redisOperations tracker for one test.
+func resetPods(t *testing.T) {
+	t.Helper()
+	mutex.Lock()
+	pods, instances := podsByIP, instanceMetricLastUpdated
+	podsByIP = map[string]podEntry{}
+	instanceMetricLastUpdated = map[podKey]time.Time{}
+	mutex.Unlock()
+	t.Cleanup(func() {
+		mutex.Lock()
+		podsByIP, instanceMetricLastUpdated = pods, instances
+		mutex.Unlock()
+	})
+}
+
+// A pod that Kubernetes creates again gets a different IP and keeps its name. The
+// series of the pod must not change.
+func TestPodSeriesKeepTheNameAcrossIPs(t *testing.T) {
+	resetTrackers(t)
+	resetPods(t)
+	rec := NewRecorder("pod_name_test", prometheus.NewRegistry()).(recorder)
+
+	for _, ip := range []string{"10.1.0.1", "10.1.0.2"} {
+		rec.SetPodIP("ns7", "rfr-rf7-0", ip)
+		rec.RecordRedisOperation(KIND_REDIS, ip, IS_MASTER, SUCCESS, NOT_APPLICABLE)
+		rec.RecordRedisCheck("ns7", "rf7", SLAVE_WRONG_MASTER, ip, STATUS_HEALTHY)
+		rec.RecordSentinelCheck("ns7", "rf7", SENTINEL_WRONG_MASTER, ip, STATUS_HEALTHY)
+	}
+
+	assert.Equal(t, 1, testutil.CollectAndCount(rec.redisOperations))
+	assert.InDelta(t, 2, testutil.ToFloat64(rec.redisOperations.WithLabelValues(KIND_REDIS, "ns7", "rfr-rf7-0", IS_MASTER, SUCCESS, NOT_APPLICABLE)), 0)
+	assert.Equal(t, 1, testutil.CollectAndCount(rec.redisCheck))
+	assert.InDelta(t, 2, testutil.ToFloat64(rec.redisCheck.WithLabelValues("ns7", "rf7", SLAVE_WRONG_MASTER, "rfr-rf7-0", STATUS_HEALTHY)), 0)
+	assert.Equal(t, 1, testutil.CollectAndCount(rec.sentinelCheck))
+	assert.InDelta(t, 2, testutil.ToFloat64(rec.sentinelCheck.WithLabelValues("ns7", "rf7", SENTINEL_WRONG_MASTER, "rfr-rf7-0", STATUS_HEALTHY)), 0)
+}
+
+// Two RedisFailovers with the same name in two namespaces have pods with the
+// same name. Their series must stay apart.
+func TestRedisOperationSeriesOfPodsInTwoNamespaces(t *testing.T) {
+	resetPods(t)
+	rec := NewRecorder("pod_namespace_test", prometheus.NewRegistry()).(recorder)
+
+	rec.SetPodIP("ns8a", "rfr-rf8-0", "10.1.0.3")
+	rec.SetPodIP("ns8b", "rfr-rf8-0", "10.1.0.4")
+	rec.RecordRedisOperation(KIND_REDIS, "10.1.0.3", IS_MASTER, SUCCESS, NOT_APPLICABLE)
+	rec.RecordRedisOperation(KIND_REDIS, "10.1.0.4", IS_MASTER, SUCCESS, NOT_APPLICABLE)
+
+	assert.Equal(t, 2, testutil.CollectAndCount(rec.redisOperations))
+	assert.InDelta(t, 1, testutil.ToFloat64(rec.redisOperations.WithLabelValues(KIND_REDIS, "ns8a", "rfr-rf8-0", IS_MASTER, SUCCESS, NOT_APPLICABLE)), 0)
+	assert.InDelta(t, 1, testutil.ToFloat64(rec.redisOperations.WithLabelValues(KIND_REDIS, "ns8b", "rfr-rf8-0", IS_MASTER, SUCCESS, NOT_APPLICABLE)), 0)
+}
+
+// The checks of the RedisFailover use NOT_APPLICABLE as instance, and an IP
+// without SetPodIP has no pod name.
+func TestPodSeriesWithoutAPodName(t *testing.T) {
+	resetTrackers(t)
+	resetPods(t)
+	rec := NewRecorder("pod_unknown_test", prometheus.NewRegistry()).(recorder)
+
+	rec.RecordRedisCheck("ns9", "rf9", NO_MASTER, NOT_APPLICABLE, STATUS_HEALTHY)
+	rec.RecordSentinelCheck("ns9", "rf9", SENTINEL_WRONG_MASTER, "10.1.0.5", STATUS_HEALTHY)
+	rec.RecordRedisOperation(KIND_SENTINEL, "10.1.0.5", GET_SENTINEL_MONITOR, SUCCESS, NOT_APPLICABLE)
+
+	assert.InDelta(t, 1, testutil.ToFloat64(rec.redisCheck.WithLabelValues("ns9", "rf9", NO_MASTER, NOT_APPLICABLE, STATUS_HEALTHY)), 0)
+	assert.InDelta(t, 1, testutil.ToFloat64(rec.sentinelCheck.WithLabelValues("ns9", "rf9", SENTINEL_WRONG_MASTER, "10.1.0.5", STATUS_HEALTHY)), 0)
+	assert.InDelta(t, 1, testutil.ToFloat64(rec.redisOperations.WithLabelValues(KIND_SENTINEL, NOT_APPLICABLE, "10.1.0.5", GET_SENTINEL_MONITOR, SUCCESS, NOT_APPLICABLE)), 0)
+}
+
+// The GC deletes the redisOperations series of a removed pod by its namespace
+// and pod name. It forgets an IP that no pod list showed for
+// metricsGCIntervalMinutes.
+func TestRemoveStaleMetricsDeletesRemovedPod(t *testing.T) {
+	resetTrackers(t)
+	resetPods(t)
+	rec := NewRecorder("stale_pod_test", prometheus.NewRegistry()).(recorder)
+
+	rec.SetPodIP("ns10", "rfr-rf10-2", "10.1.0.6")
+	rec.SetPodIP("ns10", "rfr-rf10-0", "10.1.0.7")
+	rec.RecordRedisOperation(KIND_REDIS, "10.1.0.6", IS_MASTER, SUCCESS, NOT_APPLICABLE)
+	rec.RecordRedisOperation(KIND_REDIS, "10.1.0.7", IS_MASTER, SUCCESS, NOT_APPLICABLE)
+
+	old := time.Now().Add(-2 * metricsGCIntervalMinutes * time.Minute)
+	mutex.Lock()
+	podsByIP["10.1.0.6"] = podEntry{podKey: podKey{namespace: "ns10", name: "rfr-rf10-2"}, lastSeen: old}
+	instanceMetricLastUpdated[podKey{namespace: "ns10", name: "rfr-rf10-2"}] = old
+	mutex.Unlock()
+
+	go removeStaleMetrics()
+
+	assert.Eventually(t, func() bool {
+		return testutil.CollectAndCount(rec.redisOperations) == 1
+	}, 3*time.Second, 50*time.Millisecond, "expected removeStaleMetrics to delete the series of the removed pod")
+	assert.InDelta(t, 1, testutil.ToFloat64(rec.redisOperations.WithLabelValues(KIND_REDIS, "ns10", "rfr-rf10-0", IS_MASTER, SUCCESS, NOT_APPLICABLE)), 0)
+	mutex.Lock()
+	_, staleIP := podsByIP["10.1.0.6"]
+	_, freshIP := podsByIP["10.1.0.7"]
+	mutex.Unlock()
+	assert.False(t, staleIP, "expected the GC to forget the IP of the removed pod")
+	assert.True(t, freshIP, "expected the GC to keep the IP of a listed pod")
+}

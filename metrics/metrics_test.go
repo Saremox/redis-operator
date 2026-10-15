@@ -176,7 +176,7 @@ func TestRecorderRecordMethods(t *testing.T) {
 
 	t.Run("RecordRedisOperation", func(t *testing.T) {
 		rec.RecordRedisOperation("redis", "10.0.0.5", GET_SLAVE_OF, SUCCESS, "")
-		val := testutil.ToFloat64(concrete.redisOperations.WithLabelValues("redis", "10.0.0.5", GET_SLAVE_OF, SUCCESS, ""))
+		val := testutil.ToFloat64(concrete.redisOperations.WithLabelValues("redis", NOT_APPLICABLE, "10.0.0.5", GET_SLAVE_OF, SUCCESS, ""))
 		assert.InDelta(t, float64(1), val, 0)
 	})
 }
@@ -187,11 +187,11 @@ func TestUpdateTrackers(t *testing.T) {
 	before := time.Now()
 
 	updateResourceMetricLastUpdatedTracker("nsX", "kindX", "nameX")
-	updateInstanceMetricLastUpdatedTracker("1.2.3.4")
+	updateInstanceMetricLastUpdatedTracker(podKey{namespace: "nsX", name: "podX"})
 
 	mutex.Lock()
 	resourceTS, resourceOK := resourceMetricLastUpdated["nsX/kindX/nameX"]
-	instanceTS, instanceOK := instanceMetricLastUpdated["1.2.3.4"]
+	instanceTS, instanceOK := instanceMetricLastUpdated[podKey{namespace: "nsX", name: "podX"}]
 	mutex.Unlock()
 
 	assert.True(t, resourceOK, "expected resource tracker entry to be present")
@@ -224,15 +224,15 @@ func TestGetLabelsOfStaleMetrics(t *testing.T) {
 	mutex.Lock()
 	resourceMetricLastUpdated[staleResourceKey] = old
 	resourceMetricLastUpdated[staleCheckKey] = old
-	instanceMetricLastUpdated["10.0.0.10"] = old
+	instanceMetricLastUpdated[podKey{namespace: NOT_APPLICABLE, name: "10.0.0.10"}] = old
 	mutex.Unlock()
 
-	kubeLabels, customLabels, ipLabels := getLabelsOfStaleMetrics()
+	kubeLabels, customLabels, podLabels := getLabelsOfStaleMetrics()
 
 	assert.Contains(t, kubeLabels, prometheus.Labels{"namespace": "ns1", "kind": KIND_REDIS, "name": "obj1"})
 	assert.Contains(t, customLabels, prometheus.Labels{"namespace": "ns1", "resource": "obj1"})
 	assert.Contains(t, kubeLabels, prometheus.Labels{"namespace": "ns1", "kind": "redisfailover", "name": "res1"})
-	assert.Contains(t, ipLabels, prometheus.Labels{"IP": "10.0.0.10"})
+	assert.Contains(t, podLabels, prometheus.Labels{"namespace": NOT_APPLICABLE, "pod": "10.0.0.10"})
 
 	// The fresh entry must not show up as stale.
 	for _, l := range kubeLabels {
@@ -243,7 +243,7 @@ func TestGetLabelsOfStaleMetrics(t *testing.T) {
 	mutex.Lock()
 	_, stillTrackedResource := resourceMetricLastUpdated[staleResourceKey]
 	_, stillTrackedCheck := resourceMetricLastUpdated[staleCheckKey]
-	_, stillTrackedInstance := instanceMetricLastUpdated["10.0.0.10"]
+	_, stillTrackedInstance := instanceMetricLastUpdated[podKey{namespace: NOT_APPLICABLE, name: "10.0.0.10"}]
 	_, freshStillTracked := resourceMetricLastUpdated[freshResourceKey]
 	mutex.Unlock()
 
@@ -280,7 +280,7 @@ func TestRemoveStaleMetrics(t *testing.T) {
 	old := time.Now().Add(-2 * metricsGCIntervalMinutes * time.Minute)
 	mutex.Lock()
 	resourceMetricLastUpdated["ns3/Pod/obj3"] = old
-	instanceMetricLastUpdated["10.0.0.20"] = old
+	instanceMetricLastUpdated[podKey{namespace: NOT_APPLICABLE, name: "10.0.0.20"}] = old
 	mutex.Unlock()
 
 	go removeStaleMetrics()
@@ -290,7 +290,7 @@ func TestRemoveStaleMetrics(t *testing.T) {
 		// deleted, so a value of 0 here indicates the GC pass ran and
 		// removed it.
 		return testutil.ToFloat64(concrete.k8sServiceOperations.WithLabelValues("ns3", "Pod", "obj3", "create", SUCCESS, "")) == 0 &&
-			testutil.ToFloat64(concrete.redisOperations.WithLabelValues("redis", "10.0.0.20", GET_SLAVE_OF, SUCCESS, "")) == 0
+			testutil.ToFloat64(concrete.redisOperations.WithLabelValues("redis", NOT_APPLICABLE, "10.0.0.20", GET_SLAVE_OF, SUCCESS, "")) == 0
 	}, 3*time.Second, 50*time.Millisecond, "expected removeStaleMetrics to delete the aged out series")
 }
 
@@ -307,6 +307,7 @@ func TestDummyRecorder(t *testing.T) {
 		Dummy.RecordSentinelCheck("ns", "res", SENTINEL_NOT_READY, "inst", FAIL)
 		Dummy.RecordK8sOperation("ns", "Pod", "name", "create", SUCCESS, "")
 		Dummy.RecordRedisOperation("redis", "10.0.0.5", GET_SLAVE_OF, SUCCESS, "")
+		Dummy.SetPodIP("ns", "pod", "10.0.0.5")
 		Dummy.SetAutoscaler("ns", "name", 1, 0.5, 2, 1)
 		Dummy.SetAutoscalerPhase("ns", "name", 1)
 		Dummy.CountAutoscalerStep("ns", "name", AutoscalerStepDone)

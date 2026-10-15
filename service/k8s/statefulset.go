@@ -80,6 +80,7 @@ func (s *StatefulSetService) GetStatefulSetPods(namespace, name string) (*corev1
 		}
 	}
 	pods.Items = owned
+	setPodIPs(pods.Items, s.metricsRecorder)
 	return pods, nil
 }
 

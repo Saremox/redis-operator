@@ -108,6 +108,11 @@ func (_m *Recorder) SetClusterOK(namespace string, name string) {
 	_m.Called(namespace, name)
 }
 
+// SetPodIP provides a mock function with given fields: namespace, name, ip
+func (_m *Recorder) SetPodIP(namespace string, name string, ip string) {
+	_m.Called(namespace, name, ip)
+}
+
 // NewRecorder creates a new instance of Recorder. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
 func NewRecorder(t interface {
