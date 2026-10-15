@@ -447,6 +447,36 @@ func TestPlanKeepsAStepWithTheSpecAtTo(t *testing.T) {
 	})
 }
 
+// A spec limit at the frozen limit holds a step to it. Another change of the
+// spec only ends the freeze.
+func TestUnfreeze(t *testing.T) {
+	frozen := State{Version: StateVersion, Phase: PhaseIdle, Frozen: true, Generation: 1, Effective: 1280 * mi, SpecLimit: gi}
+	o := obs(time.Minute)
+	o.Generation, o.Spec, o.Settled = 2, 1280*mi, false
+	s, action := Plan(frozen, o)
+	assert.Equal(t, ActionNone, action)
+	assert.False(t, s.Frozen)
+	assert.Equal(t, PhaseHeld, s.Phase)
+	assert.Equal(t, RefusalLostState, s.Refusal)
+	assert.Equal(t, gi, s.From)
+	assert.Equal(t, 1280*mi, s.To)
+	assert.Zero(t, s.Effective)
+
+	o.Applied = true
+	s, action = Plan(s, o)
+	assert.Equal(t, ActionDone, action)
+	assert.Equal(t, PhaseDone, s.Phase)
+
+	for _, spec := range []int64{gi + 64*mi, 1344 * mi} {
+		s := Unfreeze(frozen, spec)
+		assert.False(t, s.Frozen)
+		assert.Equal(t, PhaseIdle, s.Phase, spec)
+	}
+	atSpec := frozen
+	atSpec.Effective = 0
+	assert.Equal(t, PhaseIdle, Unfreeze(atSpec, gi).Phase)
+}
+
 func TestBoundKeepsTheStepOfAnotherPhase(t *testing.T) {
 	s := State{Phase: PhaseDone, Effective: 1280 * mi}
 	assert.Equal(t, State{Phase: PhaseDone}, Bound(s, 1280*mi, 4*gi))

@@ -48,6 +48,9 @@ const (
 	// RefusalStepPod holds a revert that Ensure did not apply, because a pod
 	// runs or starts from the template of the step.
 	RefusalStepPod = "a pod runs or starts with the limit of the step"
+	// RefusalLostState holds the frozen limit of a lost state after the user
+	// set the spec limit to it.
+	RefusalLostState = "the state ConfigMap of the step is lost"
 )
 
 // The reasons in the status of mode Auto. A reason with a refusal adds the
@@ -135,6 +138,18 @@ func Bound(s State, spec, maxLimit int64) State {
 	return s
 }
 
+// Unfreeze ends a freeze after a change of the spec. A spec limit at the
+// frozen limit does not change the template, and a pod can still refuse the
+// step of the lost state. The freeze then becomes a held step to that limit,
+// which ends as Done when each pod runs with it.
+func Unfreeze(s State, spec int64) State {
+	s.Frozen = false
+	if s.Effective != 0 && s.Effective == spec && s.SpecLimit < spec {
+		s.Phase, s.From, s.To, s.Refusal = PhaseHeld, s.SpecLimit, spec, RefusalLostState
+	}
+	return s
+}
+
 // endStep ends a step that is not done after a change of Effective. A spec
 // limit at the target of the step does not change the template, so that step
 // continues with an Effective of 0.
@@ -172,16 +187,17 @@ func Resume(s State, live, spec, maxLimit int64) State {
 // step starts only from Recommended, so the dwell of Observe applies.
 func Plan(s State, o Observation) (State, Action) {
 	now := o.Now.Unix()
-	s = Bound(s.rebase(now), o.Spec, o.Max)
+	s = s.rebase(now)
+	if s.Frozen && o.Generation != s.Generation {
+		// The user saw the frozen limit and changed the spec.
+		s = Unfreeze(s, o.Spec)
+	}
+	s = Bound(s, o.Spec, o.Max)
 	if s.Phase == "" {
 		s.Phase = PhaseIdle
 	}
 	if s.Frozen {
-		if o.Generation == s.Generation {
-			return s, ActionNone
-		}
-		// The user saw the frozen limit and changed the spec.
-		s.Frozen = false
+		return s, ActionNone
 	}
 	if s.Reverts != 0 && o.Generation != s.Generation {
 		// A user change can remove the cause of the refusal.
