@@ -1867,20 +1867,20 @@ type sentinelHeal struct {
 	// readErrors holds the time of the first read error of the failover
 	// state of each Sentinel.
 	readErrors map[string]time.Time
-	// readErrorHold holds the Sentinels that get no change because of a
-	// read error.
-	readErrorHold map[string]bool
+	// held holds the Sentinels that get no change in this reconcile: after a
+	// read error, or in a failover that the stored wait does not cover.
+	held map[string]bool
 }
 
 // startSentinelHeal loads the reset times that are still in the hold-off.
 func (r *RedisFailoverHandler) startSentinelHeal(rf *redisfailoverv1.RedisFailover) *sentinelHeal {
 	heal := &sentinelHeal{
-		key:           failoverKey(rf),
-		logger:        r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace),
-		resets:        map[string]time.Time{},
-		unreachable:   map[string]bool{},
-		readErrors:    map[string]time.Time{},
-		readErrorHold: map[string]bool{},
+		key:         failoverKey(rf),
+		logger:      r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace),
+		resets:      map[string]time.Time{},
+		unreachable: map[string]bool{},
+		readErrors:  map[string]time.Time{},
+		held:        map[string]bool{},
 	}
 	if v, ok := r.sentinelReadErrors.Load(heal.key); ok {
 		if last, ok := v.(map[string]time.Time); ok {
@@ -2051,10 +2051,10 @@ func (r *RedisFailoverHandler) sentinelChangeAllowed(rf *redisfailoverv1.RedisFa
 		heal.failoverRead = true
 		r.readSentinelFailovers(rf, sentinels, true, heal)
 	}
-	if !heal.failoverHold && !heal.unreachable[sip] && !heal.readErrorHold[sip] {
+	if !heal.failoverHold && !heal.unreachable[sip] && !heal.held[sip] {
 		r.readSentinelFailovers(rf, []string{sip}, false, heal)
 	}
-	return !heal.failoverHold && !heal.unreachable[sip] && !heal.readErrorHold[sip]
+	return !heal.failoverHold && !heal.unreachable[sip] && !heal.held[sip]
 }
 
 // readSentinelFailovers reads the failover state of the Sentinels and sets
@@ -2101,12 +2101,25 @@ func (r *RedisFailoverHandler) readSentinelFailovers(rf *redisfailoverv1.RedisFa
 	now := r.now()
 	// A failover of another Sentinel or of another master, or an earlier
 	// failover-state, is a new failover with its own wait. The master of a
-	// Sentinel changes only at the end of a failover. Only a read of all the
-	// Sentinels finds the leader, so a read of one Sentinel does not start a
-	// new wait.
+	// Sentinel changes only at the end of a failover.
 	v, ok := r.sentinelFailovers.Load(heal.key)
 	last, _ := v.(sentinelFailover)
-	newFailover := !ok || all && (last.sentinel != found.sentinel || last.master != found.master || found.state < last.state)
+	newFailover := !ok || last.sentinel != found.sentinel || last.master != found.master || found.state < last.state
+	if newFailover && !all {
+		// Only a read of all the Sentinels finds the leader and starts a
+		// wait. Until then, the target alone gets no change, so a candidate
+		// cannot make the wait of a leader longer.
+		heal.logger.Infof("Sentinel %s fails over, so the operator does not change it in this reconcile", found.sentinel)
+		heal.held[found.sentinel] = true
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: sentinelFailoverMsg,
+		}
+		if r.requeue != nil {
+			r.requeue(heal.key, timeout)
+		}
+		return
+	}
 	switch {
 	case newFailover:
 		found.since = now
@@ -2152,7 +2165,7 @@ func (r *RedisFailoverHandler) holdOnReadError(rf *redisfailoverv1.RedisFailover
 		if !ok {
 			heal.logger.Warningf("Sentinel %s did not give its failover state, so the operator does not change it for %s: %s", sip, timeout, err.Error())
 		}
-		heal.readErrorHold[sip] = true
+		heal.held[sip] = true
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: fmt.Sprintf("waiting to read the failover state of sentinel %s", sip),

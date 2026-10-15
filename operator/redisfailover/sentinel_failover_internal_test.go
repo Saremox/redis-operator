@@ -435,8 +435,8 @@ func TestSentinelFailoverWaitEndsAfterOneTimeout(t *testing.T) {
 
 // TestSentinelFailoverCandidateDoesNotExtendTheWait covers a leader that does
 // not end its failover and a candidate that keeps the flag. The read of the
-// candidate before its change must not start a new wait, so the heal waits
-// one failover-timeout only.
+// candidate before its change holds the candidate only and starts no new
+// wait, so the other Sentinels wait one failover-timeout only.
 func TestSentinelFailoverCandidateDoesNotExtendTheWait(t *testing.T) {
 	ft := newSentinelFailoverTest(false)
 	stuck := sfReconcile{wrong: sfSentinels[1:], failover: map[string][]redis.SentinelFailover{
@@ -446,8 +446,54 @@ func TestSentinelFailoverCandidateDoesNotExtendTheWait(t *testing.T) {
 	assert.Empty(t, ft.reconcile(t, stuck).monitored)
 	for elapsed := 10 * time.Second; elapsed <= time.Minute; elapsed += 5 * time.Second {
 		ft.clock = time.Unix(1000, 0).Add(elapsed)
-		assert.Equal(t, sfSentinels[1:], ft.reconcile(t, stuck).monitored, elapsed)
-		assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State, elapsed)
+		assert.Equal(t, sfSentinels[1:2], ft.reconcile(t, stuck).monitored, elapsed)
+		ft.assertHold(t)
+		v, _ := ft.handler.sentinelFailovers.Load("testns/test")
+		assert.Equal(t, sentinelFailover{sentinel: sfSentinels[0], master: sfOldMaster + ":6379", state: 4, since: time.Unix(1000, 0)}, v, elapsed)
+	}
+
+	// A candidate loses the flag at the end of the election.
+	delete(stuck.failover, sfSentinels[2])
+	assert.Equal(t, sfSentinels[1:], ft.reconcile(t, stuck).monitored)
+	assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
+}
+
+// TestSentinelFailoverAfterAnExpiredWait covers a new failover that starts
+// between the read of all the Sentinels and the read of the target, after the
+// wait of an earlier failover ended. The target gets no change, and the next
+// read of all the Sentinels starts a full wait.
+func TestSentinelFailoverAfterAnExpiredWait(t *testing.T) {
+	for _, mismatch := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reset=%v", mismatch), func(t *testing.T) {
+			ft := newSentinelFailoverTest(false)
+			ft.reconcile(t, sfReconcile{wrong: sfSentinels, failover: map[string][]redis.SentinelFailover{
+				sfSentinels[2]: failingOverMaster("10.0.0.1:6379", "reconf_slaves", 10*time.Second),
+			}})
+
+			second := failingOverMaster("10.0.0.2:6379", "wait_start", 10*time.Second)[0]
+			ft.clock = ft.clock.Add(12 * time.Second)
+			state := sfReconcile{wrong: sfSentinels[2:], failover: map[string][]redis.SentinelFailover{
+				sfSentinels[2]: {{}, second},
+			}}
+			if mismatch {
+				state.wrong, state.mismatch = nil, sfSentinels[2:]
+			}
+			res := ft.reconcile(t, state)
+			assert.Empty(t, res.monitored)
+			assert.Empty(t, res.reset)
+			ft.assertHold(t)
+			assert.Equal(t, []time.Duration{10 * time.Second}, ft.requeues)
+
+			ft.clock = ft.clock.Add(time.Second)
+			state.failover[sfSentinels[2]] = []redis.SentinelFailover{second}
+			res = ft.reconcile(t, state)
+			assert.Empty(t, res.monitored)
+			assert.Empty(t, res.reset)
+			assert.Equal(t, []time.Duration{10 * time.Second}, ft.requeues)
+			v, _ := ft.handler.sentinelFailovers.Load("testns/test")
+			stored, _ := v.(sentinelFailover)
+			assert.Equal(t, ft.clock, stored.since)
+		})
 	}
 }
 
