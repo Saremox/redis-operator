@@ -19,6 +19,8 @@ Each reconcile does these steps in this order:
 5. Autoscaler state: with `redis.autoscaling.mode` `Recommend` or `Auto`, the operator reads its state from the ConfigMap `rfa-<NAME>`. The state can hold a memory limit of the redis pods above `redis.resources`, and Ensure writes that limit to the statefulset. Thus an error of this read stops the reconcile before Ensure. Without autoscaling and without `status.autoscaling`, the operator reads the ConfigMap one time after its start, and deletes a ConfigMap that it finds.
 
    After a step, the spec limit can be smaller than the pods. Thus a state that is lost, not valid, of another owner or of a newer operator gives the limit of the live statefulset. Mode `Auto` reads the statefulset for such a state. Mode `Recommend` reads it when `status.autoscaling.effectiveMemory` is set, and one time after each operator start. A state with a larger limit and without a sample in the last 11 minutes also gives the limit of the live statefulset. A revert is the exception.
+
+   A lost or invalid state also lost its budget, its back-off and its step. A `status.autoscaling` or the ConfigMap shows such a loss. Step 8 then freezes the limit, also at the spec limit, and no step starts until the next change of the spec.
 6. Ensure: the operator creates or updates the objects below. It overwrites a manual change of these objects:
    - Redis service (if exporter enabled)
    - Redis master service and Redis replica service
@@ -47,9 +49,14 @@ While the statefulset status does not show the generation of its template, the r
 
 In mode `Auto`, a step of the autoscaler changes only the memory limit of the redis container. The rollout resizes such a pod in place and never recreates it. This is also true when the cluster refuses the resize or the operator cannot read a revision. It keeps the refusal for step 9, and the status shows it. A change of the spec in the same revision takes the normal rollout.
 
+The rule does not depend on the mode or the phase, so it also applies in mode `Recommend`. A revision that raises only the memory limit to the effective limit is a step when the effective limit is above the spec limit. A raise of the spec below the effective limit does not change the template, so a pod from before it keeps the rule. These cases also keep a pod:
+
+- The spec limit is at the limit of a step that is `Applying` or `Held`. The template does not change, so the step continues. A refusal or the timeout then holds the step, because a revert cannot lower the template.
+- The state is lost, not valid, frozen, of another owner or of a newer operator. Then each raise to the limit of the live statefulset can be a step, also at the spec limit. A freeze ends at the next change of the spec.
+
 A revert to the limit before the step happens only while no pod applied the step. Also, no pod may run or start from the template of the step. No pod may be missing or terminating, because the StatefulSet can create it from that template. The revert first removes the annotation of the open resize request from the pods. Otherwise the operator holds the step and does not lower the limit of a pod. It also holds the step when it cannot remove an annotation within 30 minutes after the start of the step.
 
-Before Ensure applies a revert, step 5 lists the pods again, also after an operator outage. An existing pod of the step then holds the step. A missing pod or a missing statefulset does not. A pod that the StatefulSet created from the template of the last step keeps its larger limit. The rollout only moves its revision label. This rule ends with a `memoryMax` below that limit, a spec limit at that limit, or mode `Off`.
+Before Ensure applies a revert, step 5 lists the pods again, also after an operator outage. An existing pod of the step then holds the step. A missing pod or a missing statefulset does not. A pod that the StatefulSet created from the template of the last step keeps its larger limit. The rollout only moves its revision label. A raise of `memoryMax` keeps this rule. Only a `memoryMax` below that limit, a spec limit at or above that limit, or mode `Off` ends it.
 
 When the spec of a pod requests the limit of a step since a revert, the next step writes the request time again. Otherwise a deferred resize times out at once.
 

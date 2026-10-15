@@ -465,16 +465,23 @@ The reason of `Reverted` and `Held` gives the pod and the refusal. Alert on `red
 
 A pod can run with a larger limit than the StatefulSet. This happens when the kubelet applies a resize after a revert, or on Kubernetes 1.33 and 1.34, which cannot lower a limit in place. The operator does not change such a pod. A pod that the StatefulSet created from the template of the last step also keeps its limit. The rollout only moves its revision label. `maxmemory` follows the smallest pod, so the larger pod is safe.
 
-`effectiveMemory` shows the limit of the StatefulSet, so it can be lower than the limit of such a pod. To give such a pod the smaller limit, set `memoryMax` below the limit of the pod, or set mode `Off`. A spec limit at the limit of the pod also ends the rule.
+`effectiveMemory` shows the limit of the StatefulSet, so it can be lower than the limit of such a pod. A raise of `memoryMax` keeps this rule. To give such a pod the smaller limit, set `memoryMax` below the limit of the pod, or set mode `Off`. A spec limit at or above the limit of the pod also ends the rule.
+
+A pod that refuses a step stays on its revision, also in mode `Recommend`. The operator does not recreate it in these cases:
+
+- The spec limit is above the limit before the step and below the limit of the step. The template does not change.
+- The spec limit is equal to the limit of a step that is `Applying` or `Held`. The step continues. A refusal or the timeout then holds the step, because a revert cannot lower the template.
+- The state is lost, not valid, of another owner or of a newer operator. Until the next change of the spec, each raise to the limit of the StatefulSet can be a step.
 
 Changes of the user:
 
 - A spec limit above the effective limit ends the step. The pods get the spec limit as for each change of the resources.
+- A spec limit equal to the effective limit does not change the pods. A step that is `Applying` or `Held` continues until each pod runs with that limit.
 - A spec limit below the effective limit does not change the pods. The reason then contains `redis.resources.limits.memory is below effectiveMemory`.
 - A `memoryMax` below the effective limit lowers the limit of the pods to `memoryMax`. This is a change of the user: Kubernetes 1.35 lowers it in place, and older versions recreate the pods.
 - Mode `Recommend` keeps the effective limit, and completes a step that is `Applying` or `Held`. It starts no step. The status shows no phase of an earlier step.
 - Mode `Off` gives the pods the spec limit. This lowers the limit as above. To keep the limit, pin it first.
-- A ConfigMap `rfa-<NAME>` that is lost or not valid gives the limit of the live StatefulSet. No step starts until the next change of the spec. Mode `Recommend` also keeps that limit when `status.autoscaling.effectiveMemory` is set.
+- A ConfigMap `rfa-<NAME>` that is lost or not valid gives the limit of the live StatefulSet. No step starts until the next change of the spec, also when the live limit is the spec limit. After that change, the budget and the back-off start again. Mode `Recommend` also keeps that limit when `status.autoscaling.effectiveMemory` is set.
 - A ConfigMap `rfa-<NAME>` of another owner or of a newer operator version also gives the limit of the live StatefulSet. The operator does not change that ConfigMap and starts no step.
 - A state with a last sample more than 11 minutes before the current time gives the limit of the live StatefulSet. A state that stays after mode `Off` thus does not change the pods.
 
@@ -482,8 +489,9 @@ To pin the effective limit, for example before mode `Off` or a downgrade of the 
 
 1. Read `status.autoscaling.effectiveMemory`. When it is empty, the pods have the spec limit.
 2. Set `redis.resources.requests.memory` and `redis.resources.limits.memory` to that value.
-3. Set `redis.autoscaling.mode` to `Recommend` or `Off`.
-4. Wait until `status.state` is `Healthy`.
+3. When `status.autoscaling.phase` is `Applying` or `Held`, wait until it is `Done`. Mode `Off` recreates a pod that refuses the limit.
+4. Set `redis.autoscaling.mode` to `Recommend` or `Off`.
+5. Wait until `status.state` is `Healthy`.
 
 An operator version without mode `Auto` rejects such a RedisFailover in validation. It then stops all reconciles of the RedisFailover, also the failover of the operator-managed mode. The 4.1.x CRD removes `redis.autoscaling`, and then the 4.1.x operator gives the pods the spec limit. Thus pin the limit before a downgrade. See the [migration guide](docs/migrations/4.2.0.md).
 
