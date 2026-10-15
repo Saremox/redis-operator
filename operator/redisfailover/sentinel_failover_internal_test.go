@@ -290,24 +290,48 @@ func TestSentinelFailoverStartsAfterTheFirstRead(t *testing.T) {
 	ft.assertHold(t)
 }
 
-// TestSentinelFailoverReadError covers a Sentinel that gives no failover
-// state. The operator does not change that Sentinel in the reconcile, because
-// it can be the Sentinel that fails over.
+// TestSentinelFailoverReadError covers a Sentinel that answers the read
+// with an error reply, for example after SENTINEL REMOVE. That Sentinel has
+// no failover, so it gets the heal. A Sentinel that does not answer gets no
+// change.
 func TestSentinelFailoverReadError(t *testing.T) {
-	ft := newSentinelFailoverTest(false)
-	res := ft.reconcile(t, sfReconcile{wrong: sfSentinels, mismatch: sfSentinels, readErr: map[string]error{
-		sfSentinels[2]: errors.New("ERR unknown subcommand"),
-	}})
-	assert.Equal(t, sfSentinels[:2], res.monitored)
-	assert.Empty(t, res.reset, "the new monitors start the reset hold-off")
-	assert.Contains(t, ft.lines, "warning: Sentinel 10.0.1.3 did not give its failover state, so the operator does not change it in this reconcile: ERR unknown subcommand")
+	for _, readErr := range []error{
+		errors.New("ERR No such master with that name"),
+		errors.New("malformed SENTINEL MASTER reply"),
+	} {
+		t.Run(readErr.Error(), func(t *testing.T) {
+			ft := newSentinelFailoverTest(false)
+			res := ft.reconcile(t, sfReconcile{wrong: sfSentinels[2:], readErr: map[string]error{sfSentinels[2]: readErr}})
+			assert.Equal(t, sfSentinels[2:], res.monitored)
+			assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
+		})
+	}
+	t.Run("unreachable", func(t *testing.T) {
+		ft := newSentinelFailoverTest(false)
+		res := ft.run(sfReconcile{wrong: sfSentinels, readErr: map[string]error{
+			sfSentinels[2]: errors.New("dial tcp 10.0.1.3:26379: i/o timeout"),
+		}})
+		require.EqualError(t, res.err, "sentinel(s) 10.0.1.3 unreachable")
+		assert.Equal(t, sfSentinels[:2], res.monitored)
+	})
+}
 
-	ft.clock = ft.clock.Add(time.Minute)
-	res = ft.run(sfReconcile{wrong: sfSentinels, readErr: map[string]error{
-		sfSentinels[2]: errors.New("dial tcp 10.0.1.3:26379: i/o timeout"),
-	}})
-	require.EqualError(t, res.err, "sentinel(s) 10.0.1.3 unreachable")
-	assert.Equal(t, sfSentinels[:2], res.monitored)
+// TestSentinelFailoverCandidateDoesNotExtendTheWait covers a leader that does
+// not end its failover and a candidate that keeps the flag. The read of the
+// candidate before its change must not start a new wait, so the heal waits
+// one failover-timeout only.
+func TestSentinelFailoverCandidateDoesNotExtendTheWait(t *testing.T) {
+	ft := newSentinelFailoverTest(false)
+	stuck := sfReconcile{wrong: sfSentinels[1:], failover: map[string][]redis.SentinelFailover{
+		sfSentinels[0]: failingOver("reconf_slaves", 10*time.Second),
+		sfSentinels[2]: failingOver("wait_start", 10*time.Second),
+	}}
+	assert.Empty(t, ft.reconcile(t, stuck).monitored)
+	for elapsed := 10 * time.Second; elapsed <= time.Minute; elapsed += 5 * time.Second {
+		ft.clock = time.Unix(1000, 0).Add(elapsed)
+		assert.Equal(t, sfSentinels[1:], ft.reconcile(t, stuck).monitored, elapsed)
+		assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State, elapsed)
+	}
 }
 
 // TestStuckSentinelFailoverEndsTheWait checks that the wait ends after the
@@ -350,7 +374,7 @@ func TestSentinelFailoverLeader(t *testing.T) {
 
 // TestSentinelFailoverWaitStartsAgain checks that a new failover gets the
 // full wait: after a reconcile without a change, after a failover of another
-// Sentinel, and after a failover-state that goes back.
+// Sentinel, and after an earlier failover-state.
 func TestSentinelFailoverWaitStartsAgain(t *testing.T) {
 	inFailover := func(sip, state string) sfReconcile {
 		return sfReconcile{wrong: sfSentinels, failover: map[string][]redis.SentinelFailover{
@@ -365,7 +389,7 @@ func TestSentinelFailoverWaitStartsAgain(t *testing.T) {
 	}{
 		{name: "a reconcile without a change", second: inFailover(sfSentinels[2], "reconf_slaves"), between: true},
 		{name: "another Sentinel", second: inFailover(sfSentinels[0], "reconf_slaves")},
-		{name: "the failover-state goes back", second: inFailover(sfSentinels[2], "wait_promotion")},
+		{name: "an earlier failover-state", second: inFailover(sfSentinels[2], "wait_promotion")},
 	}
 	for _, test := range tests {
 		for _, bootstrap := range []bool{false, true} {

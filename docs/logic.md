@@ -98,10 +98,10 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
   - While a Sentinel has the flag `failover_in_progress`, the operator sends no `SENTINEL MONITOR` and no `SENTINEL RESET`. These commands end the failover in that Sentinel. The Sentinels can then return to the old master and fail over a second time. The promoted replica then loses its writes. The status is `NotHealthy` while the operator waits.
   - `SENTINEL SET`, for the custom configuration and the password, does not end a failover. The operator sends it during the wait.
   - A Sentinel has the flag while it tries to fail over: as a candidate in the election, and as the leader. Thus the operator reads the flag of each Sentinel before the first change. Before each further change, it reads the flag of that Sentinel again.
-  - A Sentinel that does not give its flag gets no change in that reconcile, because it can be the Sentinel that fails over.
+  - A Sentinel that does not answer gets no change. An error reply, for example after `SENTINEL REMOVE`, shows no failover, so that Sentinel gets the heal.
   - The wait ends after the `failover-timeout` of the Sentinel (default 10s). Then the operator heals the Sentinels, so a failover that does not end does not stop the heal.
   - The flag can stay for two `failover-timeout` periods: one to wait for the promotion and one to reconfigure the replicas. The wait ends after one period on purpose. In the second period, the leader already announces the new master to the other Sentinels.
-  - A failover of another Sentinel, or a failover state that goes back, starts a new wait.
+  - A read of all the Sentinels that finds another Sentinel or an earlier failover state starts a new wait. The read of one Sentinel before a change does not start a new wait. Thus the heal waits at most one `failover-timeout` from the first read of a failover.
 - Each Sentinel knows the correct number of Sentinels and replicas. If not, the operator resets that Sentinel. A pod that does not run, for example a Pending pod, is no reason for a reset, because a reset does not add it.
 - After a reset or a new monitor, the Sentinel needs some seconds to find the other Sentinels and the replicas again. A failover cannot start in that time, so the operator does not reset it again in the next 25 seconds. The operator keeps this time in memory only, so a restart of the operator ends the wait.
 - Sentinel has the custom configuration.

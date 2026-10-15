@@ -138,3 +138,21 @@ func TestGetSentinelFailoverOfARealFailover(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "0", info["config-epoch"], "the Sentinel forgets the epoch of the failover")
 }
+
+// TestGetSentinelFailoverWithoutTheMaster covers a real Sentinel after
+// SENTINEL REMOVE. The error is a reply, not an unreachable Sentinel, so the
+// operator can give the Sentinel a new monitor.
+func TestGetSentinelFailoverWithoutTheMaster(t *testing.T) {
+	requireRedisServer(t)
+	// The shared Sentinel is gone after TestSentinelFunctions_SentinelUnreachable.
+	const sentinelIP = "127.0.0.3"
+	startSentinelOnAddr(t, sentinelIP, startRedisProcess(t))
+	rc := rediscli.NewSentinelClient(&rediscli.Options{Addr: net.JoinHostPort(sentinelIP, sentinelPort)})
+	defer func() { _ = rc.Close() }()
+	require.NoError(t, rc.Process(bgCtx(), rediscli.NewBoolCmd(bgCtx(), "SENTINEL", "REMOVE", masterName)))
+
+	_, err := newTestClient().GetSentinelFailover(sentinelIP)
+
+	require.EqualError(t, err, "ERR No such master with that name")
+	assert.False(t, IsUnreachableError(err))
+}
