@@ -221,6 +221,10 @@ func TestNewBuildsController(t *testing.T) {
 	assert.NotNil(t, ctrl)
 	mk.AssertExpectations(t)
 	mr.AssertExpectations(t)
+
+	c := ctrl.(*rfController)
+	c.handler.(*RedisFailoverHandler).requeue("ns/rf", 0)
+	assert.Eventually(t, func() bool { return c.queue.Len() == 1 }, 5*time.Second, 10*time.Millisecond, "the handler requeue reaches the controller queue")
 }
 
 // TestNewPropagatesLeaderElectionError covers the error path returned by
