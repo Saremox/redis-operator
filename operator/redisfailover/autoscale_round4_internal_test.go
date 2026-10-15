@@ -40,13 +40,16 @@ func TestReadAutoscaleKeepsTheLiveLimit(t *testing.T) {
 	tests := map[string]struct {
 		state     autoscale.State
 		ss        *appsv1.StatefulSet
-		max       string
+		max, spec string
 		effective int64
 		lost      bool
 	}{
 		"the state of the template":        {state: done, ss: ensuredStatefulSet("1280Mi", "1Gi"), effective: 1280 * mib},
 		"a restored state before the step": {state: before, ss: ensuredStatefulSet("1280Mi", "1Gi"), effective: 1280 * mib, lost: true},
-		"a change of the spec limit":       {state: before, ss: ensuredStatefulSet("1280Mi", "1280Mi"), effective: 1024 * mib},
+		"a lower spec limit":               {state: before, ss: ensuredStatefulSet("1280Mi", "1280Mi"), effective: 1024 * mib},
+		"a higher spec limit":              {state: before, ss: ensuredStatefulSet("1536Mi", "768Mi"), effective: 1536 * mib, lost: true},
+		"a lower spec limit below a step":  {state: before, ss: ensuredStatefulSet("1536Mi", "1280Mi"), effective: 1536 * mib, lost: true},
+		"a lower spec limit at a step":     {state: before, ss: ensuredStatefulSet("1280Mi", "1280Mi"), spec: "768Mi", effective: 768 * mib},
 		"a template without the spec":      {state: before, ss: redisStatefulSet("1280Mi"), effective: 1280 * mib, lost: true},
 		"the revert of the template step":  {state: reverted, ss: ensuredStatefulSet("1280Mi", "1Gi"), effective: 1024 * mib},
 		"a revert of another step":         {state: func() autoscale.State { s := reverted; s.To = 1536 * mib; return s }(), ss: ensuredStatefulSet("1280Mi", "1Gi"), effective: 1280 * mib, lost: true},
@@ -58,6 +61,9 @@ func TestReadAutoscaleKeepsTheLiveLimit(t *testing.T) {
 			at.rf.Spec.Redis.Autoscaling.Mode = redisfailoverv1.AutoscalingModeAuto
 			if test.max != "" {
 				at.rf.Spec.Redis.Autoscaling.MemoryMax = ptrQuantity(test.max)
+			}
+			if test.spec != "" {
+				at.rf.Spec.Redis.Resources.Limits[corev1.ResourceMemory] = resource.MustParse(test.spec)
 			}
 			at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(at.stateConfigMap(encodeState(t, test.state)), nil)
 			at.mk.On("GetStatefulSetPods", "testns", "rfr-test").Maybe().Return(&corev1.PodList{}, nil)

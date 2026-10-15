@@ -63,10 +63,11 @@ type autoscaleRead struct {
 // readAutoscale reads the state and resolves the effective memory limit.
 //
 // The live limit is a floor: the limit of the StatefulSet template, or of the
-// largest redis pod when the StatefulSet is missing. Only a change of the spec
-// limit since the last Ensure, or the revert of the step of the template,
-// gives a lower limit. A state below the floor is lost, for example after a
-// restore of an older ConfigMap, because its limit would shrink the pods.
+// largest redis pod when the StatefulSet is missing. Only a lower spec limit
+// than the one of the last Ensure, when the template had that limit, or the
+// revert of the step of the template, gives a lower limit. A state below the
+// floor is lost, for example after a restore of an older ConfigMap, because
+// its limit would shrink the pods.
 func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) (autoscaleRead, error) {
 	spec := rf.Spec.Redis.Resources.Limits.Memory().Value()
 	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
@@ -82,10 +83,13 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 		read.blocked = autoscale.ReasonNewerState
 		read.err = fmt.Errorf("the state ConfigMap has version %d, this operator reads version %d", read.state.Version, autoscale.StateVersion)
 	}
-	live, specChanged, err := r.liveRedisMemoryLimit(rf, spec)
+	live, written, err := r.liveRedisMemoryLimit(rf, spec)
 	if err != nil {
 		return read, err
 	}
+	// A limit above the last spec limit is a step, and a lower spec limit
+	// does not change it.
+	userLowered := spec < written && live <= written
 	if read.blocked == "" && read.state.Version != 0 {
 		if err := r.holdUnappliedRevert(rf, &read, spec, maxLimit); err != nil {
 			return read, err
@@ -101,7 +105,7 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 		read.effective = autoscale.EffectiveLimit(read.state, spec, maxLimit)
 	}
 	floor := max(spec, min(live, maxLimit))
-	if read.effective < floor && !specChanged && !ownRevert(read.state, live) {
+	if read.effective < floor && !userLowered && !ownRevert(read.state, live) {
 		if read.blocked == "" {
 			read.state, read.resumed = autoscale.State{}, false
 		}
@@ -157,16 +161,15 @@ func (r *RedisFailoverHandler) autoscaleStateExpired(rf *redisfailoverv1.RedisFa
 }
 
 // liveRedisMemoryLimit returns the memory limit of the redis container in the
-// live StatefulSet, and whether the spec limit differs from the one of the
-// last Ensure. Without the StatefulSet, for example after a delete with
-// --cascade=orphan, the largest limit of the redis pods counts, or spec
-// without pods.
-func (r *RedisFailoverHandler) liveRedisMemoryLimit(rf *redisfailoverv1.RedisFailover, spec int64) (int64, bool, error) {
+// live StatefulSet, and the spec limit of the last Ensure, or 0. Without the
+// StatefulSet, for example after a delete with --cascade=orphan, the largest
+// limit of the redis pods counts, or spec without pods.
+func (r *RedisFailoverHandler) liveRedisMemoryLimit(rf *redisfailoverv1.RedisFailover, spec int64) (int64, int64, error) {
 	ss, err := r.k8sservice.GetStatefulSet(rf.Namespace, rfservice.GetRedisName(rf))
 	if apierrors.IsNotFound(err) {
 		pods, err := r.k8sservice.ListPods(rf.Namespace)
 		if err != nil {
-			return 0, false, err
+			return 0, 0, err
 		}
 		live := spec
 		for i := range pods.Items {
@@ -174,13 +177,16 @@ func (r *RedisFailoverHandler) liveRedisMemoryLimit(rf *redisfailoverv1.RedisFai
 				live = max(live, rfservice.AppliedRedisMemoryLimit(pod))
 			}
 		}
-		return live, false, nil
+		return live, 0, nil
 	}
 	if err != nil {
-		return 0, false, err
+		return 0, 0, err
 	}
 	written, err := resource.ParseQuantity(ss.Annotations[rfservice.SpecMemoryLimitAnnotation])
-	return rfservice.TemplateRedisMemoryLimit(ss), err == nil && written.Value() != spec, nil
+	if err != nil {
+		return rfservice.TemplateRedisMemoryLimit(ss), 0, nil
+	}
+	return rfservice.TemplateRedisMemoryLimit(ss), written.Value(), nil
 }
 
 // autoscalerLimits returns the memory limits of this reconcile in each mode

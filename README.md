@@ -487,7 +487,7 @@ Changes of the user:
 - A ConfigMap `rfa-<NAME>` of another owner or of a newer operator version also gives the limit of the live StatefulSet. The operator does not change that ConfigMap and starts no step.
 - A state with a last sample more than 11 minutes before the current time gives the limit of the live StatefulSet. A state that stays after mode `Off` thus does not change the pods.
 
-The operator never lowers the limit of the StatefulSet without a user change. Before each Ensure, it reads the limit of the live StatefulSet, also in mode `Recommend`. Without the StatefulSet, for example after a delete with `--cascade=orphan`, the largest redis pod gives the limit. Only these changes give a lower limit: a change of the spec limit, a lower `memoryMax`, and the revert of the step of the StatefulSet. The annotation `redisfailovers.databases.spotahome.com/spec-memory-limit` of the StatefulSet holds the spec limit of the last Ensure.
+The operator lowers the limit of the StatefulSet only after a user change or for the revert of its own step. Before each Ensure, it reads the limit of the live StatefulSet, also in mode `Recommend`. Without the StatefulSet, for example after a delete with `--cascade=orphan`, the largest redis pod gives the limit. The user changes are a lower `memoryMax`, and a lower spec limit while the StatefulSet has the earlier spec limit. The annotation `redisfailovers.databases.spotahome.com/spec-memory-limit` of the StatefulSet holds the spec limit of the last Ensure.
 
 To pin the effective limit, for example before mode `Off` or a downgrade of the operator:
 
