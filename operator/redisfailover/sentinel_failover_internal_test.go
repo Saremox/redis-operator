@@ -458,6 +458,19 @@ func TestSentinelFailoverCandidateDoesNotExtendTheWait(t *testing.T) {
 	assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
 }
 
+// TestSentinelFailoverCandidateHoldsOnlyItself covers a candidate before the
+// other targets in the list. Its hold does not hold the next Sentinel.
+func TestSentinelFailoverCandidateHoldsOnlyItself(t *testing.T) {
+	ft := newSentinelFailoverTest(false)
+	stuck := sfReconcile{wrong: sfSentinels[:2], failover: map[string][]redis.SentinelFailover{
+		sfSentinels[0]: failingOver("wait_start", 10*time.Second),
+		sfSentinels[2]: failingOver("reconf_slaves", 10*time.Second),
+	}}
+	assert.Empty(t, ft.reconcile(t, stuck).monitored)
+	ft.clock = ft.clock.Add(10 * time.Second)
+	assert.Equal(t, sfSentinels[1:2], ft.reconcile(t, stuck).monitored)
+}
+
 // TestSentinelFailoverAfterAnExpiredWait covers a new failover that starts
 // between the read of all the Sentinels and the read of the target, after the
 // wait of an earlier failover ended. The target gets no change, and the next
