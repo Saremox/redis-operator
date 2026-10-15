@@ -60,9 +60,13 @@ type autoscaleRead struct {
 	spec, effective int64
 }
 
-// readAutoscale reads the state and resolves the effective memory limit. A
-// state without a limit freezes it at the limit of the live StatefulSet,
-// because the spec limit can shrink the pods.
+// readAutoscale reads the state and resolves the effective memory limit.
+//
+// The live limit is a floor: the limit of the StatefulSet template, or of the
+// largest redis pod when the StatefulSet is missing. Only a change of the spec
+// limit since the last Ensure, or the revert of the step of the template,
+// gives a lower limit. A state below the floor is lost, for example after a
+// restore of an older ConfigMap, because its limit would shrink the pods.
 func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) (autoscaleRead, error) {
 	spec := rf.Spec.Redis.Resources.Limits.Memory().Value()
 	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
@@ -77,50 +81,47 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 	case read.state.Version > autoscale.StateVersion:
 		read.blocked = autoscale.ReasonNewerState
 		read.err = fmt.Errorf("the state ConfigMap has version %d, this operator reads version %d", read.state.Version, autoscale.StateVersion)
-	case read.state.Version != 0:
+	}
+	live, specChanged, err := r.liveRedisMemoryLimit(rf, spec)
+	if err != nil {
+		return read, err
+	}
+	if read.blocked == "" && read.state.Version != 0 {
 		if err := r.holdUnappliedRevert(rf, &read, spec, maxLimit); err != nil {
 			return read, err
 		}
 		// No operator sampled an expired state for MaxStateAge. Its Effective
 		// can be a leftover of an earlier mode Auto, or of a step whose
-		// template never reached the pods. Only the template shows the limit
-		// of the pods. The template wins, because a leftover would resize the
-		// pods without a decision, and a lower Effective would shrink them.
+		// template never reached the pods. A leftover would resize the pods
+		// without a decision, so the template wins.
 		if read.state.Effective != 0 && r.autoscaleStateExpired(rf, read) {
-			live, err := r.liveRedisMemoryLimit(rf, spec)
-			if err != nil {
-				return read, err
-			}
 			read.state = autoscale.Resume(read.state, live, spec, maxLimit)
 			read.resumed = true
 		}
 		read.effective = autoscale.EffectiveLimit(read.state, spec, maxLimit)
-		return read, nil
+	}
+	floor := max(spec, min(live, maxLimit))
+	if read.effective < floor && !specChanged && !ownRevert(read.state, live) {
+		if read.blocked == "" {
+			read.state, read.resumed = autoscale.State{}, false
+		}
+		read.effective = floor
 	}
 	read.lost = stateLost(read, rf.Status.Autoscaling)
-	// In mode Recommend, only an effective limit in the status shows that a
-	// step of an earlier mode Auto changed the pods. Thus an instance without
-	// a step makes no extra call.
-	// A status without it, for example after a restore, gets one read after
-	// each operator start.
-	_, looked := r.autoscaleLiveRead.Load(failoverKey(rf))
-	if rf.Spec.Redis.Autoscaling.Mode != redisfailoverv1.AutoscalingModeAuto && rf.Status.Autoscaling.EffectiveMemory == "" && looked {
-		return read, nil
-	}
-	live, err := r.liveRedisMemoryLimit(rf, spec)
-	if err != nil {
-		return read, err
-	}
-	r.autoscaleLiveRead.Store(failoverKey(rf), true)
-	read.effective = max(spec, min(live, maxLimit))
 	return read, nil
 }
 
-// stateLost reports whether a state without a version replaces a lost or
-// invalid state. A ConfigMap or a status shows that the autoscaler ran
-// before.
+// ownRevert reports whether s reverts the step of the template limit live,
+// and Ensure did not apply that revert.
+func ownRevert(s autoscale.State, live int64) bool {
+	return s.Phase == autoscale.PhaseReverted && !s.RevertApplied && s.To == live
+}
+
+// stateLost reports whether a state without a version replaces a lost,
+// invalid or outdated state. A ConfigMap, a phase or an effective limit in
+// the status shows that the autoscaler ran before.
 func stateLost(read autoscaleRead, status redisfailoverv1.AutoscalingStatus) bool {
-	return read.blocked == "" && read.state.Version == 0 && (read.cm != nil || status != (redisfailoverv1.AutoscalingStatus{}))
+	return read.blocked == "" && read.state.Version == 0 && (read.cm != nil || status.Phase != "" || status.EffectiveMemory != "")
 }
 
 // holdUnappliedRevert checks a Reverted state that Ensure did not apply. The
@@ -156,16 +157,30 @@ func (r *RedisFailoverHandler) autoscaleStateExpired(rf *redisfailoverv1.RedisFa
 }
 
 // liveRedisMemoryLimit returns the memory limit of the redis container in the
-// live StatefulSet, or spec when the StatefulSet does not exist.
-func (r *RedisFailoverHandler) liveRedisMemoryLimit(rf *redisfailoverv1.RedisFailover, spec int64) (int64, error) {
+// live StatefulSet, and whether the spec limit differs from the one of the
+// last Ensure. Without the StatefulSet, for example after a delete with
+// --cascade=orphan, the largest limit of the redis pods counts, or spec
+// without pods.
+func (r *RedisFailoverHandler) liveRedisMemoryLimit(rf *redisfailoverv1.RedisFailover, spec int64) (int64, bool, error) {
 	ss, err := r.k8sservice.GetStatefulSet(rf.Namespace, rfservice.GetRedisName(rf))
 	if apierrors.IsNotFound(err) {
-		return spec, nil
+		pods, err := r.k8sservice.ListPods(rf.Namespace)
+		if err != nil {
+			return 0, false, err
+		}
+		live := spec
+		for i := range pods.Items {
+			if pod := &pods.Items[i]; rfservice.IsRedisPod(rf, pod) {
+				live = max(live, rfservice.AppliedRedisMemoryLimit(pod))
+			}
+		}
+		return live, false, nil
 	}
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	return rfservice.TemplateRedisMemoryLimit(ss), nil
+	written, err := resource.ParseQuantity(ss.Annotations[rfservice.SpecMemoryLimitAnnotation])
+	return rfservice.TemplateRedisMemoryLimit(ss), err == nil && written.Value() != spec, nil
 }
 
 // autoscalerLimits returns the memory limits of this reconcile in each mode
@@ -196,8 +211,8 @@ func (r *RedisFailoverHandler) autoscalerLimits(rf *redisfailoverv1.RedisFailove
 		limits.Spec, limits.Effective = read.spec, read.effective
 	}
 	// The last step keeps the pods of its template in each phase and mode,
-	// also after the back-off of a revert. Only the limits end it: a user
-	// shrinks such a pod with a memoryMax below its limit, or with mode Off.
+	// also after the back-off of a revert. A memoryMax below its limit, a
+	// spec limit at or above it (Bound), and mode Off end it.
 	if s := read.state; s.To > read.spec && s.To <= rf.Spec.Redis.Autoscaling.MemoryMax.Value() {
 		limits.Step = s.To
 	}
@@ -216,7 +231,9 @@ func (r *RedisFailoverHandler) autoscaleStepping(rf *redisfailoverv1.RedisFailov
 	}
 	v, _ := r.autoscaleReads.Load(failoverKey(rf))
 	read, _ := v.(autoscaleRead)
-	return stepUnfinished(read.state)
+	// A change of the spec turns a frozen limit into a held step, which ends
+	// at once when each pod runs with the limit.
+	return stepUnfinished(read.state) || read.state.Frozen && read.state.Generation != rf.Generation
 }
 
 // stepUnfinished reports whether the template of a step can be ahead of
@@ -475,11 +492,14 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 		version = cm.ResourceVersion
 	}
 	state := stored
-	if last.sampled && last.version == version && !read.resumed {
+	// A lost state can have the version of the sample, for example no
+	// ConfigMap after a delete.
+	lost := read.lost || stateLost(read, observed)
+	if last.sampled && last.version == version && !read.resumed && !lost {
 		state = last.state
 	}
 	unbound := state
-	if state.Version == 0 && (limit != read.spec || stateLost(read, observed)) {
+	if state.Version == 0 && (limit != read.spec || lost) {
 		// The write of the state keeps the limit that readAutoscale froze, and
 		// no step starts from it. A lost state also lost its budget, its
 		// back-off and its step.
@@ -546,7 +566,7 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 			next, action = state, autoscale.ActionNone
 		}
 	}
-	r.autoscaleStepWritten(rf, next, action)
+	r.autoscaleStepWritten(rf, state.Phase, next, action)
 
 	shown := shownStep(rf, next)
 	report := autoscale.Report(next, limit, maxLimit)
@@ -698,7 +718,7 @@ func (r *RedisFailoverHandler) stepBlocked(rf *redisfailoverv1.RedisFailover, ro
 // autoscaleStepWritten logs and counts a transition that the state write
 // stored. Ensure applies a changed Effective in the next reconcile, and the
 // controller does not watch the state ConfigMap.
-func (r *RedisFailoverHandler) autoscaleStepWritten(rf *redisfailoverv1.RedisFailover, s autoscale.State, action autoscale.Action) {
+func (r *RedisFailoverHandler) autoscaleStepWritten(rf *redisfailoverv1.RedisFailover, from string, s autoscale.State, action autoscale.Action) {
 	logger := r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name)
 	switch action {
 	case autoscale.ActionNone:
@@ -707,7 +727,11 @@ func (r *RedisFailoverHandler) autoscaleStepWritten(rf *redisfailoverv1.RedisFai
 		logger.Infof("Autoscaler: a step of the memory limit from %s to %s starts", quantity(s.From), quantity(s.To))
 	case autoscale.ActionDone:
 		logger.Infof("Autoscaler: the step to %s is done", quantity(s.To))
-		r.mClient.CountAutoscalerStep(rf.Namespace, rf.Name, metrics.AutoscalerStepDone)
+		// A held step counted as held, and a held frozen limit is no step of
+		// the operator.
+		if from == autoscale.PhaseApplying {
+			r.mClient.CountAutoscalerStep(rf.Namespace, rf.Name, metrics.AutoscalerStepDone)
+		}
 	case autoscale.ActionRevert:
 		logger.Warningf("Autoscaler: the operator reverted the step to %s, back to %s: %s", quantity(s.To), quantity(s.From), s.Refusal)
 		r.mClient.CountAutoscalerStep(rf.Namespace, rf.Name, metrics.AutoscalerStepReverted)
@@ -827,7 +851,6 @@ func (r *RedisFailoverHandler) forgetAutoscaler(key string) {
 	r.autoscaleLogged.Delete(key)
 	r.autoscaleRefusalLogged.Delete(key)
 	r.autoscaleOff.Delete(key)
-	r.autoscaleLiveRead.Delete(key)
 	r.autoscaleClearLogged.Delete(key)
 }
 

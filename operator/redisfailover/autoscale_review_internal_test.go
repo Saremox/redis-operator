@@ -276,7 +276,7 @@ func TestReadAutoscaleFreezesTheLimitInRecommend(t *testing.T) {
 			at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
 			at.rf.Status.Autoscaling.EffectiveMemory = "1280Mi"
 			at.mk.On("GetConfigMap", "testns", autoscaleCM).Once().Return(cm(at))
-			at.mk.On("GetStatefulSet", "testns", "rfr-test").Once().Return(redisStatefulSet("1280Mi"), nil)
+			at.onStatefulSet().Once().Return(redisStatefulSet("1280Mi"), nil)
 
 			read, err := at.h.readAutoscale(at.rf)
 
@@ -284,12 +284,13 @@ func TestReadAutoscaleFreezesTheLimitInRecommend(t *testing.T) {
 			assert.Equal(t, 1280*mib, read.effective)
 			at.mk.AssertExpectations(t)
 
+			// The status can be lost together with the state.
 			at = newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
 			at.mk.On("GetConfigMap", "testns", autoscaleCM).Once().Return(cm(at))
+			at.onStatefulSet().Once().Return(redisStatefulSet("1280Mi"), nil)
 			read, err = at.h.readAutoscale(at.rf)
 			require.NoError(t, err)
-			assert.Equal(t, 1024*mib, read.effective, "no step, no extra read")
-			at.mk.AssertNotCalled(t, "GetStatefulSet", mock.Anything, mock.Anything)
+			assert.Equal(t, 1280*mib, read.effective)
 		})
 	}
 }
@@ -301,7 +302,7 @@ func TestAutoscaleFrozenEndsInModeRecommend(t *testing.T) {
 	at.now = stepNow
 	at.rf.Status.Autoscaling.EffectiveMemory = "1280Mi"
 	f := at.fakeStateStore(t)
-	at.mk.On("GetStatefulSet", "testns", "rfr-test").Return(redisStatefulSet("1280Mi"), nil)
+	at.onStatefulSet().Return(redisStatefulSet("1280Mi"), nil)
 	at.mrec.On("SetAutoscaler", "testns", "test", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	at.mrfc.On("GetAutoscalerInfo", mock.Anything, autoscaleMaster).Return(masterInfo(500), nil)
 
@@ -341,7 +342,7 @@ func testFrozenLimitPinned(t *testing.T, mode string, later bool) {
 	at.now = stepNow
 	at.rf.Status.Autoscaling.EffectiveMemory = "1280Mi"
 	f := at.fakeStateStore(t)
-	at.mk.On("GetStatefulSet", "testns", "rfr-test").Return(redisStatefulSet("1280Mi"), nil)
+	at.onStatefulSet().Return(redisStatefulSet("1280Mi"), nil)
 	at.mrec.On("SetAutoscaler", "testns", "test", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	at.mrfc.On("GetAutoscalerInfo", mock.Anything, autoscaleMaster).Return(masterInfo(500), nil)
 	rf := at.handle(t, redisfailoverv1.AutoscalingStatus{})
@@ -382,7 +383,7 @@ func TestReadAutoscaleKeepsAnExpiredRevert(t *testing.T) {
 	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
 	at.rf.Spec.Redis.Autoscaling.Mode = redisfailoverv1.AutoscalingModeAuto
 	at.mk.On("GetConfigMap", "testns", autoscaleCM).Once().Return(at.stateConfigMap(encodeState(t, reverted)), nil)
-	at.mk.On("GetStatefulSet", "testns", "rfr-test").Once().Return(redisStatefulSet("1280Mi"), nil)
+	at.onStatefulSet().Once().Return(redisStatefulSet("1280Mi"), nil)
 	at.rf.Spec.Redis.Replicas = 1
 	at.mk.On("GetStatefulSetPods", "testns", "rfr-test").Once().Return(&corev1.PodList{Items: []corev1.Pod{redisPod("rfr-test-0", "old", "1152Mi")}}, nil)
 
@@ -433,7 +434,11 @@ func TestReadAutoscaleHoldsARevertThatEnsureDidNotApply(t *testing.T) {
 			at.rf.Spec.Redis.Replicas = 1
 			at.mk.On("GetConfigMap", "testns", autoscaleCM).Once().Return(at.stateConfigMap(encodeState(t, s)), nil)
 			at.mk.On("GetStatefulSetPods", "testns", "rfr-test").Return(&corev1.PodList{Items: test.pods}, test.listErr)
-			at.mk.On("GetStatefulSet", "testns", "rfr-test").Maybe().Return(redisStatefulSet("1280Mi"), nil)
+			template := "1280Mi"
+			if s.RevertApplied {
+				template = "1Gi"
+			}
+			at.onStatefulSet().Maybe().Return(redisStatefulSet(template), nil)
 
 			read, err := at.h.readAutoscale(at.rf)
 

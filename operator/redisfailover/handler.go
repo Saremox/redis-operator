@@ -102,9 +102,6 @@ type RedisFailoverHandler struct {
 	// autoscaleOff holds, per namespace/name, true after a reconcile without
 	// autoscaling found no state ConfigMap.
 	autoscaleOff sync.Map
-	// autoscaleLiveRead holds, per namespace/name, true after a read of the
-	// StatefulSet for a state without a limit.
-	autoscaleLiveRead sync.Map
 	// autoscaleClearLogged holds, per namespace/name, the last failed removal
 	// of a resize request that was logged at Warning.
 	autoscaleClearLogged sync.Map
@@ -241,14 +238,22 @@ func (r *RedisFailoverHandler) withEffectiveLimit(rf *redisfailoverv1.RedisFailo
 }
 
 // effectiveRF returns rf with the effective memory limit of the redis
-// container, for Ensure and the checks. Validate reads the spec before. It
-// returns rf itself for the spec limit, so the generated objects stay equal.
+// container, for Ensure and the checks. Validate reads the spec before. The
+// redis StatefulSet gets the annotations of the RedisFailover, and with them
+// the spec limit, so the next reconcile sees a change of the spec limit.
 func effectiveRF(rf *redisfailoverv1.RedisFailover, effective int64) *redisfailoverv1.RedisFailover {
+	if !rf.AutoscalingEnabled() {
+		return rf
+	}
 	limit := rf.Spec.Redis.Resources.Limits.Memory()
-	if !rf.AutoscalingEnabled() || effective == limit.Value() {
+	if effective == limit.Value() && rf.Annotations[rfservice.SpecMemoryLimitAnnotation] == limit.String() {
 		return rf
 	}
 	rf = rf.DeepCopy()
+	rf.Annotations = util.MergeAnnotations(rf.Annotations, map[string]string{rfservice.SpecMemoryLimitAnnotation: limit.String()})
+	if effective == limit.Value() {
+		return rf
+	}
 	resources := &rf.Spec.Redis.Resources
 	value := *resource.NewQuantity(effective, resource.BinarySI)
 	// Only a request equal to the limit follows it, so the QoS class stays.

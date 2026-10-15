@@ -99,8 +99,9 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 					autoscaleStep(t, mk, mrfh, rf, master, &step)
 				}
 				if autoscaling == v1.AutoscalingModeRecommend {
-					// The first read after the operator start for a missing state.
+					// The read of the live limit: no StatefulSet and no pods.
 					mk.On("GetStatefulSet", rf.Namespace, "rfr-"+rf.Name).Once().Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "statefulsets"}, "rfr-"+rf.Name))
+					mk.On("ListPods", rf.Namespace).Once().Return(&corev1.PodList{}, nil)
 					mk.On("GetConfigMap", rf.Namespace, "rfa-"+rf.Name).Once().Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "rfa-"+rf.Name))
 					mk.On("CreateConfigMap", rf.Namespace, mock.Anything).Once().Return(nil)
 					mrfc.On("GetAutoscalerInfo", rf, master).Once().Return(&redis.AutoscalerInfo{
@@ -147,6 +148,11 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 				max := resource.MustParse("2Gi")
 				rf.Spec.Redis.Autoscaling = &v1.AutoscalingSettings{Mode: autoscaling, MemoryMax: &max}
 			}
+			if rf.AutoscalingEnabled() {
+				// effectiveRF adds the annotation of the spec limit, so the
+				// mocks match the copy for Ensure and the checks.
+				rf.Annotations = map[string]string{rfservice.SpecMemoryLimitAnnotation: "1Gi"}
+			}
 			var calls []string
 			record := func(name string) func(mock.Arguments) {
 				return func(mock.Arguments) { calls = append(calls, name) }
@@ -179,7 +185,7 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 			want := map[string][]string{
 				"unset":                     {"GetConfigMap", "Ensure"},
 				v1.AutoscalingModeOff:       {"GetConfigMap", "Ensure"},
-				v1.AutoscalingModeRecommend: {"GetConfigMap", "GetStatefulSet", "Ensure", "CreateConfigMap"},
+				v1.AutoscalingModeRecommend: {"GetConfigMap", "GetStatefulSet", "ListPods", "Ensure", "CreateConfigMap"},
 				v1.AutoscalingModeAuto:      {"GetConfigMap", "GetStatefulSet", "Ensure", "GetStatefulSet", "CreateConfigMap"},
 			}[autoscaling]
 			if rf.AutoscalingEnabled() {
@@ -189,9 +195,10 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 				}, nil)
 			}
 			if autoscaling == v1.AutoscalingModeRecommend {
-				// One read of the StatefulSet for a missing state after the
-				// operator start.
+				// Each reconcile reads the live limit. Without the StatefulSet,
+				// the pods give it.
 				mk.On("GetStatefulSet", rf.Namespace, "rfr-"+rf.Name).Once().Run(record("GetStatefulSet")).Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "statefulsets"}, "rfr-"+rf.Name))
+				mk.On("ListPods", rf.Namespace).Once().Run(record("ListPods")).Return(&corev1.PodList{}, nil)
 			}
 			if autoscaling == v1.AutoscalingModeAuto {
 				rf.Spec.Redis.MaxMemory = &v1.MaxMemorySettings{}

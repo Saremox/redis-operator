@@ -288,8 +288,8 @@ func TestAutoscaleStepTimeoutAndDone(t *testing.T) {
 	stored := applying()
 	stored.StartedAt = stepNow.Add(-autoscale.ApplyTimeout).Unix()
 	st := newStepTest(t, stored)
+	// The held step counts one time, as held.
 	st.mrec.On("CountAutoscalerStep", "testns", "test", metrics.AutoscalerStepHeld).Once()
-	st.mrec.On("CountAutoscalerStep", "testns", "test", metrics.AutoscalerStepDone).Once()
 	waiting := &autoscaleRollout{complete: true, anyApplied: true, updateRevision: "rev1"}
 
 	st.reconcile(t, waiting)
@@ -419,7 +419,7 @@ func TestReadAutoscaleResumesAnExpiredState(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
 			at.mk.On("GetConfigMap", "testns", autoscaleCM).Once().Return(at.stateConfigMap(encodeState(t, old)), nil)
-			at.mk.On("GetStatefulSet", "testns", "rfr-test").Once().Return(redisStatefulSet(test.template), nil)
+			at.onStatefulSet().Once().Return(redisStatefulSet(test.template), nil)
 
 			read, err := at.h.readAutoscale(at.rf)
 
@@ -434,7 +434,8 @@ func TestReadAutoscaleResumesAnExpiredState(t *testing.T) {
 	t.Run("no StatefulSet", func(t *testing.T) {
 		at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
 		at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(at.stateConfigMap(encodeState(t, old)), nil)
-		at.mk.On("GetStatefulSet", "testns", "rfr-test").Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "statefulsets"}, "rfr-test"))
+		at.onStatefulSet().Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "statefulsets"}, "rfr-test"))
+		at.mk.On("ListPods", "testns").Return(&corev1.PodList{}, nil)
 		read, err := at.h.readAutoscale(at.rf)
 		require.NoError(t, err)
 		assert.Equal(t, 1024*mib, read.effective)
@@ -443,7 +444,7 @@ func TestReadAutoscaleResumesAnExpiredState(t *testing.T) {
 	t.Run("StatefulSet read error", func(t *testing.T) {
 		at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
 		at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(at.stateConfigMap(encodeState(t, old)), nil)
-		at.mk.On("GetStatefulSet", "testns", "rfr-test").Return(nil, errors.New("forbidden"))
+		at.onStatefulSet().Return(nil, errors.New("forbidden"))
 		_, err := at.h.readAutoscale(at.rf)
 		assert.EqualError(t, err, "forbidden")
 	})
@@ -461,7 +462,6 @@ func TestReadAutoscaleResumesAnExpiredState(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 1280*mib, read.effective)
 		assert.False(t, read.resumed)
-		at.mk.AssertNotCalled(t, "GetStatefulSet", mock.Anything, mock.Anything)
 	})
 
 	t.Run("the autoscaler writes the resumed state", func(t *testing.T) {

@@ -12,6 +12,22 @@ import (
 // AutoscalerStateKey is the key of the state in the autoscaler ConfigMap.
 const AutoscalerStateKey = "state"
 
+// SpecMemoryLimitAnnotation holds the spec memory limit of the redis
+// container at the last Ensure of the redis StatefulSet. Only a change of the
+// spec limit lets the autoscaler lower the template.
+const SpecMemoryLimitAnnotation = "redisfailovers.databases.spotahome.com/spec-memory-limit"
+
+// IsRedisPod reports whether pod is a redis pod of rf, also without its
+// StatefulSet.
+func IsRedisPod(rf *redisfailoverv1.RedisFailover, pod *corev1.Pod) bool {
+	for k, v := range generateSelectorLabels(redisRoleName, rf.Name) {
+		if pod.Labels[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 // GenerateAutoscalerStateConfigMap returns the ConfigMap that holds the state
 // of the memory autoscaler. With the owner references, Kubernetes deletes it
 // together with the RedisFailover.

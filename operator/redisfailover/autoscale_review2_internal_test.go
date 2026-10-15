@@ -239,32 +239,25 @@ func cmpOr(a, b string) string {
 	return b
 }
 
-// In mode Recommend, a missing state without an effective limit in the
-// status gets one read of the StatefulSet after the operator start, for
-// example after a restore of the RedisFailover without its status.
-func TestReadAutoscaleReadsTheStatefulSetOnceInRecommend(t *testing.T) {
+// In mode Recommend, a missing state and a status without an effective
+// limit, for example after a restore of the RedisFailover, keep the limit of
+// the live StatefulSet. Each read of the state reads the StatefulSet.
+func TestReadAutoscaleReadsTheStatefulSetInRecommend(t *testing.T) {
 	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
-	at.h.autoscaleLiveRead.Delete(failoverKey(at.rf))
 	at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(nil, notFound())
-	at.mk.On("GetStatefulSet", "testns", "rfr-test").Once().Return(redisStatefulSet("1280Mi"), nil)
+	at.onStatefulSet().Return(redisStatefulSet("1280Mi"), nil)
 
-	read, err := at.h.readAutoscale(at.rf)
-	require.NoError(t, err)
-	assert.Equal(t, 1280*mib, read.effective)
+	for range 2 {
+		read, err := at.h.readAutoscale(at.rf)
+		require.NoError(t, err)
+		assert.Equal(t, 1280*mib, read.effective)
+	}
+	at.mk.AssertNumberOfCalls(t, "GetStatefulSet", 2)
 
-	_, err = at.h.readAutoscale(at.rf)
-	require.NoError(t, err)
-	at.mk.AssertNumberOfCalls(t, "GetStatefulSet", 1)
-
-	at.h.forgetAutoscaler(failoverKey(at.rf))
-	_, ok := at.h.autoscaleLiveRead.Load(failoverKey(at.rf))
-	assert.False(t, ok)
-
-	t.Run("a read error is retried", func(t *testing.T) {
+	t.Run("a read error stops the reconcile", func(t *testing.T) {
 		at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
-		at.h.autoscaleLiveRead.Delete(failoverKey(at.rf))
 		at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(nil, notFound())
-		at.mk.On("GetStatefulSet", "testns", "rfr-test").Return(nil, errors.New("timeout"))
+		at.onStatefulSet().Return(nil, errors.New("timeout"))
 		for range 2 {
 			_, err := at.h.readAutoscale(at.rf)
 			require.Error(t, err)
