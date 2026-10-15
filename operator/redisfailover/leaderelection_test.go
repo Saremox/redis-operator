@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	fakekubernetes "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/utils/ptr"
 
 	"github.com/saremox/redis-operator/log"
@@ -263,4 +264,35 @@ func TestLeaseRunnerLeavesALeaseTakenOverByAnotherReplica(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "other", leaseHolder(t, kube))
+}
+
+type ctxKey struct{}
+
+// ctxRecordLock records what release passes to Get.
+type ctxRecordLock struct {
+	resourcelock.Interface
+	value       any
+	err         error
+	hasDeadline bool
+}
+
+func (l *ctxRecordLock) Get(ctx context.Context) (*resourcelock.LeaderElectionRecord, []byte, error) {
+	l.value = ctx.Value(ctxKey{})
+	l.err = ctx.Err()
+	_, l.hasDeadline = ctx.Deadline()
+	return l.Interface.Get(ctx)
+}
+
+func TestLeaseRunnerReleaseKeepsTheContextValuesAfterShutdown(t *testing.T) {
+	r := fastLeaseRunner(t, fakekubernetes.NewClientset())
+	lock := &ctxRecordLock{Interface: r.lock}
+	r.lock = lock
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), ctxKey{}, "v"))
+	cancel()
+
+	r.release(ctx)
+
+	assert.Equal(t, "v", lock.value)
+	require.NoError(t, lock.err, "a release on shutdown must not fail because ctx is done")
+	assert.True(t, lock.hasDeadline)
 }
