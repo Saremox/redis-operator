@@ -457,9 +457,9 @@ The operator writes the step to the ConfigMap `rfa-<NAME>` first. The next recon
 - `Reverted`: the cluster refused the resize before a pod applied it, for example a ResourceQuota, a LimitRange or a node without enough memory. The operator also reverts a step that no pod applied in 15 minutes, for example because no node can hold the pod. The StatefulSet gets the limit before the step. `retryAfter` shows the end of the back-off.
 - `Held`: the cluster refused the resize after a pod applied it. Or the step did not end in 15 minutes, and a revert is not safe. The operator does not lower the limit of a pod, so it keeps the larger limit and starts no further step. The phase changes to `Done` when each pod runs with the larger limit, for example after a pod restart.
 
-A revert is not safe when a pod applied the step, or runs or starts from the template of the step. A missing or terminating pod also blocks a revert, because the StatefulSet can create it from that template. A pod that no node can hold blocks no revert, because it has no data. The operator also holds a step when it cannot remove the resize request of a pod within 30 minutes after the start of the step.
+A revert is not safe when a pod applied the step, or runs or starts from the template of the step. A pod that is absent or stops also blocks a revert, because the StatefulSet can create it from that template. A pod that no node can hold blocks no revert, because it has no data. The operator also holds a step when it cannot remove the resize request of a pod within 30 minutes after the start of the step.
 
-Before the StatefulSet gets the limit before the step, the operator checks the pods again. Then only an existing pod of the step holds the step. A missing pod does not, because a quota can refuse it at the limit of the step.
+Before the StatefulSet gets the limit before the step, the operator checks the pods again. Then only a pod of the step that exists holds the step. An absent pod does not, because a quota can refuse it at the limit of the step.
 
 The reason of `Reverted` and `Held` gives the refusal that ended the step. A later refusal does not change that reason. Alert on `redis_operator_controller_autoscaler_step_phase` equal to `4`. In the other phases, the reason also shows a refused resize. An example is a change of the spec while the operator cannot read a revision.
 
@@ -487,7 +487,11 @@ Changes of the user:
 - A ConfigMap `rfa-<NAME>` of another owner or of a newer operator version also gives the limit of the live StatefulSet. The operator does not change that ConfigMap and starts no step.
 - A state with a last sample more than 11 minutes before the current time gives the limit of the live StatefulSet. A state that stays after mode `Off` thus does not change the pods.
 
-The operator lowers the limit of the StatefulSet only after a user change or for the revert of its own step. Before each Ensure, it reads the limit of the live StatefulSet, also in mode `Recommend`. Without the StatefulSet, for example after a delete with `--cascade=orphan`, the largest redis pod gives the limit. The user changes are a lower `memoryMax`, and a lower spec limit while the StatefulSet has the earlier spec limit. The annotation `redisfailovers.databases.spotahome.com/spec-memory-limit` of the StatefulSet holds the spec limit of the last Ensure.
+The operator lowers the limit of the StatefulSet only after a user change or for the revert of its own step. Before each Ensure, it reads the limit of the live StatefulSet, also in mode `Recommend`. Without the StatefulSet, for example after a delete with `--cascade=orphan`, the largest redis pod gives the limit. The user changes are a lower `memoryMax`, and a lower spec limit while the StatefulSet has the earlier spec limit.
+
+The annotation `redisfailovers.databases.spotahome.com/spec-memory-limit` of the StatefulSet holds the spec limit of the last Ensure. The operator owns this annotation, so do not change it. A larger value counts as a lower spec limit of the user, and the StatefulSet then gets the spec limit. The pods keep their limit until they restart.
+
+Without autoscaling, a reconcile reads the StatefulSet less often. Mode `Recommend` reads it one time more in each reconcile. Mode `Auto` reads it three times more, and lists the pods one time.
 
 To pin the effective limit, for example before mode `Off` or a downgrade of the operator:
 
