@@ -250,7 +250,7 @@ func TestSentinelFailoverWaitSkipsAnUnreachableSentinel(t *testing.T) {
 	heal := ft.handler.startSentinelHeal(ft.rf)
 	heal.unreachable[gone] = true
 
-	assert.True(t, ft.handler.waitForSentinelFailover(ft.rf, sfSentinels, heal))
+	assert.True(t, ft.handler.waitForSentinelFailover(sfSentinels, heal))
 
 	ft.check.AssertNotCalled(t, "SentinelFailoverInProgress", gone)
 }

@@ -1270,7 +1270,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 			}
 			if !failoverChecked {
 				failoverChecked = true
-				if r.waitForSentinelFailover(rf, sentinels, heal) {
+				if r.waitForSentinelFailover(sentinels, heal) {
 					return nil
 				}
 			}
@@ -1757,7 +1757,7 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Fixing sentinel not monitoring expected master: %s", err.Error())
 				if !failoverChecked {
 					failoverChecked = true
-					if r.waitForSentinelFailover(rf, sentinels, heal) {
+					if r.waitForSentinelFailover(sentinels, heal) {
 						return nil
 					}
 				}
@@ -2010,7 +2010,7 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 // RESET end the failover in the leader. The Sentinels can then go back to the
 // old master and fail over a second time, and the promoted replica loses its
 // writes. The wait ends after the failover-timeout of the leader.
-func (r *RedisFailoverHandler) waitForSentinelFailover(rf *redisfailoverv1.RedisFailover, sentinels []string, heal *sentinelHeal) bool {
+func (r *RedisFailoverHandler) waitForSentinelFailover(sentinels []string, heal *sentinelHeal) bool {
 	leader := ""
 	var timeout time.Duration
 	for _, sip := range sentinels {
