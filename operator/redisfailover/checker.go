@@ -1040,8 +1040,9 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	switch nMasters {
 	case 0:
 		// A master pod in deletion is not counted, but it can still accept
-		// writes. When CLIENT PAUSE WRITE returns OK, its shutdown script also asks
-		// Sentinel to fail over. An election at this time can lose writes.
+		// writes. When CLIENT PAUSE WRITE returns OK, its shutdown script waits for
+		// the replicas and asks Sentinel to fail over. An election at this time
+		// can lose writes.
 		stopping, err := r.masterPodStopping(rf)
 		if err != nil {
 			rf.Status = redisfailoverv1.RedisFailoverStatus{

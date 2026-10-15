@@ -33,10 +33,35 @@ data:
     master_ip() {
       $sentinel --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '"' | cut -d' ' -f1
     }
+    # Prints the number of online replicas that did not confirm the offset of the master.
+    replicas_behind() {
+      info=$(local_cli INFO replication | tr -d '\r')
+      top=""
+      for line in $info; do
+        case "$line" in
+        master_repl_offset:*) top=${line#*:} ;;
+        esac
+      done
+      [ -n "$top" ] || return
+      n=0
+      for line in $info; do
+        case "$line" in
+        slave*state=online,offset=*)
+          offset=${line#*,offset=}
+          if [ "${offset%%,*}" -lt "$top" ]; then n=$((n + 1)); fi ;;
+        esac
+      done
+      echo "$n"
+    }
     deadline=$(($(date +%s) + 12))
     self=$(hostname -i)
     # A failover without a write pause loses the writes that the replica did not get.
     if [ "$(master_ip)" = "$self" ] && [ "$(local_cli CLIENT PAUSE 15000 WRITE)" = "OK" ]; then
+      # Sentinel can promote a replica that did not get the last writes. Thus wait
+      # at most 4 seconds until the online replicas confirm all writes.
+      while [ "$(replicas_behind)" != 0 ] && [ "$(date +%s)" -lt "$((deadline - 8))" ]; do
+        sleep 0.1
+      done
       if [ "$($sentinel SENTINEL failover mymaster)" = "OK" ]; then
         while [ "$(master_ip)" = "$self" ] && [ "$(date +%s)" -lt "$deadline" ]; do
           sleep 1
