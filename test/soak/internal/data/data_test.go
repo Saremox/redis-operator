@@ -157,13 +157,26 @@ type fakeInfo struct {
 	policy    atomic.Pointer[string]
 	// oomAbove rejects SET with OOM once the instance holds more keys.
 	oomAbove atomic.Int64
+	// infos counts the INFO calls. failInfo fails the call of that number,
+	// and afterInfo runs after each reply.
+	infos     atomic.Int64
+	failInfo  atomic.Int64
+	afterInfo func(call int64)
 }
 
 func (f *fakeInfo) hook(c *server.Peer, cmd string, args ...string) bool {
 	switch {
 	case strings.EqualFold(cmd, "INFO") && len(args) == 1 && args[0] == "memory":
+		call := f.infos.Add(1)
+		if call == f.failInfo.Load() {
+			c.WriteError("ERR INFO failed")
+			return true
+		}
 		c.WriteBulk(fmt.Sprintf("# Memory\r\nused_memory:%d\r\nmaxmemory:%d\r\nmaxmemory_policy:%s\r\n",
 			len(f.m.Keys())*1024, f.maxMemory.Load(), *f.policy.Load()))
+		if f.afterInfo != nil {
+			f.afterInfo(call)
+		}
 		return true
 	case strings.EqualFold(cmd, "SET") && f.oomAbove.Load() > 0 && int64(len(f.m.Keys())) >= f.oomAbove.Load():
 		c.WriteError("OOM command not allowed when used memory > 'maxmemory'.")
@@ -471,6 +484,44 @@ func TestLoad(t *testing.T) {
 	if n := len(m.Keys()); n != 100 {
 		t.Errorf("%d keys left after the OOM rejection", n)
 	}
+	fi.oomAbove.Store(0)
+
+	// A failed INFO stops the load, and the keys are deleted.
+	fi.infos.Store(0)
+	fi.failInfo.Store(3)
+	if _, err := d.Load(ctx, 97, time.Minute, func(context.Context) (bool, error) { return true, nil }); err == nil {
+		t.Error("a failed INFO is no error")
+	}
+	fi.failInfo.Store(1)
+	fi.infos.Store(0)
+	if _, err := d.Load(ctx, 97, time.Minute, nil); err == nil {
+		t.Error("a failed first INFO is no error")
+	}
+	fi.failInfo.Store(0)
+	if n := len(m.Keys()); n != 100 {
+		t.Errorf("%d keys left after the failed INFO", n)
+	}
+
+	// The end of ctx ends the load at each phase.
+	cctx, cancel := context.WithCancel(ctx)
+	fi.infos.Store(0)
+	fi.afterInfo = func(call int64) {
+		if call == 1 {
+			cancel()
+		}
+	}
+	if _, err := d.Load(cctx, 97, time.Minute, nil); !errors.Is(err, context.Canceled) {
+		t.Errorf("canceled before the writes: %v", err)
+	}
+	fi.afterInfo = nil
+	cctx, cancel = context.WithCancel(ctx)
+	if _, err := d.Load(cctx, 97, time.Minute, func(context.Context) (bool, error) {
+		cancel()
+		return false, nil
+	}); !errors.Is(err, context.Canceled) {
+		t.Errorf("canceled in the hold: %v", err)
+	}
+
 	policy := "volatile-lru"
 	fi.policy.Store(&policy)
 	if skip, _ := d.Load(ctx, 97, time.Minute, nil); skip == "" {

@@ -96,7 +96,7 @@ func (m *Mutator) planAutoscale(r *rand.Rand, kind config.Kind, s state) plan {
 			allow:  allowResize,
 			converged: func(s state) error {
 				if mm := s.rf.Spec.Redis.Autoscaling; mm == nil || mm.MemoryMax == nil || mm.MemoryMax.Value() != want {
-					return errors.New("the RedisFailover doesn't have the change")
+					return errors.New("the RedisFailover does not have the change yet")
 				}
 				return converged(s)
 			},
@@ -157,7 +157,7 @@ func planLimit(r *rand.Rand, rg config.Range, s state) plan {
 		allow:  allowResize,
 		converged: func(s state) error {
 			if !s.rf.Spec.Redis.Resources.Limits.Memory().Equal(*want) {
-				return errors.New("the RedisFailover doesn't have the change")
+				return errors.New("the RedisFailover does not have the change yet")
 			}
 			return converged(s)
 		},
@@ -247,8 +247,14 @@ func autoscaleConverged(replicas int32) func(state) error {
 			if p.Annotations[resizeRequest] != "" {
 				return fmt.Errorf("%s: resize requested at %s", p.Name, p.Annotations[resizeRequest])
 			}
-			if l := maxmem.RedisLimit(p); l < want {
+			l := maxmem.RedisLimit(p)
+			if l < want {
 				return fmt.Errorf("%s runs with the limit %s, the StatefulSet has %s", p.Name, maxmem.FormatBytes(l), maxmem.FormatBytes(want))
+			}
+			// A lower limit that the kubelet did not apply yet would shrink the
+			// pod after the window, without a user path.
+			if spec := podSpecLimit(p); spec != 0 && spec != l {
+				return fmt.Errorf("%s runs with the limit %s, its spec has %s", p.Name, maxmem.FormatBytes(l), maxmem.FormatBytes(spec))
 			}
 		}
 		if err := maxmem.Check(s.rf, s.rf.Status.Message, s.config); err != nil {
@@ -264,7 +270,7 @@ func modeConverged(mode string, replicas int32) func(state) error {
 	converged := autoscaleConverged(replicas)
 	return func(s state) error {
 		if a := s.rf.Spec.Redis.Autoscaling; a == nil || a.Mode != mode {
-			return errors.New("the RedisFailover doesn't have the change")
+			return errors.New("the RedisFailover does not have the change yet")
 		}
 		if err := converged(s); err != nil || mode != redisfailoverv1.AutoscalingModeOff {
 			return err
@@ -285,7 +291,17 @@ func modeConverged(mode string, replicas int32) func(state) error {
 // templateLimit returns the memory limit of the redis container of the
 // StatefulSet template.
 func templateLimit(sts *appsv1.StatefulSet) int64 {
-	for _, c := range sts.Spec.Template.Spec.Containers {
+	return redisLimitOf(sts.Spec.Template.Spec.Containers)
+}
+
+// podSpecLimit returns the memory limit of the redis container in the pod
+// spec, which a resize changes before the kubelet applies it.
+func podSpecLimit(p *corev1.Pod) int64 {
+	return redisLimitOf(p.Spec.Containers)
+}
+
+func redisLimitOf(containers []corev1.Container) int64 {
+	for _, c := range containers {
 		if c.Name == redisName {
 			return c.Resources.Limits.Memory().Value()
 		}

@@ -202,7 +202,7 @@ func (j *Judge) reset() {
 	j.starts, j.doneAfter, j.retryAt, j.reverts = nil, time.Time{}, time.Time{}, 0
 }
 
-// start judges the start of a step that is new in r.
+// start judges a step that the previous round did not show.
 func (j *Judge) start(prev, r Round) []Event {
 	step := r.Status.LastStep
 	from, to := effective(prev), effective(r)

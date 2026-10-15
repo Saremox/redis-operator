@@ -98,6 +98,9 @@ func TestPlanAutoscaleSkips(t *testing.T) {
 	if p := m.plan(stepRand(1, m.in, 1), config.AutoscaleKillMaster, s); p.skip == "" {
 		t.Errorf("a stale master label: %+v", p)
 	}
+	if p := m.planAutoscale(stepRand(1, m.in, 1), config.KillMaster, s); p.skip == "" {
+		t.Errorf("another kind: %+v", p)
+	}
 }
 
 // The limit stays within its range and at most memoryMax, and the request
@@ -184,14 +187,15 @@ func TestPlanAutoscaleStateLost(t *testing.T) {
 type fakeLoader struct {
 	fakeData
 	skip     string
+	err      error
 	rfs      versioned.Interface
 	statuses []redisfailoverv1.AutoscalingStatus
 	calls    int
 }
 
 func (f *fakeLoader) Load(ctx context.Context, percent int64, _ time.Duration, until func(context.Context) (bool, error)) (string, error) {
-	if f.skip != "" || percent != loadPercent {
-		return f.skip, nil
+	if f.skip != "" || f.err != nil || percent != loadPercent {
+		return f.skip, f.err
 	}
 	for _, st := range f.statuses {
 		f.calls++
@@ -225,20 +229,26 @@ func TestPlanLoad(t *testing.T) {
 		// mutation deleted.
 		notApplied bool
 		deleted    string
+		// unreadable is a RedisFailover that the mutator cannot read.
+		unreadable bool
 	}{
-		{"a step", config.AutoscaleLoad, "", []redisfailoverv1.AutoscalingStatus{idle, applying, done}, 2, false, ""},
-		{"no step", config.AutoscaleLoad, "", []redisfailoverv1.AutoscalingStatus{idle, idle}, 2, false, ""},
-		{"not loaded", config.AutoscaleLoad, "policy allkeys-lru", nil, 0, true, ""},
-		{"a replica in a step", config.AutoscaleKillReplica, "", []redisfailoverv1.AutoscalingStatus{idle, applying}, 2, false, "rfr-x-"},
-		{"the master in a step", config.AutoscaleKillMaster, "", []redisfailoverv1.AutoscalingStatus{applying}, 1, false, "rfr-x-0"},
-		{"a step that ended before", config.AutoscaleKillMaster, "", []redisfailoverv1.AutoscalingStatus{done, applying}, 1, true, ""},
-		{"no step to disturb", config.AutoscaleKillMaster, "", []redisfailoverv1.AutoscalingStatus{idle}, 1, true, ""},
+		{"a step", config.AutoscaleLoad, "", []redisfailoverv1.AutoscalingStatus{idle, applying, done}, 2, false, "", false},
+		{"no step", config.AutoscaleLoad, "", []redisfailoverv1.AutoscalingStatus{idle, idle}, 2, false, "", false},
+		{"not loaded", config.AutoscaleLoad, "policy allkeys-lru", nil, 0, true, "", false},
+		{"a replica in a step", config.AutoscaleKillReplica, "", []redisfailoverv1.AutoscalingStatus{idle, applying}, 2, false, "rfr-x-", false},
+		{"the master in a step", config.AutoscaleKillMaster, "", []redisfailoverv1.AutoscalingStatus{applying}, 1, false, "rfr-x-0", false},
+		{"a step that ended before", config.AutoscaleKillMaster, "", []redisfailoverv1.AutoscalingStatus{done, applying}, 1, true, "", false},
+		{"no step to disturb", config.AutoscaleKillMaster, "", []redisfailoverv1.AutoscalingStatus{idle}, 1, true, "", false},
+		{"no read", config.AutoscaleLoad, "", []redisfailoverv1.AutoscalingStatus{applying}, 1, false, "", true},
 	} {
 		s := autoscaled("Auto")
 		s.rf.Status.Autoscaling = idle
 		l := &fakeLoader{skip: c.skip, statuses: c.statuses}
 		m, kube, rfs := autoscaleMutator(s, l)
 		l.rfs = rfs
+		if c.unreadable {
+			m.rfs = rffake.NewSimpleClientset()
+		}
 		p := m.plan(stepRand(1, m.in, 1), c.kind, s)
 		err := p.action(context.Background())
 		var na notApplied
@@ -265,6 +275,35 @@ func TestPlanLoad(t *testing.T) {
 	}
 }
 
+// A kill kind converges after the pod is back and the step ended.
+func TestPlanLoadKillConverged(t *testing.T) {
+	s := autoscaled("Auto")
+	m, _, _ := autoscaleMutator(s, &fakeLoader{})
+	p := m.plan(stepRand(1, m.in, 1), config.AutoscaleKillMaster, s)
+	if err := p.converged(s); err == nil {
+		t.Error("converged before the delete")
+	}
+	replaced := autoscaled("Auto")
+	replaced.redis[0].UID = "u0-new"
+	if err := p.converged(replaced); err != nil {
+		t.Error(err)
+	}
+	replaced.rf.Status.Autoscaling.Phase = autoscale.PhaseApplying
+	if err := p.converged(replaced); err == nil {
+		t.Error("converged while the step is Applying")
+	}
+}
+
+// A failed load fails the mutation.
+func TestPlanLoadFailed(t *testing.T) {
+	s := autoscaled("Auto")
+	failed := errors.New("failed")
+	m, _, _ := autoscaleMutator(s, &fakeLoader{err: failed})
+	if err := m.plan(stepRand(1, m.in, 1), config.AutoscaleLoad, s).action(context.Background()); !errors.Is(err, failed) {
+		t.Errorf("%v", err)
+	}
+}
+
 func TestAutoscaleConverged(t *testing.T) {
 	runPredicateOn(t, func() state { return autoscaled("Auto") }, autoscaleConverged(3), []predicateCase{
 		{"converged", func(*state) {}, true},
@@ -281,6 +320,12 @@ func TestAutoscaleConverged(t *testing.T) {
 			s.sts.Spec.Template.Spec.Containers[0].Resources.Limits = quantities("memory", "128Mi")
 		}, true},
 		{"rollout not complete", func(s *state) { s.sts.Status.UpdatedReplicas = 2 }, false},
+		{"a pod not Ready", func(s *state) { s.redis[2].Status.Conditions[0].Status = corev1.ConditionFalse }, false},
+		{"a template without redis", func(s *state) { s.sts.Spec.Template.Spec.Containers = nil }, true},
+		// The kubelet did not apply a lower limit yet.
+		{"a resize in progress", func(s *state) {
+			s.redis[1].Spec.Containers[0].Resources.Limits = quantities("memory", "128Mi")
+		}, false},
 		{"maxmemory not applied", func(s *state) { s.config[2].MaxMemory = 100 * mi }, false},
 		{"not Healthy", func(s *state) { s.rf.Status.State = "NotHealthy" }, false},
 	})
@@ -295,6 +340,9 @@ func TestModeConverged(t *testing.T) {
 		{"a pod above the spec limit", func(s *state) {
 			s.rf.Spec.Redis.Resources.Limits = quantities("memory", "128Mi")
 			s.sts.Spec.Template.Spec.Containers[0].Resources.Limits = quantities("memory", "128Mi")
+			for i := range s.config {
+				s.config[i].MaxMemory = 96 * mi
+			}
 		}, false},
 	})
 	// Mode Recommend keeps the status and a larger pod.

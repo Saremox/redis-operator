@@ -249,6 +249,18 @@ func TestBackOff(t *testing.T) {
 	}
 }
 
+// A revert without retryAfter starts no back-off check.
+func TestRevertWithoutRetryAfter(t *testing.T) {
+	j := NewJudge()
+	e := observe(j, at(0), stepped(at(1), 1, PhaseApplying, "192Mi"), stepped(at(2), 1, PhaseReverted, ""))
+	if got := summary(e); !slices.Equal(got, []string{ResultStarted, ResultReverted}) || !j.retryAt.IsZero() {
+		t.Fatalf("%v, retryAt %s", got, j.retryAt)
+	}
+	if got := summary(observe(j, stepped(at(3), 3, PhaseApplying, "192Mi"))); !slices.Equal(got, []string{ResultStarted}) {
+		t.Errorf("the next step: %v", got)
+	}
+}
+
 func TestBackOffFor(t *testing.T) {
 	for reverts, want := range map[int]time.Duration{1: time.Hour, 2: 2 * time.Hour, 5: 16 * time.Hour, 6: 24 * time.Hour, 9: 24 * time.Hour} {
 		if got := backOffFor(reverts); got != want {

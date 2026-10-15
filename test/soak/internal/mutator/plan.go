@@ -176,8 +176,8 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 		}
 	case config.RedisMemory, config.MaxMemoryPolicy, config.MaxMemoryPercent, config.FillBurst,
 		config.ImageUpgrade, config.SentinelImageUpgrade, config.Reset, config.SentinelImageFlip,
-		config.SentinelResetKillMaster, config.AutoscaleLoad, config.AutoscaleLimit, config.AutoscaleMemoryMax, config.AutoscaleMode,
-		config.AutoscaleStateLost, config.AutoscaleKillMaster, config.AutoscaleKillReplica:
+		config.SentinelResetKillMaster, config.AutoscaleLoad, config.AutoscaleLimit, config.AutoscaleMemoryMax,
+		config.AutoscaleMode, config.AutoscaleStateLost, config.AutoscaleKillMaster, config.AutoscaleKillReplica:
 		// The maxMemory switch below plans the maxMemory kinds. Mutator.plan
 		// plans the other kinds.
 	}
@@ -239,8 +239,9 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 		config.KillMasterForce, config.KillReplica, config.KillSentinel, config.PasswordRotate,
 		config.AuthAdd, config.AuthRemove, config.SentinelToggle, config.PasswordRotateOffline,
 		config.PasswordRotateOfflineForget, config.ImageUpgrade, config.SentinelImageUpgrade,
-		config.Reset, config.SentinelImageFlip, config.SentinelResetKillMaster, config.AutoscaleLoad, config.AutoscaleLimit, config.AutoscaleMemoryMax, config.AutoscaleMode,
-		config.AutoscaleStateLost, config.AutoscaleKillMaster, config.AutoscaleKillReplica:
+		config.Reset, config.SentinelImageFlip, config.SentinelResetKillMaster, config.AutoscaleLoad,
+		config.AutoscaleLimit, config.AutoscaleMemoryMax, config.AutoscaleMode, config.AutoscaleStateLost,
+		config.AutoscaleKillMaster, config.AutoscaleKillReplica:
 		// The first switch or Mutator.plan plans these kinds.
 	}
 	return skipped(kind, "unknown kind")
@@ -372,8 +373,8 @@ func planAuth(kind config.Kind, s state) plan {
 		config.KillMasterForce, config.KillReplica, config.KillSentinel, config.RedisMemory,
 		config.MaxMemoryPolicy, config.MaxMemoryPercent, config.FillBurst, config.SentinelToggle,
 		config.ImageUpgrade, config.SentinelImageUpgrade, config.Reset, config.SentinelImageFlip,
-		config.SentinelResetKillMaster, config.AutoscaleLoad, config.AutoscaleLimit, config.AutoscaleMemoryMax, config.AutoscaleMode,
-		config.AutoscaleStateLost, config.AutoscaleKillMaster, config.AutoscaleKillReplica:
+		config.SentinelResetKillMaster, config.AutoscaleLoad, config.AutoscaleLimit, config.AutoscaleMemoryMax,
+		config.AutoscaleMode, config.AutoscaleStateLost, config.AutoscaleKillMaster, config.AutoscaleKillReplica:
 		// newPlan calls planAuth for the auth kinds only.
 	}
 	p.fetch = fetchOpts{password: &password, sentinelMaster: s.rf.SentinelEnabled()}
