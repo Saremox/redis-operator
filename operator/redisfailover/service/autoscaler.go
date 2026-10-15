@@ -12,6 +12,22 @@ import (
 // AutoscalerStateKey is the key of the state in the autoscaler ConfigMap.
 const AutoscalerStateKey = "state"
 
+// SpecMemoryLimitAnnotation holds the spec memory limit of the redis
+// container at the last Ensure of the redis StatefulSet. Only a change of the
+// spec limit lets the autoscaler lower the template.
+const SpecMemoryLimitAnnotation = "redisfailovers.databases.spotahome.com/spec-memory-limit"
+
+// IsRedisPod reports whether pod is a redis pod of rf, also without its
+// StatefulSet.
+func IsRedisPod(rf *redisfailoverv1.RedisFailover, pod *corev1.Pod) bool {
+	for k, v := range generateSelectorLabels(redisRoleName, rf.Name) {
+		if pod.Labels[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 // GenerateAutoscalerStateConfigMap returns the ConfigMap that holds the state
 // of the memory autoscaler. With the owner references, Kubernetes deletes it
 // together with the RedisFailover.
@@ -31,6 +47,17 @@ func GenerateAutoscalerStateConfigMap(rf *redisfailoverv1.RedisFailover, labels 
 // the pod template of ss, or 0 without one.
 func TemplateRedisMemoryLimit(ss *appsv1.StatefulSet) int64 {
 	for _, c := range ss.Spec.Template.Spec.Containers {
+		if c.Name == redisContainerName {
+			return c.Resources.Limits.Memory().Value()
+		}
+	}
+	return 0
+}
+
+// RequestedRedisMemoryLimit returns the memory limit of the redis container in
+// the pod spec, or 0 without one.
+func RequestedRedisMemoryLimit(pod *corev1.Pod) int64 {
+	for _, c := range pod.Spec.Containers {
 		if c.Name == redisContainerName {
 			return c.Resources.Limits.Memory().Value()
 		}

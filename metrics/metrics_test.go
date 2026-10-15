@@ -308,6 +308,8 @@ func TestDummyRecorder(t *testing.T) {
 		Dummy.RecordK8sOperation("ns", "Pod", "name", "create", SUCCESS, "")
 		Dummy.RecordRedisOperation("redis", "10.0.0.5", GET_SLAVE_OF, SUCCESS, "")
 		Dummy.SetAutoscaler("ns", "name", 1, 0.5, 2, 1)
+		Dummy.SetAutoscalerPhase("ns", "name", 1)
+		Dummy.CountAutoscalerStep("ns", "name", AutoscalerStepDone)
 		Dummy.DeleteAutoscaler("ns", "name")
 	})
 }
@@ -318,19 +320,29 @@ func TestAutoscalerMetrics(t *testing.T) {
 	rec.SetAutoscaler("ns", "a", 1342177280, 0.912, 2, 1073741824)
 	rec.SetAutoscaler("ns", "b", 0, 0.5, 0, 1)
 	rec.SetAutoscaler("ns", "c", 0, 0.5, 0, 1)
+	for _, name := range []string{"a", "b", "c"} {
+		rec.SetAutoscalerPhase("ns", name, 4)
+		for _, result := range []string{AutoscalerStepDone, AutoscalerStepReverted, AutoscalerStepHeld} {
+			rec.CountAutoscalerStep("ns", name, result)
+		}
+	}
+	rec.CountAutoscalerStep("ns", "a", AutoscalerStepDone)
 
 	assert.InDelta(t, 1342177280.0, testutil.ToFloat64(rec.recommendedMemory.WithLabelValues("ns", "a")), 0)
 	assert.InDelta(t, 0.912, testutil.ToFloat64(rec.memoryUsedRatio.WithLabelValues("ns", "a")), 0)
 	assert.InDelta(t, 2.0, testutil.ToFloat64(rec.highWindows.WithLabelValues("ns", "a")), 0)
 	assert.InDelta(t, 1073741824.0, testutil.ToFloat64(rec.effectiveMemory.WithLabelValues("ns", "a")), 0)
+	assert.InDelta(t, 4.0, testutil.ToFloat64(rec.stepPhase.WithLabelValues("ns", "a")), 0)
+	assert.InDelta(t, 2.0, testutil.ToFloat64(rec.steps.WithLabelValues("ns", "a", AutoscalerStepDone)), 0)
 
 	// DeleteAutoscaler is for a mode change to Off, and DeleteCluster for a
 	// deleted RedisFailover.
 	rec.DeleteAutoscaler("ns", "b")
 	rec.SetClusterOK("ns", "c")
 	rec.DeleteCluster("ns", "c")
-	for _, gauge := range []*prometheus.GaugeVec{rec.recommendedMemory, rec.memoryUsedRatio, rec.highWindows, rec.effectiveMemory} {
+	for _, gauge := range []*prometheus.GaugeVec{rec.recommendedMemory, rec.memoryUsedRatio, rec.highWindows, rec.effectiveMemory, rec.stepPhase} {
 		assert.Equal(t, 1, testutil.CollectAndCount(gauge))
 	}
+	assert.Equal(t, 3, testutil.CollectAndCount(rec.steps), "the three results of a")
 	assert.Zero(t, testutil.CollectAndCount(rec.clusterOK))
 }

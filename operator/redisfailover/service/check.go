@@ -698,8 +698,15 @@ func (r *RedisFailoverChecker) GetRedisesMasterPod(rFailover *redisfailoverv1.Re
 	return "", errors.New("redis nodes known as master not found")
 }
 
+// ErrUpdateRevisionNotObserved is the error of GetStatefulSetUpdateRevision
+// while the status of the StatefulSet does not show its latest template.
+var ErrUpdateRevisionNotObserved = errors.New("the statefulset status does not show the latest template")
+
 // GetStatefulSetUpdateRevision returns `status.updateRevision` of the redis
 // StatefulSet. The rollout updates each pod whose revision label differs.
+// Before the StatefulSet controller observes a template change, the status
+// names the revision before the change, and each pod on the latest template
+// looks stale. Then it returns ErrUpdateRevisionNotObserved.
 func (r *RedisFailoverChecker) GetStatefulSetUpdateRevision(rFailover *redisfailoverv1.RedisFailover) (string, error) {
 	ss, err := r.k8sService.GetStatefulSet(rFailover.Namespace, GetRedisName(rFailover))
 	if err != nil {
@@ -708,6 +715,9 @@ func (r *RedisFailoverChecker) GetStatefulSetUpdateRevision(rFailover *redisfail
 
 	if ss == nil {
 		return "", errors.New("statefulSet not found")
+	}
+	if ss.Status.ObservedGeneration < ss.Generation || ss.Status.UpdateRevision == "" {
+		return "", ErrUpdateRevisionNotObserved
 	}
 
 	return ss.Status.UpdateRevision, nil

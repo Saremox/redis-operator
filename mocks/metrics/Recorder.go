@@ -15,6 +15,11 @@ type Recorder struct {
 	mock.Mock
 }
 
+// CountAutoscalerStep provides a mock function with given fields: namespace, name, result
+func (_m *Recorder) CountAutoscalerStep(namespace string, name string, result string) {
+	_m.Called(namespace, name, result)
+}
+
 // DeleteAutoscaler provides a mock function with given fields: namespace, name
 func (_m *Recorder) DeleteAutoscaler(namespace string, name string) {
 	_m.Called(namespace, name)
@@ -86,6 +91,11 @@ func (_m *Recorder) RegisterResourceQueueLengthFunc(controller string, f func(co
 // SetAutoscaler provides a mock function with given fields: namespace, name, recommendedBytes, usedRatio, highWindows, effectiveBytes
 func (_m *Recorder) SetAutoscaler(namespace string, name string, recommendedBytes int64, usedRatio float64, highWindows int32, effectiveBytes int64) {
 	_m.Called(namespace, name, recommendedBytes, usedRatio, highWindows, effectiveBytes)
+}
+
+// SetAutoscalerPhase provides a mock function with given fields: namespace, name, phase
+func (_m *Recorder) SetAutoscalerPhase(namespace string, name string, phase int) {
+	_m.Called(namespace, name, phase)
 }
 
 // SetClusterError provides a mock function with given fields: namespace, name

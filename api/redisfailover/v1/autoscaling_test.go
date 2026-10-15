@@ -62,7 +62,6 @@ func TestValidateAutoscaling(t *testing.T) {
 		{name: "Off ignores the memory rules", settings: AutoscalingSettings{Mode: AutoscalingModeOff}},
 		{name: "Recommend", settings: recommend("2Gi"), limit: "1Gi", request: "1Gi"},
 		{name: "Recommend without a request", settings: recommend("2Gi"), limit: "1Gi"},
-		{name: "Auto is refused", settings: AutoscalingSettings{Mode: AutoscalingModeAuto, MemoryMax: quantity("2Gi")}, limit: "1Gi", expectedError: "redis.autoscaling.mode Auto is not available, use Off or Recommend"},
 		{name: "unknown mode", settings: AutoscalingSettings{Mode: "On"}, expectedError: `redis.autoscaling.mode "On" must be Off, Recommend or Auto`},
 		{name: "unknown workload", settings: AutoscalingSettings{Workload: "Queue"}, expectedError: `redis.autoscaling.workload "Queue" must be Auto, Store or Cache`},
 		{name: "recreateAfter 0s", settings: withRecreate(recommend("2Gi"), 0), limit: "1Gi"},
@@ -150,6 +149,93 @@ func TestStatusWithoutAutoscaling(t *testing.T) {
 	var back RedisFailoverStatus
 	require.NoError(t, json.Unmarshal(got, &back))
 	assert.Equal(t, other, back)
+}
+
+// autoRF is a RedisFailover that mode Auto accepts.
+func autoRF() *RedisFailover {
+	rf := rfWithAutoscaling("1Gi", "1Gi", &AutoscalingSettings{Mode: AutoscalingModeAuto, MemoryMax: quantity("4Gi")})
+	rf.Spec.Redis.MaxMemory = &MaxMemorySettings{}
+	return rf
+}
+
+func TestValidateAutoscalingAuto(t *testing.T) {
+	tests := map[string]struct {
+		change        func(rf *RedisFailover)
+		expectedError string
+	}{
+		"valid":                        {change: func(*RedisFailover) {}},
+		"without a request":            {change: func(rf *RedisFailover) { rf.Spec.Redis.Resources.Requests = nil }},
+		"memoryMax equal to the limit": {change: func(rf *RedisFailover) { rf.Spec.Redis.Autoscaling.MemoryMax = quantity("1Gi") }},
+		"cache workload": {change: func(rf *RedisFailover) {
+			rf.Spec.Redis.Autoscaling.Workload = AutoscalingWorkloadCache
+		}},
+		"inPlaceResize Enabled": {change: func(rf *RedisFailover) { rf.Spec.Redis.InPlaceResize = "Enabled" }},
+		"other customConfig": {change: func(rf *RedisFailover) {
+			rf.Spec.Redis.CustomConfig = []string{"maxmemory-policy allkeys-lru", "maxmemory-samples 10"}
+		}},
+		"no maxMemory": {change: func(rf *RedisFailover) { rf.Spec.Redis.MaxMemory = nil },
+			expectedError: "redis.autoscaling.mode Auto requires redis.maxMemory"},
+		"limit below 64Mi": {change: func(rf *RedisFailover) {
+			rf.Spec.Redis.Resources = corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("32Mi")}}
+		}, expectedError: "redis.autoscaling.mode Auto requires a managed maxmemory: redis.maxMemory requires redis.resources.limits.memory of at least 64Mi, got 32Mi"},
+		"maxmemory in customConfig": {change: func(rf *RedisFailover) { rf.Spec.Redis.CustomConfig = []string{"MAXMEMORY 100mb"} },
+			expectedError: "redis.autoscaling.mode Auto requires no maxmemory in redis.customConfig"},
+		"inPlaceResize Disabled": {change: func(rf *RedisFailover) { rf.Spec.Redis.InPlaceResize = "Disabled" },
+			expectedError: "redis.autoscaling.mode Auto requires redis.inPlaceResize Enabled, because a step resizes the pods in place"},
+		"recreateAfter": {change: func(rf *RedisFailover) {
+			rf.Spec.Redis.Autoscaling.RecreateAfter = &metav1.Duration{Duration: 10 * time.Minute}
+		}, expectedError: "redis.autoscaling.recreateAfter is not available with mode Auto, because a step never recreates a pod"},
+		"recreateAfter 0s": {change: func(rf *RedisFailover) { rf.Spec.Redis.Autoscaling.RecreateAfter = &metav1.Duration{} },
+			expectedError: "redis.autoscaling.recreateAfter is not available with mode Auto"},
+		"request below the limit of a cache": {change: func(rf *RedisFailover) {
+			rf.Spec.Redis.Autoscaling.Workload = AutoscalingWorkloadCache
+			rf.Spec.Redis.Resources.Requests = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")}
+		}, expectedError: "redis.autoscaling.mode Auto requires redis.resources.requests.memory 512Mi equal to the limit 1Gi"},
+		"request above the limit": {change: func(rf *RedisFailover) {
+			rf.Spec.Redis.Resources.Requests = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")}
+		}, expectedError: "redis.autoscaling.mode Auto requires redis.resources.requests.memory 2Gi equal to the limit 1Gi"},
+		// The rules of each mode stay.
+		"no memoryMax": {change: func(rf *RedisFailover) { rf.Spec.Redis.Autoscaling.MemoryMax = nil },
+			expectedError: "redis.autoscaling.memoryMax is required for mode Auto"},
+		"memoryMax below the limit": {change: func(rf *RedisFailover) { rf.Spec.Redis.Autoscaling.MemoryMax = quantity("512Mi") },
+			expectedError: "redis.autoscaling.memoryMax 512Mi must not be less than redis.resources.limits.memory 1Gi"},
+		"no memory limit": {change: func(rf *RedisFailover) { rf.Spec.Redis.Resources = corev1.ResourceRequirements{} },
+			expectedError: "redis.autoscaling requires redis.resources.limits.memory"},
+		"bootstrapNode": {change: func(rf *RedisFailover) { rf.Spec.BootstrapNode = &BootstrapSettings{Host: "10.0.0.9"} },
+			expectedError: "redis.autoscaling.mode Auto is not available with bootstrapNode"},
+		"recreateAfter below 5m": {change: func(rf *RedisFailover) {
+			rf.Spec.Redis.Autoscaling.RecreateAfter = &metav1.Duration{Duration: time.Minute}
+		}, expectedError: "redis.autoscaling.recreateAfter 1m0s must be 0s or at least 5m0s"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			rf := autoRF()
+			test.change(rf)
+			err := rf.Validate()
+			if test.expectedError != "" {
+				assert.ErrorContains(t, err, test.expectedError)
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, rf.AutoscalingEnabled())
+		})
+	}
+}
+
+// The CRD accepts mode Auto, and its description has the requirements.
+func TestCRDModeAuto(t *testing.T) {
+	data, err := os.ReadFile("../../../manifests/databases.spotahome.com_redisfailovers.yaml")
+	require.NoError(t, err)
+	var crd map[string]any
+	require.NoError(t, yaml.Unmarshal(data, &crd))
+	node := crd["spec"].(map[string]any)["versions"].([]any)[0].(map[string]any)["schema"].(map[string]any)["openAPIV3Schema"]
+	for _, key := range []string{"spec", "redis", "autoscaling", "mode"} {
+		node = node.(map[string]any)["properties"].(map[string]any)[key]
+	}
+	mode := node.(map[string]any)
+	assert.Equal(t, []any{"Off", "Recommend", "Auto"}, mode["enum"])
+	assert.NotContains(t, mode["description"], "not available")
+	assert.Contains(t, mode["description"], "Kubernetes 1.33")
 }
 
 // recreateAfterSchema returns a check of the CRD pattern and maxLength of

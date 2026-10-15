@@ -7,6 +7,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // The values of redis.autoscaling.mode and redis.autoscaling.workload.
@@ -57,9 +58,7 @@ func (r *RedisFailover) validateAutoscaling() error {
 		a.Workload = AutoscalingWorkloadAuto
 	}
 	switch a.Mode {
-	case AutoscalingModeOff, AutoscalingModeRecommend:
-	case AutoscalingModeAuto:
-		return errors.New("redis.autoscaling.mode Auto is not available, use Off or Recommend")
+	case AutoscalingModeOff, AutoscalingModeRecommend, AutoscalingModeAuto:
 	default:
 		return fmt.Errorf("redis.autoscaling.mode %q must be Off, Recommend or Auto", a.Mode)
 	}
@@ -88,12 +87,44 @@ func (r *RedisFailover) validateAutoscaling() error {
 	if a.MemoryMax.Cmp(limit) < 0 {
 		return fmt.Errorf("redis.autoscaling.memoryMax %s must not be less than redis.resources.limits.memory %s", a.MemoryMax.String(), limit.String())
 	}
+	if a.Mode == AutoscalingModeAuto {
+		if err := r.validateAutoscalingAuto(limit); err != nil {
+			return err
+		}
+	}
 	// A request below the limit lets the node run out of memory before the
 	// pod reaches its limit, and a store then loses its data.
 	store := a.Workload == AutoscalingWorkloadStore || (a.Workload == AutoscalingWorkloadAuto && !strings.HasPrefix(r.MaxMemoryPolicy(), "allkeys-"))
 	request, ok := r.Spec.Redis.Resources.Requests[corev1.ResourceMemory]
 	if ok && store && request.Cmp(limit) != 0 {
 		return fmt.Errorf("redis.autoscaling requires redis.resources.requests.memory %s equal to the limit %s for a store", request.String(), limit.String())
+	}
+	return nil
+}
+
+// validateAutoscalingAuto checks the rules of a step. The operator resizes the
+// pods in place and never recreates them for a step, and maxmemory must
+// follow the limit. Otherwise the memory use stays high after a step, and the
+// steps continue up to memoryMax.
+func (r *RedisFailover) validateAutoscalingAuto(limit resource.Quantity) error {
+	redis := r.Spec.Redis
+	switch {
+	case redis.MaxMemory == nil:
+		return errors.New("redis.autoscaling.mode Auto requires redis.maxMemory")
+	case r.ManagedMaxMemoryError() != nil:
+		return fmt.Errorf("redis.autoscaling.mode Auto requires a managed maxmemory: %w", r.ManagedMaxMemoryError())
+	case r.CustomConfigSets("maxmemory"):
+		return errors.New("redis.autoscaling.mode Auto requires no maxmemory in redis.customConfig")
+	case redis.InPlaceResize == "Disabled":
+		return errors.New("redis.autoscaling.mode Auto requires redis.inPlaceResize Enabled, because a step resizes the pods in place")
+	case redis.Autoscaling.RecreateAfter != nil:
+		return errors.New("redis.autoscaling.recreateAfter is not available with mode Auto, because a step never recreates a pod")
+	}
+	// This applies to each workload. A step raises the request with the
+	// limit only when they are equal. A request below the limit lets the node
+	// run out of memory first.
+	if request, ok := redis.Resources.Requests[corev1.ResourceMemory]; ok && request.Cmp(limit) != 0 {
+		return fmt.Errorf("redis.autoscaling.mode Auto requires redis.resources.requests.memory %s equal to the limit %s", request.String(), limit.String())
 	}
 	return nil
 }

@@ -41,7 +41,9 @@ func exampleFiles(t *testing.T) []string {
 }
 
 // An effective limit equal to the spec limit must give the golden files, or
-// an upgrade of the operator restarts the pods of each RedisFailover.
+// an upgrade of the operator restarts the pods of each RedisFailover. With
+// autoscaling, the redis StatefulSet only gets the annotation of the spec
+// limit, which changes no pod.
 func TestEffectiveRFKeepsTheGoldenFiles(t *testing.T) {
 	for _, f := range exampleFiles(t) {
 		example := strings.TrimSuffix(filepath.Base(f), ".yaml")
@@ -53,17 +55,30 @@ func TestEffectiveRFKeepsTheGoldenFiles(t *testing.T) {
 				effective := autoscale.EffectiveLimit(stored, spec, rf.Spec.Redis.Autoscaling.MemoryMax.Value())
 
 				got := effectiveRF(rf, effective)
-				require.Same(t, rf, got)
+				if mode == redisfailoverv1.AutoscalingModeOff {
+					require.Same(t, rf, got)
+				}
 
 				objects := ensuredObjects(t, got)
 				dir := filepath.Join(goldenDir, example)
 				entries, err := os.ReadDir(dir)
 				require.NoError(t, err)
 				require.Len(t, objects, len(entries))
+				statefulSet := "StatefulSet-" + rfservice.GetRedisName(rf) + ".json"
 				for _, e := range entries {
 					want, err := os.ReadFile(filepath.Join(dir, e.Name()))
 					require.NoError(t, err)
-					assert.Equal(t, string(want), string(objects[e.Name()]), e.Name())
+					if e.Name() != statefulSet || mode == redisfailoverv1.AutoscalingModeOff {
+						assert.Equal(t, string(want), string(objects[e.Name()]), e.Name())
+						continue
+					}
+					wantSS, gotSS := decodeStatefulSet(t, want), decodeStatefulSet(t, objects[e.Name()])
+					assert.Equal(t, rf.Spec.Redis.Resources.Limits.Memory().String(), gotSS.Annotations[rfservice.SpecMemoryLimitAnnotation])
+					delete(gotSS.Annotations, rfservice.SpecMemoryLimitAnnotation)
+					if len(gotSS.Annotations) == 0 {
+						gotSS.Annotations = wantSS.Annotations
+					}
+					assert.Equal(t, wantSS, gotSS)
 				}
 			})
 		}
@@ -89,7 +104,7 @@ func TestEffectiveRFChangesOnlyTheRedisResources(t *testing.T) {
 			request, hasRequest := resources.Requests[corev1.ResourceMemory]
 			effective := spec.Value() + 256*mib
 
-			want := ensuredObjects(t, rf)
+			want := ensuredObjects(t, effectiveRF(rf, spec.Value()))
 			got := ensuredObjects(t, effectiveRF(rf, effective))
 
 			assert.Equal(t, spec, rf.Spec.Redis.Resources.Limits[corev1.ResourceMemory], "the spec stays")
@@ -159,8 +174,12 @@ func TestEffectiveRF(t *testing.T) {
 		rf := newRF(mode, "1Gi")
 		assert.Same(t, rf, effectiveRF(rf, 2*1024*mib), "mode %q", mode)
 	}
+	// The spec limit changes only the annotations, and not rf.
 	rf := newRF(redisfailoverv1.AutoscalingModeRecommend, "1Gi")
-	assert.Same(t, rf, effectiveRF(rf, 1024*mib), "the spec limit")
+	got := effectiveRF(rf, 1024*mib)
+	assert.Equal(t, rf.Spec, got.Spec)
+	assert.Equal(t, map[string]string{rfservice.SpecMemoryLimitAnnotation: "1Gi"}, got.Annotations)
+	assert.Empty(t, rf.Annotations)
 
 	tests := []struct {
 		name, request, want string

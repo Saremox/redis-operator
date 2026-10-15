@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -64,9 +65,20 @@ func newAutoscaleTest(t *testing.T, mode string) *autoscaleTest {
 		logger: &warnLogger{},
 		now:    autoscaleT0,
 	}
+	// The tests of the steps assert the phase metric.
+	at.mrec.On("SetAutoscalerPhase", "testns", "test", mock.Anything).Maybe()
 	at.h = NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, at.mrfc, &mRFService.RedisFailoverHeal{}, at.mk, at.mrec, at.logger)
 	at.h.now = func() time.Time { return at.now }
+	// Each read of the state also reads the live limit. The tests of the
+	// floor set their own StatefulSet with onStatefulSet.
+	at.onStatefulSet().Maybe().Return(redisStatefulSet("1Gi"), nil)
 	return at
+}
+
+// onStatefulSet replaces the answer of GetStatefulSet.
+func (at *autoscaleTest) onStatefulSet() *mock.Call {
+	at.mk.ExpectedCalls = slices.DeleteFunc(at.mk.ExpectedCalls, func(c *mock.Call) bool { return c.Method == "GetStatefulSet" })
+	return at.mk.On("GetStatefulSet", "testns", "rfr-test")
 }
 
 // run runs the autoscaler as the end of CheckAndHeal does.
@@ -105,6 +117,10 @@ func decodeState(t *testing.T, cm *corev1.ConfigMap) autoscale.State {
 type fakeStateStore struct {
 	stored           *corev1.ConfigMap
 	creates, updates int
+	// onWrite sees each state that a create or an update stores.
+	onWrite func(autoscale.State)
+	// err fails each create and update.
+	err error
 }
 
 func (at *autoscaleTest) fakeStateStore(t *testing.T) *fakeStateStore {
@@ -116,18 +132,31 @@ func (at *autoscaleTest) fakeStateStore(t *testing.T) *fakeStateStore {
 		}
 		return f.stored.DeepCopy(), nil
 	})
-	at.mk.On("CreateConfigMap", "testns", mock.Anything).Run(func(args mock.Arguments) {
+	written := func() error {
+		if f.onWrite != nil && f.err == nil {
+			f.onWrite(decodeState(t, f.stored))
+		}
+		return f.err
+	}
+	at.mk.On("CreateConfigMap", "testns", mock.Anything).Return(func(_ string, cm *corev1.ConfigMap) error {
+		if f.err != nil {
+			return f.err
+		}
 		f.creates++
-		f.stored = args.Get(1).(*corev1.ConfigMap).DeepCopy()
+		f.stored = cm.DeepCopy()
 		f.stored.ResourceVersion = "1"
-	}).Return(nil)
-	at.mk.On("UpdateConfigMap", "testns", mock.Anything).Run(func(args mock.Arguments) {
+		return written()
+	})
+	at.mk.On("UpdateConfigMap", "testns", mock.Anything).Return(func(_ string, cm *corev1.ConfigMap) error {
+		if f.err != nil {
+			return f.err
+		}
 		f.updates++
-		cm := args.Get(1).(*corev1.ConfigMap)
 		assert.Equal(t, f.stored.ResourceVersion, cm.ResourceVersion)
 		f.stored = cm.DeepCopy()
 		f.stored.ResourceVersion += "1"
-	}).Return(nil)
+		return written()
+	})
 	return f
 }
 
@@ -512,9 +541,9 @@ func TestAutoscaleErrorsOnlyLog(t *testing.T) {
 		assert.Equal(t, redisfailoverv1.AutoscalingStatus{Reason: autoscale.ReasonNewerState}, at.rf.Status.Autoscaling)
 		assert.Equal(t, []string{"Autoscaler: the state ConfigMap has version 3, this operator reads version 2"}, at.logger.warnings)
 		assert.Len(t, at.logger.debugs, 1)
-		// No write, no sample.
+		// No write, no sample: each run reads the state and the live limit.
 		at.mk.AssertExpectations(t)
-		assert.Len(t, at.mk.Calls, 2)
+		assert.Len(t, at.mk.Calls, 4)
 		at.mrfc.AssertNotCalled(t, "GetAutoscalerInfo", mock.Anything, mock.Anything)
 	})
 
@@ -530,7 +559,8 @@ func TestAutoscaleErrorsOnlyLog(t *testing.T) {
 
 		at.run(observed)
 
-		assert.Equal(t, redisfailoverv1.AutoscalingStatus{Reason: autoscale.ReasonNoInfo}, at.rf.Status.Autoscaling)
+		// The invalid state freezes the limit also in mode Recommend.
+		assert.Equal(t, redisfailoverv1.AutoscalingStatus{Reason: autoscale.ReasonFrozen}, at.rf.Status.Autoscaling)
 		require.Len(t, at.logger.warnings, 2)
 		assert.Contains(t, at.logger.warnings[0], "is not valid, the autoscaler starts again")
 		assert.Equal(t, "Autoscaler: no autoscaler sample of 10.0.0.1: timeout\nconflict", at.logger.warnings[1])
@@ -752,7 +782,8 @@ func encodeState(t *testing.T, s autoscale.State) string {
 }
 
 // Ensure writes the pods with the effective limit, so Handle reads the state
-// before Ensure. Without autoscaling, Handle reads nothing.
+// before Ensure. Without autoscaling, Handle reads the ConfigMap one time
+// after the operator start, for a leftover state.
 func TestHandleReadsTheAutoscalerStateBeforeEnsure(t *testing.T) {
 	stop := errors.New("stop")
 	tests := []struct {
@@ -762,8 +793,8 @@ func TestHandleReadsTheAutoscalerStateBeforeEnsure(t *testing.T) {
 		want    []string
 		wantErr string
 	}{
-		{name: "unset", want: []string{"Ensure"}, wantErr: "stop"},
-		{name: "Off", mode: redisfailoverv1.AutoscalingModeOff, want: []string{"Ensure"}, wantErr: "stop"},
+		{name: "unset", readErr: notFound(), want: []string{"GetConfigMap", "Ensure", "Ensure"}, wantErr: "stop"},
+		{name: "Off", mode: redisfailoverv1.AutoscalingModeOff, readErr: notFound(), want: []string{"GetConfigMap", "Ensure", "Ensure"}, wantErr: "stop"},
 		{name: "Recommend", mode: redisfailoverv1.AutoscalingModeRecommend, readErr: notFound(), want: []string{"GetConfigMap", "Ensure"}, wantErr: "stop"},
 		{name: "read error", mode: redisfailoverv1.AutoscalingModeRecommend, readErr: errors.New("forbidden"), want: []string{"GetConfigMap"}, wantErr: "autoscaler state: forbidden"},
 	}
@@ -772,17 +803,23 @@ func TestHandleReadsTheAutoscalerStateBeforeEnsure(t *testing.T) {
 			at := newAutoscaleTest(t, test.mode)
 			at.rf.Finalizers = []string{redisFailoverFinalizer}
 			var calls []string
-			if test.mode == redisfailoverv1.AutoscalingModeRecommend {
-				at.mk.On("GetConfigMap", "testns", autoscaleCM).Once().Run(func(mock.Arguments) { calls = append(calls, "GetConfigMap") }).Return(nil, test.readErr)
-			}
+			at.mk.On("GetConfigMap", "testns", autoscaleCM).Once().Run(func(mock.Arguments) { calls = append(calls, "GetConfigMap") }).Return(nil, test.readErr)
 			mrfs := &mRFService.RedisFailoverClient{}
 			mrfs.On("EnsureNotPresentRedisService", mock.Anything).Maybe().Run(func(mock.Arguments) { calls = append(calls, "Ensure") }).Return(stop)
 			at.h.rfService = mrfs
-			at.mrec.On("SetClusterError", "testns", "test").Once()
+			if at.rf.AutoscalingEnabled() {
+				at.mrec.On("SetClusterError", "testns", "test").Once()
+			} else {
+				at.mrec.On("SetClusterError", "testns", "test").Times(2)
+			}
 
 			err := at.h.Handle(context.Background(), at.rf)
-
 			require.EqualError(t, err, test.wantErr)
+			if !at.rf.AutoscalingEnabled() {
+				// One look for a leftover state after the operator start.
+				require.EqualError(t, at.h.Handle(context.Background(), at.rf), test.wantErr)
+			}
+
 			assert.Equal(t, test.want, calls)
 			at.mk.AssertExpectations(t)
 			at.mrec.AssertExpectations(t)
@@ -825,7 +862,10 @@ func TestReadAutoscaleFreezesTheLimitInAuto(t *testing.T) {
 				at.rf.Spec.Redis.Autoscaling.Mode = redisfailoverv1.AutoscalingModeAuto
 				cm, cmErr := state.cm(at)
 				at.mk.On("GetConfigMap", "testns", autoscaleCM).Once().Return(cm, cmErr)
-				at.mk.On("GetStatefulSet", "testns", "rfr-test").Once().Return(template.ss, template.err)
+				at.onStatefulSet().Once().Return(template.ss, template.err)
+				if template.err != nil {
+					at.mk.On("ListPods", "testns").Once().Return(&corev1.PodList{}, nil)
+				}
 
 				read, err := at.h.readAutoscale(at.rf)
 
@@ -842,7 +882,7 @@ func TestReadAutoscaleFreezesTheLimitInAuto(t *testing.T) {
 		at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
 		at.rf.Spec.Redis.Autoscaling.Mode = redisfailoverv1.AutoscalingModeAuto
 		at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(nil, notFound())
-		at.mk.On("GetStatefulSet", "testns", "rfr-test").Return(nil, errors.New("forbidden"))
+		at.onStatefulSet().Return(nil, errors.New("forbidden"))
 
 		_, err := at.h.readAutoscale(at.rf)
 
@@ -913,7 +953,7 @@ func TestAutoscaleWritesTheFrozenLimit(t *testing.T) {
 	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
 	at.rf.Spec.Redis.Autoscaling.Mode = redisfailoverv1.AutoscalingModeAuto
 	f := at.fakeStateStore(t)
-	at.mk.On("GetStatefulSet", "testns", "rfr-test").Once().Return(redisStatefulSet("1280Mi"), nil)
+	at.onStatefulSet().Return(redisStatefulSet("1280Mi"), nil)
 	at.mrfc.On("GetAutoscalerInfo", mock.Anything, autoscaleMaster).Return(masterInfo(500), nil)
 	at.mrec.On("SetAutoscaler", "testns", "test", int64(0), 0.5, int32(0), 1280*mib).Twice()
 
@@ -924,13 +964,43 @@ func TestAutoscaleWritesTheFrozenLimit(t *testing.T) {
 	assert.Equal(t, 1280*mib, written.Effective)
 	assert.Equal(t, 1024*mib, written.SpecLimit)
 	assert.Equal(t, 1280*mib, written.Limit, "the sample uses the effective limit")
-	assert.Equal(t, redisfailoverv1.AutoscalingStatus{Workload: "Store", Reason: autoscale.ReasonLow, EffectiveMemory: "1280Mi"}, rf.Status.Autoscaling)
+	assert.True(t, written.Frozen, "no step starts from a frozen limit")
+	assert.Equal(t, redisfailoverv1.AutoscalingStatus{Workload: "Store", Reason: autoscale.ReasonFrozen, EffectiveMemory: "1280Mi", Phase: autoscale.PhaseIdle}, rf.Status.Autoscaling)
 
 	at.now = at.now.Add(time.Minute)
 	rf = at.handle(t, rf.Status.Autoscaling)
 	assert.Equal(t, "1280Mi", rf.Status.Autoscaling.EffectiveMemory)
-	at.mk.AssertNumberOfCalls(t, "GetStatefulSet", 1)
+	at.mk.AssertNumberOfCalls(t, "GetStatefulSet", 2)
 	at.mrec.AssertExpectations(t)
+}
+
+// A lost state also lost its budget and its back-off. A status shows the
+// loss, so mode Auto freezes also the spec limit. A RedisFailover without an
+// earlier status has no state to lose.
+func TestAutoscaleFreezesALostStateAtTheSpecLimit(t *testing.T) {
+	for name, observed := range map[string]redisfailoverv1.AutoscalingStatus{
+		"lost":  {Workload: "Store", Reason: autoscale.ReasonLow, Phase: autoscale.PhaseIdle},
+		"first": {},
+		// The first write of the state failed, and the status has no phase.
+		"failed first write": {Workload: "Store", Reason: autoscale.ReasonLow},
+	} {
+		t.Run(name, func(t *testing.T) {
+			at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
+			at.rf.Spec.Redis.Autoscaling.Mode = redisfailoverv1.AutoscalingModeAuto
+			f := at.fakeStateStore(t)
+			at.onStatefulSet().Return(redisStatefulSet("1Gi"), nil)
+			at.mrfc.On("GetAutoscalerInfo", mock.Anything, autoscaleMaster).Return(masterInfo(500), nil)
+			at.mrec.On("SetAutoscaler", "testns", "test", mock.Anything, mock.Anything, mock.Anything, 1024*mib).Maybe()
+
+			rf := at.handle(t, observed)
+
+			frozen := name == "lost"
+			written := decodeState(t, f.stored)
+			assert.Equal(t, frozen, written.Frozen)
+			assert.Zero(t, written.Effective)
+			assert.Equal(t, frozen, rf.Status.Autoscaling.Reason == autoscale.ReasonFrozen)
+		})
+	}
 }
 
 // A state of another owner or of a newer operator is not written, and the
@@ -939,7 +1009,7 @@ func TestAutoscaleShowsTheFrozenLimitOfABlockedState(t *testing.T) {
 	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
 	at.rf.Spec.Redis.Autoscaling.Mode = redisfailoverv1.AutoscalingModeAuto
 	at.mk.On("GetConfigMap", "testns", autoscaleCM).Return(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: autoscaleCM}}, nil)
-	at.mk.On("GetStatefulSet", "testns", "rfr-test").Return(redisStatefulSet("1280Mi"), nil)
+	at.onStatefulSet().Return(redisStatefulSet("1280Mi"), nil)
 	at.mrec.On("DeleteAutoscaler", "testns", "test").Once()
 
 	rf := at.handle(t, redisfailoverv1.AutoscalingStatus{})
@@ -973,9 +1043,7 @@ func TestAutoscaleRecommendKeepsTheEffectiveLimit(t *testing.T) {
 		Reason:            autoscale.ReasonUrgent + "; " + autoscale.NoteSpecBelowEffective,
 		EvaluatedAt:       at.now.UTC().Format(time.RFC3339),
 		EffectiveMemory:   "1536Mi",
-		Phase:             autoscale.PhaseDone,
-		LastStep:          autoscaleT0.Add(-time.Hour).UTC().Format(time.RFC3339),
-	}, rf.Status.Autoscaling)
+	}, rf.Status.Autoscaling, "Recommend shows no step of an earlier mode Auto")
 	assert.Equal(t, "1536Mi", rf.Spec.Redis.Resources.Limits.Memory().String())
 	assert.Equal(t, "1Gi", at.rf.Spec.Redis.Resources.Limits.Memory().String())
 	written := decodeState(t, f.stored)

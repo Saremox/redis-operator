@@ -148,16 +148,32 @@ func TestPlanRefusal(t *testing.T) {
 	})
 }
 
+// appliedObs is obs(at) with a pod that applied the step.
+func appliedObs(at time.Duration) Observation {
+	o := obs(at)
+	o.AnyApplied = true
+	return o
+}
+
+// A step that does not end in 15 minutes is held when a pod applied it, and
+// reverted otherwise.
 func TestPlanTimeout(t *testing.T) {
-	s, action := Plan(applying(t), obs(ApplyTimeout-time.Second))
+	s, action := Plan(applying(t), appliedObs(ApplyTimeout-time.Second))
 	require.Equal(t, ActionNone, action)
 	require.Equal(t, PhaseApplying, s.Phase)
 
-	s, action = Plan(s, obs(ApplyTimeout))
+	held, action := Plan(s, appliedObs(ApplyTimeout))
 	assert.Equal(t, ActionHold, action)
-	assert.Equal(t, PhaseHeld, s.Phase)
-	assert.Equal(t, RefusalTimeout, s.Refusal)
-	assert.Equal(t, 1280*mi, s.Effective)
+	assert.Equal(t, PhaseHeld, held.Phase)
+	assert.Equal(t, RefusalTimeout, held.Refusal)
+	assert.Equal(t, 1280*mi, held.Effective)
+
+	reverted, action := Plan(s, obs(ApplyTimeout))
+	assert.Equal(t, ActionRevert, action)
+	assert.Equal(t, PhaseReverted, reverted.Phase)
+	assert.Equal(t, RefusalTimeout, reverted.Refusal)
+	assert.Zero(t, reverted.Effective)
+	assert.Equal(t, int32(1), reverted.Reverts)
 }
 
 // A phase that this operator does not know, for example of a newer operator,
@@ -180,7 +196,7 @@ func TestPlanUnknownPhaseStartsNoStep(t *testing.T) {
 }
 
 func TestPlanHeldEndsWhenAllPodsApplied(t *testing.T) {
-	s, _ := Plan(applying(t), obs(ApplyTimeout))
+	s, _ := Plan(applying(t), appliedObs(ApplyTimeout))
 	require.Equal(t, PhaseHeld, s.Phase)
 	o := obs(time.Hour)
 	o.Applied = true
@@ -315,7 +331,7 @@ func TestPlanAfterTheClockWentBack(t *testing.T) {
 		require.Equal(t, ActionNone, action)
 		assert.Equal(t, at(back), s.StartedAt)
 		assert.Equal(t, at(back), s.Steps[StepBudget-1])
-		s, action = Plan(s, obs(back+ApplyTimeout))
+		s, action = Plan(s, appliedObs(back+ApplyTimeout))
 		assert.Equal(t, ActionHold, action)
 	})
 
@@ -347,7 +363,7 @@ func TestPlanUserChanges(t *testing.T) {
 		effective int64
 	}{
 		{name: "spec raised above To", spec: 1500 * mi, max: 4 * gi, phase: PhaseIdle},
-		{name: "spec raised to To", spec: 1280 * mi, max: 4 * gi, phase: PhaseIdle},
+		{name: "spec raised to To", spec: 1280 * mi, max: 4 * gi, phase: PhaseApplying},
 		{name: "spec raised below To", spec: 1100 * mi, max: 4 * gi, phase: PhaseApplying, effective: 1280 * mi},
 		{name: "spec lowered", spec: 512 * mi, max: 4 * gi, phase: PhaseApplying, effective: 1280 * mi},
 		{name: "memoryMax lowered below To", spec: gi, max: 1100 * mi, phase: PhaseIdle, effective: 1100 * mi},
@@ -363,6 +379,137 @@ func TestPlanUserChanges(t *testing.T) {
 			assert.Equal(t, test.effective, s.Effective)
 			assert.Equal(t, max(test.spec, test.effective), EffectiveLimit(s, test.spec, test.max))
 		})
+	}
+}
+
+// A spec limit at the target of the step does not change the template. The
+// step continues, and a refusal or the timeout holds it, because a revert
+// cannot lower the template.
+func TestPlanKeepsAStepWithTheSpecAtTo(t *testing.T) {
+	pinned := func(t *testing.T) State {
+		o := obs(time.Minute)
+		o.Spec, o.Settled = 1280*mi, false
+		s, action := Plan(applying(t), o)
+		require.Equal(t, ActionNone, action)
+		require.Equal(t, PhaseApplying, s.Phase)
+		return s
+	}
+	t.Run("refusal", func(t *testing.T) {
+		o := obs(2 * time.Minute)
+		o.Spec, o.Refusal = 1280*mi, "quota"
+		s, action := Plan(pinned(t), o)
+		assert.Equal(t, ActionHold, action)
+		assert.Equal(t, PhaseHeld, s.Phase)
+		assert.Equal(t, "quota", s.Refusal)
+		assert.Zero(t, s.Effective)
+		assert.Zero(t, s.Reverts)
+	})
+	t.Run("timeout", func(t *testing.T) {
+		o := obs(ApplyTimeout)
+		o.Spec = 1280 * mi
+		s, action := Plan(pinned(t), o)
+		assert.Equal(t, ActionHold, action)
+		assert.Equal(t, RefusalTimeout, s.Refusal)
+	})
+	t.Run("done", func(t *testing.T) {
+		o := obs(2 * time.Minute)
+		o.Spec, o.Applied = 1280*mi, true
+		s, action := Plan(pinned(t), o)
+		assert.Equal(t, ActionDone, action)
+		assert.Equal(t, PhaseDone, s.Phase)
+	})
+	t.Run("held step", func(t *testing.T) {
+		s := applying(t)
+		s.Phase, s.Refusal = PhaseHeld, "infeasible"
+		o := obs(time.Hour)
+		o.Spec = 1280 * mi
+		s, action := Plan(s, o)
+		assert.Equal(t, ActionNone, action)
+		assert.Equal(t, PhaseHeld, s.Phase)
+		assert.Equal(t, "infeasible", s.Refusal)
+		assert.Equal(t, s, Resume(s, 1280*mi, 1280*mi, 4*gi))
+
+		// An expired state from before the change of the spec.
+		stored := applying(t)
+		stored.Phase = PhaseHeld
+		resumed := Resume(stored, 1280*mi, 1280*mi, 4*gi)
+		assert.Equal(t, PhaseHeld, resumed.Phase)
+		assert.Zero(t, resumed.Effective)
+	})
+	t.Run("a later change of the spec ends it", func(t *testing.T) {
+		for _, spec := range []int64{1344 * mi, 1100 * mi} {
+			o := obs(2 * time.Minute)
+			o.Spec, o.Settled = spec, false
+			s, _ := Plan(pinned(t), o)
+			assert.Equal(t, PhaseIdle, s.Phase, spec)
+			assert.Equal(t, PhaseIdle, Resume(pinned(t), spec, spec, 4*gi).Phase, spec)
+		}
+	})
+}
+
+// A change of the spec turns a frozen limit above the spec limit into a held
+// step to it. The step ends as Done when each pod runs with the limit, and a
+// spec limit above it ends the step.
+func TestUnfreeze(t *testing.T) {
+	frozen := State{Version: StateVersion, Phase: PhaseIdle, Frozen: true, Generation: 1, Effective: 1280 * mi, SpecLimit: gi}
+	for _, test := range []struct {
+		spec, effective int64
+		phase           string
+	}{
+		{spec: gi, effective: 1280 * mi, phase: PhaseHeld},
+		{spec: gi + 64*mi, effective: 1280 * mi, phase: PhaseHeld},
+		{spec: 1280 * mi, phase: PhaseHeld},
+		{spec: 1344 * mi, phase: PhaseIdle},
+	} {
+		o := obs(time.Minute)
+		o.Generation, o.Spec, o.Settled = 2, test.spec, false
+		s, action := Plan(frozen, o)
+		assert.Equal(t, ActionNone, action)
+		assert.False(t, s.Frozen)
+		assert.Equal(t, test.phase, s.Phase, test.spec)
+		assert.Equal(t, test.effective, s.Effective, test.spec)
+		if test.phase == PhaseHeld {
+			assert.Equal(t, RefusalLostState, s.Refusal)
+			assert.Equal(t, gi, s.From)
+			assert.Equal(t, 1280*mi, s.To)
+
+			o.Applied = true
+			s, action = Plan(s, o)
+			assert.Equal(t, ActionDone, action)
+			assert.Equal(t, PhaseDone, s.Phase)
+		}
+	}
+
+	// Without the generation of a change, the freeze stays.
+	o := obs(time.Minute)
+	o.Generation = 1
+	s, _ := Plan(frozen, o)
+	assert.True(t, s.Frozen)
+
+	atSpec := frozen
+	atSpec.Effective = 0
+	assert.Equal(t, PhaseIdle, Unfreeze(atSpec).Phase)
+}
+
+// A spec limit at or above the limit of a step ends the step, unless the
+// step is not done. A later lower spec limit then gives the pods of the step
+// the user path.
+func TestBoundEndsTheStepAtTheSpecLimit(t *testing.T) {
+	for _, test := range []struct {
+		phase string
+		spec  int64
+		to    int64
+	}{
+		{PhaseDone, 1280 * mi, 0},
+		{PhaseDone, 1536 * mi, 0},
+		{PhaseIdle, 1280 * mi, 0},
+		{PhaseReverted, 1280 * mi, 0},
+		{PhaseDone, gi, 1280 * mi},
+		{PhaseApplying, 1280 * mi, 1280 * mi},
+		{PhaseHeld, 1280 * mi, 1280 * mi},
+	} {
+		s := State{Phase: test.phase, From: gi, To: 1280 * mi, Effective: 1280 * mi}
+		assert.Equal(t, test.to, Bound(s, test.spec, 4*gi).To, "%s at %d", test.phase, test.spec)
 	}
 }
 
@@ -438,4 +585,106 @@ func TestStateRoundTrip(t *testing.T) {
 	moved := s
 	moved.Steps[0] = 1
 	assert.True(t, moved.NeedsWrite(s), "a change of the steps")
+}
+
+// A frozen limit starts no step until the spec changes.
+func TestPlanFrozen(t *testing.T) {
+	s := recommending()
+	s.Effective, s.Frozen, s.Generation = 1100*mi, true, 1
+
+	got, action := Plan(s, obs(time.Hour))
+	assert.Equal(t, ActionNone, action)
+	assert.True(t, got.Frozen)
+	assert.Equal(t, ReasonFrozen, ReportStep(redisfailoverv1.AutoscalingStatus{Reason: ReasonSustained}, got, gi, 1100*mi).Reason)
+	assert.Empty(t, WaitReason(got, obs(time.Hour)), "the frozen reason has priority")
+
+	// The change of the spec holds the frozen limit as a step until each pod
+	// runs with it. The next step waits for the cooldown after that.
+	o := obs(time.Hour)
+	o.Generation = 2
+	got, action = Plan(s, o)
+	assert.Equal(t, ActionNone, action)
+	assert.False(t, got.Frozen)
+	assert.Equal(t, PhaseHeld, got.Phase)
+	o.Applied = true
+	got, action = Plan(got, o)
+	require.Equal(t, ActionDone, action)
+	got.Recommended, got.Reason = 1408*mi, ReasonSustained
+	got, action = Plan(got, obs(time.Hour+Cooldown))
+	assert.Equal(t, ActionStart, action)
+	assert.Equal(t, 1100*mi, got.From)
+}
+
+func TestWaitReason(t *testing.T) {
+	notSettled := obs(0)
+	notSettled.Settled = false
+	budget := recommending()
+	for i := range StepBudget {
+		budget.Steps[i] = at(time.Duration(i) * time.Minute)
+	}
+	reverted := recommending()
+	reverted.Phase = PhaseReverted
+	applied := recommending()
+	applied.Effective = 1280 * mi
+	tests := map[string]struct {
+		s    State
+		o    Observation
+		want string
+	}{
+		"no recommendation":            {known(), notSettled, ""},
+		"limit has the recommendation": {applied, notSettled, ""},
+		"not settled":                  {recommending(), notSettled, ReasonNotSettled},
+		"cooldown":                     {done(t, ReasonSustained), obs(time.Minute), ReasonCooldown},
+		"budget":                       {budget, obs(time.Hour), ReasonBudget},
+		"step can start":               {recommending(), obs(0), ""},
+		"reverted":                     {reverted, notSettled, ""},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, test.want, WaitReason(test.s, test.o))
+		})
+	}
+}
+
+func TestReportStepRefusal(t *testing.T) {
+	st := redisfailoverv1.AutoscalingStatus{Reason: ReasonLow}
+	for phase, reason := range map[string]string{PhaseHeld: ReasonHeld, PhaseReverted: ReasonReverted} {
+		s := State{Phase: phase, Refusal: "pod rfr-test-1: resize infeasible"}
+		assert.Equal(t, reason+": pod rfr-test-1: resize infeasible", ReportStep(st, s, gi, gi).Reason, phase)
+	}
+}
+
+func TestResume(t *testing.T) {
+	s := applying(t)
+	tests := map[string]struct {
+		live      int64
+		effective int64
+		phase     string
+	}{
+		"template has the step":          {1280 * mi, 1280 * mi, PhaseApplying},
+		"template before the step":       {gi, 0, PhaseIdle},
+		"template between":               {1100 * mi, 1100 * mi, PhaseIdle},
+		"template above memoryMax":       {8 * gi, 4 * gi, PhaseIdle},
+		"template below the spec":        {512 * mi, 0, PhaseIdle},
+		"template larger than Effective": {1536 * mi, 1536 * mi, PhaseIdle},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := Resume(s, test.live, gi, 4*gi)
+			assert.Equal(t, test.effective, got.Effective)
+			assert.Equal(t, test.phase, got.Phase)
+		})
+	}
+
+	reverted := s
+	reverted.Phase, reverted.Effective = PhaseReverted, 0
+	assert.Equal(t, reverted, Resume(reverted, 1280*mi, gi, 4*gi), "a revert stays")
+
+	held := s
+	held.Phase, held.Refusal = PhaseHeld, "quota"
+	got := Resume(held, gi, gi, 4*gi)
+	assert.Equal(t, PhaseIdle, got.Phase)
+	assert.Empty(t, got.Refusal)
+	doneStep := State{Phase: PhaseDone, Effective: 1280 * mi}
+	assert.Equal(t, PhaseDone, Resume(doneStep, gi, gi, 4*gi).Phase, "a done step keeps its phase")
 }

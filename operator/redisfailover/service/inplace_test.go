@@ -368,7 +368,7 @@ func TestResizePodInPlaceRecreates(t *testing.T) {
 		old, new corev1.PodTemplateSpec
 		reason   string
 	}{
-		"unsupported cluster":         {k8s.PodResizeSupport{}, podTemplate(resources("1", "1Gi")), podTemplate(resources("2", "1Gi")), ""},
+		"unsupported cluster":         {k8s.PodResizeSupport{}, podTemplate(resources("1", "1Gi")), podTemplate(resources("2", "1Gi")), "an in-place resize needs Kubernetes 1.33 or later"},
 		"more than resources change":  {fullSupport, podTemplate(resources("1", "1Gi")), other, "the update changes more than container resources"},
 		"resource claims change":      {fullSupport, podTemplate(resources("1", "1Gi")), claimed, "the update changes more than container resources"},
 		"limit replaced":              {fullSupport, podTemplate(resources("1", "1Gi")), podTemplate(corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")}}), "requests or limits are added or removed"},
@@ -408,6 +408,7 @@ func TestResizePodInPlaceRecreatesWithoutRevisionsOrSupport(t *testing.T) {
 		result, err := NewRedisFailoverHealer(&mK8SService.Services{}, nil, log.Dummy).ResizePodInPlace(rf, resizePod, "new", AutoscalerLimits{})
 		require.NoError(t, err)
 		assert.Equal(t, ResizeRecreate, result.Action)
+		assert.Equal(t, "redis.inPlaceResize is Disabled", result.Message)
 	})
 
 	t.Run("revisions forbidden", func(t *testing.T) {
@@ -598,14 +599,13 @@ func TestResizePodInPlaceSupersededResize(t *testing.T) {
 	assert.Equal(t, ResizeRecreate, result.Action)
 	assert.Equal(t, "lowering a memory limit in place needs Kubernetes 1.35", result.Message)
 
-	// Before 1.35 the API server refuses to revert an increase the kubelet has not applied yet.
-	invalid := apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, resizePod, nil)
-	result, _, err = runResize(t, resizeCase{k8s.PodResizeSupport{Supported: true}, podTemplate(a), podTemplate(a), stalePod(c, a)}, func(ms *mK8SService.Services) {
-		ms.On("ResizePod", "testns", resizePod, mock.Anything).Once().Return(invalid)
-	})
+	// Before 1.35 the API server refuses to revert an increase the kubelet has
+	// not applied, so the operator sends no resize.
+	result, ms, err = runResize(t, resizeCase{k8s.PodResizeSupport{Supported: true}, podTemplate(a), podTemplate(a), stalePod(c, a)}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, ResizeRecreate, result.Action)
-	assert.Equal(t, "resize rejected: "+invalid.Error(), result.Message)
+	assert.Equal(t, "lowering a memory limit in place needs Kubernetes 1.35", result.Message)
+	ms.AssertNotCalled(t, "ResizePod", mock.Anything, mock.Anything, mock.Anything)
 }
 
 // A condition keeps its transition time when a newer resize supersedes the
@@ -850,21 +850,21 @@ func TestAutoscalerRevision(t *testing.T) {
 		"from an earlier effective limit":   {memory("", "1536Mi"), memory("", "2Gi"), effective, true},
 		"memoryMax lowered":                 {memory("", "2Gi"), memory("", "1536Mi"), AutoscalerLimits{Spec: 1 << 30, Effective: 1536 << 20}, false},
 		"same limit":                        {memory("", "2Gi"), memory("", "2Gi"), effective, false},
-		"pod revision below the spec limit": {memory("", "512Mi"), memory("", "2Gi"), effective, false},
-		"memory request equal to the limit": {memory("1Gi", "1Gi"), memory("2Gi", "2Gi"), effective, true},
-		"memory request below the limit":    {memory("512Mi", "1Gi"), memory("512Mi", "2Gi"), effective, true},
-		"no autoscaler state":               {memory("", "1Gi"), memory("", "2Gi"), AutoscalerLimits{}, false},
-		"limit other than effective":        {memory("", "1Gi"), memory("", "2Gi"), AutoscalerLimits{Spec: 1 << 30, Effective: 3 << 30}, false},
-		"image change":                      {memory("", "1Gi"), image, effective, false},
-		"cpu change":                        {memory("", "1Gi"), cpu, effective, false},
-		"exporter change":                   {memory("", "1Gi"), exporter, effective, false},
-		"request added":                     {memory("", "1Gi"), memory("2Gi", "2Gi"), effective, false},
-		"request removed":                   {memory("1Gi", "1Gi"), memory("", "2Gi"), effective, false},
-		"request changed":                   {memory("512Mi", "1Gi"), memory("768Mi", "2Gi"), effective, false},
-		"request changed, limit kept":       {memory("512Mi", "2Gi"), memory("768Mi", "2Gi"), effective, false},
-		"limit added":                       {noLimit, memory("", "2Gi"), effective, false},
-		"limit removed":                     {memory("", "1Gi"), noLimit, effective, false},
-		"no redis container":                {memory("", "1Gi"), noRedis, effective, false},
+		"pod revision below the spec limit": {memory("", "512Mi"), memory("", "2Gi"), effective, true},
+		"effective at the spec limit":       {memory("", "512Mi"), memory("", "1Gi"), AutoscalerLimits{Spec: 1 << 30, Effective: 1 << 30}, false}, "memory request equal to the limit": {memory("1Gi", "1Gi"), memory("2Gi", "2Gi"), effective, true},
+		"memory request below the limit": {memory("512Mi", "1Gi"), memory("512Mi", "2Gi"), effective, true},
+		"no autoscaler state":            {memory("", "1Gi"), memory("", "2Gi"), AutoscalerLimits{}, false},
+		"limit other than effective":     {memory("", "1Gi"), memory("", "2Gi"), AutoscalerLimits{Spec: 1 << 30, Effective: 3 << 30}, false},
+		"image change":                   {memory("", "1Gi"), image, effective, false},
+		"cpu change":                     {memory("", "1Gi"), cpu, effective, false},
+		"exporter change":                {memory("", "1Gi"), exporter, effective, false},
+		"request added":                  {memory("", "1Gi"), memory("2Gi", "2Gi"), effective, false},
+		"request removed":                {memory("1Gi", "1Gi"), memory("", "2Gi"), effective, false},
+		"request changed":                {memory("512Mi", "1Gi"), memory("768Mi", "2Gi"), effective, false},
+		"request changed, limit kept":    {memory("512Mi", "2Gi"), memory("768Mi", "2Gi"), effective, false},
+		"limit added":                    {noLimit, memory("", "2Gi"), effective, false},
+		"limit removed":                  {memory("", "1Gi"), noLimit, effective, false},
+		"no redis container":             {memory("", "1Gi"), noRedis, effective, false},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -894,11 +894,15 @@ func TestResizePodInPlaceReportsAnAutoscalerRevision(t *testing.T) {
 		"infeasible without autoscaler": {resizeRF(), infeasible, AutoscalerLimits{}, nil, false},
 		// A lower memoryMax is a change of the user, so the pod takes the
 		// user path and is recreated.
-		"memoryMax lowered before 1.35":    {resizeRF(), resizeCase{k8s.PodResizeSupport{Supported: true}, podTemplate(new), podTemplate(resources("1", "1536Mi")), podFrom(podTemplate(new))}, AutoscalerLimits{Spec: 1 << 30, Effective: 1536 << 20}, nil, false},
-		"disabled":                         {disabled, infeasible, effective, nil, true},
-		"unsupported cluster":              {resizeRF(), resizeCase{k8s.PodResizeSupport{}, infeasible.old, infeasible.new, infeasible.pod}, effective, nil, true},
-		"disabled, revision not available": {disabled, infeasible, effective, revisionNotFound("old"), false},
-		"revision not available":           {resizeRF(), infeasible, effective, revisionNotFound("old"), false},
+		"memoryMax lowered before 1.35": {resizeRF(), resizeCase{k8s.PodResizeSupport{Supported: true}, podTemplate(new), podTemplate(resources("1", "1536Mi")), podFrom(podTemplate(new))}, AutoscalerLimits{Spec: 1 << 30, Effective: 1536 << 20}, nil, false},
+		"disabled":                      {disabled, infeasible, effective, nil, true},
+		"unsupported cluster":           {resizeRF(), resizeCase{k8s.PodResizeSupport{}, infeasible.old, infeasible.new, infeasible.pod}, effective, nil, true},
+		// Without the revision, the pod can be on a step of the autoscaler,
+		// so it is not recreated.
+		"disabled, revision not available":          {disabled, infeasible, effective, revisionNotFound("old"), true},
+		"revision not available":                    {resizeRF(), infeasible, effective, revisionNotFound("old"), true},
+		"update revision not available":             {resizeRF(), infeasible, effective, revisionNotFound("new"), true},
+		"revision not available without autoscaler": {resizeRF(), infeasible, AutoscalerLimits{}, revisionNotFound("old"), false},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
