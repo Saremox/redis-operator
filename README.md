@@ -417,7 +417,7 @@ These gauges have the labels `namespace` and `name`:
 
 ### Custom shutdown script
 
-By default, the operator gives each Redis pod a shutdown script. The script makes Redis `SAVE` its data before it stops. When Sentinel runs and the pod is the master, the script first pauses the writes and asks Sentinel to fail over. Thus Sentinel moves the master immediately and does not wait for `down-after-milliseconds`. The Redis pods have no service links, so the script finds Sentinel through the Service name `rfs-<NAME>` on port 26379.
+By default, the operator gives each Redis pod a shutdown script. The script makes Redis `SAVE` its data before it stops. When Sentinel runs and the pod is the master, the script first pauses the writes, waits for the replicas, and asks Sentinel to fail over. Thus Sentinel moves the master immediately and does not wait for `down-after-milliseconds`. The Redis pods have no service links, so the script finds Sentinel through the Service name `rfs-<NAME>` on port 26379.
 
 After the failover, the script makes the old master a replica of the new master. The pause prevents the loss of writes that the old master acknowledged, because the clients get `READONLY` instead. If the pause fails, the script does not ask for a failover. Redis 7 and later then pause the writes when they stop and wait for their replicas, and Sentinel fails over after `down-after-milliseconds`. The pause fails on Redis before 6.2 and after a password change. After a password change, the `REDIS_PASSWORD` variable of a pod keeps the old password until the pod restarts.
 
@@ -429,7 +429,9 @@ To replace the default script, create a ConfigMap with a `shutdown.sh` key in th
 
 Sentinel does not stop writes on the old master in a failover. If the old master still runs, it accepts writes until Sentinel makes it a replica. With the default timings, this occurs about 10 seconds after the promotion. The old master then copies the data of the new master, and the writes that it acknowledged in that interval are lost. The interval ends earlier if the operator moves the master label or makes the old master a replica first. In a test on kind, a `SENTINEL FAILOVER` lost 11 seconds of writes through `rfrm-<NAME>`.
 
-The default shutdown script prevents this loss when the master pod is deleted, because it pauses the writes (`CLIENT PAUSE ... WRITE`) before it requests the failover. In 3 deletions on kind, no acknowledged write was lost, and the new master was ready after about 1 second.
+The default shutdown script prevents this loss when the master pod is deleted. It pauses the writes (`CLIENT PAUSE ... WRITE`) before it requests the failover. In 3 deletions on kind without the wait below, no acknowledged write was lost. The new master was ready after about 1 second.
+
+Sentinel promotes a replica without a check of its replication offset. Thus, before the failover request, the script waits until each online replica confirms the `master_repl_offset` of the master. The replicas confirm once per second, so with healthy replicas the wait adds 1 second or less to the write pause. The wait stops 5 seconds after the start of the script. Then the script requests the failover also when a replica is behind.
 
 A custom shutdown script that requests a failover without this pause causes the loss. In a test without the pause, 2 deletions lost 8 seconds and 0.1 seconds of writes through `rfrm-<NAME>`. A custom script that uses `REDIS_PASSWORD` has the old password after a password change, until the pod restarts.
 

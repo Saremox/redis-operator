@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -3423,7 +3426,9 @@ func TestRedisShutdownScriptEndsInsideGracePeriod(t *testing.T) {
 
 	// The fake Sentinel reports this pod (10.0.0.1) as the master on the
 	// first query and 10.0.0.2 after it. The fake local Redis answers OK, or
-	// refuses a password other than FAKE_REQUIREPASS as redis-cli does.
+	// refuses a password other than FAKE_REQUIREPASS as redis-cli does. Its
+	// INFO shows one online replica behind the master for the first
+	// FAKE_BEHIND calls, or FAKE_INFO.
 	fakeCLI := `#!/bin/sh
 echo "auth=$REDISCLI_AUTH $*" >>"$FAKE_LOG"
 case "$*" in
@@ -3440,6 +3445,19 @@ esac
 case "$*" in
 *"-h "*) ;;
 *"CLIENT PAUSE"*) echo "${FAKE_PAUSE:-OK}"; exit 0 ;;
+*"INFO replication"*)
+	if [ -n "$FAKE_INFO" ]; then
+		printf '%b\n' "$FAKE_INFO"
+		exit 0
+	fi
+	offset=200
+	[ "$(grep -c "INFO replication" "$FAKE_LOG")" -le "${FAKE_BEHIND:-0}" ] && offset=150
+	printf '# Replication\r\nrole:master\r\nconnected_slaves:3\r\n'
+	printf 'slave0:ip=10.0.0.2,port=6379,state=online,offset=200,lag=0\r\n'
+	printf 'slave1:ip=10.0.0.3,port=6379,state=online,offset=%s,lag=1,type=replica\r\n' "$offset"
+	printf 'slave2:ip=10.0.0.4,port=6379,state=wait_bgsave,offset=0,lag=0\r\n'
+	printf 'master_failover_state:no-failover\r\nmaster_repl_offset:200\r\n'
+	exit 0 ;;
 *) echo OK; exit 0 ;;
 esac
 [ "$FAKE_FROZEN" = 1 ] && exec sleep 30
@@ -3460,11 +3478,24 @@ esac
 	sentinel := "auth= -h " + rfservice.GetSentinelName(rf) + " -p 26379 "
 	lookup := sentinel + "--csv SENTINEL get-master-addr-by-name mymaster"
 	failover := sentinel + "SENTINEL failover mymaster"
+	info := "auth= -p 6379 INFO replication"
+	moved := []string{
+		failover,
+		lookup,
+		"auth= -p 6379 REPLICAOF 10.0.0.2 6379",
+		"auth= -p 6379 CLIENT UNPAUSE",
+		"auth= -p 6379 save",
+	}
 	tests := []struct {
 		name      string
 		env       []string
 		wantCalls []string
-		maxTime   time.Duration
+		// manyInfo means that the script repeats INFO until the end of the
+		// wait for the replicas. wantCalls then has one INFO call.
+		manyInfo   bool
+		wantOutput string
+		minTime    time.Duration
+		maxTime    time.Duration
 	}{
 		{
 			name: "master moves",
@@ -3472,6 +3503,7 @@ esac
 			wantCalls: []string{
 				lookup,
 				"auth=secret -p 6379 CLIENT PAUSE <ms> WRITE",
+				"auth=secret -p 6379 INFO replication",
 				failover,
 				lookup,
 				"auth=secret -p 6379 REPLICAOF 10.0.0.2 6379",
@@ -3479,6 +3511,44 @@ esac
 				"auth=secret -p 6379 save",
 			},
 			maxTime: 5 * time.Second,
+		},
+		{
+			// Sentinel can promote a replica that did not get the last
+			// writes. The script asks for the failover only after the
+			// replica confirmed the offset of the master.
+			name:      "replica behind",
+			env:       []string{"FAKE_BEHIND=3"},
+			wantCalls: append([]string{lookup, "auth= -p 6379 CLIENT PAUSE <ms> WRITE", info, info, info, info}, moved...),
+			maxTime:   5 * time.Second,
+		},
+		{
+			// A replica that does not confirm the writes must not stop the
+			// failover: the pause of the writes ends at a fixed time.
+			name:       "replica stays behind",
+			env:        []string{"FAKE_BEHIND=1000"},
+			wantCalls:  append([]string{lookup, "auth= -p 6379 CLIENT PAUSE <ms> WRITE", info}, moved...),
+			manyInfo:   true,
+			wantOutput: "shutdown.sh: not all online replicas confirmed the writes, the failover can lose writes (replicas behind: 1)",
+			minTime:    4 * time.Second,
+			maxTime:    9 * time.Second,
+		},
+		{
+			name:       "info fails",
+			env:        []string{"FAKE_INFO=NOAUTH Authentication required."},
+			wantCalls:  append([]string{lookup, "auth= -p 6379 CLIENT PAUSE <ms> WRITE", info}, moved...),
+			manyInfo:   true,
+			wantOutput: "(replicas behind: unknown)",
+			minTime:    4 * time.Second,
+			maxTime:    9 * time.Second,
+		},
+		{
+			// A replica in a full sync has no offset to compare.
+			name: "no online replica",
+			env: []string{
+				`FAKE_INFO=role:master\r\nslave0:ip=10.0.0.2,port=6379,state=send_bulk,offset=0,lag=0\r\nmaster_repl_offset:200\r`,
+			},
+			wantCalls: append([]string{lookup, "auth= -p 6379 CLIENT PAUSE <ms> WRITE", info}, moved...),
+			maxTime:   5 * time.Second,
 		},
 		{
 			// Redis before 6.2 has no CLIENT PAUSE WRITE. A failover without
@@ -3513,6 +3583,7 @@ esac
 			wantCalls: []string{
 				lookup,
 				"auth=old -p 6379 CLIENT PAUSE <ms> WRITE",
+				"auth=old -p 6379 INFO replication",
 				failover,
 				lookup,
 				"auth=old -p 6379 REPLICAOF 10.0.0.2 6379",
@@ -3527,6 +3598,7 @@ esac
 			wantCalls: []string{
 				lookup,
 				"auth= -p 6379 CLIENT PAUSE <ms> WRITE",
+				info,
 				failover,
 				failover,
 				failover,
@@ -3569,7 +3641,9 @@ esac
 			out, err := cmd.CombinedOutput()
 			elapsed := time.Since(start)
 			require.NoError(t, err, string(out))
+			assert.GreaterOrEqual(t, elapsed, test.minTime)
 			assert.Less(t, elapsed, test.maxTime)
+			assert.Contains(t, string(out), test.wantOutput)
 			raw, err := os.ReadFile(logFile)
 			require.NoError(t, err)
 			calls := strings.Split(strings.TrimSpace(string(raw)), "\n")
@@ -3583,19 +3657,157 @@ esac
 					calls[i] = pause.ReplaceAllString(call, "CLIENT PAUSE <ms> WRITE")
 				}
 			}
+			if test.manyInfo {
+				// One INFO call each 0.1s until 7s before the deadline.
+				repeated := slices.Compact(slices.Clone(calls))
+				assert.Greater(t, len(calls)-len(repeated), 10)
+				calls = repeated
+			}
 			if test.wantCalls != nil {
 				assert.Equal(t, test.wantCalls, calls)
 				return
 			}
 			// The poll repeats the lookup until the deadline.
-			require.GreaterOrEqual(t, len(calls), 6)
-			assert.Equal(t, []string{lookup, "auth= -p 6379 CLIENT PAUSE <ms> WRITE", failover}, calls[:3])
-			for _, call := range calls[3 : len(calls)-2] {
+			require.GreaterOrEqual(t, len(calls), 7)
+			assert.Equal(t, []string{lookup, "auth= -p 6379 CLIENT PAUSE <ms> WRITE", info, failover}, calls[:4])
+			for _, call := range calls[4 : len(calls)-2] {
 				assert.Equal(t, lookup, call)
 			}
 			assert.Equal(t, []string{"auth= -p 6379 CLIENT UNPAUSE", "auth= -p 6379 save"}, calls[len(calls)-2:])
 		})
 	}
+}
+
+// startShutdownTestRedis starts a redis-server on ip:port. The pods of a
+// RedisFailover use one port, and the script gives that port to REPLICAOF.
+func startShutdownTestRedis(t *testing.T, ip string, port int, args ...string) *exec.Cmd {
+	t.Helper()
+	dir := t.TempDir()
+	args = append([]string{"--bind", ip, "--port", strconv.Itoa(port), "--save", "", "--appendonly", "no",
+		"--dir", dir, "--logfile", filepath.Join(dir, "log"), "--repl-diskless-sync-delay", "0"}, args...)
+	cmd := exec.Command("redis-server", args...)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	require.Eventually(t, func() bool {
+		out, err := exec.Command("redis-cli", "-h", ip, "-p", strconv.Itoa(port), "PING").Output()
+		return err == nil && strings.TrimSpace(string(out)) == "PONG"
+	}, 5*time.Second, 50*time.Millisecond)
+	return cmd
+}
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = l.Close() }()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+func shutdownTestReplicationInfo(t *testing.T, ip string, port int) string {
+	t.Helper()
+	out, err := exec.Command("redis-cli", "-h", ip, "-p", strconv.Itoa(port), "INFO", "replication").Output()
+	require.NoError(t, err)
+	return strings.ReplaceAll(string(out), "\r", "")
+}
+
+// The script runs against a real master and replica. The fake Sentinel
+// promotes the replica, as Sentinel does, without a check of its offset.
+func TestRedisShutdownScriptWaitsForTheReplica(t *testing.T) {
+	for _, bin := range []string{"redis-server", "redis-cli", "timeout"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s is not installed", bin)
+		}
+	}
+	realCLI, err := exec.LookPath("redis-cli")
+	require.NoError(t, err)
+	port := freeTCPPort(t)
+	startShutdownTestRedis(t, "127.0.0.1", port)
+	replica := startShutdownTestRedis(t, "127.0.0.2", port,
+		"--replicaof", "127.0.0.1", strconv.Itoa(port), "--replica-announce-ip", "127.0.0.2")
+	online := regexp.MustCompile(`slave0:ip=127\.0\.0\.2,port=\d+,state=online,offset=(\d+),`)
+	top := regexp.MustCompile(`master_repl_offset:(\d+)`)
+	require.Eventually(t, func() bool {
+		info := shutdownTestReplicationInfo(t, "127.0.0.1", port)
+		m, o := online.FindStringSubmatch(info), top.FindStringSubmatch(info)
+		return m != nil && o != nil && m[1] == o[1]
+	}, 10*time.Second, 50*time.Millisecond, "the replica did not sync")
+
+	// The stopped replica does not get the writes that the master
+	// acknowledges.
+	require.NoError(t, replica.Process.Signal(syscall.SIGSTOP))
+	t.Cleanup(func() { _ = replica.Process.Signal(syscall.SIGCONT) })
+	var writes strings.Builder
+	for i := range 100 {
+		fmt.Fprintf(&writes, "SET k%d %d\n", i, i)
+	}
+	set := exec.Command("redis-cli", "-p", strconv.Itoa(port))
+	set.Stdin = strings.NewReader(writes.String())
+	require.NoError(t, set.Run())
+
+	rf := generateRF()
+	rf.Spec.Redis.Port = int32(port)
+	rf.Spec.Sentinel.Enabled = ptr.To(true)
+	var script string
+	ms := &mK8SService.Services{}
+	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+		script = args.Get(1).(*corev1.ConfigMap).Data["shutdown.sh"]
+	}).Return(nil)
+	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+	require.NoError(t, client.EnsureRedisShutdownConfigMap(rf, nil, []metav1.OwnerReference{}))
+
+	// The fake Sentinel records the offsets at the failover request, then
+	// promotes the replica. The local calls go to the real master.
+	dir := t.TempDir()
+	fakeCLI := fmt.Sprintf(`#!/bin/sh
+case "$*" in
+*"-h "*) ;;
+*) exec %[1]s "$@" ;;
+esac
+case "$*" in
+*get-master-addr-by-name*)
+	if [ -e %[2]s/promoted ]; then echo '"127.0.0.2","%[3]d"'; else echo '"127.0.0.1","%[3]d"'; fi ;;
+*failover*)
+	%[1]s -p %[3]d INFO replication >%[2]s/master
+	%[1]s -h 127.0.0.2 -p %[3]d INFO replication >%[2]s/replica
+	%[1]s -h 127.0.0.2 -p %[3]d REPLICAOF NO ONE >/dev/null
+	touch %[2]s/promoted
+	echo OK ;;
+esac
+`, realCLI, dir, port)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "redis-cli"), []byte(fakeCLI), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hostname"), []byte("#!/bin/sh\necho 127.0.0.1\n"), 0o755))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", script)
+	cmd.WaitDelay = time.Second
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "REDIS_PASSWORD=")
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	require.NoError(t, cmd.Start())
+	time.Sleep(500 * time.Millisecond)
+	require.NoError(t, replica.Process.Signal(syscall.SIGCONT))
+	require.NoError(t, cmd.Wait(), out.String())
+
+	raw, err := os.ReadFile(filepath.Join(dir, "master"))
+	require.NoError(t, err, out.String())
+	master := strings.ReplaceAll(string(raw), "\r", "")
+	offset := top.FindStringSubmatch(master)
+	require.NotNil(t, offset, master)
+	acked := online.FindStringSubmatch(master)
+	require.NotNil(t, acked, master)
+	assert.Equal(t, offset[1], acked[1], "the master had writes that the replica did not confirm")
+	raw, err = os.ReadFile(filepath.Join(dir, "replica"))
+	require.NoError(t, err)
+	assert.Contains(t, strings.ReplaceAll(string(raw), "\r", ""), "slave_repl_offset:"+offset[1]+"\n")
+
+	dbsize, err := exec.Command("redis-cli", "-h", "127.0.0.2", "-p", strconv.Itoa(port), "DBSIZE").Output()
+	require.NoError(t, err)
+	assert.Equal(t, "100", strings.TrimSpace(string(dbsize)))
+	assert.Contains(t, shutdownTestReplicationInfo(t, "127.0.0.1", port), "master_host:127.0.0.2\n")
 }
 
 func TestEnsureRedisShutdownConfigMapUserSuppliedExists(t *testing.T) {

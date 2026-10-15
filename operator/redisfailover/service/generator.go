@@ -272,7 +272,8 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
 	// The preStop hook runs this script with /bin/sh, which is BusyBox ash on
 	// the Alpine Redis images. Thus the script uses only POSIX syntax, without
-	// "let" and "[[ ]]". The script retries both Sentinel calls, because one
+	// "let" and "[[ ]]". The sleep of BusyBox and of GNU coreutils accepts
+	// 0.1 seconds. The script retries both Sentinel calls, because one
 	// failed call must not stop the failover. The Redis pods have no service
 	// links, so the script finds Sentinel through the DNS name of the Sentinel
 	// Service.
@@ -290,6 +291,13 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	// before it ends the pause: the clients then get READONLY and not a lost
 	// OK. The pause stops 6s after the deadline, also if the script stops.
 	//
+	// Sentinel does not compare the offsets of the replicas with the master
+	// before the promotion. Thus the script waits until each online replica
+	// confirms the offset of the master. The replicas confirm once per second.
+	// WAIT does not help: since Redis 7.2, it waits only for the writes of its
+	// own connection. The wait stops 7s before the deadline, so that the
+	// failover request and the polls keep their time.
+	//
 	// Without the pause, a failover loses writes, so the script asks for none.
 	// Then Redis 7 and later pause the writes on SIGTERM and wait for the
 	// replicas, and Sentinel fails over after down-after-milliseconds. The
@@ -305,6 +313,25 @@ local_cli() {
 	else
 		$t redis-cli -p %[2]v "$@"
 	fi
+}
+replicas_behind() {
+	info=$(local_cli INFO replication | tr -d '\r')
+	top=""
+	for line in $info; do
+		case "$line" in
+		master_repl_offset:*) top=${line#*:} ;;
+		esac
+	done
+	[ -n "$top" ] || return
+	n=0
+	for line in $info; do
+		case "$line" in
+		slave*state=online,offset=*)
+			offset=${line#*,offset=}
+			if [ "${offset%%%%,*}" -lt "$top" ]; then n=$((n + 1)); fi ;;
+		esac
+	done
+	echo "$n"
 }
 deadline=$(($(date +%%s) + 12))
 self=$(hostname -i)
@@ -325,6 +352,14 @@ if [ "$master" = "$self" ]; then
   if [ "$paused" != "OK" ]; then
   	echo "shutdown.sh: could not pause the writes, so no failover is requested (stale REDIS_PASSWORD, or Redis before 6.2): $paused" >&2
   else
+  	behind=$(replicas_behind)
+  	while [ "$behind" != 0 ] && [ "$(date +%%s)" -lt "$((deadline - 7))" ]; do
+  		sleep 0.1
+  		behind=$(replicas_behind)
+  	done
+  	if [ "$behind" != 0 ]; then
+  		echo "shutdown.sh: not all online replicas confirmed the writes, the failover can lose writes (replicas behind: ${behind:-unknown})" >&2
+  	fi
   	failover=""
   	retries=0
   	while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ] && [ "$(date +%%s)" -lt "$deadline" ]; do
