@@ -333,7 +333,7 @@ func (c *rfController) process(ctx context.Context, key string) (err error) {
 	}()
 	obj, exists, err := c.rfInformer.GetIndexer().GetByKey(key)
 	if err != nil {
-		return err
+		return fmt.Errorf("get %s from the informer cache: %w", key, err)
 	}
 	if !exists {
 		c.handler.Forget(key)

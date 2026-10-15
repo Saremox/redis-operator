@@ -158,7 +158,7 @@ func (c *client) GetNumberSentinelsInMemory(ip string) (int32, error) {
 	info, err := rClient.Info(context.TODO(), "sentinel").Result()
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, getRedisError(err))
-		return 0, err
+		return 0, fmt.Errorf("INFO sentinel: %w", err)
 	}
 	if err2 := isSentinelReady(info); err2 != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, metrics.SENTINEL_NOT_READY)
@@ -172,7 +172,7 @@ func (c *client) GetNumberSentinelsInMemory(ip string) (int32, error) {
 	nSentinels, err := strconv.Atoi(match[1])
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, metrics.MISC)
-		return 0, err
+		return 0, fmt.Errorf("read the sentinel count: %w", err)
 	}
 	if nSentinels > 65536 {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, metrics.SENTINEL_TOO_MANY)
@@ -198,7 +198,7 @@ func (c *client) GetNumberSentinelSlavesInMemory(ip string) (int32, error) {
 	info, err := rClient.Info(context.TODO(), "sentinel").Result()
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, getRedisError(err))
-		return 0, err
+		return 0, fmt.Errorf("INFO sentinel: %w", err)
 	}
 	if err2 := isSentinelReady(info); err2 != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, metrics.SENTINEL_NOT_READY)
@@ -212,7 +212,7 @@ func (c *client) GetNumberSentinelSlavesInMemory(ip string) (int32, error) {
 	nSlaves, err := strconv.Atoi(match[1])
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, metrics.MISC)
-		return 0, err
+		return 0, fmt.Errorf("read the replica count: %w", err)
 	}
 	if nSlaves > 65536 {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, metrics.SENTINEL_TOO_MANY)
@@ -247,12 +247,7 @@ func (c *client) ResetSentinel(ip string) error {
 	err := rClient.Process(context.TODO(), cmd)
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.RESET_SENTINEL, metrics.FAIL, getRedisError(err))
-		return err
-	}
-	_, err = cmd.Result()
-	if err != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.RESET_SENTINEL, metrics.FAIL, getRedisError(err))
-		return err
+		return fmt.Errorf("SENTINEL RESET: %w", err)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.RESET_SENTINEL, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
@@ -274,7 +269,7 @@ func (c *client) GetSlaveOf(ip, port, password string) (string, error) {
 	info, err := rClient.Info(context.TODO(), "replication").Result()
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_SLAVE_OF, metrics.FAIL, getRedisError(err))
-		return "", err
+		return "", fmt.Errorf("INFO replication: %w", err)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_SLAVE_OF, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	// master_host can be an IPv6 address or a hostname, so take the full value.
@@ -301,7 +296,7 @@ func (c *client) IsMaster(ip, port, password string) (bool, error) {
 	info, err := rClient.Info(context.TODO(), "replication").Result()
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.IS_MASTER, metrics.FAIL, getRedisError(err))
-		return false, err
+		return false, fmt.Errorf("INFO replication: %w", err)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.IS_MASTER, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return strings.Contains(info, redisRoleMaster), nil
@@ -331,12 +326,7 @@ func (c *client) MonitorRedisWithPort(ip, monitor, port, quorum, password string
 	err := rClient.Process(context.TODO(), cmd)
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.MONITOR_REDIS_WITH_PORT, metrics.FAIL, getRedisError(err))
-		return err
-	}
-	_, err = cmd.Result()
-	if err != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.MONITOR_REDIS_WITH_PORT, metrics.FAIL, getRedisError(err))
-		return err
+		return fmt.Errorf("SENTINEL MONITOR: %w", err)
 	}
 
 	if password != "" {
@@ -344,12 +334,7 @@ func (c *client) MonitorRedisWithPort(ip, monitor, port, quorum, password string
 		err := rClient.Process(context.TODO(), cmd)
 		if err != nil {
 			c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.MONITOR_REDIS_WITH_PORT, metrics.FAIL, getRedisError(err))
-			return err
-		}
-		_, err = cmd.Result()
-		if err != nil {
-			c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.MONITOR_REDIS_WITH_PORT, metrics.FAIL, getRedisError(err))
-			return err
+			return fmt.Errorf("SENTINEL SET auth-pass: %w", err)
 		}
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.MONITOR_REDIS_WITH_PORT, metrics.SUCCESS, metrics.NOT_APPLICABLE)
@@ -370,7 +355,7 @@ func (c *client) MakeMaster(ip, port, password string) error {
 	}(rClient)
 	if res := rClient.SlaveOf(context.TODO(), "NO", "ONE"); res.Err() != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.MAKE_MASTER, metrics.FAIL, getRedisError(res.Err()))
-		return res.Err()
+		return fmt.Errorf("SLAVEOF NO ONE: %w", res.Err())
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.MAKE_MASTER, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
@@ -399,7 +384,7 @@ func (c *client) MakeSlaveOfWithPort(ip, port, masterIP, masterPort, password st
 	}(rClient)
 	if res := rClient.SlaveOf(context.TODO(), masterIP, masterPort); res.Err() != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.MAKE_SLAVE_OF, metrics.FAIL, getRedisError(res.Err()))
-		return res.Err()
+		return fmt.Errorf("SLAVEOF: %w", res.Err())
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.MAKE_SLAVE_OF, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
@@ -454,13 +439,10 @@ func (c *client) GetSentinelMonitor(ip string) (string, string, error) {
 	err := rClient.Process(context.TODO(), cmd)
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MONITOR, metrics.FAIL, getRedisError(err))
-		return "", "", err
+		return "", "", fmt.Errorf("SENTINEL MASTER: %w", err)
 	}
-	res, err := cmd.Result()
-	if err != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MONITOR, metrics.FAIL, getRedisError(err))
-		return "", "", err
-	}
+	// Process returns the error of cmd, so Val needs no error check.
+	res := cmd.Val()
 	// The reply comes from the Sentinel image, which a tenant can choose.
 	if len(res) < 6 {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MONITOR, metrics.FAIL, metrics.MISC)
@@ -619,7 +601,7 @@ func (c *client) sentinelConfigsToApply(current map[string]string, configs []str
 func (c *client) getSentinelMasterInfo(rClient *rediscli.Client) (map[string]string, error) {
 	cmd := rediscli.NewSliceCmd(context.TODO(), "SENTINEL", "master", masterName)
 	if err := rClient.Process(context.TODO(), cmd); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("SENTINEL MASTER: %w", err)
 	}
 	// Process returns the error of cmd, so Val needs no error check.
 	res := cmd.Val()
@@ -662,7 +644,7 @@ func (c *client) SentinelCheckQuorum(ip string) error {
 		}
 		log.Warnf("Unable to get result for CKQUORUM comand")
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.CHECK_SENTINEL_QUORUM, metrics.FAIL, getRedisError(err))
-		return err
+		return fmt.Errorf("SENTINEL CKQUORUM: %w", err)
 	}
 	log.Debugf("SentinelCheckQuorum cmd result: %s", res)
 	s := strings.Split(res, " ")
@@ -725,11 +707,11 @@ func (c *client) applyACLLoad(rClient *rediscli.Client) error {
 	err := rClient.Process(context.TODO(), cmd)
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.APPLY_REDIS_CONFIG, metrics.FAIL, getRedisError(err))
-		return err
+		return fmt.Errorf("ACL LOAD: %w", err)
 	}
 	if _, err := cmd.Result(); err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.APPLY_REDIS_CONFIG, metrics.FAIL, getRedisError(err))
-		return err
+		return fmt.Errorf("ACL LOAD: %w", err)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.APPLY_REDIS_CONFIG, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
@@ -739,10 +721,10 @@ func (c *client) applyRedisConfig(parameter, value string, rClient *rediscli.Cli
 	result := rClient.ConfigSet(context.TODO(), parameter, value)
 	if nil != result.Err() {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.APPLY_REDIS_CONFIG, metrics.FAIL, getRedisError(result.Err()))
-		return result.Err()
+		return fmt.Errorf("CONFIG SET %s: %w", parameter, result.Err())
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.APPLY_REDIS_CONFIG, metrics.SUCCESS, metrics.NOT_APPLICABLE)
-	return result.Err()
+	return nil
 }
 
 func (c *client) applySentinelConfig(parameter, value string, rClient *rediscli.Client) error {
@@ -750,10 +732,10 @@ func (c *client) applySentinelConfig(parameter, value string, rClient *rediscli.
 	err := rClient.Process(context.TODO(), cmd)
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, addrHost(rClient.Options().Addr), metrics.APPLY_SENTINEL_CONFIG, metrics.FAIL, getRedisError(err))
-		return err
+		return fmt.Errorf("SENTINEL SET %s: %w", parameter, err)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, addrHost(rClient.Options().Addr), metrics.APPLY_SENTINEL_CONFIG, metrics.SUCCESS, metrics.NOT_APPLICABLE)
-	return cmd.Err()
+	return nil
 }
 
 // addrHost returns the host part of addr for a metric label. A split on ":"
@@ -792,7 +774,7 @@ func (c *client) SlaveIsReady(ip, port, password string) (bool, error) {
 	info, err := rClient.Info(context.TODO(), "replication").Result()
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, addrHost(rClient.Options().Addr), metrics.SLAVE_IS_READY, metrics.FAIL, getRedisError(err))
-		return false, err
+		return false, fmt.Errorf("INFO replication: %w", err)
 	}
 
 	ok := !strings.Contains(info, redisSyncing) &&
@@ -820,7 +802,7 @@ func (c *client) GetReplicationInfo(ip, port, password string) (*ReplicationInfo
 	info, err := rClient.Info(context.TODO(), "replication").Result()
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_REPLICATION_INFO, metrics.FAIL, getRedisError(err))
-		return nil, err
+		return nil, fmt.Errorf("INFO replication: %w", err)
 	}
 
 	replInfo := &ReplicationInfo{}
@@ -888,7 +870,7 @@ func (c *client) SetPassword(ip, port, password, newPassword string) error {
 	for _, param := range []string{"masterauth", "requirepass"} {
 		if err := rClient.ConfigSet(context.TODO(), param, newPassword).Err(); err != nil {
 			c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.SET_PASSWORD, metrics.FAIL, getRedisError(err))
-			return err
+			return fmt.Errorf("CONFIG SET %s: %w", param, err)
 		}
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.SET_PASSWORD, metrics.SUCCESS, metrics.NOT_APPLICABLE)
@@ -909,7 +891,7 @@ func (c *client) SetSentinelAuthPass(ip, password string) error {
 	}(rClient)
 	if err := rClient.Do(context.TODO(), "SENTINEL", "SET", masterName, "auth-pass", password).Err(); err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.SET_PASSWORD, metrics.FAIL, getRedisError(err))
-		return err
+		return fmt.Errorf("SENTINEL SET auth-pass: %w", err)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.SET_PASSWORD, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
@@ -930,7 +912,7 @@ func (c *client) FailoverTo(ip, port, password, targetIP string, timeout time.Du
 	err := rClient.Do(context.TODO(), "FAILOVER", "TO", targetIP, port, "TIMEOUT", strconv.FormatInt(timeout.Milliseconds(), 10)).Err()
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_TO, metrics.FAIL, getRedisError(err))
-		return err
+		return fmt.Errorf("FAILOVER TO: %w", err)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_TO, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
@@ -950,7 +932,7 @@ func (c *client) FailoverAbort(ip, port, password string) error {
 	err := rClient.Do(context.TODO(), "FAILOVER", "ABORT").Err()
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_ABORT, metrics.FAIL, getRedisError(err))
-		return err
+		return fmt.Errorf("FAILOVER ABORT: %w", err)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.FAILOVER_ABORT, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
@@ -976,7 +958,7 @@ func (c *client) GetFailoverState(ip, port, password string) (string, error) {
 	info, err := rClient.Info(context.TODO(), "replication").Result()
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_FAILOVER_STATE, metrics.FAIL, getRedisError(err))
-		return "", err
+		return "", fmt.Errorf("INFO replication: %w", err)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_FAILOVER_STATE, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	for _, line := range strings.Split(info, "\n") {
@@ -999,7 +981,7 @@ func (c *client) GetRunID(ip, port, password string) (string, error) {
 	info, err := rClient.Info(context.TODO(), "server").Result()
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_RUN_ID, metrics.FAIL, getRedisError(err))
-		return "", err
+		return "", fmt.Errorf("INFO server: %w", err)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_RUN_ID, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	for _, line := range strings.Split(info, "\n") {
@@ -1028,7 +1010,7 @@ func (c *client) GetMemoryInfo(ip, port, password string) (*MemoryInfo, error) {
 		info, err := rClient.Info(context.TODO(), section).Result()
 		if err != nil {
 			c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_MEMORY_INFO, metrics.FAIL, getRedisError(err))
-			return nil, err
+			return nil, fmt.Errorf("INFO %s: %w", section, err)
 		}
 		for _, line := range strings.Split(info, "\n") {
 			key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
@@ -1071,7 +1053,7 @@ func (c *client) GetAutoscalerInfo(ip, port, password string) (*AutoscalerInfo, 
 	info, err := rClient.Info(context.TODO()).Result()
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_AUTOSCALER_INFO, metrics.FAIL, getRedisError(err))
-		return nil, err
+		return nil, fmt.Errorf("INFO: %w", err)
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_AUTOSCALER_INFO, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return parseAutoscalerInfo(info), nil
@@ -1142,6 +1124,17 @@ func IsAuthError(err error) bool {
 	return strings.Contains(msg, "WRONGPASS") ||
 		strings.Contains(msg, "NOAUTH") ||
 		IsNoPasswordError(err)
+}
+
+// ReplyHasPrefix reports whether the error reply of Redis in err starts with
+// prefix. The client methods wrap the reply, so a check of err.Error() does
+// not see the reply at the start. An error without a reply is checked by its
+// text.
+func ReplyHasPrefix(err error, prefix string) bool {
+	if reply, ok := errors.AsType[rediscli.Error](err); ok {
+		return strings.HasPrefix(reply.Error(), prefix)
+	}
+	return err != nil && strings.HasPrefix(err.Error(), prefix)
 }
 
 // IsNoPasswordError reports whether Redis was given a password while it has

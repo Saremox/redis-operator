@@ -73,9 +73,9 @@ func (p *PodService) GetPod(namespace, name string) (*corev1.Pod, error) {
 	pod, err := p.kubeClient.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "Pod", name, "GET", err, p.metricsRecorder)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get pod %s/%s: %w", namespace, name, err)
 	}
-	return pod, err
+	return pod, nil
 }
 
 // DeletePod deletes the named pod. Use DeletePodWithUID when a pod with the
@@ -83,7 +83,10 @@ func (p *PodService) GetPod(namespace, name string) (*corev1.Pod, error) {
 func (p *PodService) DeletePod(namespace, name string) error {
 	err := p.kubeClient.CoreV1().Pods(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 	recordMetrics(namespace, "Pod", name, "DELETE", err, p.metricsRecorder)
-	return err
+	if err != nil {
+		return fmt.Errorf("delete pod %s/%s: %w", namespace, name, err)
+	}
+	return nil
 }
 
 // DeletePodWithUID deletes the pod only while it has the UID uid. A pod
@@ -92,14 +95,20 @@ func (p *PodService) DeletePod(namespace, name string) error {
 func (p *PodService) DeletePodWithUID(namespace, name string, uid types.UID) error {
 	err := p.kubeClient.CoreV1().Pods(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
 	recordMetrics(namespace, "Pod", name, "DELETE", err, p.metricsRecorder)
-	return err
+	if err != nil {
+		return fmt.Errorf("delete pod %s/%s: %w", namespace, name, err)
+	}
+	return nil
 }
 
 // ListPods returns all the pods of the namespace.
 func (p *PodService) ListPods(namespace string) (*corev1.PodList, error) {
 	pods, err := p.kubeClient.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{})
 	recordMetrics(namespace, "Pod", metrics.NOT_APPLICABLE, "LIST", err, p.metricsRecorder)
-	return pods, err
+	if err != nil {
+		return pods, fmt.Errorf("list pods in %s: %w", namespace, err)
+	}
+	return pods, nil
 }
 
 // UpdatePodLabels sets the given labels on a pod. It uses a JSON merge patch
@@ -129,8 +138,9 @@ func (p *PodService) UpdatePodLabels(namespace, podName string, labels map[strin
 			logf = logger.Debugf
 		}
 		logf("Update pod labels failed: %v", err)
+		return fmt.Errorf("patch the labels of pod %s/%s: %w", namespace, podName, err)
 	}
-	return err
+	return nil
 }
 
 // UpdatePodAnnotations sets the given annotations on a pod. The JSON merge
@@ -150,8 +160,9 @@ func (p *PodService) UpdatePodAnnotations(namespace, podName string, annotations
 	recordMetrics(namespace, "Pod", podName, "PATCH", err, p.metricsRecorder)
 	if err != nil {
 		p.logger.WithField("namespace", namespace).WithField("pod", podName).Errorf("Update pod annotations failed: %v", err)
+		return fmt.Errorf("patch the annotations of pod %s/%s: %w", namespace, podName, err)
 	}
-	return err
+	return nil
 }
 
 // RemovePodAnnotation deletes one annotation from a pod. In a JSON merge patch,
@@ -170,8 +181,9 @@ func (p *PodService) RemovePodAnnotation(namespace, podName, key string) error {
 	recordMetrics(namespace, "Pod", podName, "PATCH", err, p.metricsRecorder)
 	if err != nil {
 		p.logger.WithField("namespace", namespace).WithField("pod", podName).Errorf("Remove pod annotation failed: %v", err)
+		return fmt.Errorf("remove annotation %s of pod %s/%s: %w", key, namespace, podName, err)
 	}
-	return err
+	return nil
 }
 
 // ResizePod sets the resources of the named containers through the pod's
@@ -189,7 +201,10 @@ func (p *PodService) ResizePod(namespace, podName string, resources map[string]c
 	payloadBytes, _ := json.Marshal(map[string]any{"spec": map[string]any{"containers": containers}})
 	_, err := p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.StrategicMergePatchType, payloadBytes, metav1.PatchOptions{}, "resize")
 	recordMetrics(namespace, "Pod", podName, "RESIZE", err, p.metricsRecorder)
-	return err
+	if err != nil {
+		return fmt.Errorf("resize pod %s/%s: %w", namespace, podName, err)
+	}
+	return nil
 }
 
 // PodResizeSupport reports the cluster's support for in-place pod resize.
@@ -201,7 +216,7 @@ func (p *PodService) PodResizeSupport() (PodResizeSupport, error) {
 	}
 	version, err := p.kubeClient.Discovery().ServerVersion()
 	if err != nil {
-		return PodResizeSupport{}, err
+		return PodResizeSupport{}, fmt.Errorf("get the server version: %w", err)
 	}
 	// Minor can carry a suffix, e.g. "35+".
 	minor, err := strconv.Atoi(strings.TrimRight(version.Minor, "+"))

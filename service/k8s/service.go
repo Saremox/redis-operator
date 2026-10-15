@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -44,9 +45,9 @@ func (s *ServiceService) GetService(namespace, name string) (*corev1.Service, er
 	service, err := s.kubeClient.CoreV1().Services(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "Service", name, "GET", err, s.metricsRecorder)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get service %s/%s: %w", namespace, name, err)
 	}
-	return service, err
+	return service, nil
 }
 
 // CreateService creates the given Service.
@@ -54,7 +55,7 @@ func (s *ServiceService) CreateService(namespace string, service *corev1.Service
 	_, err := s.kubeClient.CoreV1().Services(namespace).Create(context.TODO(), service, metav1.CreateOptions{})
 	recordMetrics(namespace, "Service", service.GetName(), "CREATE", err, s.metricsRecorder)
 	if err != nil {
-		return err
+		return fmt.Errorf("create service %s/%s: %w", namespace, service.Name, err)
 	}
 	s.logger.WithField("namespace", namespace).WithField("serviceName", service.Name).Debugf("service created")
 	return nil
@@ -65,7 +66,7 @@ func (s *ServiceService) UpdateService(namespace string, service *corev1.Service
 	_, err := s.kubeClient.CoreV1().Services(namespace).Update(context.TODO(), service, metav1.UpdateOptions{})
 	recordMetrics(namespace, "Service", service.GetName(), "UPDATE", err, s.metricsRecorder)
 	if err != nil {
-		return err
+		return fmt.Errorf("update service %s/%s: %w", namespace, service.Name, err)
 	}
 	s.logger.WithField("namespace", namespace).WithField("serviceName", service.Name).Debugf("service updated")
 	return nil
@@ -140,12 +141,18 @@ func (s *ServiceService) DeleteService(namespace, name string) error {
 	propagation := metav1.DeletePropagationForeground
 	err := s.kubeClient.CoreV1().Services(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{PropagationPolicy: &propagation})
 	recordMetrics(namespace, "Service", name, "DELETE", err, s.metricsRecorder)
-	return err
+	if err != nil {
+		return fmt.Errorf("delete service %s/%s: %w", namespace, name, err)
+	}
+	return nil
 }
 
 // ListServices returns all the Services of the namespace.
 func (s *ServiceService) ListServices(namespace string) (*corev1.ServiceList, error) {
 	serviceList, err := s.kubeClient.CoreV1().Services(namespace).List(context.TODO(), metav1.ListOptions{})
 	recordMetrics(namespace, "Service", metrics.NOT_APPLICABLE, "LIST", err, s.metricsRecorder)
-	return serviceList, err
+	if err != nil {
+		return serviceList, fmt.Errorf("list services in %s: %w", namespace, err)
+	}
+	return serviceList, nil
 }

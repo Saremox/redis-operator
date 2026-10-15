@@ -274,7 +274,7 @@ func TestPodServiceLogsTheNamespaceAndPod(t *testing.T) {
 			service := k8s.NewPodService(mcli, fieldLogger{lines: &lines}, metrics.Dummy)
 
 			err := test.call(service)
-			assert.Equal(t, test.err, err)
+			require.ErrorIs(t, err, test.err)
 			assert.Equal(t, test.expLines, lines)
 		})
 	}

@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"fmt"
 
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -43,7 +44,7 @@ func (p *PodDisruptionBudgetService) GetPodDisruptionBudget(namespace, name stri
 	podDisruptionBudget, err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "PodDisruptionBudget", name, "GET", err, p.metricsRecorder)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get poddisruptionbudget %s/%s: %w", namespace, name, err)
 	}
 	return podDisruptionBudget, nil
 }
@@ -53,7 +54,7 @@ func (p *PodDisruptionBudgetService) CreatePodDisruptionBudget(namespace string,
 	_, err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Create(context.TODO(), podDisruptionBudget, metav1.CreateOptions{})
 	recordMetrics(namespace, "PodDisruptionBudget", podDisruptionBudget.GetName(), "CREATE", err, p.metricsRecorder)
 	if err != nil {
-		return err
+		return fmt.Errorf("create poddisruptionbudget %s/%s: %w", namespace, podDisruptionBudget.Name, err)
 	}
 	p.logger.WithField("namespace", namespace).WithField("podDisruptionBudget", podDisruptionBudget.Name).Debugf("podDisruptionBudget created")
 	return nil
@@ -65,7 +66,7 @@ func (p *PodDisruptionBudgetService) UpdatePodDisruptionBudget(namespace string,
 	_, err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Update(context.TODO(), podDisruptionBudget, metav1.UpdateOptions{})
 	recordMetrics(namespace, "PodDisruptionBudget", podDisruptionBudget.GetName(), "UPDATE", err, p.metricsRecorder)
 	if err != nil {
-		return err
+		return fmt.Errorf("update poddisruptionbudget %s/%s: %w", namespace, podDisruptionBudget.Name, err)
 	}
 	p.logger.WithField("namespace", namespace).WithField("podDisruptionBudget", podDisruptionBudget.Name).Debugf("podDisruptionBudget updated")
 	return nil
@@ -104,5 +105,8 @@ func (p *PodDisruptionBudgetService) CreateOrUpdatePodDisruptionBudget(namespace
 func (p *PodDisruptionBudgetService) DeletePodDisruptionBudget(namespace, name string) error {
 	err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 	recordMetrics(namespace, "PodDisruptionBudget", name, "DELETE", err, p.metricsRecorder)
-	return err
+	if err != nil {
+		return fmt.Errorf("delete poddisruptionbudget %s/%s: %w", namespace, name, err)
+	}
+	return nil
 }

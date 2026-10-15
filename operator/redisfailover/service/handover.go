@@ -2,11 +2,11 @@ package service
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/service/k8s"
+	"github.com/saremox/redis-operator/service/redis"
 )
 
 // HandoverResult is the outcome of HandOverMaster.
@@ -78,9 +78,9 @@ func (r *RedisFailoverHealer) HandOverMaster(masterIP, targetIP string, rf *redi
 		err = r.redisClient.FailoverTo(masterIP, port, password, targetIP, handoverWritePause)
 		switch {
 		case err == nil:
-		case strings.HasPrefix(err.Error(), "ERR unknown command"):
+		case redis.ReplyHasPrefix(err, "ERR unknown command"):
 			return HandoverUnsupported, nil
-		case strings.HasPrefix(err.Error(), "ERR FAILOVER"), strings.HasPrefix(err.Error(), "NOPERM"):
+		case redis.ReplyHasPrefix(err, "ERR FAILOVER"), redis.ReplyHasPrefix(err, "NOPERM"):
 			logger.Warningf("FAILOVER to %s refused: %v", targetIP, err)
 			return HandoverRefused, nil
 		default:
@@ -109,7 +109,7 @@ func (r *RedisFailoverHealer) HandOverMaster(masterIP, targetIP string, rf *redi
 		case err == nil:
 			logger.Warningf("FAILOVER to %s aborted: it did not end in the wait, or the target stopped", targetIP)
 		// The role change ended just before the abort.
-		case !strings.HasPrefix(err.Error(), "ERR No failover in progress"):
+		case !redis.ReplyHasPrefix(err, "ERR No failover in progress"):
 			return 0, err
 		}
 	}
@@ -186,7 +186,7 @@ func (r *RedisFailoverHealer) AbortOrphanedFailover(masterIP string, rf *redisfa
 		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Warningf("aborted a FAILOVER on %s that no reconcile watched", masterIP)
 	// The failover ended just before the abort. The roles changed, so the
 	// caller also checks them again.
-	case !strings.HasPrefix(err.Error(), "ERR No failover in progress"):
+	case !redis.ReplyHasPrefix(err, "ERR No failover in progress"):
 		return false, err
 	}
 	return true, nil

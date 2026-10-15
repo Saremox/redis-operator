@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -16,6 +17,17 @@ import (
 	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
 	"github.com/saremox/redis-operator/service/redis"
 )
+
+// replyError is an error reply of Redis. The client wraps it with the command.
+type replyError string
+
+func (e replyError) Error() string { return string(e) }
+
+func (replyError) RedisError() {}
+
+func wrappedReply(command, reply string) error {
+	return fmt.Errorf("%s: %w", command, replyError(reply))
+}
 
 const (
 	handoverMaster = "10.0.0.1"
@@ -139,6 +151,15 @@ func TestHandOverMaster(t *testing.T) {
 			want:       HandoverDone,
 		},
 		{
+			name:       "the role change ends just before the abort, wrapped reply",
+			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget)},
+			failover:   true,
+			abort:      new(wrappedReply("FAILOVER ABORT", "ERR No failover in progress.")),
+			afterAbort: replicaInfo("no-failover", handoverTarget),
+			targetRole: new(true),
+			want:       HandoverDone,
+		},
+		{
 			name:     "FAILOVER ABORT fails",
 			infos:    []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget)},
 			failover: true,
@@ -195,10 +216,31 @@ func TestHandOverMaster(t *testing.T) {
 			want:        HandoverUnsupported,
 		},
 		{
+			name:        "a rename-command disables FAILOVER, wrapped reply",
+			infos:       []*redis.ReplicationInfo{masterInfo("no-failover")},
+			failover:    true,
+			failoverErr: wrappedReply("FAILOVER TO", "ERR unknown command 'FAILOVER', with args beginning with: 'TO' "),
+			want:        HandoverUnsupported,
+		},
+		{
 			name:        "the target is not an online replica",
 			infos:       []*redis.ReplicationInfo{masterInfo("no-failover")},
 			failover:    true,
 			failoverErr: errors.New("ERR FAILOVER target HOST and PORT is not a replica."),
+			want:        HandoverRefused,
+		},
+		{
+			name:        "the target is not an online replica, wrapped reply",
+			infos:       []*redis.ReplicationInfo{masterInfo("no-failover")},
+			failover:    true,
+			failoverErr: wrappedReply("FAILOVER TO", "ERR FAILOVER target HOST and PORT is not a replica."),
+			want:        HandoverRefused,
+		},
+		{
+			name:        "an ACL denies FAILOVER, wrapped reply",
+			infos:       []*redis.ReplicationInfo{masterInfo("no-failover")},
+			failover:    true,
+			failoverErr: wrappedReply("FAILOVER TO", "NOPERM User operator has no permissions to run the 'failover' command"),
 			want:        HandoverRefused,
 		},
 		{
@@ -396,6 +438,7 @@ func TestAbortOrphanedFailover(t *testing.T) {
 		{name: "a role change runs", state: "failover-in-progress", abort: ptrTo[error](nil), want: true},
 		{name: "a catch-up runs", state: "waiting-for-sync", abort: ptrTo[error](nil), want: true},
 		{name: "the failover ends just before the abort", state: "waiting-for-sync", abort: ptrTo(errors.New("ERR No failover in progress.")), want: true},
+		{name: "the failover ends just before the abort, wrapped reply", state: "waiting-for-sync", abort: new(wrappedReply("FAILOVER ABORT", "ERR No failover in progress.")), want: true},
 		{name: "the abort fails", state: "waiting-for-sync", abort: ptrTo(errBoom), wantErr: "boom"},
 		{name: "no failover runs", state: "no-failover"},
 		{name: "Redis before 6.2"},
