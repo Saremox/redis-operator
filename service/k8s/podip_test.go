@@ -11,6 +11,7 @@ import (
 	kubernetes "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/saremox/redis-operator/log"
+	"github.com/saremox/redis-operator/metrics"
 	mmetrics "github.com/saremox/redis-operator/mocks/metrics"
 	"github.com/saremox/redis-operator/service/k8s"
 )
@@ -43,7 +44,7 @@ func TestPodListsSetPodIPs(t *testing.T) {
 			withIP(ownedPod(other, "rfr-rf-2", selectorLabels), "10.0.0.3"),
 		)
 		rec := newRecorder()
-		rec.On("SetPodIP", testns, "rfr-rf-0", "10.0.0.1").Once()
+		rec.On("SetPodIP", metrics.KIND_REDIS, testns, "rfr-rf-0", "10.0.0.1").Once()
 
 		_, err := k8s.NewStatefulSetService(mcli, log.Dummy, rec).GetStatefulSetPods(testns, "rfr-rf")
 		require.NoError(t, err)
@@ -61,7 +62,7 @@ func TestPodListsSetPodIPs(t *testing.T) {
 			withIP(replicaSetPod("other-abc-3", testns, "abc", "other-abc", selectorLabels), "10.0.0.6"),
 		)
 		rec := newRecorder()
-		rec.On("SetPodIP", testns, "rfs-rf-abc-1", "10.0.0.4").Once()
+		rec.On("SetPodIP", metrics.KIND_SENTINEL, testns, "rfs-rf-abc-1", "10.0.0.4").Once()
 
 		_, err := k8s.NewDeploymentService(mcli, log.Dummy, rec).GetDeploymentPods(testns, "rfs-rf")
 		require.NoError(t, err)

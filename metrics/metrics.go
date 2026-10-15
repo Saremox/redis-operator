@@ -93,7 +93,7 @@ var ( // used for garbage collection of metrics
 	mutex                     sync.Mutex
 	recorders                 = []recorder{}
 	instanceMetricLastUpdated = map[podKey]time.Time{}
-	podsByIP                  = map[string]podEntry{}
+	podsByIP                  = map[podIPKey]map[podKey]time.Time{}
 	resourceMetricLastUpdated = map[string]time.Time{}
 	checkMetricLastUpdated    = map[string]checkMetricInfo{}
 )
@@ -116,10 +116,12 @@ type podKey struct {
 	name      string
 }
 
-// podEntry is the pod that had an IP when the operator last listed the pods.
-type podEntry struct {
-	podKey
-	lastSeen time.Time
+// podIPKey is a pod IP of one kind, KIND_REDIS or KIND_SENTINEL. With the
+// host network, a pod has the IP of its node, so a redis pod and a sentinel
+// pod can have the same IP.
+type podIPKey struct {
+	kind string
+	ip   string
 }
 
 // Recorder collects the operator metrics. NewRecorder exposes them to
@@ -147,10 +149,11 @@ type Recorder interface {
 
 	RecordEnsureOperation(objectNamespace string, objectName string, objectKind string, resourceName string, status string)
 
-	// SetPodIP tells which pod has the IP. The series of RecordRedisCheck,
-	// RecordSentinelCheck and RecordRedisOperation then carry the pod name,
-	// because a pod IP changes each time Kubernetes creates the pod again.
-	SetPodIP(namespace string, name string, ip string)
+	// SetPodIP tells which pod of the kind KIND_REDIS or KIND_SENTINEL has
+	// the IP. The series of RecordRedisCheck, RecordSentinelCheck and
+	// RecordRedisOperation then carry the pod name, because a pod IP changes
+	// each time Kubernetes creates the pod again.
+	SetPodIP(kind string, namespace string, name string, ip string)
 
 	// RecordRedisCheck and RecordSentinelCheck take a pod IP or NOT_APPLICABLE
 	// as instance.
@@ -357,32 +360,40 @@ func (r recorder) RecordEnsureOperation(objectNamespace, objectName, objectKind,
 	updateResourceMetricLastUpdatedTracker(objectNamespace, objectKind, objectName)
 }
 
-func (r recorder) SetPodIP(namespace, name, ip string) {
+func (r recorder) SetPodIP(kind, namespace, name, ip string) {
+	key := podIPKey{kind: kind, ip: ip}
 	mutex.Lock()
-	podsByIP[ip] = podEntry{podKey: podKey{namespace: namespace, name: name}, lastSeen: time.Now()}
+	if podsByIP[key] == nil {
+		podsByIP[key] = map[podKey]time.Time{}
+	}
+	podsByIP[key][podKey{namespace: namespace, name: name}] = time.Now()
 	mutex.Unlock()
 }
 
 // podOf returns the pod of SetPodIP. For an unknown IP or NOT_APPLICABLE, the
-// value is the name, so the series stays apart from the other pods.
-func podOf(ip string) podKey {
+// value is the name, so the series stays apart from the other pods. An IP of
+// more than one pod gives the same result, because the operator cannot tell
+// which pod got the command.
+func podOf(kind, ip string) podKey {
 	mutex.Lock()
 	defer mutex.Unlock()
-	if entry, ok := podsByIP[ip]; ok {
-		return entry.podKey
+	if pods := podsByIP[podIPKey{kind: kind, ip: ip}]; len(pods) == 1 {
+		for pod := range pods {
+			return pod
+		}
 	}
 	return podKey{namespace: NOT_APPLICABLE, name: ip}
 }
 
 func (r recorder) RecordRedisCheck(namespace, resource, indicator /* aspect of redis that is unhealthy */, instance, status string) {
-	instance = podOf(instance).name
+	instance = podOf(KIND_REDIS, instance).name
 	r.redisCheck.WithLabelValues(namespace, resource, indicator, instance, status).Add(1)
 	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", resource)
 	updateCheckMetricLastUpdatedTracker("redis", namespace, resource, indicator, instance)
 }
 
 func (r recorder) RecordSentinelCheck(namespace, resource, indicator /* aspect of sentinel that is unhealthy */, instance, status string) {
-	instance = podOf(instance).name
+	instance = podOf(KIND_SENTINEL, instance).name
 	r.sentinelCheck.WithLabelValues(namespace, resource, indicator, instance, status).Add(1)
 	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", resource)
 	updateCheckMetricLastUpdatedTracker("sentinel", namespace, resource, indicator, instance)
@@ -394,7 +405,7 @@ func (r recorder) RecordK8sOperation(namespace, kind, name, operation, status, e
 }
 
 func (r recorder) RecordRedisOperation(kind /* redis or sentinel */, IP, operation, status, err string) {
-	pod := podOf(IP)
+	pod := podOf(kind, IP)
 	r.redisOperations.WithLabelValues(kind, pod.namespace, pod.name, operation, status, err).Add(1)
 	updateInstanceMetricLastUpdatedTracker(pod)
 }
@@ -526,9 +537,15 @@ func getLabelsOfStaleMetrics() (kubernetesResourceBasedLabels, customResourceBas
 		}
 
 	}
-	for ip, entry := range podsByIP {
-		if entry.lastSeen.Before(time.Now().Add(-metricsGCIntervalMinutes * time.Minute)) {
-			delete(podsByIP, ip)
+	// An IP of two pods gets a pod name again when only one pod stays listed.
+	for key, pods := range podsByIP {
+		for pod, lastSeen := range pods {
+			if lastSeen.Before(time.Now().Add(-metricsGCIntervalMinutes * time.Minute)) {
+				delete(pods, pod)
+			}
+		}
+		if len(pods) == 0 {
+			delete(podsByIP, key)
 		}
 	}
 	mutex.Unlock()

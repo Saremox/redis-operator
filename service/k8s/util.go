@@ -97,10 +97,10 @@ func recordMetrics(namespace, kind, object, operation string, err error, metrics
 
 // setPodIPs gives the pod IPs to the metrics. The operator sends the Redis and
 // Sentinel commands only to the IPs of these pod lists.
-func setPodIPs(pods []corev1.Pod, metricsRecorder metrics.Recorder) {
+func setPodIPs(kind string, pods []corev1.Pod, metricsRecorder metrics.Recorder) {
 	for i := range pods {
 		if ip := pods[i].Status.PodIP; ip != "" {
-			metricsRecorder.SetPodIP(pods[i].Namespace, pods[i].Name, ip)
+			metricsRecorder.SetPodIP(kind, pods[i].Namespace, pods[i].Name, ip)
 		}
 	}
 }

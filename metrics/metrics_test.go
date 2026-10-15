@@ -307,7 +307,7 @@ func TestDummyRecorder(t *testing.T) {
 		Dummy.RecordSentinelCheck("ns", "res", SENTINEL_NOT_READY, "inst", FAIL)
 		Dummy.RecordK8sOperation("ns", "Pod", "name", "create", SUCCESS, "")
 		Dummy.RecordRedisOperation("redis", "10.0.0.5", GET_SLAVE_OF, SUCCESS, "")
-		Dummy.SetPodIP("ns", "pod", "10.0.0.5")
+		Dummy.SetPodIP(KIND_REDIS, "ns", "pod", "10.0.0.5")
 		Dummy.SetAutoscaler("ns", "name", 1, 0.5, 2, 1)
 		Dummy.SetAutoscalerPhase("ns", "name", 1)
 		Dummy.CountAutoscalerStep("ns", "name", AutoscalerStepDone)
