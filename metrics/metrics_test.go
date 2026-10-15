@@ -232,7 +232,7 @@ func TestGetLabelsOfStaleMetrics(t *testing.T) {
 	assert.Contains(t, kubeLabels, prometheus.Labels{"namespace": "ns1", "kind": KIND_REDIS, "name": "obj1"})
 	assert.Contains(t, customLabels, prometheus.Labels{"namespace": "ns1", "resource": "obj1"})
 	assert.Contains(t, kubeLabels, prometheus.Labels{"namespace": "ns1", "kind": "redisfailover", "name": "res1"})
-	assert.Contains(t, podLabels, prometheus.Labels{"namespace": NOT_APPLICABLE, "pod": "10.0.0.10"})
+	assert.Contains(t, podLabels, prometheus.Labels{"namespace": NOT_APPLICABLE, "pod_name": "10.0.0.10"})
 
 	// The fresh entry must not show up as stale.
 	for _, l := range kubeLabels {

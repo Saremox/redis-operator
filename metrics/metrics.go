@@ -258,7 +258,7 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 			Subsystem: promControllerSubsystem,
 			Name:      "redis_operations_total",
 			Help:      "Number of commands that the operator sent to Redis and Sentinel, by pod and status.",
-		}, []string{"kind" /* redis or sentinel */, "namespace", "pod", "operation", "status", "err"})
+		}, []string{"kind" /* redis or sentinel */, "namespace", "pod_name", "operation", "status", "err"})
 
 	k8sServiceOperations := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -518,7 +518,7 @@ func getLabelsOfStaleMetrics() (kubernetesResourceBasedLabels, customResourceBas
 			podBasedLabels = append(podBasedLabels,
 				prometheus.Labels{
 					"namespace": pod.namespace,
-					"pod":       pod.name,
+					"pod_name":  pod.name,
 				},
 			)
 			// The labels hold the key, so the tracker can forget it.

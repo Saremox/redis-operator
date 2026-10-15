@@ -829,8 +829,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (namespace, kind, operation, status, pod, err) (rate(redis_operator_controller_redis_operations_total{pod=~\"$redis_pod|$sentinel_pod\",status=\"FAIL\", err!=\"SENTINEL_REGEX_NOT_FOUND\"}[$bucket_interval])) > 0",
-          "legendFormat": "{{kind}} {{pod}} {{operation}} {{err}} ",
+          "expr": "sum by (namespace, kind, operation, status, pod_name, err) (rate(redis_operator_controller_redis_operations_total{pod_name=~\"$redis_pod|$sentinel_pod\",status=\"FAIL\", err!=\"SENTINEL_REGEX_NOT_FOUND\"}[$bucket_interval])) > 0",
+          "legendFormat": "{{kind}} {{pod_name}} {{operation}} {{err}} ",
           "range": true,
           "refId": "A"
         }
@@ -1027,8 +1027,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (kind, operation, status, pod) (rate(redis_operator_controller_redis_operations_total{pod=~\"$redis_pod|$sentinel_pod\"}[$bucket_interval]))  > 0",
-          "legendFormat": "{{kind}} {{pod}} {{operation}} {{status}} ",
+          "expr": "sum by (kind, operation, status, pod_name) (rate(redis_operator_controller_redis_operations_total{pod_name=~\"$redis_pod|$sentinel_pod\"}[$bucket_interval]))  > 0",
+          "legendFormat": "{{kind}} {{pod_name}} {{operation}} {{status}} ",
           "range": true,
           "refId": "A"
         }
