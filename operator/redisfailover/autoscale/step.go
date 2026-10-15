@@ -128,11 +128,19 @@ func Bound(s State, spec, maxLimit int64) State {
 	if e <= spec {
 		e = 0
 	}
-	if e != s.Effective {
+	if e != s.Effective || e == 0 {
 		s.Effective = e
-		if s.Phase == PhaseApplying || s.Phase == PhaseHeld {
-			s.Phase, s.Refusal = PhaseIdle, ""
-		}
+		s = s.endStep(spec)
+	}
+	return s
+}
+
+// endStep ends a step that is not done after a change of Effective. A spec
+// limit at the target of the step does not change the template, so that step
+// continues with an Effective of 0.
+func (s State) endStep(spec int64) State {
+	if (s.Phase == PhaseApplying || s.Phase == PhaseHeld) && (s.Effective != 0 || s.To != spec) {
+		s.Phase, s.Refusal = PhaseIdle, ""
 	}
 	return s
 }
@@ -151,10 +159,11 @@ func Resume(s State, live, spec, maxLimit int64) State {
 		e = 0
 	}
 	if e != s.Effective {
-		s.Effective, s.SpecLimit = e, spec
-		if s.Phase == PhaseApplying || s.Phase == PhaseHeld {
-			s.Phase, s.Refusal = PhaseIdle, ""
-		}
+		s.SpecLimit = spec
+	}
+	if e != s.Effective || e == 0 {
+		s.Effective = e
+		s = s.endStep(spec)
 	}
 	return s
 }
@@ -183,15 +192,18 @@ func Plan(s State, o Observation) (State, Action) {
 	}
 	switch s.Phase {
 	case PhaseApplying:
+		// With a spec limit at the target of the step, a revert cannot lower
+		// the template.
+		revert := !o.AnyApplied && s.Effective != 0
 		switch {
 		case o.Applied:
 			return s.done(now), ActionDone
-		case o.Refusal != "" && !o.AnyApplied:
+		case o.Refusal != "" && revert:
 			return s.revert(o, now), ActionRevert
 		case o.Refusal != "":
 			s.Phase, s.Refusal = PhaseHeld, o.Refusal
 			return s, ActionHold
-		case now-s.StartedAt >= seconds(ApplyTimeout) && !o.AnyApplied:
+		case now-s.StartedAt >= seconds(ApplyTimeout) && revert:
 			// For example, a pod of the step that no node can hold.
 			o.Refusal = RefusalTimeout
 			return s.revert(o, now), ActionRevert

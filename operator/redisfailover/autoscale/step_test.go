@@ -363,7 +363,7 @@ func TestPlanUserChanges(t *testing.T) {
 		effective int64
 	}{
 		{name: "spec raised above To", spec: 1500 * mi, max: 4 * gi, phase: PhaseIdle},
-		{name: "spec raised to To", spec: 1280 * mi, max: 4 * gi, phase: PhaseIdle},
+		{name: "spec raised to To", spec: 1280 * mi, max: 4 * gi, phase: PhaseApplying},
 		{name: "spec raised below To", spec: 1100 * mi, max: 4 * gi, phase: PhaseApplying, effective: 1280 * mi},
 		{name: "spec lowered", spec: 512 * mi, max: 4 * gi, phase: PhaseApplying, effective: 1280 * mi},
 		{name: "memoryMax lowered below To", spec: gi, max: 1100 * mi, phase: PhaseIdle, effective: 1100 * mi},
@@ -380,6 +380,71 @@ func TestPlanUserChanges(t *testing.T) {
 			assert.Equal(t, max(test.spec, test.effective), EffectiveLimit(s, test.spec, test.max))
 		})
 	}
+}
+
+// A spec limit at the target of the step does not change the template. The
+// step continues, and a refusal or the timeout holds it, because a revert
+// cannot lower the template.
+func TestPlanKeepsAStepWithTheSpecAtTo(t *testing.T) {
+	pinned := func(t *testing.T) State {
+		o := obs(time.Minute)
+		o.Spec, o.Settled = 1280*mi, false
+		s, action := Plan(applying(t), o)
+		require.Equal(t, ActionNone, action)
+		require.Equal(t, PhaseApplying, s.Phase)
+		return s
+	}
+	t.Run("refusal", func(t *testing.T) {
+		o := obs(2 * time.Minute)
+		o.Spec, o.Refusal = 1280*mi, "quota"
+		s, action := Plan(pinned(t), o)
+		assert.Equal(t, ActionHold, action)
+		assert.Equal(t, PhaseHeld, s.Phase)
+		assert.Equal(t, "quota", s.Refusal)
+		assert.Zero(t, s.Effective)
+		assert.Zero(t, s.Reverts)
+	})
+	t.Run("timeout", func(t *testing.T) {
+		o := obs(ApplyTimeout)
+		o.Spec = 1280 * mi
+		s, action := Plan(pinned(t), o)
+		assert.Equal(t, ActionHold, action)
+		assert.Equal(t, RefusalTimeout, s.Refusal)
+	})
+	t.Run("done", func(t *testing.T) {
+		o := obs(2 * time.Minute)
+		o.Spec, o.Applied = 1280*mi, true
+		s, action := Plan(pinned(t), o)
+		assert.Equal(t, ActionDone, action)
+		assert.Equal(t, PhaseDone, s.Phase)
+	})
+	t.Run("held step", func(t *testing.T) {
+		s := applying(t)
+		s.Phase, s.Refusal = PhaseHeld, "infeasible"
+		o := obs(time.Hour)
+		o.Spec = 1280 * mi
+		s, action := Plan(s, o)
+		assert.Equal(t, ActionNone, action)
+		assert.Equal(t, PhaseHeld, s.Phase)
+		assert.Equal(t, "infeasible", s.Refusal)
+		assert.Equal(t, s, Resume(s, 1280*mi, 1280*mi, 4*gi))
+
+		// An expired state from before the change of the spec.
+		stored := applying(t)
+		stored.Phase = PhaseHeld
+		resumed := Resume(stored, 1280*mi, 1280*mi, 4*gi)
+		assert.Equal(t, PhaseHeld, resumed.Phase)
+		assert.Zero(t, resumed.Effective)
+	})
+	t.Run("a later change of the spec ends it", func(t *testing.T) {
+		for _, spec := range []int64{1344 * mi, 1100 * mi} {
+			o := obs(2 * time.Minute)
+			o.Spec, o.Settled = spec, false
+			s, _ := Plan(pinned(t), o)
+			assert.Equal(t, PhaseIdle, s.Phase, spec)
+			assert.Equal(t, PhaseIdle, Resume(pinned(t), spec, spec, 4*gi).Phase, spec)
+		}
+	})
 }
 
 func TestBoundKeepsTheStepOfAnotherPhase(t *testing.T) {
