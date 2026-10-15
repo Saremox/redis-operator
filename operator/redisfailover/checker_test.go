@@ -453,11 +453,11 @@ func TestCheckAndHeal(t *testing.T) {
 					if test.bootstrapping {
 						mrfc.On("CheckSentinelMonitor", sentinel, bootstrapMaster, bootstrapMasterPort).Once().Return(errors.New(""))
 						mrfh.On("NewSentinelMonitorWithPort", sentinel, bootstrapMaster, bootstrapMasterPort, rf).Once().Return(nil)
-						mrfc.On("SentinelFailoverInProgress", mock.Anything).Maybe().Return(false, time.Duration(0), nil)
+						mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 					} else {
 						mrfc.On("CheckSentinelMonitor", sentinel, master, "0").Once().Return(errors.New(""))
 						mrfh.On("NewSentinelMonitor", sentinel, master, rf).Once().Return(nil)
-						mrfc.On("SentinelFailoverInProgress", mock.Anything).Maybe().Return(false, time.Duration(0), nil)
+						mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 					}
 				}
 				if test.sentinelNumberInMemoryOK {
@@ -465,12 +465,14 @@ func TestCheckAndHeal(t *testing.T) {
 				} else {
 					mrfc.On("CheckSentinelNumberInMemory", sentinel, rf).Once().Return(errors.New(""))
 					mrfh.On("RestoreSentinel", sentinel).Once().Return(nil)
+					mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 				}
 				if test.sentinelSlavesNumberInMemoryOK {
 					mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(nil)
 				} else {
 					mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(errors.New(""))
 					mrfh.On("RestoreSentinel", sentinel).Once().Return(nil)
+					mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 				}
 				mrfh.On("SetSentinelCustomConfig", sentinel, rf).Once().Return(nil)
 			}
@@ -1348,7 +1350,7 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				mrfc.On("GetMasterIP", rf).Once().Return(newMaster, nil)
 				mrfc.On("CheckSentinelMonitor", sentinel, newMaster, port).Once().Return(errors.New("mon err"))
 				mrfh.On("NewSentinelMonitor", sentinel, newMaster, rf).Once().Return(errors.New("new monitor err"))
-				mrfc.On("SentinelFailoverInProgress", mock.Anything).Maybe().Return(false, time.Duration(0), nil)
+				mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 			},
 			wantErr:   true,
 			wantState: v1.NotHealthyState,
@@ -1381,6 +1383,7 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				mrfc.On("CheckSentinelMonitor", sentinel, master, port).Once().Return(nil)
 				mrfc.On("CheckSentinelNumberInMemory", sentinel, rf).Once().Return(errors.New("mismatch"))
 				mrfh.On("RestoreSentinel", sentinel).Once().Return(errors.New("restore err"))
+				mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 			},
 			wantErr:     true,
 			wantState:   v1.NotHealthyState,
@@ -1407,6 +1410,7 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				mrfc.On("CheckSentinelNumberInMemory", sentinel, rf).Once().Return(nil)
 				mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(errors.New("mismatch"))
 				mrfh.On("RestoreSentinel", sentinel).Once().Return(errors.New("restore err"))
+				mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 			},
 			wantErr:     true,
 			wantState:   v1.NotHealthyState,
@@ -1522,7 +1526,7 @@ func TestSentinelModeElectsWhenSentinelKnowsNoReplica(t *testing.T) {
 				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel}, nil)
 				mrfc.On("CheckSentinelMonitor", sentinel, newMaster, port).Once().Return(errors.New("monitors 10.0.0.9"))
 				mrfh.On("NewSentinelMonitor", sentinel, newMaster, rf).Once().Return(nil)
-				mrfc.On("SentinelFailoverInProgress", mock.Anything).Maybe().Return(false, time.Duration(0), nil)
+				mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 				mrfc.On("CheckSentinelNumberInMemory", sentinel, rf).Once().Return(nil)
 				mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(nil)
 				mrfh.On("SetSentinelCustomConfig", sentinel, rf).Once().Return(nil)
@@ -1718,7 +1722,7 @@ func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
 			mrfc.On("CheckSentinelMonitor", sentinel1, newMaster, port).Once().Return(test.sentinel1Err)
 			if test.wantNewMonitor1 {
 				mrfh.On("NewSentinelMonitor", sentinel1, newMaster, rf).Once().Return(nil)
-				mrfc.On("SentinelFailoverInProgress", mock.Anything).Maybe().Return(false, time.Duration(0), nil)
+				mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 			}
 			mrfc.On("CheckSentinelMonitor", sentinel2, newMaster, port).Once().Return(nil)
 			healed := []string{sentinel1, sentinel2}
@@ -1833,7 +1837,7 @@ func TestCheckAndHealSkipsUnreachableSentinel(t *testing.T) {
 						mrfc.On("CheckSentinelMonitor", s, master, port).Once().Return(checkErr)
 						if healErr != nil {
 							mrfh.On("NewSentinelMonitor", s, master, rf).Once().Return(healErr)
-							mrfc.On("SentinelFailoverInProgress", mock.Anything).Maybe().Return(false, time.Duration(0), nil)
+							mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 						}
 					case "sentinels", "replicas":
 						check := "CheckSentinelNumberInMemory"
@@ -1843,6 +1847,7 @@ func TestCheckAndHealSkipsUnreachableSentinel(t *testing.T) {
 						mrfc.On(check, s, rf).Once().Return(checkErr)
 						if healErr != nil {
 							mrfh.On("RestoreSentinel", s).Once().Return(healErr)
+							mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 						}
 					case "config":
 						mrfh.On("SetSentinelCustomConfig", s, rf).Once().Return(healErr)
@@ -1902,7 +1907,7 @@ func TestCheckAndHealNoResetAfterNewMonitor(t *testing.T) {
 		mrfc.On("CheckSentinelMonitor", sentinel, master, port).Once().Return(monitorErr)
 		if monitorErr != nil {
 			mrfh.On("NewSentinelMonitor", sentinel, master, rf).Once().Return(nil)
-			mrfc.On("SentinelFailoverInProgress", mock.Anything).Maybe().Return(false, time.Duration(0), nil)
+			mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 		}
 		mrfc.On("CheckSentinelNumberInMemory", sentinel, rf).Once().Return(errors.New("mismatch"))
 		mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(errors.New("mismatch"))
@@ -2047,7 +2052,7 @@ func TestCheckAndHealBootstrapModeErrorBranches(t *testing.T) {
 				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel}, nil)
 				mrfc.On("CheckSentinelMonitor", sentinel, bootstrapMaster, bootstrapMasterPort).Once().Return(errors.New("mon err"))
 				mrfh.On("NewSentinelMonitorWithPort", sentinel, bootstrapMaster, bootstrapMasterPort, rf).Once().Return(errors.New("new monitor err"))
-				mrfc.On("SentinelFailoverInProgress", mock.Anything).Maybe().Return(false, time.Duration(0), nil)
+				mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 			},
 			wantErr:     true,
 			wantState:   v1.NotHealthyState,
@@ -2065,7 +2070,7 @@ func TestCheckAndHealBootstrapModeErrorBranches(t *testing.T) {
 				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel, other, healthy}, nil)
 				mrfc.On("CheckSentinelMonitor", sentinel, bootstrapMaster, bootstrapMasterPort).Once().Return(errors.New("mon err"))
 				mrfh.On("NewSentinelMonitorWithPort", sentinel, bootstrapMaster, bootstrapMasterPort, rf).Once().Return(errors.New("dial tcp: i/o timeout"))
-				mrfc.On("SentinelFailoverInProgress", mock.Anything).Maybe().Return(false, time.Duration(0), nil)
+				mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 				mrfc.On("CheckSentinelMonitor", other, bootstrapMaster, bootstrapMasterPort).Once().Return(errors.New("dial tcp: i/o timeout"))
 				mrfc.On("CheckSentinelMonitor", healthy, bootstrapMaster, bootstrapMasterPort).Once().Return(nil)
 				mrfc.On("CheckSentinelNumberInMemory", healthy, rf).Once().Return(nil)
@@ -2088,7 +2093,7 @@ func TestCheckAndHealBootstrapModeErrorBranches(t *testing.T) {
 				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel}, nil)
 				mrfc.On("CheckSentinelMonitor", sentinel, bootstrapMaster, bootstrapMasterPort).Once().Return(errors.New("mon err"))
 				mrfh.On("NewSentinelMonitorWithPort", sentinel, bootstrapMaster, bootstrapMasterPort, rf).Once().Return(nil)
-				mrfc.On("SentinelFailoverInProgress", mock.Anything).Maybe().Return(false, time.Duration(0), nil)
+				mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 				mrfc.On("CheckSentinelNumberInMemory", sentinel, rf).Once().Return(errors.New("mismatch"))
 				mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(errors.New("mismatch"))
 				mrfh.On("SetSentinelCustomConfig", sentinel, rf).Once().Return(nil)

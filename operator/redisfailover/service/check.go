@@ -52,7 +52,7 @@ type RedisFailoverCheck interface {
 	CheckIfMasterLocalhost(rFailover *redisfailoverv1.RedisFailover) (bool, error)
 	CheckSentinelsCannotFailover(rFailover *redisfailoverv1.RedisFailover) (bool, error)
 	CheckSentinelMonitor(sentinel string, monitor ...string) error
-	SentinelFailoverInProgress(sentinel string) (bool, time.Duration, error)
+	GetSentinelFailover(sentinel string) (redis.SentinelFailover, error)
 	GetMasterIP(rFailover *redisfailoverv1.RedisFailover) (string, error)
 	GetNumberMasters(rFailover *redisfailoverv1.RedisFailover) (int, error)
 	GetRedisesIPs(rFailover *redisfailoverv1.RedisFailover) ([]string, error)
@@ -518,10 +518,9 @@ func (r *RedisFailoverChecker) CheckSentinelMonitor(sentinel string, monitor ...
 	return nil
 }
 
-// SentinelFailoverInProgress reports whether the Sentinel leads a failover,
-// and the failover-timeout of the Sentinel.
-func (r *RedisFailoverChecker) SentinelFailoverInProgress(sentinel string) (bool, time.Duration, error) {
-	return r.redisClient.SentinelFailoverInProgress(sentinel)
+// GetSentinelFailover returns the failover state of the Sentinel.
+func (r *RedisFailoverChecker) GetSentinelFailover(sentinel string) (redis.SentinelFailover, error) {
+	return r.redisClient.GetSentinelFailover(sentinel)
 }
 
 // GetMasterIP connects to all redis and returns the master of the redis failover.

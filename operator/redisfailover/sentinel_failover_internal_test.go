@@ -18,6 +18,7 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 	mRFService "github.com/saremox/redis-operator/mocks/operator/redisfailover/service"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
+	"github.com/saremox/redis-operator/service/redis"
 )
 
 // levelLogger records the Info, Warning and Debug lines with the level in front.
@@ -47,8 +48,34 @@ const (
 
 var sfSentinels = []string{"10.0.1.1", "10.0.1.2", "10.0.1.3"}
 
-// sentinelFailoverTest runs CheckAndHeal with Sentinels that monitor the old
-// master after a Sentinel failover. The Redis checks pass.
+// failingOver is the failover state of a Sentinel that fails over.
+func failingOver(state string, timeout time.Duration) []redis.SentinelFailover {
+	return []redis.SentinelFailover{{InProgress: true, State: state, Timeout: timeout}}
+}
+
+// sfReconcile is the state of the Sentinels in one reconcile.
+type sfReconcile struct {
+	// wrong holds the Sentinels that monitor the old master.
+	wrong []string
+	// mismatch holds the Sentinels that know a wrong number of Sentinels.
+	mismatch []string
+	// failover holds the replies of GetSentinelFailover of each Sentinel, in
+	// order. The last reply repeats. A Sentinel without replies has no failover.
+	failover map[string][]redis.SentinelFailover
+	// readErr holds the error of GetSentinelFailover of each Sentinel.
+	readErr map[string]error
+}
+
+// sfResult is what a reconcile did.
+type sfResult struct {
+	err       error
+	monitored []string
+	reset     []string
+	reads     int
+}
+
+// sentinelFailoverTest runs CheckAndHeal after a Sentinel failover. The Redis
+// checks pass.
 type sentinelFailoverTest struct {
 	rf       *redisfailoverv1.RedisFailover
 	check    *mRFService.RedisFailoverCheck
@@ -57,8 +84,6 @@ type sentinelFailoverTest struct {
 	clock    time.Time
 	lines    []string
 	requeues []time.Duration
-	// readErr is the error of each read of the failover_in_progress flag.
-	readErr error
 }
 
 func newSentinelFailoverTest(bootstrap bool) *sentinelFailoverTest {
@@ -85,11 +110,7 @@ func newSentinelFailoverTest(bootstrap bool) *sentinelFailoverTest {
 	return ft
 }
 
-// reconcile runs CheckAndHeal. wrong lists the Sentinels that monitor the old
-// master, and leader the Sentinel with the failover_in_progress flag. It
-// returns the Sentinels that got a new monitor.
-func (ft *sentinelFailoverTest) reconcile(t *testing.T, wrong []string, leader string, timeout time.Duration) []string {
-	t.Helper()
+func (ft *sentinelFailoverTest) run(s sfReconcile) sfResult {
 	ft.check.ExpectedCalls, ft.check.Calls = nil, nil
 	ft.heal.ExpectedCalls, ft.heal.Calls = nil, nil
 	ft.lines, ft.requeues = nil, nil
@@ -111,146 +132,274 @@ func (ft *sentinelFailoverTest) reconcile(t *testing.T, wrong []string, leader s
 	c.On("GetRedisRevisionHash", "rfr-test-1", rf).Maybe().Return("1", nil)
 	c.On("CheckRedisSlavesReady", mock.Anything, rf).Maybe().Return(true, nil)
 	c.On("GetSentinelsIPs", rf).Maybe().Return(sfSentinels, nil)
-	for _, s := range sfSentinels {
-		var err error
-		if slices.Contains(wrong, s) {
-			err = fmt.Errorf("sentinel monitoring %s:0 instead %s:0", sfOldMaster, sfMaster)
+	for _, sip := range sfSentinels {
+		var wrong, mismatch error
+		if slices.Contains(s.wrong, sip) {
+			wrong = fmt.Errorf("sentinel monitoring %s:0 instead %s:0", sfOldMaster, sfMaster)
 		}
-		c.On("CheckSentinelMonitor", s, sfMaster, mock.Anything).Maybe().Return(err)
-		c.On("SentinelFailoverInProgress", s).Maybe().Return(s == leader, timeout, ft.readErr)
-		h.On("NewSentinelMonitor", s, sfMaster, rf).Maybe().Return(nil)
-		h.On("NewSentinelMonitorWithPort", s, sfMaster, "6379", rf).Maybe().Return(nil)
-		c.On("CheckSentinelNumberInMemory", s, rf).Maybe().Return(nil)
-		c.On("CheckSentinelSlavesNumberInMemory", s, rf).Maybe().Return(nil)
-		h.On("SetSentinelCustomConfig", s, rf).Maybe().Return(nil)
+		if slices.Contains(s.mismatch, sip) {
+			mismatch = errors.New("sentinels in memory mismatch")
+		}
+		c.On("CheckSentinelMonitor", sip, sfMaster, mock.Anything).Maybe().Return(wrong)
+		replies := s.failover[sip]
+		if len(replies) == 0 {
+			replies = []redis.SentinelFailover{{}}
+		}
+		for i, reply := range replies {
+			call := c.On("GetSentinelFailover", sip).Maybe().Return(reply, s.readErr[sip])
+			if i < len(replies)-1 {
+				call.Once()
+			}
+		}
+		h.On("NewSentinelMonitor", sip, sfMaster, rf).Maybe().Return(nil)
+		h.On("NewSentinelMonitorWithPort", sip, sfMaster, "6379", rf).Maybe().Return(nil)
+		c.On("CheckSentinelNumberInMemory", sip, rf).Maybe().Return(mismatch)
+		c.On("CheckSentinelSlavesNumberInMemory", sip, rf).Maybe().Return(nil)
+		h.On("RestoreSentinel", sip).Maybe().Return(nil)
+		h.On("SetSentinelCustomConfig", sip, rf).Maybe().Return(nil)
 	}
-	require.NoError(t, ft.handler.CheckAndHeal(rf))
-	var monitored []string
+	res := sfResult{err: ft.handler.CheckAndHeal(rf)}
 	for _, call := range h.Calls {
-		if call.Method == "NewSentinelMonitor" || call.Method == "NewSentinelMonitorWithPort" {
-			monitored = append(monitored, call.Arguments.String(0))
+		switch call.Method {
+		case "NewSentinelMonitor", "NewSentinelMonitorWithPort":
+			res.monitored = append(res.monitored, call.Arguments.String(0))
+		case "RestoreSentinel":
+			res.reset = append(res.reset, call.Arguments.String(0))
 		}
 	}
-	return monitored
+	for _, call := range c.Calls {
+		if call.Method == "GetSentinelFailover" {
+			res.reads++
+		}
+	}
+	return res
 }
 
-const sfFixLine = "warning: Fixing sentinel not monitoring expected master: sentinel monitoring 10.0.0.1:0 instead 10.0.0.2:0"
+// reconcile runs a reconcile that returns no error.
+func (ft *sentinelFailoverTest) reconcile(t *testing.T, s sfReconcile) sfResult {
+	t.Helper()
+	res := ft.run(s)
+	require.NoError(t, res.err)
+	return res
+}
 
-const sfWaitLine = "Sentinel 10.0.1.3 leads a failover, so the operator does not change the Sentinels until the failover ends"
+func (ft *sentinelFailoverTest) assertHold(t *testing.T) {
+	t.Helper()
+	assert.Equal(t, redisfailoverv1.NotHealthyState, ft.rf.Status.State)
+	assert.Equal(t, sentinelFailoverMsg, ft.rf.Status.Message)
+}
+
+const (
+	sfFixLine  = "warning: Fixing sentinel not monitoring expected master: sentinel monitoring 10.0.0.1:0 instead 10.0.0.2:0"
+	sfWaitLine = "Sentinel 10.0.1.3 fails over, so the operator sends no SENTINEL MONITOR or RESET until the failover ends"
+)
 
 // TestSentinelFailoverInProgressHoldsTheNewMonitor covers the evidence of the
 // soak test: SENTINEL REMOVE and MONITOR during the failover made the
-// Sentinels go back to the old master. Only the leader has the flag, so the
-// two Sentinels before it in the list do not get a new monitor either.
+// Sentinels return to the old master. Only the Sentinel that fails over has
+// the flag, so the two Sentinels before it in the list get no new monitor too.
 func TestSentinelFailoverInProgressHoldsTheNewMonitor(t *testing.T) {
 	for _, bootstrap := range []bool{false, true} {
 		t.Run(fmt.Sprintf("bootstrap=%v", bootstrap), func(t *testing.T) {
 			ft := newSentinelFailoverTest(bootstrap)
+			inFailover := sfReconcile{wrong: sfSentinels, failover: map[string][]redis.SentinelFailover{
+				sfSentinels[2]: failingOver("wait_promotion", 10*time.Second),
+			}}
 
-			assert.Empty(t, ft.reconcile(t, sfSentinels, sfSentinels[2], 10*time.Second))
-			assert.Equal(t, []string{sfFixLine, "info: " + sfWaitLine}, ft.lines)
+			res := ft.reconcile(t, inFailover)
+			assert.Empty(t, res.monitored)
+			assert.Equal(t, 3, res.reads)
+			assert.Equal(t, []string{sfFixLine, "info: " + sfWaitLine, sfFixLine, sfFixLine}, ft.lines)
 			assert.Equal(t, []time.Duration{10 * time.Second}, ft.requeues)
-			assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
-			// A SENTINEL RESET also ends the failover in the leader.
-			ft.check.AssertNotCalled(t, "CheckSentinelNumberInMemory", mock.Anything, mock.Anything)
-			ft.heal.AssertNotCalled(t, "SetSentinelCustomConfig", mock.Anything, mock.Anything)
+			ft.assertHold(t)
+			// SENTINEL SET does not end a failover.
+			ft.heal.AssertCalled(t, "SetSentinelCustomConfig", sfSentinels[2], ft.rf)
 
 			// The next reconcile in the same failover logs at Debug.
 			ft.clock = ft.clock.Add(3 * time.Second)
-			assert.Empty(t, ft.reconcile(t, sfSentinels, sfSentinels[2], 10*time.Second))
-			assert.Equal(t, []string{sfFixLine, "debug: " + sfWaitLine}, ft.lines)
+			res = ft.reconcile(t, inFailover)
+			assert.Empty(t, res.monitored)
+			assert.Contains(t, ft.lines, "debug: "+sfWaitLine)
 			assert.Equal(t, []time.Duration{7 * time.Second}, ft.requeues)
+			ft.assertHold(t)
 
 			// After the failover, a Sentinel that still monitors the old master
 			// gets a new monitor, as before.
 			ft.clock = ft.clock.Add(time.Second)
-			assert.Equal(t, []string{sfSentinels[0]}, ft.reconcile(t, sfSentinels[:1], "", 10*time.Second))
+			res = ft.reconcile(t, sfReconcile{wrong: sfSentinels[:1]})
+			assert.Equal(t, sfSentinels[:1], res.monitored)
 			assert.Empty(t, ft.requeues)
+			assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
 			_, waiting := ft.handler.sentinelFailovers.Load("testns/test")
 			assert.False(t, waiting)
 		})
 	}
 }
 
-// TestSentinelWithoutFailoverGetsANewMonitor covers the normal heal: a
-// Sentinel that monitors a wrong master and leads no failover gets a new
-// monitor at once. An error of the flag read gives the same heal.
-func TestSentinelWithoutFailoverGetsANewMonitor(t *testing.T) {
+// TestSentinelFailoverInProgressHoldsTheReset covers a Sentinel that fails
+// over and monitors the master that the operator read. SENTINEL RESET also
+// ends its failover.
+func TestSentinelFailoverInProgressHoldsTheReset(t *testing.T) {
+	ft := newSentinelFailoverTest(false)
+	res := ft.reconcile(t, sfReconcile{mismatch: sfSentinels[2:], failover: map[string][]redis.SentinelFailover{
+		sfSentinels[2]: failingOver("wait_promotion", 10*time.Second),
+	}})
+	assert.Empty(t, res.reset)
+	assert.Equal(t, 3, res.reads)
+	ft.assertHold(t)
+	assert.Equal(t, []time.Duration{10 * time.Second}, ft.requeues)
+}
+
+// TestSentinelHealWithoutFailover covers the normal heals: they read the
+// failover state only before a change, and a Sentinel without a failover gets
+// the change at once.
+func TestSentinelHealWithoutFailover(t *testing.T) {
 	for _, bootstrap := range []bool{false, true} {
 		t.Run(fmt.Sprintf("bootstrap=%v", bootstrap), func(t *testing.T) {
 			ft := newSentinelFailoverTest(bootstrap)
-			assert.Equal(t, sfSentinels[:2], ft.reconcile(t, sfSentinels[:2], "", 0))
+			res := ft.reconcile(t, sfReconcile{})
+			assert.Zero(t, res.reads)
+			assert.Empty(t, res.monitored)
+
+			// The second change reads the state of its Sentinel again.
+			res = ft.reconcile(t, sfReconcile{wrong: sfSentinels[:2]})
+			assert.Equal(t, sfSentinels[:2], res.monitored)
+			assert.Equal(t, 4, res.reads)
 			assert.Empty(t, ft.requeues)
-			ft.heal.AssertCalled(t, "SetSentinelCustomConfig", sfSentinels[2], ft.rf)
+			assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
 		})
 	}
-	t.Run("the flag read fails", func(t *testing.T) {
+	t.Run("reset", func(t *testing.T) {
 		ft := newSentinelFailoverTest(false)
-		ft.readErr = errors.New("ERR unknown subcommand")
-		assert.Equal(t, sfSentinels, ft.reconcile(t, sfSentinels, sfSentinels[2], 10*time.Second))
-		assert.Empty(t, ft.requeues)
+		res := ft.reconcile(t, sfReconcile{mismatch: sfSentinels[2:]})
+		assert.Equal(t, sfSentinels[2:], res.reset)
+		assert.Equal(t, 3, res.reads)
+		assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
 	})
 }
 
+// TestSentinelFailoverStartsAfterTheFirstRead covers a failover that starts
+// after the first read. The read before the next change finds it.
+func TestSentinelFailoverStartsAfterTheFirstRead(t *testing.T) {
+	ft := newSentinelFailoverTest(false)
+	res := ft.reconcile(t, sfReconcile{wrong: sfSentinels, failover: map[string][]redis.SentinelFailover{
+		sfSentinels[2]: {{}, {InProgress: true, State: "wait_start", Timeout: 10 * time.Second}},
+	}})
+	assert.Equal(t, sfSentinels[:2], res.monitored)
+	assert.Equal(t, 5, res.reads)
+	ft.assertHold(t)
+}
+
+// TestSentinelFailoverReadError covers a Sentinel that gives no failover
+// state. The operator does not change that Sentinel in the reconcile, because
+// it can be the Sentinel that fails over.
+func TestSentinelFailoverReadError(t *testing.T) {
+	ft := newSentinelFailoverTest(false)
+	res := ft.reconcile(t, sfReconcile{wrong: sfSentinels, mismatch: sfSentinels, readErr: map[string]error{
+		sfSentinels[2]: errors.New("ERR unknown subcommand"),
+	}})
+	assert.Equal(t, sfSentinels[:2], res.monitored)
+	assert.Empty(t, res.reset, "the new monitors start the reset hold-off")
+	assert.Contains(t, ft.lines, "warning: Sentinel 10.0.1.3 did not give its failover state, so the operator does not change it in this reconcile: ERR unknown subcommand")
+
+	ft.clock = ft.clock.Add(time.Minute)
+	res = ft.run(sfReconcile{wrong: sfSentinels, readErr: map[string]error{
+		sfSentinels[2]: errors.New("dial tcp 10.0.1.3:26379: i/o timeout"),
+	}})
+	require.EqualError(t, res.err, "sentinel(s) 10.0.1.3 unreachable")
+	assert.Equal(t, sfSentinels[:2], res.monitored)
+}
+
 // TestStuckSentinelFailoverEndsTheWait checks that the wait ends after the
-// failover-timeout of the leader, so a failover that does not end does not
-// stop the heal.
+// failover-timeout, so a failover that does not end does not stop the heal.
 func TestStuckSentinelFailoverEndsTheWait(t *testing.T) {
 	ft := newSentinelFailoverTest(false)
-	assert.Empty(t, ft.reconcile(t, sfSentinels, sfSentinels[2], 10*time.Second))
+	inFailover := sfReconcile{wrong: sfSentinels, failover: map[string][]redis.SentinelFailover{
+		sfSentinels[2]: failingOver("reconf_slaves", 10*time.Second),
+	}}
+	assert.Empty(t, ft.reconcile(t, inFailover).monitored)
 
 	ft.clock = ft.clock.Add(10 * time.Second)
-	assert.Equal(t, sfSentinels, ft.reconcile(t, sfSentinels, sfSentinels[2], 10*time.Second))
-	assert.Equal(t, []string{
-		sfFixLine,
-		"warning: Sentinel 10.0.1.3 leads a failover for 10s, longer than its failover-timeout 10s, so the operator heals the Sentinels",
-		sfFixLine,
-		sfFixLine,
-	}, ft.lines)
+	assert.Equal(t, sfSentinels, ft.reconcile(t, inFailover).monitored)
+	assert.Contains(t, ft.lines, "warning: Sentinel 10.0.1.3 fails over for 10s, longer than its failover-timeout 10s, so the operator heals the Sentinels")
 	assert.Empty(t, ft.requeues)
+	assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
 }
 
 // TestSentinelFailoverWaitUsesTheDefaultTimeout covers a Sentinel that gives
 // no failover-timeout.
 func TestSentinelFailoverWaitUsesTheDefaultTimeout(t *testing.T) {
 	ft := newSentinelFailoverTest(false)
-	assert.Empty(t, ft.reconcile(t, sfSentinels, sfSentinels[2], 0))
+	ft.reconcile(t, sfReconcile{wrong: sfSentinels, failover: map[string][]redis.SentinelFailover{
+		sfSentinels[2]: failingOver("wait_promotion", 0),
+	}})
 	assert.Equal(t, []time.Duration{10 * time.Second}, ft.requeues)
 }
 
-// TestSentinelFailoverWaitStartsAgain checks that a reconcile in which each
-// Sentinel monitors the master clears the wait. A later failover then gets
-// the full wait.
+// TestSentinelFailoverLeader checks that the wait names the Sentinel with the
+// highest failover-state. A candidate that loses the election also has the
+// flag for a short time.
+func TestSentinelFailoverLeader(t *testing.T) {
+	ft := newSentinelFailoverTest(false)
+	ft.reconcile(t, sfReconcile{wrong: sfSentinels, failover: map[string][]redis.SentinelFailover{
+		sfSentinels[0]: failingOver("wait_start", 10*time.Second),
+		sfSentinels[2]: failingOver("wait_promotion", 10*time.Second),
+	}})
+	assert.Contains(t, ft.lines, "info: "+sfWaitLine)
+}
+
+// TestSentinelFailoverWaitStartsAgain checks that a new failover gets the
+// full wait: after a reconcile without a change, after a failover of another
+// Sentinel, and after a failover-state that goes back.
 func TestSentinelFailoverWaitStartsAgain(t *testing.T) {
-	for _, bootstrap := range []bool{false, true} {
-		t.Run(fmt.Sprintf("bootstrap=%v", bootstrap), func(t *testing.T) {
-			ft := newSentinelFailoverTest(bootstrap)
-			assert.Empty(t, ft.reconcile(t, sfSentinels, sfSentinels[2], 10*time.Second))
+	inFailover := func(sip, state string) sfReconcile {
+		return sfReconcile{wrong: sfSentinels, failover: map[string][]redis.SentinelFailover{
+			sip: failingOver(state, 10*time.Second),
+		}}
+	}
+	tests := []struct {
+		name   string
+		second sfReconcile
+		// between runs a reconcile without a change between the failovers.
+		between bool
+	}{
+		{name: "a reconcile without a change", second: inFailover(sfSentinels[2], "reconf_slaves"), between: true},
+		{name: "another Sentinel", second: inFailover(sfSentinels[0], "reconf_slaves")},
+		{name: "the failover-state goes back", second: inFailover(sfSentinels[2], "wait_promotion")},
+	}
+	for _, test := range tests {
+		for _, bootstrap := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s bootstrap=%v", test.name, bootstrap), func(t *testing.T) {
+				ft := newSentinelFailoverTest(bootstrap)
+				ft.reconcile(t, inFailover(sfSentinels[2], "reconf_slaves"))
+				if test.between {
+					ft.clock = ft.clock.Add(2 * time.Second)
+					assert.Zero(t, ft.reconcile(t, sfReconcile{}).reads)
+					_, waiting := ft.handler.sentinelFailovers.Load("testns/test")
+					assert.False(t, waiting)
+				}
 
-			ft.clock = ft.clock.Add(2 * time.Second)
-			assert.Empty(t, ft.reconcile(t, nil, "", 10*time.Second))
-			ft.check.AssertNotCalled(t, "SentinelFailoverInProgress", mock.Anything)
-			_, waiting := ft.handler.sentinelFailovers.Load("testns/test")
-			assert.False(t, waiting)
-
-			ft.clock = ft.clock.Add(time.Hour)
-			assert.Empty(t, ft.reconcile(t, sfSentinels, sfSentinels[2], 10*time.Second))
-			assert.Equal(t, []string{sfFixLine, "info: " + sfWaitLine}, ft.lines)
-		})
+				ft.clock = ft.clock.Add(10 * time.Second)
+				assert.Empty(t, ft.reconcile(t, test.second).monitored)
+				assert.Equal(t, []time.Duration{10 * time.Second}, ft.requeues)
+				ft.assertHold(t)
+			})
+		}
 	}
 }
 
-// TestSentinelFailoverWaitSkipsAnUnreachableSentinel checks that the flag read
+// TestSentinelFailoverReadSkipsAnUnreachableSentinel checks that the read
 // does not dial a Sentinel that did not answer earlier in the reconcile.
-func TestSentinelFailoverWaitSkipsAnUnreachableSentinel(t *testing.T) {
+func TestSentinelFailoverReadSkipsAnUnreachableSentinel(t *testing.T) {
 	ft := newSentinelFailoverTest(false)
 	gone := sfSentinels[0]
-	ft.check.On("SentinelFailoverInProgress", sfSentinels[1]).Once().Return(false, 10*time.Second, nil)
-	ft.check.On("SentinelFailoverInProgress", sfSentinels[2]).Once().Return(true, 10*time.Second, nil)
+	ft.check.On("GetSentinelFailover", sfSentinels[1]).Once().Return(redis.SentinelFailover{}, nil)
+	ft.check.On("GetSentinelFailover", sfSentinels[2]).Once().Return(failingOver("wait_promotion", 10*time.Second)[0], nil)
 	heal := ft.handler.startSentinelHeal(ft.rf)
 	heal.unreachable[gone] = true
 
-	assert.True(t, ft.handler.waitForSentinelFailover(sfSentinels, heal))
+	assert.False(t, ft.handler.sentinelChangeAllowed(ft.rf, sfSentinels, heal, sfSentinels[1]))
 
-	ft.check.AssertNotCalled(t, "SentinelFailoverInProgress", gone)
+	ft.check.AssertNotCalled(t, "GetSentinelFailover", gone)
+	ft.check.AssertExpectations(t)
 }

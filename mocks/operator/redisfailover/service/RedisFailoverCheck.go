@@ -587,6 +587,34 @@ func (_m *RedisFailoverCheck) GetReplicaReplicationOffsets(rFailover *v1.RedisFa
 	return r0, r1
 }
 
+// GetSentinelFailover provides a mock function with given fields: sentinel
+func (_m *RedisFailoverCheck) GetSentinelFailover(sentinel string) (redis.SentinelFailover, error) {
+	ret := _m.Called(sentinel)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetSentinelFailover")
+	}
+
+	var r0 redis.SentinelFailover
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string) (redis.SentinelFailover, error)); ok {
+		return rf(sentinel)
+	}
+	if rf, ok := ret.Get(0).(func(string) redis.SentinelFailover); ok {
+		r0 = rf(sentinel)
+	} else {
+		r0 = ret.Get(0).(redis.SentinelFailover)
+	}
+
+	if rf, ok := ret.Get(1).(func(string) error); ok {
+		r1 = rf(sentinel)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetSentinelsIPs provides a mock function with given fields: rFailover
 func (_m *RedisFailoverCheck) GetSentinelsIPs(rFailover *v1.RedisFailover) ([]string, error) {
 	ret := _m.Called(rFailover)
@@ -733,41 +761,6 @@ func (_m *RedisFailoverCheck) IsSentinelRunningQuorum(rFailover *v1.RedisFailove
 	}
 
 	return r0
-}
-
-// SentinelFailoverInProgress provides a mock function with given fields: sentinel
-func (_m *RedisFailoverCheck) SentinelFailoverInProgress(sentinel string) (bool, time.Duration, error) {
-	ret := _m.Called(sentinel)
-
-	if len(ret) == 0 {
-		panic("no return value specified for SentinelFailoverInProgress")
-	}
-
-	var r0 bool
-	var r1 time.Duration
-	var r2 error
-	if rf, ok := ret.Get(0).(func(string) (bool, time.Duration, error)); ok {
-		return rf(sentinel)
-	}
-	if rf, ok := ret.Get(0).(func(string) bool); ok {
-		r0 = rf(sentinel)
-	} else {
-		r0 = ret.Get(0).(bool)
-	}
-
-	if rf, ok := ret.Get(1).(func(string) time.Duration); ok {
-		r1 = rf(sentinel)
-	} else {
-		r1 = ret.Get(1).(time.Duration)
-	}
-
-	if rf, ok := ret.Get(2).(func(string) error); ok {
-		r2 = rf(sentinel)
-	} else {
-		r2 = ret.Error(2)
-	}
-
-	return r0, r1, r2
 }
 
 // NewRedisFailoverCheck creates a new instance of RedisFailoverCheck. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.

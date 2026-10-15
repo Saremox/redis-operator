@@ -75,7 +75,7 @@ type Client interface {
 	GetSentinelMonitor(ip string) (string, string, error)
 	GetSentinelReplicas(ip string) ([]string, error)
 	SentinelMasterDown(ip string) (bool, error)
-	SentinelFailoverInProgress(ip string) (bool, time.Duration, error)
+	GetSentinelFailover(ip string) (SentinelFailover, error)
 	SetCustomSentinelConfig(ip string, configs []string) error
 	SetCustomRedisConfig(ip string, port string, configs []string, password string) error
 	SlaveIsReady(ip, port, password string) (bool, error)
@@ -518,24 +518,38 @@ func (c *client) SentinelMasterDown(ip string) (bool, error) {
 	return flagsDown(info["flags"]), nil
 }
 
-// SentinelFailoverInProgress reports whether the Sentinel leads a failover of
-// its master, and the failover-timeout of the Sentinel. Only the leader of a
-// failover has the failover_in_progress flag.
-func (c *client) SentinelFailoverInProgress(ip string) (bool, time.Duration, error) {
+// SentinelFailover is the failover state of a Sentinel in SENTINEL MASTER.
+type SentinelFailover struct {
+	// InProgress is the failover_in_progress flag. A Sentinel has it while it
+	// tries to fail over: as a candidate in the election, and as the leader.
+	InProgress bool
+	// State is the failover-state field, for example wait_promotion. It is
+	// empty without a failover.
+	State string
+	// Timeout is the failover-timeout of the Sentinel, or 0 for a missing value.
+	Timeout time.Duration
+}
+
+// GetSentinelFailover returns the failover state of the Sentinel.
+func (c *client) GetSentinelFailover(ip string) (SentinelFailover, error) {
 	if ip == "" {
-		return false, 0, errNoIP
+		return SentinelFailover{}, errNoIP
 	}
 	rClient := rediscli.NewClient(redisOptions(net.JoinHostPort(ip, sentinelPort), ""))
 	defer closeClient(rClient)
 	info, err := c.getSentinelMasterInfo(rClient)
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_FAILOVER, metrics.FAIL, getRedisError(err))
-		return false, 0, err
+		return SentinelFailover{}, err
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_FAILOVER, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	// A missing or bad value gives 0, and the caller uses its default.
 	ms, _ := strconv.ParseInt(info["failover-timeout"], 10, 64)
-	return slices.Contains(strings.Split(info["flags"], ","), "failover_in_progress"), time.Duration(max(ms, 0)) * time.Millisecond, nil
+	return SentinelFailover{
+		InProgress: slices.Contains(strings.Split(info["flags"], ","), "failover_in_progress"),
+		State:      info["failover-state"],
+		Timeout:    time.Duration(max(ms, 0)) * time.Millisecond,
+	}, nil
 }
 
 // flagsDown reports whether the flags of SENTINEL MASTER mark the master down.

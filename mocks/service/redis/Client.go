@@ -270,6 +270,34 @@ func (_m *Client) GetRunID(ip string, port string, password string) (string, err
 	return r0, r1
 }
 
+// GetSentinelFailover provides a mock function with given fields: ip
+func (_m *Client) GetSentinelFailover(ip string) (redis.SentinelFailover, error) {
+	ret := _m.Called(ip)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetSentinelFailover")
+	}
+
+	var r0 redis.SentinelFailover
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string) (redis.SentinelFailover, error)); ok {
+		return rf(ip)
+	}
+	if rf, ok := ret.Get(0).(func(string) redis.SentinelFailover); ok {
+		r0 = rf(ip)
+	} else {
+		r0 = ret.Get(0).(redis.SentinelFailover)
+	}
+
+	if rf, ok := ret.Get(1).(func(string) error); ok {
+		r1 = rf(ip)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetSentinelMonitor provides a mock function with given fields: ip
 func (_m *Client) GetSentinelMonitor(ip string) (string, string, error) {
 	ret := _m.Called(ip)
@@ -515,41 +543,6 @@ func (_m *Client) SentinelCheckQuorum(ip string) error {
 	}
 
 	return r0
-}
-
-// SentinelFailoverInProgress provides a mock function with given fields: ip
-func (_m *Client) SentinelFailoverInProgress(ip string) (bool, time.Duration, error) {
-	ret := _m.Called(ip)
-
-	if len(ret) == 0 {
-		panic("no return value specified for SentinelFailoverInProgress")
-	}
-
-	var r0 bool
-	var r1 time.Duration
-	var r2 error
-	if rf, ok := ret.Get(0).(func(string) (bool, time.Duration, error)); ok {
-		return rf(ip)
-	}
-	if rf, ok := ret.Get(0).(func(string) bool); ok {
-		r0 = rf(ip)
-	} else {
-		r0 = ret.Get(0).(bool)
-	}
-
-	if rf, ok := ret.Get(1).(func(string) time.Duration); ok {
-		r1 = rf(ip)
-	} else {
-		r1 = ret.Get(1).(time.Duration)
-	}
-
-	if rf, ok := ret.Get(2).(func(string) error); ok {
-		r2 = rf(ip)
-	} else {
-		r2 = ret.Error(2)
-	}
-
-	return r0, r1, r2
 }
 
 // SentinelMasterDown provides a mock function with given fields: ip

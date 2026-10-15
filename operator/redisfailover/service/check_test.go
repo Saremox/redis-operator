@@ -697,16 +697,16 @@ func TestCheckSentinelMonitor(t *testing.T) {
 	assert.NoError(err)
 }
 
-func TestSentinelFailoverInProgress(t *testing.T) {
+func TestGetSentinelFailover(t *testing.T) {
+	want := redis.SentinelFailover{InProgress: true, State: "wait_promotion", Timeout: 10 * time.Second}
 	mr := &mRedisService.Client{}
-	mr.On("SentinelFailoverInProgress", "0.0.0.0").Once().Return(true, 10*time.Second, nil)
+	mr.On("GetSentinelFailover", "0.0.0.0").Once().Return(want, nil)
 	checker := rfservice.NewRedisFailoverChecker(&mK8SService.Services{}, mr, log.DummyLogger{}, metrics.Dummy)
 
-	inProgress, timeout, err := checker.SentinelFailoverInProgress("0.0.0.0")
+	got, err := checker.GetSentinelFailover("0.0.0.0")
 
 	require.NoError(t, err)
-	assert.True(t, inProgress)
-	assert.Equal(t, 10*time.Second, timeout)
+	assert.Equal(t, want, got)
 	mr.AssertExpectations(t)
 }
 
