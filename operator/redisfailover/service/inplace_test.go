@@ -599,14 +599,13 @@ func TestResizePodInPlaceSupersededResize(t *testing.T) {
 	assert.Equal(t, ResizeRecreate, result.Action)
 	assert.Equal(t, "lowering a memory limit in place needs Kubernetes 1.35", result.Message)
 
-	// Before 1.35 the API server refuses to revert an increase the kubelet has not applied yet.
-	invalid := apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, resizePod, nil)
-	result, _, err = runResize(t, resizeCase{k8s.PodResizeSupport{Supported: true}, podTemplate(a), podTemplate(a), stalePod(c, a)}, func(ms *mK8SService.Services) {
-		ms.On("ResizePod", "testns", resizePod, mock.Anything).Once().Return(invalid)
-	})
+	// Before 1.35 the API server refuses to revert an increase the kubelet has
+	// not applied, so the operator sends no resize.
+	result, ms, err = runResize(t, resizeCase{k8s.PodResizeSupport{Supported: true}, podTemplate(a), podTemplate(a), stalePod(c, a)}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, ResizeRecreate, result.Action)
-	assert.Equal(t, "resize rejected: "+invalid.Error(), result.Message)
+	assert.Equal(t, "lowering a memory limit in place needs Kubernetes 1.35", result.Message)
+	ms.AssertNotCalled(t, "ResizePod", mock.Anything, mock.Anything, mock.Anything)
 }
 
 // A condition keeps its transition time when a newer resize supersedes the
