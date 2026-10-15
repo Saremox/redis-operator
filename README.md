@@ -418,7 +418,7 @@ These gauges have the labels `namespace` and `name`:
 - `redis_operator_controller_autoscaler_effective_memory_bytes`: the memory limit of the redis container. It is the limit of `redis.resources` until the autoscaler applies a larger limit.
 - `redis_operator_controller_autoscaler_step_phase`: the phase of the last step: `0` Idle, `1` Applying, `2` Done, `3` Reverted, `4` Held.
 
-The counter `redis_operator_controller_autoscaler_steps_total` has the labels `namespace`, `name` and `result`. It counts the steps that end with the result `done`, `reverted` or `held`.
+The counter `redis_operator_controller_autoscaler_steps_total` has the labels `namespace`, `name` and `result`. It counts each step one time, at its first result: `done`, `reverted` or `held`.
 
 #### Mode Auto
 
@@ -461,35 +461,39 @@ A revert is not safe when a pod applied the step, or runs or starts from the tem
 
 Before the StatefulSet gets the limit before the step, the operator checks the pods again. Then only an existing pod of the step holds the step. A missing pod does not, because a quota can refuse it at the limit of the step.
 
-The reason of `Reverted` and `Held` gives the pod and the refusal. Alert on `redis_operator_controller_autoscaler_step_phase` equal to `4`. In the other phases, the reason also shows a refused resize. An example is a change of the spec while the operator cannot read a revision.
+The reason of `Reverted` and `Held` gives the refusal that ended the step. A later refusal does not change that reason. Alert on `redis_operator_controller_autoscaler_step_phase` equal to `4`. In the other phases, the reason also shows a refused resize. An example is a change of the spec while the operator cannot read a revision.
 
 A pod can run with a larger limit than the StatefulSet. This happens when the kubelet applies a resize after a revert, or on Kubernetes 1.33 and 1.34, which cannot lower a limit in place. The operator does not change such a pod. A pod that the StatefulSet created from the template of the last step also keeps its limit. The rollout only moves its revision label. `maxmemory` follows the smallest pod, so the larger pod is safe.
 
-`effectiveMemory` shows the limit of the StatefulSet, so it can be lower than the limit of such a pod. A raise of `memoryMax` keeps this rule. To give such a pod the smaller limit, set `memoryMax` below the limit of the pod, or set mode `Off`. A spec limit at or above the limit of the pod also ends the rule.
+The spec of a pod can also request the limit of a step after a revert. The operator then removes only the resize request, and the pod keeps the request. Before Kubernetes 1.35, the API server refuses a lower limit in the pod spec. Thus a later change of the limit holds the rollout at such a pod, and the reason shows the pod. The operator does not recreate it.
+
+`effectiveMemory` shows the limit of the StatefulSet, so it can be lower than the limit of such a pod. A raise of `memoryMax` keeps this rule. A `memoryMax` below the limit of the pod, a spec limit at or above it, or mode `Off` ends the rule. A pod that the rollout already moved to the update revision keeps its limit until it restarts. To give such a pod the limit of the StatefulSet, delete the pod.
 
 A pod that refuses a step stays on its revision, also in mode `Recommend`. The operator does not recreate it in these cases:
 
 - The spec limit is above the limit before the step and below the limit of the step. The template does not change.
 - The spec limit is equal to the limit of a step that is `Applying` or `Held`. The step continues. A refusal or the timeout then holds the step, because a revert cannot lower the template.
-- The state is lost, not valid, of another owner or of a newer operator. Until the next change of the spec, each raise to the limit of the StatefulSet can be a step.
+- The state is lost, not valid, behind the StatefulSet, of another owner or of a newer operator. Until the next change of the spec, each raise to the limit of the StatefulSet can be a step.
 
 Changes of the user:
 
 - A spec limit above the effective limit ends the step. The pods get the spec limit as for each change of the resources.
-- A spec limit equal to the effective limit does not change the pods. A step that is `Applying` or `Held` continues until each pod runs with that limit.
+- A spec limit equal to the effective limit does not change the pods. A step that is `Applying` or `Held` continues until each pod runs with that limit. A step that is done ends, so a later lower spec limit gives each pod the lower limit.
 - A spec limit below the effective limit does not change the pods. The reason then contains `redis.resources.limits.memory is below effectiveMemory`.
 - A `memoryMax` below the effective limit lowers the limit of the pods to `memoryMax`. This is a change of the user: Kubernetes 1.35 lowers it in place, and older versions recreate the pods.
 - Mode `Recommend` keeps the effective limit, and completes a step that is `Applying` or `Held`. It starts no step. The status shows no phase of an earlier step.
 - Mode `Off` gives the pods the spec limit. This lowers the limit as above. To keep the limit, pin it first.
-- A ConfigMap `rfa-<NAME>` that is lost or not valid gives the limit of the live StatefulSet. No step starts until the next change of the spec, also when the live limit is the spec limit. That change gives the phase `Held` to a frozen limit above the spec limit, until each pod runs with that limit. A spec limit above the frozen limit ends this step. After the step, the budget and the back-off start again. Mode `Recommend` also keeps that limit when `status.autoscaling.effectiveMemory` is set.
+- A ConfigMap `rfa-<NAME>` that is lost, not valid or behind the StatefulSet gives the limit of the live StatefulSet. An example of a state behind the StatefulSet is a restored older copy. No step starts until the next change of the spec, also when the live limit is the spec limit. That change gives the phase `Held` to a frozen limit above the spec limit, until each pod runs with that limit. A spec limit above the frozen limit ends this step. After the step, the budget and the back-off start again.
 - A ConfigMap `rfa-<NAME>` of another owner or of a newer operator version also gives the limit of the live StatefulSet. The operator does not change that ConfigMap and starts no step.
 - A state with a last sample more than 11 minutes before the current time gives the limit of the live StatefulSet. A state that stays after mode `Off` thus does not change the pods.
+
+The operator never lowers the limit of the StatefulSet without a user change. Before each Ensure, it reads the limit of the live StatefulSet, also in mode `Recommend`. Without the StatefulSet, for example after a delete with `--cascade=orphan`, the largest redis pod gives the limit. Only these changes give a lower limit: a change of the spec limit, a lower `memoryMax`, and the revert of the step of the StatefulSet. The annotation `redisfailovers.databases.spotahome.com/spec-memory-limit` of the StatefulSet holds the spec limit of the last Ensure.
 
 To pin the effective limit, for example before mode `Off` or a downgrade of the operator:
 
 1. Read `status.autoscaling.effectiveMemory`. When it is empty, the pods have the spec limit.
 2. Set `redis.resources.requests.memory` and `redis.resources.limits.memory` to that value.
-3. When `status.autoscaling.phase` is `Applying` or `Held`, wait until it is `Done`. Mode `Off` recreates a pod that refuses the limit.
+3. When `status.autoscaling.phase` is `Applying` or `Held`, wait until it is `Done`. Mode `Off` recreates a pod that refuses the limit. When the phase stays `Held`, set the spec limit back to the value before step 2. This ends the step, and the pods of the step keep their limit. Then find the cause of the refusal, or delete the pod that refuses the limit.
 4. Set `redis.autoscaling.mode` to `Recommend` or `Off`.
 5. Wait until `status.state` is `Healthy`.
 
