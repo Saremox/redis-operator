@@ -281,9 +281,11 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	// The kubelet stops the hook at the end of the grace period, and then the
 	// script cannot SAVE. The timing assumes the default grace period of 30s
 	// (redis.terminationGracePeriod). Each call has a 2s limit, and the
-	// Sentinel part ends before 19s. The last failover request or poll starts
-	// before the 12s deadline and ends before 15s. REPLICAOF and CLIENT
-	// UNPAUSE add a maximum of 4s.
+	// Sentinel part ends before 19s. The last poll starts before the 12s
+	// deadline and ends before 15s. REPLICAOF and CLIENT UNPAUSE add a maximum
+	// of 4s. The last failover request starts at the latest 3s before the
+	// deadline. Thus an accepted request always leaves time for one poll and
+	// the REPLICAOF.
 	//
 	// Until Sentinel promotes a replica, the master still accepts writes, and
 	// the promotion loses those that did not reach the replica. Thus the script
@@ -291,12 +293,13 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	// before it ends the pause: the clients then get READONLY and not a lost
 	// OK. The pause stops 6s after the deadline, also if the script stops.
 	//
-	// Sentinel does not compare the offsets of the replicas with the master
-	// before the promotion. Thus the script waits until each online replica
-	// confirms the offset of the master. The replicas confirm once per second.
-	// WAIT does not help: since Redis 7.2, it waits only for the writes of its
-	// own connection. The wait stops 7s before the deadline, so that the
-	// failover request and the polls keep their time.
+	// Sentinel promotes the replica with the highest offset that it knows, but
+	// this offset can be 10s old. Thus the script waits until each online
+	// replica confirms the offset of the master. The replicas confirm once per
+	// second. WAIT does not help: it waits only for the commands of its own
+	// connection, so on a new connection it returns at once. The wait stops 8s
+	// before the deadline. Then one failover request fits, and two fit when
+	// INFO answers.
 	//
 	// Without the pause, a failover loses writes, so the script asks for none.
 	// Then Redis 7 and later pause the writes on SIGTERM and wait for the
@@ -353,7 +356,7 @@ if [ "$master" = "$self" ]; then
   	echo "shutdown.sh: could not pause the writes, so no failover is requested (stale REDIS_PASSWORD, or Redis before 6.2): $paused" >&2
   else
   	behind=$(replicas_behind)
-  	while [ "$behind" != 0 ] && [ "$(date +%%s)" -lt "$((deadline - 7))" ]; do
+  	while [ "$behind" != 0 ] && [ "$(date +%%s)" -lt "$((deadline - 8))" ]; do
   		sleep 0.1
   		behind=$(replicas_behind)
   	done
@@ -362,7 +365,7 @@ if [ "$master" = "$self" ]; then
   	fi
   	failover=""
   	retries=0
-  	while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ] && [ "$(date +%%s)" -lt "$deadline" ]; do
+  	while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ] && [ "$(date +%%s)" -lt "$((deadline - 3))" ]; do
   		retries=$((retries + 1))
   		failover=$($t redis-cli -h %[1]v -p 26379 SENTINEL failover mymaster)
   		if [ "$failover" != "OK" ]; then

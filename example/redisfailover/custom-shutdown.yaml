@@ -58,8 +58,8 @@ data:
     # A failover without a write pause loses the writes that the replica did not get.
     if [ "$(master_ip)" = "$self" ] && [ "$(local_cli CLIENT PAUSE 15000 WRITE)" = "OK" ]; then
       # Sentinel can promote a replica that did not get the last writes. Thus wait
-      # a maximum of 5 seconds until the online replicas confirm all writes.
-      while [ "$(replicas_behind)" != 0 ] && [ "$(date +%s)" -lt "$((deadline - 7))" ]; do
+      # at most 4 seconds until the online replicas confirm all writes.
+      while [ "$(replicas_behind)" != 0 ] && [ "$(date +%s)" -lt "$((deadline - 8))" ]; do
         sleep 0.1
       done
       if [ "$($sentinel SENTINEL failover mymaster)" = "OK" ]; then

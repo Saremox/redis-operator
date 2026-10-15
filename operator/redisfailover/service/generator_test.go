@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -3428,7 +3427,8 @@ func TestRedisShutdownScriptEndsInsideGracePeriod(t *testing.T) {
 	// first query and 10.0.0.2 after it. The fake local Redis answers OK, or
 	// refuses a password other than FAKE_REQUIREPASS as redis-cli does. Its
 	// INFO shows one online replica behind the master for the first
-	// FAKE_BEHIND calls, or FAKE_INFO.
+	// FAKE_BEHIND calls, or FAKE_INFO. The first FAKE_FAILOVER_HANGS failover
+	// requests hang, and the next ones answer after FAKE_FAILOVER_DELAY.
 	fakeCLI := `#!/bin/sh
 echo "auth=$REDISCLI_AUTH $*" >>"$FAKE_LOG"
 case "$*" in
@@ -3468,7 +3468,10 @@ case "$*" in
 	else
 		echo '"10.0.0.1","6379"'
 	fi ;;
-*failover*) echo "${FAKE_FAILOVER:-OK}" ;;
+*failover*)
+	[ "$(grep -c "SENTINEL failover" "$FAKE_LOG")" -le "${FAKE_FAILOVER_HANGS:-0}" ] && exec sleep 30
+	[ -n "$FAKE_FAILOVER_DELAY" ] && sleep "$FAKE_FAILOVER_DELAY"
+	echo "${FAKE_FAILOVER:-OK}" ;;
 esac
 `
 	dir := t.TempDir()
@@ -3529,8 +3532,22 @@ esac
 			wantCalls:  append([]string{lookup, "auth= -p 6379 CLIENT PAUSE <ms> WRITE", info}, moved...),
 			manyInfo:   true,
 			wantOutput: "shutdown.sh: not all online replicas confirmed the writes, the failover can lose writes (replicas behind: 1)",
-			minTime:    4 * time.Second,
+			minTime:    3 * time.Second,
 			maxTime:    9 * time.Second,
+		},
+		{
+			// The failover requests time out twice after a replica that
+			// stayed behind. A request that Sentinel accepts later leaves no
+			// time for the REPLICAOF, and the old master accepts writes after
+			// the pause. Thus the script asks for no more failovers 3s before
+			// the deadline.
+			name:       "late failover",
+			env:        []string{"FAKE_BEHIND=1000", "FAKE_FAILOVER_HANGS=2", "FAKE_FAILOVER_DELAY=1.95"},
+			wantCalls:  []string{lookup, "auth= -p 6379 CLIENT PAUSE <ms> WRITE", info, failover, failover, "auth= -p 6379 CLIENT UNPAUSE", "auth= -p 6379 save"},
+			manyInfo:   true,
+			wantOutput: "shutdown.sh: sentinel did not accept the failover after 2 attempts",
+			minTime:    8 * time.Second,
+			maxTime:    13 * time.Second,
 		},
 		{
 			name:       "info fails",
@@ -3538,7 +3555,7 @@ esac
 			wantCalls:  append([]string{lookup, "auth= -p 6379 CLIENT PAUSE <ms> WRITE", info}, moved...),
 			manyInfo:   true,
 			wantOutput: "(replicas behind: unknown)",
-			minTime:    4 * time.Second,
+			minTime:    3 * time.Second,
 			maxTime:    9 * time.Second,
 		},
 		{
@@ -3658,10 +3675,16 @@ esac
 				}
 			}
 			if test.manyInfo {
-				// One INFO call each 0.1s until 7s before the deadline.
-				repeated := slices.Compact(slices.Clone(calls))
-				assert.Greater(t, len(calls)-len(repeated), 10)
-				calls = repeated
+				// One INFO call each 0.1s until 8s before the deadline.
+				var collapsed []string
+				for _, call := range calls {
+					if strings.HasSuffix(call, " INFO replication") && len(collapsed) > 0 && collapsed[len(collapsed)-1] == call {
+						continue
+					}
+					collapsed = append(collapsed, call)
+				}
+				assert.Greater(t, len(calls)-len(collapsed), 10)
+				calls = collapsed
 			}
 			if test.wantCalls != nil {
 				assert.Equal(t, test.wantCalls, calls)
@@ -3678,9 +3701,10 @@ esac
 	}
 }
 
-// startShutdownTestRedis starts a redis-server on ip:port. The pods of a
-// RedisFailover use one port, and the script gives that port to REPLICAOF.
-func startShutdownTestRedis(t *testing.T, ip string, port int, args ...string) *exec.Cmd {
+// startShutdownTestRedis starts a redis-server on ip:port and reports whether
+// it answers. The pods of a RedisFailover use one port, and the script gives
+// that port to REPLICAOF.
+func startShutdownTestRedis(t *testing.T, ip string, port int, args ...string) (*exec.Cmd, bool) {
 	t.Helper()
 	dir := t.TempDir()
 	args = append([]string{"--bind", ip, "--port", strconv.Itoa(port), "--save", "", "--appendonly", "no",
@@ -3691,19 +3715,37 @@ func startShutdownTestRedis(t *testing.T, ip string, port int, args ...string) *
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
-	require.Eventually(t, func() bool {
+	for range 100 {
 		out, err := exec.Command("redis-cli", "-h", ip, "-p", strconv.Itoa(port), "PING").Output()
-		return err == nil && strings.TrimSpace(string(out)) == "PONG"
-	}, 5*time.Second, 50*time.Millisecond)
-	return cmd
+		if err == nil && strings.TrimSpace(string(out)) == "PONG" {
+			return cmd, true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return cmd, false
 }
 
-func freeTCPPort(t *testing.T) int {
+// startShutdownTestPair starts a master on 127.0.0.1 and its replica on
+// 127.0.0.2. Another process can take the free port before redis-server
+// binds it, so the pair gets a second attempt on another port.
+func startShutdownTestPair(t *testing.T) (int, *exec.Cmd) {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer func() { _ = l.Close() }()
-	return l.Addr().(*net.TCPAddr).Port
+	for range 2 {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		port := l.Addr().(*net.TCPAddr).Port
+		_ = l.Close()
+		if _, ok := startShutdownTestRedis(t, "127.0.0.1", port); !ok {
+			continue
+		}
+		replica, ok := startShutdownTestRedis(t, "127.0.0.2", port,
+			"--replicaof", "127.0.0.1", strconv.Itoa(port), "--replica-announce-ip", "127.0.0.2")
+		if ok {
+			return port, replica
+		}
+	}
+	t.Fatal("redis-server did not start on 127.0.0.1 and 127.0.0.2")
+	return 0, nil
 }
 
 func shutdownTestReplicationInfo(t *testing.T, ip string, port int) string {
@@ -3714,19 +3756,33 @@ func shutdownTestReplicationInfo(t *testing.T, ip string, port int) string {
 }
 
 // The script runs against a real master and replica. The fake Sentinel
-// promotes the replica, as Sentinel does, without a check of its offset.
+// promotes the replica at once, as Sentinel does after a SENTINEL FAILOVER.
 func TestRedisShutdownScriptWaitsForTheReplica(t *testing.T) {
 	for _, bin := range []string{"redis-server", "redis-cli", "timeout"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			t.Skipf("%s is not installed", bin)
 		}
 	}
+	version, err := exec.Command("redis-server", "--version").Output()
+	require.NoError(t, err)
+	m := regexp.MustCompile(`v=(\d+)\.(\d+)`).FindSubmatch(version)
+	if m == nil {
+		t.Skipf("unknown redis-server version: %s", version)
+	}
+	major, _ := strconv.Atoi(string(m[1]))
+	minor, _ := strconv.Atoi(string(m[2]))
+	if major < 6 || major == 6 && minor < 2 {
+		t.Skipf("redis-server before 6.2 has no CLIENT PAUSE WRITE: %s", version)
+	}
+	// macOS has only 127.0.0.1 on the loopback interface.
+	l, err := net.Listen("tcp", "127.0.0.2:0")
+	if err != nil {
+		t.Skipf("cannot bind 127.0.0.2: %v", err)
+	}
+	_ = l.Close()
 	realCLI, err := exec.LookPath("redis-cli")
 	require.NoError(t, err)
-	port := freeTCPPort(t)
-	startShutdownTestRedis(t, "127.0.0.1", port)
-	replica := startShutdownTestRedis(t, "127.0.0.2", port,
-		"--replicaof", "127.0.0.1", strconv.Itoa(port), "--replica-announce-ip", "127.0.0.2")
+	port, replica := startShutdownTestPair(t)
 	online := regexp.MustCompile(`slave0:ip=127\.0\.0\.2,port=\d+,state=online,offset=(\d+),`)
 	top := regexp.MustCompile(`master_repl_offset:(\d+)`)
 	require.Eventually(t, func() bool {
