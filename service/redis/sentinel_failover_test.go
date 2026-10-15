@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -32,23 +33,23 @@ func TestGetSentinelFailoverReadsTheState(t *testing.T) {
 	}{
 		{
 			name:  "a Sentinel that fails over",
-			reply: sentinelMasterReply("flags", "master,failover_in_progress,force_failover", "failover-state", "wait_promotion", "failover-timeout", "10000"),
-			want:  SentinelFailover{InProgress: true, State: "wait_promotion", Timeout: 10 * time.Second},
+			reply: sentinelMasterReply("ip", "10.0.0.1", "port", "6379", "flags", "master,failover_in_progress,force_failover", "failover-state", "wait_promotion", "failover-timeout", "10000"),
+			want:  SentinelFailover{InProgress: true, State: "wait_promotion", Timeout: 10 * time.Second, Master: "10.0.0.1:6379"},
 		},
 		{
 			name:  "no failover",
 			reply: sentinelMasterReply("flags", "master", "failover-timeout", "180000"),
-			want:  SentinelFailover{Timeout: 3 * time.Minute},
+			want:  SentinelFailover{Timeout: 3 * time.Minute, Master: ":"},
 		},
 		{
 			name:  "no failover-timeout",
 			reply: sentinelMasterReply("flags", "master,failover_in_progress"),
-			want:  SentinelFailover{InProgress: true},
+			want:  SentinelFailover{InProgress: true, Master: ":"},
 		},
 		{
 			name:  "a negative failover-timeout",
 			reply: sentinelMasterReply("flags", "failover_in_progress,master", "failover-timeout", "-1"),
-			want:  SentinelFailover{InProgress: true},
+			want:  SentinelFailover{InProgress: true, Master: ":"},
 		},
 	}
 	for _, test := range tests {
@@ -110,7 +111,8 @@ func TestGetSentinelFailoverOfARealFailover(t *testing.T) {
 
 	f, err := c.GetSentinelFailover(sentinelIP)
 	require.NoError(t, err)
-	assert.Equal(t, SentinelFailover{Timeout: 15 * time.Second}, f)
+	oldMaster := net.JoinHostPort(master.IP, strconv.Itoa(master.Port))
+	assert.Equal(t, SentinelFailover{Timeout: 15 * time.Second, Master: oldMaster}, f)
 
 	rc := rediscli.NewSentinelClient(&rediscli.Options{Addr: net.JoinHostPort(sentinelIP, sentinelPort)})
 	defer func() { _ = rc.Close() }()
@@ -123,6 +125,7 @@ func TestGetSentinelFailoverOfARealFailover(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, f.InProgress)
 	assert.NotEmpty(t, f.State)
+	assert.Equal(t, oldMaster, f.Master, "the master changes at the end of the failover only")
 
 	require.NoError(t, c.SetCustomSentinelConfig(sentinelIP, []string{"down-after-milliseconds 4000"}))
 	require.NoError(t, c.SetSentinelAuthPass(sentinelIP, "s3cr3t"))
@@ -154,5 +157,8 @@ func TestGetSentinelFailoverWithoutTheMaster(t *testing.T) {
 	_, err := newTestClient().GetSentinelFailover(sentinelIP)
 
 	require.EqualError(t, err, "ERR No such master with that name")
+	assert.True(t, IsNoSuchMasterError(err))
 	assert.False(t, IsUnreachableError(err))
+	assert.False(t, IsNoSuchMasterError(nil))
+	assert.False(t, IsNoSuchMasterError(errors.New("NOPERM this user has no permissions to run the 'sentinel|master' command")))
 }

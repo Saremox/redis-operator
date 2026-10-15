@@ -528,6 +528,15 @@ type SentinelFailover struct {
 	State string
 	// Timeout is the failover-timeout of the Sentinel, or 0 for a missing value.
 	Timeout time.Duration
+	// Master is the address of the master as ip:port. It stays the old master
+	// until the failover ends.
+	Master string
+}
+
+// IsNoSuchMasterError reports whether err is the reply of a Sentinel that
+// does not monitor mymaster, for example after SENTINEL REMOVE.
+func IsNoSuchMasterError(err error) bool {
+	return err != nil && err.Error() == "ERR No such master with that name"
 }
 
 // GetSentinelFailover returns the failover state of the Sentinel.
@@ -549,6 +558,7 @@ func (c *client) GetSentinelFailover(ip string) (SentinelFailover, error) {
 		InProgress: slices.Contains(strings.Split(info["flags"], ","), "failover_in_progress"),
 		State:      info["failover-state"],
 		Timeout:    time.Duration(max(ms, 0)) * time.Millisecond,
+		Master:     net.JoinHostPort(info["ip"], info["port"]),
 	}, nil
 }
 

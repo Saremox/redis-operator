@@ -48,9 +48,14 @@ const (
 
 var sfSentinels = []string{"10.0.1.1", "10.0.1.2", "10.0.1.3"}
 
-// failingOver is the failover state of a Sentinel that fails over.
+// failingOver is the failover state of a Sentinel that fails over the old
+// master.
 func failingOver(state string, timeout time.Duration) []redis.SentinelFailover {
-	return []redis.SentinelFailover{{InProgress: true, State: state, Timeout: timeout}}
+	return failingOverMaster(sfOldMaster+":6379", state, timeout)
+}
+
+func failingOverMaster(master, state string, timeout time.Duration) []redis.SentinelFailover {
+	return []redis.SentinelFailover{{InProgress: true, State: state, Timeout: timeout, Master: master}}
 }
 
 // sfReconcile is the state of the Sentinels in one reconcile.
@@ -290,20 +295,54 @@ func TestSentinelFailoverStartsAfterTheFirstRead(t *testing.T) {
 	ft.assertHold(t)
 }
 
-// TestSentinelFailoverReadError covers a Sentinel that answers the read
-// with an error reply, for example after SENTINEL REMOVE. That Sentinel has
-// no failover, so it gets the heal. A Sentinel that does not answer gets no
-// change.
+// TestSentinelFailoverMissingMaster covers a Sentinel without the master,
+// for example after SENTINEL REMOVE. It has no failover, so it gets the heal
+// at once.
+func TestSentinelFailoverMissingMaster(t *testing.T) {
+	ft := newSentinelFailoverTest(false)
+	res := ft.reconcile(t, sfReconcile{wrong: sfSentinels[2:], readErr: map[string]error{
+		sfSentinels[2]: errors.New("ERR No such master with that name"),
+	}})
+	assert.Equal(t, sfSentinels[2:], res.monitored)
+	assert.Empty(t, ft.requeues)
+	assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
+}
+
+// TestSentinelFailoverReadError covers a Sentinel that answers the read with
+// another error, for example an ACL error. That Sentinel can fail over, so it
+// gets no change until one failover-timeout after the first error.
 func TestSentinelFailoverReadError(t *testing.T) {
 	for _, readErr := range []error{
-		errors.New("ERR No such master with that name"),
+		errors.New("NOPERM this user has no permissions to run the 'sentinel|master' command"),
 		errors.New("malformed SENTINEL MASTER reply"),
 	} {
 		t.Run(readErr.Error(), func(t *testing.T) {
 			ft := newSentinelFailoverTest(false)
-			res := ft.reconcile(t, sfReconcile{wrong: sfSentinels[2:], readErr: map[string]error{sfSentinels[2]: readErr}})
-			assert.Equal(t, sfSentinels[2:], res.monitored)
-			assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
+			state := sfReconcile{wrong: sfSentinels[1:], readErr: map[string]error{sfSentinels[2]: readErr}}
+			held := "warning: Sentinel 10.0.1.3 did not give its failover state, so the operator does not change it for 10s: " + readErr.Error()
+
+			res := ft.reconcile(t, state)
+			assert.Equal(t, sfSentinels[1:2], res.monitored)
+			assert.Contains(t, ft.lines, held)
+			assert.Equal(t, []time.Duration{10 * time.Second}, ft.requeues)
+
+			// The Warning is logged one time.
+			ft.clock = ft.clock.Add(6 * time.Second)
+			res = ft.reconcile(t, state)
+			assert.Equal(t, sfSentinels[1:2], res.monitored)
+			assert.NotContains(t, ft.lines, held)
+			assert.Equal(t, []time.Duration{4 * time.Second}, ft.requeues)
+
+			ft.clock = ft.clock.Add(4 * time.Second)
+			res = ft.reconcile(t, state)
+			assert.Equal(t, sfSentinels[1:], res.monitored)
+			assert.Contains(t, ft.lines, "warning: Sentinel 10.0.1.3 did not give its failover state for 10s, so the operator heals it: "+readErr.Error())
+
+			// A read without an error clears the time of the first error.
+			ft.clock = ft.clock.Add(time.Second)
+			ft.reconcile(t, sfReconcile{wrong: sfSentinels[2:]})
+			_, stored := ft.handler.sentinelReadErrors.Load("testns/test")
+			assert.False(t, stored)
 		})
 	}
 	t.Run("unreachable", func(t *testing.T) {
@@ -314,6 +353,56 @@ func TestSentinelFailoverReadError(t *testing.T) {
 		require.EqualError(t, res.err, "sentinel(s) 10.0.1.3 unreachable")
 		assert.Equal(t, sfSentinels[:2], res.monitored)
 	})
+}
+
+// TestSentinelFailoverReadErrorWithoutAChange checks that a reconcile without
+// a change clears the time of the first read error.
+func TestSentinelFailoverReadErrorWithoutAChange(t *testing.T) {
+	ft := newSentinelFailoverTest(false)
+	ft.reconcile(t, sfReconcile{wrong: sfSentinels[2:], readErr: map[string]error{sfSentinels[2]: errors.New("NOPERM")}})
+	ft.reconcile(t, sfReconcile{})
+	_, stored := ft.handler.sentinelReadErrors.Load("testns/test")
+	assert.False(t, stored)
+}
+
+// TestSentinelFailoverOfAnotherMaster covers two failovers of one Sentinel
+// without a reconcile between them. The second failover starts from the
+// promoted replica of the first one, so it gets its own wait.
+func TestSentinelFailoverOfAnotherMaster(t *testing.T) {
+	ft := newSentinelFailoverTest(false)
+	ft.reconcile(t, sfReconcile{wrong: sfSentinels, failover: map[string][]redis.SentinelFailover{
+		sfSentinels[2]: failingOverMaster("10.0.0.1:6379", "wait_promotion", 10*time.Second),
+	}})
+
+	ft.clock = ft.clock.Add(10 * time.Second)
+	res := ft.reconcile(t, sfReconcile{wrong: sfSentinels, failover: map[string][]redis.SentinelFailover{
+		sfSentinels[2]: failingOverMaster("10.0.0.2:6379", "reconf_slaves", 10*time.Second),
+	}})
+	assert.Empty(t, res.monitored)
+	assert.Equal(t, []time.Duration{10 * time.Second}, ft.requeues)
+	ft.assertHold(t)
+}
+
+// TestSentinelFailoverWaitEndsAfterOneTimeout follows one failover through
+// its states on a 60 s clock. The master address stays the same until the
+// failover ends, so the wait ends one failover-timeout after the first read.
+func TestSentinelFailoverWaitEndsAfterOneTimeout(t *testing.T) {
+	ft := newSentinelFailoverTest(false)
+	for elapsed := time.Duration(0); elapsed <= time.Minute; elapsed += 2 * time.Second {
+		state := "wait_promotion"
+		if elapsed >= 4*time.Second {
+			state = "reconf_slaves"
+		}
+		ft.clock = time.Unix(1000, 0).Add(elapsed)
+		res := ft.reconcile(t, sfReconcile{wrong: sfSentinels, failover: map[string][]redis.SentinelFailover{
+			sfSentinels[2]: failingOver(state, 10*time.Second),
+		}})
+		if elapsed < 10*time.Second {
+			assert.Empty(t, res.monitored, elapsed)
+		} else {
+			assert.Equal(t, sfSentinels, res.monitored, elapsed)
+		}
+	}
 }
 
 // TestSentinelFailoverCandidateDoesNotExtendTheWait covers a leader that does
