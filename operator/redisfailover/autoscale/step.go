@@ -135,6 +135,11 @@ func Bound(s State, spec, maxLimit int64) State {
 		s.Effective = e
 		s = s.endStep(spec)
 	}
+	if s.To != 0 && s.To <= spec && s.Phase != PhaseApplying && s.Phase != PhaseHeld {
+		// The spec limit reached the step, so the pods of the step have the
+		// spec limit. A later lower spec limit gives them the user path.
+		s.To = 0
+	}
 	return s
 }
 

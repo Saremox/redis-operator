@@ -491,6 +491,28 @@ func TestUnfreeze(t *testing.T) {
 	assert.Equal(t, PhaseIdle, Unfreeze(atSpec).Phase)
 }
 
+// A spec limit at or above the limit of a step ends the step, unless the
+// step is not done. A later lower spec limit then gives the pods of the step
+// the user path.
+func TestBoundEndsTheStepAtTheSpecLimit(t *testing.T) {
+	for _, test := range []struct {
+		phase string
+		spec  int64
+		to    int64
+	}{
+		{PhaseDone, 1280 * mi, 0},
+		{PhaseDone, 1536 * mi, 0},
+		{PhaseIdle, 1280 * mi, 0},
+		{PhaseReverted, 1280 * mi, 0},
+		{PhaseDone, gi, 1280 * mi},
+		{PhaseApplying, 1280 * mi, 1280 * mi},
+		{PhaseHeld, 1280 * mi, 1280 * mi},
+	} {
+		s := State{Phase: test.phase, From: gi, To: 1280 * mi, Effective: 1280 * mi}
+		assert.Equal(t, test.to, Bound(s, test.spec, 4*gi).To, "%s at %d", test.phase, test.spec)
+	}
+}
+
 func TestBoundKeepsTheStepOfAnotherPhase(t *testing.T) {
 	s := State{Phase: PhaseDone, Effective: 1280 * mi}
 	assert.Equal(t, State{Phase: PhaseDone}, Bound(s, 1280*mi, 4*gi))
