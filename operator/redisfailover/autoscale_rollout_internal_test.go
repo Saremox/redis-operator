@@ -18,6 +18,7 @@ import (
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
+	"github.com/saremox/redis-operator/operator/redisfailover/autoscale"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
@@ -141,11 +142,41 @@ func TestAutoscalerLimits(t *testing.T) {
 	h.autoscaleReads.Store(failoverKey(rf), autoscaleRead{spec: 1 << 30, effective: autoscaleEffective})
 	assert.Equal(t, autoscaleLimits, h.autoscalerLimits(rf))
 
-	// Mode Recommend can keep a frozen effective limit, but it makes no step.
-	for _, mode := range []string{"", redisfailoverv1.AutoscalingModeOff, redisfailoverv1.AutoscalingModeRecommend} {
+	// Without autoscaling, each revision takes the user path.
+	for _, mode := range []string{"", redisfailoverv1.AutoscalingModeOff} {
 		rf := autoscaleRolloutRF(mode)
 		h.autoscaleReads.Store(failoverKey(rf), autoscaleRead{spec: 1 << 30, effective: autoscaleEffective})
 		assert.Zero(t, h.autoscalerLimits(rf), mode)
+	}
+
+	// A frozen effective limit of mode Recommend can come from a step, also
+	// after the loss of the state.
+	rf = autoscaleRolloutRF(redisfailoverv1.AutoscalingModeRecommend)
+	h.autoscaleReads.Store(failoverKey(rf), autoscaleRead{spec: 1 << 30, effective: autoscaleEffective})
+	assert.Equal(t, autoscaleLimits, h.autoscalerLimits(rf))
+
+	// A blocked, lost or frozen state can hide a step, also at the spec
+	// limit.
+	for name, read := range map[string]autoscaleRead{
+		"blocked": {blocked: autoscale.ReasonNewerState},
+		"lost":    {lost: true},
+		"frozen":  {state: autoscale.State{Version: autoscale.StateVersion, Frozen: true}},
+	} {
+		read.spec, read.effective = 1<<30, 1<<30
+		h.autoscaleReads.Store(failoverKey(rf), read)
+		assert.Equal(t, rfservice.AutoscalerLimits{Effective: 1 << 30}, h.autoscalerLimits(rf), name)
+	}
+
+	// A spec limit at the target of an unfinished step keeps the step.
+	for _, phase := range []string{autoscale.PhaseApplying, autoscale.PhaseHeld} {
+		s := autoscale.State{Phase: phase, From: 1 << 30, To: 2 << 30}
+		h.autoscaleReads.Store(failoverKey(rf), autoscaleRead{state: s, spec: 2 << 30, effective: 2 << 30})
+		assert.Equal(t, rfservice.AutoscalerLimits{Spec: 1 << 30, Effective: 2 << 30}, h.autoscalerLimits(rf), phase)
+	}
+	for _, phase := range []string{autoscale.PhaseDone, autoscale.PhaseReverted, autoscale.PhaseIdle} {
+		s := autoscale.State{Phase: phase, From: 1 << 30, To: 2 << 30}
+		h.autoscaleReads.Store(failoverKey(rf), autoscaleRead{state: s, spec: 2 << 30, effective: 2 << 30})
+		assert.Zero(t, h.autoscalerLimits(rf), phase)
 	}
 }
 
@@ -332,23 +363,34 @@ func TestUpdateRedisesPodsRecordsTheAutoscaleRollout(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// The mocks fail a call that the test does not expect. In mode Recommend,
-// also with a frozen effective limit, the rollout takes the user path and
-// makes the API calls of an instance without autoscaling.
+// The mocks fail a call that the test does not expect. In mode Recommend
+// with the spec limit, the rollout takes the user path and makes the API
+// calls of an instance without autoscaling.
 func TestUpdateRedisesPodsInModeRecommend(t *testing.T) {
-	for name, effective := range map[string]int64{"spec limit": 1 << 30, "frozen effective limit": autoscaleEffective} {
-		t.Run(name, func(t *testing.T) {
-			rt := newStaleRolloutTest(t, "rfr-test-1", false)
-			rt.rf.Spec.Redis.Autoscaling = &redisfailoverv1.AutoscalingSettings{Mode: redisfailoverv1.AutoscalingModeRecommend}
-			rt.handler.autoscaleReads.Store(failoverKey(rt.rf), autoscaleRead{spec: 1 << 30, effective: effective})
-			rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new", rfservice.AutoscalerLimits{}).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate, Class: rfservice.ResizePermanent}, nil)
-			rt.heal.On("DeletePod", "rfr-test-1", rt.rf).Once().Return(nil)
-			rt.update("")
-			rt.heal.AssertExpectations(t)
-			_, ok := rt.handler.autoscaleRollout.Load(failoverKey(rt.rf))
-			assert.False(t, ok)
-		})
-	}
+	rt := newStaleRolloutTest(t, "rfr-test-1", false)
+	rt.rf.Spec.Redis.Autoscaling = &redisfailoverv1.AutoscalingSettings{Mode: redisfailoverv1.AutoscalingModeRecommend}
+	rt.handler.autoscaleReads.Store(failoverKey(rt.rf), autoscaleRead{spec: 1 << 30, effective: 1 << 30})
+	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new", rfservice.AutoscalerLimits{}).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate, Class: rfservice.ResizePermanent}, nil)
+	rt.heal.On("DeletePod", "rfr-test-1", rt.rf).Once().Return(nil)
+	rt.update("")
+	rt.heal.AssertExpectations(t)
+	_, ok := rt.handler.autoscaleRollout.Load(failoverKey(rt.rf))
+	assert.False(t, ok)
+}
+
+// In mode Recommend, a frozen effective limit can come from a step, also
+// after the loss of the state. A pod that refuses it keeps its revision.
+func TestUpdateRedisesPodsInModeRecommendKeepsAFrozenStep(t *testing.T) {
+	rt := newStaleRolloutTest(t, "rfr-test-1", false)
+	rt.rf.Spec.Redis.Autoscaling = &redisfailoverv1.AutoscalingSettings{Mode: redisfailoverv1.AutoscalingModeRecommend}
+	rt.handler.autoscaleReads.Store(failoverKey(rt.rf), autoscaleRead{spec: 1 << 30, effective: autoscaleEffective})
+	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-1", "new", autoscaleLimits).Once().Return(rfservice.ResizeResult{
+		Action: rfservice.ResizeRecreate, Class: rfservice.ResizePermanent, Message: "resize infeasible", AutoscalerRevision: true,
+	}, nil)
+	rt.update("")
+	rt.heal.AssertExpectations(t)
+	rt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+	assert.Equal(t, "rollout holds pod rfr-test-1: resize infeasible", rt.rf.Status.Message)
 }
 
 // A reconcile that ends before UpdateRedisesPods leaves no rollout result of

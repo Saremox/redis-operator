@@ -385,7 +385,8 @@ func TestAutoscaleSteppingInModeRecommend(t *testing.T) {
 	} {
 		h.autoscaleReads.Store(failoverKey(rf), autoscaleRead{state: autoscale.State{Phase: phase}, spec: 1 << 30, effective: autoscaleEffective})
 		assert.Equal(t, want, h.autoscaleStepping(rf), phase)
-		assert.Equal(t, want, h.autoscalerLimits(rf) != rfservice.AutoscalerLimits{}, phase)
+		// The limits do not depend on the phase.
+		assert.Equal(t, autoscaleLimits, h.autoscalerLimits(rf), phase)
 	}
 	assert.False(t, h.autoscaleStepping(autoscaleRolloutRF(redisfailoverv1.AutoscalingModeOff)))
 }

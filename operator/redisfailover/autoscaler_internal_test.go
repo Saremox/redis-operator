@@ -552,7 +552,8 @@ func TestAutoscaleErrorsOnlyLog(t *testing.T) {
 
 		at.run(observed)
 
-		assert.Equal(t, redisfailoverv1.AutoscalingStatus{Reason: autoscale.ReasonNoInfo}, at.rf.Status.Autoscaling)
+		// The invalid state freezes the limit also in mode Recommend.
+		assert.Equal(t, redisfailoverv1.AutoscalingStatus{Reason: autoscale.ReasonFrozen}, at.rf.Status.Autoscaling)
 		require.Len(t, at.logger.warnings, 2)
 		assert.Contains(t, at.logger.warnings[0], "is not valid, the autoscaler starts again")
 		assert.Equal(t, "Autoscaler: no autoscaler sample of 10.0.0.1: timeout\nconflict", at.logger.warnings[1])
@@ -961,6 +962,33 @@ func TestAutoscaleWritesTheFrozenLimit(t *testing.T) {
 	assert.Equal(t, "1280Mi", rf.Status.Autoscaling.EffectiveMemory)
 	at.mk.AssertNumberOfCalls(t, "GetStatefulSet", 1)
 	at.mrec.AssertExpectations(t)
+}
+
+// A lost state also lost its budget and its back-off. A status shows the
+// loss, so mode Auto freezes also the spec limit. A RedisFailover without an
+// earlier status has no state to lose.
+func TestAutoscaleFreezesALostStateAtTheSpecLimit(t *testing.T) {
+	for name, observed := range map[string]redisfailoverv1.AutoscalingStatus{
+		"lost":  {Workload: "Store", Reason: autoscale.ReasonLow},
+		"first": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
+			at.rf.Spec.Redis.Autoscaling.Mode = redisfailoverv1.AutoscalingModeAuto
+			f := at.fakeStateStore(t)
+			at.mk.On("GetStatefulSet", "testns", "rfr-test").Return(redisStatefulSet("1Gi"), nil)
+			at.mrfc.On("GetAutoscalerInfo", mock.Anything, autoscaleMaster).Return(masterInfo(500), nil)
+			at.mrec.On("SetAutoscaler", "testns", "test", mock.Anything, mock.Anything, mock.Anything, 1024*mib).Maybe()
+
+			rf := at.handle(t, observed)
+
+			frozen := name == "lost"
+			written := decodeState(t, f.stored)
+			assert.Equal(t, frozen, written.Frozen)
+			assert.Zero(t, written.Effective)
+			assert.Equal(t, frozen, rf.Status.Autoscaling.Reason == autoscale.ReasonFrozen)
+		})
+	}
 }
 
 // A state of another owner or of a newer operator is not written, and the

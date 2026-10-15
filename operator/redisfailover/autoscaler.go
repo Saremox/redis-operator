@@ -52,6 +52,9 @@ type autoscaleRead struct {
 	// resumed tells that state took its Effective from the StatefulSet, and
 	// that the autoscaler must write it.
 	resumed bool
+	// lost tells that a state without a version replaces a lost or invalid
+	// state.
+	lost bool
 	// spec is the memory limit of redis.resources, and effective the memory
 	// limit of the pods.
 	spec, effective int64
@@ -94,6 +97,7 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 		read.effective = autoscale.EffectiveLimit(read.state, spec, maxLimit)
 		return read, nil
 	}
+	read.lost = stateLost(read, rf.Status.Autoscaling)
 	// In mode Recommend, only an effective limit in the status shows that a
 	// step of an earlier mode Auto changed the pods. Thus an instance without
 	// a step makes no extra call.
@@ -110,6 +114,13 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 	r.autoscaleLiveRead.Store(failoverKey(rf), true)
 	read.effective = max(spec, min(live, maxLimit))
 	return read, nil
+}
+
+// stateLost reports whether a state without a version replaces a lost or
+// invalid state. A ConfigMap or a status shows that the autoscaler ran
+// before.
+func stateLost(read autoscaleRead, status redisfailoverv1.AutoscalingStatus) bool {
+	return read.blocked == "" && read.state.Version == 0 && (read.cm != nil || status != (redisfailoverv1.AutoscalingStatus{}))
 }
 
 // holdUnappliedRevert checks a Reverted state that Ensure did not apply. The
@@ -157,10 +168,10 @@ func (r *RedisFailoverHandler) liveRedisMemoryLimit(rf *redisfailoverv1.RedisFai
 	return rfservice.TemplateRedisMemoryLimit(ss), nil
 }
 
-// autoscalerLimits returns the memory limits of this reconcile while the
-// autoscaler makes steps, when the effective limit differs from the spec
-// limit. Only then a revision can be a step of the autoscaler. Otherwise, a
-// frozen effective limit makes no step, so each revision takes the user path.
+// autoscalerLimits returns the memory limits of this reconcile in each mode
+// with autoscaling. A revision to the effective limit can come from a step,
+// also after a mode change or the loss of the state. The user path would
+// recreate a pod that refuses it.
 func (r *RedisFailoverHandler) autoscalerLimits(rf *redisfailoverv1.RedisFailover) rfservice.AutoscalerLimits {
 	if !rf.AutoscalingEnabled() {
 		return rfservice.AutoscalerLimits{}
@@ -171,7 +182,17 @@ func (r *RedisFailoverHandler) autoscalerLimits(rf *redisfailoverv1.RedisFailove
 		return rfservice.AutoscalerLimits{}
 	}
 	var limits rfservice.AutoscalerLimits
-	if r.autoscaleStepping(rf) && read.effective != read.spec {
+	switch s := read.state; {
+	case stepUnfinished(s) && s.To == read.spec:
+		// A spec limit at the target of the step does not change the
+		// template. The revision of the step stays a step.
+		limits.Spec, limits.Effective = s.From, s.To
+	case read.blocked != "" || read.lost || s.Frozen:
+		// Without a known state, each raise to the limit of the StatefulSet
+		// can be a step, also at the spec limit. A freeze ends at the next
+		// change of the spec.
+		limits.Effective = read.effective
+	case read.effective != read.spec:
 		limits.Spec, limits.Effective = read.spec, read.effective
 	}
 	// The last step keeps the pods of its template in each phase and mode,
@@ -185,7 +206,7 @@ func (r *RedisFailoverHandler) autoscalerLimits(rf *redisfailoverv1.RedisFailove
 
 // autoscaleStepping reports whether the autoscaler makes steps in this
 // reconcile. Mode Auto makes steps. Mode Recommend completes a step of an
-// earlier mode Auto, because the user path would recreate its pods.
+// earlier mode Auto.
 func (r *RedisFailoverHandler) autoscaleStepping(rf *redisfailoverv1.RedisFailover) bool {
 	switch {
 	case !rf.AutoscalingEnabled():
@@ -458,9 +479,10 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 		state = last.state
 	}
 	unbound := state
-	if state.Version == 0 && limit != read.spec {
+	if state.Version == 0 && (limit != read.spec || stateLost(read, observed)) {
 		// The write of the state keeps the limit that readAutoscale froze, and
-		// no step starts from it.
+		// no step starts from it. A lost state also lost its budget, its
+		// back-off and its step.
 		state.Version, state.Effective, state.SpecLimit = autoscale.StateVersion, limit, read.spec
 		state.Frozen, state.Generation = true, rf.Generation
 	}
