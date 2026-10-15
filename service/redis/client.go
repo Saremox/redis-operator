@@ -547,6 +547,16 @@ func (c *client) GetSentinelFailover(ip string) (SentinelFailover, error) {
 	rClient := rediscli.NewClient(redisOptions(net.JoinHostPort(ip, sentinelPort), ""))
 	defer closeClient(rClient)
 	info, err := c.getSentinelMasterInfo(rClient)
+	if err == nil {
+		// Without flags, the reply cannot show a failover. Without the
+		// address, the caller cannot tell two failovers apart. A truncated
+		// reply can lose these fields.
+		for _, field := range []string{"flags", "ip", "port"} {
+			if _, ok := info[field]; !ok {
+				err = errMalformedSentinelMaster
+			}
+		}
+	}
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_FAILOVER, metrics.FAIL, getRedisError(err))
 		return SentinelFailover{}, err

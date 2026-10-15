@@ -38,18 +38,18 @@ func TestGetSentinelFailoverReadsTheState(t *testing.T) {
 		},
 		{
 			name:  "no failover",
-			reply: sentinelMasterReply("flags", "master", "failover-timeout", "180000"),
-			want:  SentinelFailover{Timeout: 3 * time.Minute, Master: ":"},
+			reply: sentinelMasterReply("ip", "10.0.0.1", "port", "6379", "flags", "master", "failover-timeout", "180000"),
+			want:  SentinelFailover{Timeout: 3 * time.Minute, Master: "10.0.0.1:6379"},
 		},
 		{
 			name:  "no failover-timeout",
-			reply: sentinelMasterReply("flags", "master,failover_in_progress"),
-			want:  SentinelFailover{InProgress: true, Master: ":"},
+			reply: sentinelMasterReply("ip", "10.0.0.1", "port", "6379", "flags", "master,failover_in_progress"),
+			want:  SentinelFailover{InProgress: true, Master: "10.0.0.1:6379"},
 		},
 		{
 			name:  "a negative failover-timeout",
-			reply: sentinelMasterReply("flags", "failover_in_progress,master", "failover-timeout", "-1"),
-			want:  SentinelFailover{InProgress: true, Master: ":"},
+			reply: sentinelMasterReply("ip", "10.0.0.1", "port", "6379", "flags", "failover_in_progress,master", "failover-timeout", "-1"),
+			want:  SentinelFailover{InProgress: true, Master: "10.0.0.1:6379"},
 		},
 	}
 	for _, test := range tests {
@@ -58,6 +58,28 @@ func TestGetSentinelFailoverReadsTheState(t *testing.T) {
 			got, err := newTestClient().GetSentinelFailover("127.0.0.3")
 			require.NoError(t, err)
 			assert.Equal(t, test.want, got)
+		})
+	}
+}
+
+// TestGetSentinelFailoverRejectsAnIncompleteReply covers replies without
+// the fields that the operator needs. Such a reply must not read as a
+// Sentinel without a failover.
+func TestGetSentinelFailoverRejectsAnIncompleteReply(t *testing.T) {
+	for name, reply := range map[string]string{
+		"an empty array":           "*0\r\n",
+		"an odd array with flags":  sentinelMasterReply("ip", "10.0.0.1", "port", "6379", "flags"),
+		"no flags":                 sentinelMasterReply("ip", "10.0.0.1", "port", "6379"),
+		"no ip":                    sentinelMasterReply("port", "6379", "flags", "master,failover_in_progress"),
+		"no port":                  sentinelMasterReply("ip", "10.0.0.1", "flags", "master"),
+		"a value that is a number": "*6\r\n$2\r\nip\r\n$8\r\n10.0.0.1\r\n$4\r\nport\r\n$4\r\n6379\r\n$5\r\nflags\r\n:1\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			startRawSentinel(t, "127.0.0.3", reply)
+			_, err := newTestClient().GetSentinelFailover("127.0.0.3")
+			require.ErrorIs(t, err, errMalformedSentinelMaster)
+			assert.False(t, IsNoSuchMasterError(err))
+			assert.False(t, IsUnreachableError(err))
 		})
 	}
 }
