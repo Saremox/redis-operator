@@ -55,6 +55,43 @@ func TestResizePodInPlaceKeepsAPodOnTheUpdateRevision(t *testing.T) {
 	}
 }
 
+// A stale pod that already runs with the limit of a step or a larger one,
+// for example after a resize from outside, moves to the step revision with
+// its resources. A resize to the step limit would lower it: Kubernetes 1.35
+// shrinks the pod, and older versions refuse the resize and hold the step.
+func TestResizePodInPlaceKeepsALargerPodOfAStep(t *testing.T) {
+	before, step := resources("1", "1Gi"), resources("1", "2Gi")
+	limits := AutoscalerLimits{Spec: 1 << 30, Effective: 2 << 30}
+	relabel := map[string]string{appsv1.ControllerRevisionHashLabelKey: "new"}
+	for name, support := range map[string]k8s.PodResizeSupport{"1.34": {Supported: true}, "1.35": fullSupport} {
+		t.Run(name, func(t *testing.T) {
+			c := resizeCase{support, podTemplate(before), podTemplate(step), stalePod(resources("1", "3Gi"), resources("1", "3Gi"))}
+			setup := func(ms *mK8SService.Services) {
+				ms.On("UpdatePodLabels", "testns", resizePod, relabel).Maybe().Return(nil)
+				ms.On("ResizePod", "testns", resizePod, mock.Anything).Maybe().Return(nil)
+			}
+			memory := func(mr *mRedisService.Client) {
+				mr.On("GetMemoryInfo", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(&redis.MemoryInfo{UsedMemoryRSS: 100 << 20}, nil)
+			}
+			result, ms, _, err := runResizeEffective(t, resizeRF(), c, limits, setup, memory)
+			require.NoError(t, err)
+			assert.Equal(t, ResizeResult{Action: ResizeDone, AutoscalerRevision: true}, result)
+			ms.AssertCalled(t, "UpdatePodLabels", "testns", resizePod, relabel)
+			ms.AssertNotCalled(t, "ResizePod", mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
+	// A user change of the template resizes the pod as before.
+	c := resizeCase{fullSupport, podTemplate(before), podTemplate(step), stalePod(resources("1", "3Gi"), resources("1", "3Gi"))}
+	result, ms, _, err := runResizeEffective(t, resizeRF(), c, AutoscalerLimits{}, func(ms *mK8SService.Services) {
+		ms.On("ResizePod", "testns", resizePod, mock.Anything).Maybe().Return(nil)
+	}, func(mr *mRedisService.Client) {
+		mr.On("GetMemoryInfo", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(&redis.MemoryInfo{UsedMemoryRSS: 100 << 20}, nil)
+	})
+	require.NoError(t, err)
+	assert.NotEqual(t, ResizeDone, result.Action)
+	ms.AssertNotCalled(t, "UpdatePodLabels", mock.Anything, mock.Anything, mock.Anything)
+}
+
 // Before Kubernetes 1.35, a pod that requests the step since a revert keeps
 // the request when a user change gives another limit. The API server would
 // refuse the lower limit in the pod spec, and the user path would recreate

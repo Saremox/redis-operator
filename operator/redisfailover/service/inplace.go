@@ -174,13 +174,14 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 	if c := redisContainer(update); c != nil {
 		ul = c.Resources.Limits.Memory().Value()
 	}
-	if pod.Labels[appsv1.ControllerRevisionHashLabelKey] == updateRevision && keepsTemplate(pod, update) {
-		// Only the resize request makes the pod stale, for example a request
-		// of a step after its revert. The pod runs with the template limit
-		// or a larger one, so it keeps its resources.
-		return keep("Kept the memory limit of the pod, which is on the update revision")
-	}
 	autoscaler = autoscalerRevision(current, update, limits)
+	if (pod.Labels[appsv1.ControllerRevisionHashLabelKey] == updateRevision || autoscaler) && keepsTemplate(pod, update) {
+		// Only the resize request makes the pod stale, for example a request
+		// of a step after its revert, or the pod already runs with the limit
+		// of a step, for example after a resize from outside. The pod runs
+		// with the template limit or a larger one, so it keeps its resources.
+		return keep("Kept the memory limit of the pod, which has the resources of the update revision")
+	}
 	var held int64
 	requested := RequestedRedisMemoryLimit(pod)
 	if !support.MemoryLimitDecrease && requested > ul && (requested == limits.Step || requested <= limits.StepMax) {
