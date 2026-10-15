@@ -3,6 +3,7 @@ package redisfailover
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -312,46 +313,64 @@ func TestAutoscaleFrozenEndsInModeRecommend(t *testing.T) {
 	at.rf.Generation = 2
 	at.now = stepNow.Add(2 * time.Minute)
 	rf = at.handle(t, rf.Status.Autoscaling)
-	assert.False(t, decodeState(t, f.stored).Frozen)
-	assert.Equal(t, autoscale.ReasonLow, rf.Status.Autoscaling.Reason)
+	s := decodeState(t, f.stored)
+	assert.False(t, s.Frozen)
+	// A pod can still refuse the step of the lost state.
+	assert.Equal(t, autoscale.PhaseHeld, s.Phase)
+	assert.Equal(t, autoscale.ReasonHeld+": "+autoscale.RefusalLostState, rf.Status.Autoscaling.Reason)
 	assert.Equal(t, "1280Mi", rf.Status.Autoscaling.EffectiveMemory, "Recommend keeps the limit")
 }
 
 // The procedure to pin the limit after a lost state sets the spec limit to
 // the frozen limit. The template stays, and a pod can still refuse the step of
-// the lost state, so the freeze becomes a held step to that limit.
+// the lost state. The freeze becomes a held step to that limit at the first
+// change of the spec, so a later pin also keeps the step.
 func TestAutoscaleFrozenLimitPinnedBecomesAHeldStep(t *testing.T) {
 	for _, mode := range []string{redisfailoverv1.AutoscalingModeRecommend, redisfailoverv1.AutoscalingModeAuto} {
-		t.Run(mode, func(t *testing.T) {
-			at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
-			at.rf.Spec.Redis.Autoscaling.Mode = mode
-			at.now = stepNow
-			at.rf.Status.Autoscaling.EffectiveMemory = "1280Mi"
-			f := at.fakeStateStore(t)
-			at.mk.On("GetStatefulSet", "testns", "rfr-test").Return(redisStatefulSet("1280Mi"), nil)
-			at.mrec.On("SetAutoscaler", "testns", "test", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
-			at.mrfc.On("GetAutoscalerInfo", mock.Anything, autoscaleMaster).Return(masterInfo(500), nil)
-			rf := at.handle(t, redisfailoverv1.AutoscalingStatus{})
-			require.True(t, decodeState(t, f.stored).Frozen)
-
-			at.rf.Generation = 2
-			at.rf.Spec.Redis.Resources = memoryLimit("1280Mi")
-			at.now = stepNow.Add(2 * time.Minute)
-			rf = at.handle(t, rf.Status.Autoscaling)
-
-			s := decodeState(t, f.stored)
-			assert.False(t, s.Frozen)
-			assert.Equal(t, autoscale.PhaseHeld, s.Phase)
-			assert.Equal(t, 1024*mib, s.From)
-			assert.Equal(t, 1280*mib, s.To)
-			assert.Zero(t, s.Effective)
-			assert.Equal(t, autoscale.ReasonHeld+": "+autoscale.RefusalLostState, rf.Status.Autoscaling.Reason)
-			read, err := at.h.readAutoscale(at.rf)
-			require.NoError(t, err)
-			at.h.autoscaleReads.Store(failoverKey(at.rf), read)
-			assert.Equal(t, rfservice.AutoscalerLimits{Spec: 1024 * mib, Effective: 1280 * mib}, at.h.autoscalerLimits(at.rf))
-		})
+		for _, later := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s later %v", mode, later), func(t *testing.T) {
+				testFrozenLimitPinned(t, mode, later)
+			})
+		}
 	}
+}
+
+func testFrozenLimitPinned(t *testing.T, mode string, later bool) {
+	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
+	at.rf.Spec.Redis.Autoscaling.Mode = mode
+	at.now = stepNow
+	at.rf.Status.Autoscaling.EffectiveMemory = "1280Mi"
+	f := at.fakeStateStore(t)
+	at.mk.On("GetStatefulSet", "testns", "rfr-test").Return(redisStatefulSet("1280Mi"), nil)
+	at.mrec.On("SetAutoscaler", "testns", "test", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	at.mrfc.On("GetAutoscalerInfo", mock.Anything, autoscaleMaster).Return(masterInfo(500), nil)
+	rf := at.handle(t, redisfailoverv1.AutoscalingStatus{})
+	require.True(t, decodeState(t, f.stored).Frozen)
+
+	if later {
+		// A change of the spec that keeps the template.
+		at.rf.Generation++
+		at.rf.Spec.Redis.Replicas = 3
+		at.now = at.now.Add(2 * time.Minute)
+		rf = at.handle(t, rf.Status.Autoscaling)
+		require.Equal(t, autoscale.PhaseHeld, decodeState(t, f.stored).Phase)
+	}
+	at.rf.Generation++
+	at.rf.Spec.Redis.Resources = memoryLimit("1280Mi")
+	at.now = at.now.Add(2 * time.Minute)
+	rf = at.handle(t, rf.Status.Autoscaling)
+
+	s := decodeState(t, f.stored)
+	assert.False(t, s.Frozen)
+	assert.Equal(t, autoscale.PhaseHeld, s.Phase)
+	assert.Equal(t, 1024*mib, s.From)
+	assert.Equal(t, 1280*mib, s.To)
+	assert.Zero(t, s.Effective)
+	assert.Equal(t, autoscale.ReasonHeld+": "+autoscale.RefusalLostState, rf.Status.Autoscaling.Reason)
+	read, err := at.h.readAutoscale(at.rf)
+	require.NoError(t, err)
+	at.h.autoscaleReads.Store(failoverKey(at.rf), read)
+	assert.Equal(t, rfservice.AutoscalerLimits{Spec: 1024 * mib, Effective: 1280 * mib}, at.h.autoscalerLimits(at.rf))
 }
 
 // An expired revert keeps its limit: Ensure did not write the template of the

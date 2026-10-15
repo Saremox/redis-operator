@@ -447,34 +447,48 @@ func TestPlanKeepsAStepWithTheSpecAtTo(t *testing.T) {
 	})
 }
 
-// A spec limit at the frozen limit holds a step to it. Another change of the
-// spec only ends the freeze.
+// A change of the spec turns a frozen limit above the spec limit into a held
+// step to it. The step ends as Done when each pod runs with the limit, and a
+// spec limit above it ends the step.
 func TestUnfreeze(t *testing.T) {
 	frozen := State{Version: StateVersion, Phase: PhaseIdle, Frozen: true, Generation: 1, Effective: 1280 * mi, SpecLimit: gi}
-	o := obs(time.Minute)
-	o.Generation, o.Spec, o.Settled = 2, 1280*mi, false
-	s, action := Plan(frozen, o)
-	assert.Equal(t, ActionNone, action)
-	assert.False(t, s.Frozen)
-	assert.Equal(t, PhaseHeld, s.Phase)
-	assert.Equal(t, RefusalLostState, s.Refusal)
-	assert.Equal(t, gi, s.From)
-	assert.Equal(t, 1280*mi, s.To)
-	assert.Zero(t, s.Effective)
-
-	o.Applied = true
-	s, action = Plan(s, o)
-	assert.Equal(t, ActionDone, action)
-	assert.Equal(t, PhaseDone, s.Phase)
-
-	for _, spec := range []int64{gi + 64*mi, 1344 * mi} {
-		s := Unfreeze(frozen, spec)
+	for _, test := range []struct {
+		spec, effective int64
+		phase           string
+	}{
+		{spec: gi, effective: 1280 * mi, phase: PhaseHeld},
+		{spec: gi + 64*mi, effective: 1280 * mi, phase: PhaseHeld},
+		{spec: 1280 * mi, phase: PhaseHeld},
+		{spec: 1344 * mi, phase: PhaseIdle},
+	} {
+		o := obs(time.Minute)
+		o.Generation, o.Spec, o.Settled = 2, test.spec, false
+		s, action := Plan(frozen, o)
+		assert.Equal(t, ActionNone, action)
 		assert.False(t, s.Frozen)
-		assert.Equal(t, PhaseIdle, s.Phase, spec)
+		assert.Equal(t, test.phase, s.Phase, test.spec)
+		assert.Equal(t, test.effective, s.Effective, test.spec)
+		if test.phase == PhaseHeld {
+			assert.Equal(t, RefusalLostState, s.Refusal)
+			assert.Equal(t, gi, s.From)
+			assert.Equal(t, 1280*mi, s.To)
+
+			o.Applied = true
+			s, action = Plan(s, o)
+			assert.Equal(t, ActionDone, action)
+			assert.Equal(t, PhaseDone, s.Phase)
+		}
 	}
+
+	// Without the generation of a change, the freeze stays.
+	o := obs(time.Minute)
+	o.Generation = 1
+	s, _ := Plan(frozen, o)
+	assert.True(t, s.Frozen)
+
 	atSpec := frozen
 	atSpec.Effective = 0
-	assert.Equal(t, PhaseIdle, Unfreeze(atSpec, gi).Phase)
+	assert.Equal(t, PhaseIdle, Unfreeze(atSpec).Phase)
 }
 
 func TestBoundKeepsTheStepOfAnotherPhase(t *testing.T) {
@@ -562,11 +576,20 @@ func TestPlanFrozen(t *testing.T) {
 	assert.Equal(t, ReasonFrozen, ReportStep(redisfailoverv1.AutoscalingStatus{Reason: ReasonSustained}, got, gi, 1100*mi).Reason)
 	assert.Empty(t, WaitReason(got, obs(time.Hour)), "the frozen reason has priority")
 
+	// The change of the spec holds the frozen limit as a step until each pod
+	// runs with it. The next step waits for the cooldown after that.
 	o := obs(time.Hour)
 	o.Generation = 2
 	got, action = Plan(s, o)
-	assert.Equal(t, ActionStart, action)
+	assert.Equal(t, ActionNone, action)
 	assert.False(t, got.Frozen)
+	assert.Equal(t, PhaseHeld, got.Phase)
+	o.Applied = true
+	got, action = Plan(got, o)
+	require.Equal(t, ActionDone, action)
+	got.Recommended, got.Reason = 1408*mi, ReasonSustained
+	got, action = Plan(got, obs(time.Hour+Cooldown))
+	assert.Equal(t, ActionStart, action)
 	assert.Equal(t, 1100*mi, got.From)
 }
 

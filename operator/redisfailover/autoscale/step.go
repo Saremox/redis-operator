@@ -138,14 +138,15 @@ func Bound(s State, spec, maxLimit int64) State {
 	return s
 }
 
-// Unfreeze ends a freeze after a change of the spec. A spec limit at the
-// frozen limit does not change the template, and a pod can still refuse the
-// step of the lost state. The freeze then becomes a held step to that limit,
-// which ends as Done when each pod runs with it.
-func Unfreeze(s State, spec int64) State {
+// Unfreeze ends a freeze after a change of the spec. A pod can still refuse
+// the step of the lost state, and a later spec limit at the frozen limit does
+// not change the template. Thus a frozen limit above the spec limit becomes a
+// held step to it, which ends as Done when each pod runs with it. Bound then
+// ends that step after a spec limit above it.
+func Unfreeze(s State) State {
 	s.Frozen = false
-	if s.Effective != 0 && s.Effective == spec && s.SpecLimit < spec {
-		s.Phase, s.From, s.To, s.Refusal = PhaseHeld, s.SpecLimit, spec, RefusalLostState
+	if s.Effective != 0 && s.SpecLimit < s.Effective {
+		s.Phase, s.From, s.To, s.Refusal = PhaseHeld, s.SpecLimit, s.Effective, RefusalLostState
 	}
 	return s
 }
@@ -190,7 +191,7 @@ func Plan(s State, o Observation) (State, Action) {
 	s = s.rebase(now)
 	if s.Frozen && o.Generation != s.Generation {
 		// The user saw the frozen limit and changed the spec.
-		s = Unfreeze(s, o.Spec)
+		s = Unfreeze(s)
 	}
 	s = Bound(s, o.Spec, o.Max)
 	if s.Phase == "" {

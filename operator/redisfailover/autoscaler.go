@@ -489,7 +489,7 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 	if state.Frozen && state.Generation != rf.Generation {
 		// A change of the spec ends the freeze in each mode. Plan runs only
 		// in mode Auto.
-		state = autoscale.Unfreeze(state, read.spec)
+		state = autoscale.Unfreeze(state)
 	}
 	state = autoscale.Bound(state, read.spec, maxLimit)
 	if ok && read.state.Phase == autoscale.PhaseReverted && !read.state.RevertApplied && state.Phase == autoscale.PhaseReverted {
