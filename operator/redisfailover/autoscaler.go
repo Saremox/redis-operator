@@ -55,6 +55,9 @@ type autoscaleRead struct {
 	// lost tells that a state without a version replaces a lost or invalid
 	// state.
 	lost bool
+	// userLowered tells that the user lowered the spec limit while the
+	// template had the earlier spec limit.
+	userLowered bool
 	// spec is the memory limit of redis.resources, and effective the memory
 	// limit of the pods.
 	spec, effective int64
@@ -89,7 +92,7 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 	}
 	// A limit above the last spec limit is a step, and a lower spec limit
 	// does not change it.
-	userLowered := spec < written && live <= written
+	read.userLowered = spec < written && live <= written
 	if read.blocked == "" && read.state.Version != 0 {
 		if err := r.holdUnappliedRevert(rf, &read, spec, maxLimit); err != nil {
 			return read, err
@@ -105,7 +108,7 @@ func (r *RedisFailoverHandler) readAutoscale(rf *redisfailoverv1.RedisFailover) 
 		read.effective = autoscale.EffectiveLimit(read.state, spec, maxLimit)
 	}
 	floor := max(spec, min(live, maxLimit))
-	if read.effective < floor && !userLowered && !ownRevert(read.state, live) {
+	if read.effective < floor && !read.userLowered && !ownRevert(read.state, live) {
 		if read.blocked == "" {
 			read.state, read.resumed = autoscale.State{}, false
 		}
@@ -210,9 +213,12 @@ func (r *RedisFailoverHandler) autoscalerLimits(rf *redisfailoverv1.RedisFailove
 		limits.Spec, limits.Effective = s.From, s.To
 	case read.blocked != "" || read.lost || s.Frozen:
 		// Without a known state, each raise to the limit of the StatefulSet
-		// can be a step, also at the spec limit. A freeze ends at the next
-		// change of the spec.
+		// can be a step, also at the spec limit, and each larger pod can be
+		// a pod of a step. A freeze ends at the next change of the spec.
 		limits.Effective = read.effective
+		if !read.userLowered {
+			limits.StepMax = rf.Spec.Redis.Autoscaling.MemoryMax.Value()
+		}
 	case read.effective != read.spec:
 		limits.Spec, limits.Effective = read.spec, read.effective
 	}

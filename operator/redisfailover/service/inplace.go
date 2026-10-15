@@ -54,6 +54,9 @@ type AutoscalerLimits struct {
 	// above it and a memoryMax below it end it. A pod with this limit keeps
 	// it, also when it only requests it since a revert.
 	Step int64
+	// StepMax is memoryMax when the state of the last step is not known, or
+	// 0. Then a pod with a larger limit up to StepMax keeps it, as for Step.
+	StepMax int64
 }
 
 // ResizeResult is the outcome of ResizePodInPlace.
@@ -160,7 +163,7 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 		autoscaler = limits != (AutoscalerLimits{})
 		return recreate(ResizePermanent, reason)
 	}
-	if limits.Step != 0 && autoscalerRevision(update, current, AutoscalerLimits{Effective: limits.Step}) {
+	if limits.Step != 0 && autoscalerRevision(update, current, AutoscalerLimits{Effective: limits.Step}) || stepRevision(update, current, limits.StepMax) {
 		// The StatefulSet created the pod from the template of a step, and
 		// the update revision has the limit before it, for example after a
 		// revert. A resize or a recreate would shrink the pod, so it only
@@ -179,11 +182,12 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 	}
 	autoscaler = autoscalerRevision(current, update, limits)
 	var held int64
-	if limits.Step != 0 && !support.MemoryLimitDecrease && RequestedRedisMemoryLimit(pod) == limits.Step && limits.Step > ul {
+	requested := RequestedRedisMemoryLimit(pod)
+	if !support.MemoryLimitDecrease && requested > ul && (requested == limits.Step || requested <= limits.StepMax) {
 		// The pod requests the step since a revert. Before Kubernetes 1.35,
 		// the API server refuses a lower limit in the pod spec, and the user
 		// path would recreate the pod. The pod keeps the request.
-		held, autoscaler = limits.Step, true
+		held, autoscaler = requested, true
 	}
 	if unsupported != "" {
 		return result(ResizeRecreate, ResizePermanent, unsupported)
@@ -391,6 +395,17 @@ func autoscalerRevision(current, update *corev1.PodTemplateSpec, limits Autoscal
 		c.Resources.Requests[corev1.ResourceMemory] = ur
 	}
 	return equality.Semantic.DeepEqual(current, update)
+}
+
+// stepRevision reports whether current differs from update only by a larger
+// redis memory limit up to stepMax, as a revision of an unknown step.
+func stepRevision(update, current *corev1.PodTemplateSpec, stepMax int64) bool {
+	c := redisContainer(current)
+	if stepMax == 0 || c == nil {
+		return false
+	}
+	cl := c.Resources.Limits.Memory().Value()
+	return cl <= stepMax && autoscalerRevision(update, current, AutoscalerLimits{Effective: cl})
 }
 
 func redisContainer(t *corev1.PodTemplateSpec) *corev1.Container {

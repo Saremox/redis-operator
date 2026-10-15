@@ -10,7 +10,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
+	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
 	"github.com/saremox/redis-operator/service/k8s"
+	"github.com/saremox/redis-operator/service/redis"
 )
 
 // A pod on the update revision that a resize request makes stale, for
@@ -99,6 +101,63 @@ func TestResizePodInPlaceHoldsTheRequestOfAStep(t *testing.T) {
 		assert.Equal(t, ResizeWaiting, result.Action)
 		assert.Equal(t, "1536Mi", got)
 	})
+}
+
+// Without a known state, a pod on a revision with a larger memory limit up to
+// memoryMax can be a pod of a step. It keeps its limit, and a pod above
+// memoryMax or with another change takes the user path.
+func TestResizePodInPlaceKeepsAPodOfAnUnknownStep(t *testing.T) {
+	before := resources("1", "1Gi")
+	relabel := map[string]string{appsv1.ControllerRevisionHashLabelKey: "new"}
+	image := podTemplate(resources("1", "2Gi"))
+	image.Spec.Containers[0].Image = "redis:8"
+	for name, test := range map[string]struct {
+		current corev1.PodTemplateSpec
+		stepMax int64
+		kept    bool
+	}{
+		"a larger pod":           {podTemplate(resources("1", "2Gi")), 4 << 30, true},
+		"at memoryMax":           {podTemplate(resources("1", "2Gi")), 2 << 30, true},
+		"above memoryMax":        {podTemplate(resources("1", "2Gi")), 1536 << 20, false},
+		"a known state":          {podTemplate(resources("1", "2Gi")), 0, false},
+		"also another change":    {image, 4 << 30, false},
+		"a smaller pod revision": {podTemplate(resources("1", "768Mi")), 4 << 30, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := resizeCase{fullSupport, test.current, podTemplate(before), podFrom(test.current)}
+			setup := func(ms *mK8SService.Services) {
+				ms.On("UpdatePodLabels", "testns", resizePod, relabel).Maybe().Return(nil)
+				ms.On("ResizePod", "testns", resizePod, mock.Anything).Maybe().Return(nil)
+			}
+			memory := func(mr *mRedisService.Client) {
+				mr.On("GetMemoryInfo", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(&redis.MemoryInfo{UsedMemoryRSS: 100 << 20}, nil)
+			}
+			result, ms, _, err := runResizeEffective(t, resizeRF(), c, AutoscalerLimits{StepMax: test.stepMax}, setup, memory)
+			require.NoError(t, err)
+			if test.kept {
+				assert.Equal(t, ResizeResult{Action: ResizeDone}, result)
+				ms.AssertCalled(t, "UpdatePodLabels", "testns", resizePod, relabel)
+				ms.AssertNotCalled(t, "ResizePod", mock.Anything, mock.Anything, mock.Anything)
+				return
+			}
+			assert.NotEqual(t, ResizeDone, result.Action)
+		})
+	}
+}
+
+// Without a known state, a pod that requests a larger limit up to memoryMax
+// keeps the request before Kubernetes 1.35.
+func TestResizePodInPlaceHoldsTheRequestOfAnUnknownStep(t *testing.T) {
+	before, step := resources("1", "1Gi"), resources("1", "2Gi")
+	c := resizeCase{k8s.PodResizeSupport{Supported: true}, podTemplate(before), podTemplate(resources("1", "1536Mi")), stalePod(step, before)}
+	result, ms, _, err := runResizeEffective(t, resizeRF(), c, AutoscalerLimits{StepMax: 4 << 30}, nil, nil)
+	require.NoError(t, err)
+	assert.True(t, result.AutoscalerRevision)
+	ms.AssertNotCalled(t, "ResizePod", mock.Anything, mock.Anything, mock.Anything)
+
+	result, _, _, err = runResizeEffective(t, resizeRF(), c, AutoscalerLimits{StepMax: 1536 << 20}, nil, nil)
+	require.NoError(t, err)
+	assert.False(t, result.AutoscalerRevision, "a request above memoryMax takes the user path")
 }
 
 // With redis.inPlaceResize Disabled, a pod of the last step after a revert

@@ -156,13 +156,19 @@ func TestAutoscalerLimits(t *testing.T) {
 	assert.Equal(t, autoscaleLimits, h.autoscalerLimits(rf))
 
 	// A blocked, lost or frozen state can hide a step, also at the spec
-	// limit.
+	// limit, and a pod of a step up to memoryMax. A lower spec limit of the
+	// user gives the larger pods the user path.
+	rf.Spec.Redis.Autoscaling.MemoryMax = ptr.To(resource.MustParse("4Gi"))
+	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
 	for name, read := range map[string]autoscaleRead{
 		"blocked": {blocked: autoscale.ReasonNewerState},
 		"lost":    {lost: true},
 		"frozen":  {state: autoscale.State{Version: autoscale.StateVersion, Frozen: true}},
 	} {
 		read.spec, read.effective = 1<<30, 1<<30
+		h.autoscaleReads.Store(failoverKey(rf), read)
+		assert.Equal(t, rfservice.AutoscalerLimits{Effective: 1 << 30, StepMax: maxLimit}, h.autoscalerLimits(rf), name)
+		read.userLowered = true
 		h.autoscaleReads.Store(failoverKey(rf), read)
 		assert.Equal(t, rfservice.AutoscalerLimits{Effective: 1 << 30}, h.autoscalerLimits(rf), name)
 	}

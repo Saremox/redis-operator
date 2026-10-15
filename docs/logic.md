@@ -56,7 +56,7 @@ In mode `Auto`, a step of the autoscaler changes only the memory limit of the re
 The rule does not depend on the mode or the phase, so it also applies in mode `Recommend`. A revision that raises only the memory limit to the effective limit is a step when the effective limit is above the spec limit. A raise of the spec below the effective limit does not change the template, so a pod from before it keeps the rule. These cases also keep a pod:
 
 - The spec limit is at the limit of a step that is `Applying` or `Held`. The template does not change, so the step continues. A refusal or the timeout then holds the step, because a revert cannot lower the template.
-- The state is lost, not valid, frozen, of another owner or of a newer operator. Then each raise to the limit of the live statefulset can be a step, also at the spec limit. A freeze ends at the next change of the spec.
+- The state is lost, not valid, frozen, of another owner or of a newer operator. Then each raise to the limit of the live statefulset can be a step, also at the spec limit. A pod on a revision with a larger limit up to `memoryMax` can be a pod of a step, so it keeps its limit. A lower spec limit of the user ends this rule. A freeze ends at the next change of the spec.
 
 A revert to the limit before the step happens only while no pod applied the step. Also, no pod may run or start from the template of the step. No pod may be missing or terminating, because the StatefulSet can create it from that template. The revert first removes the annotation of the open resize request from the pods. Otherwise the operator holds the step and does not lower the limit of a pod. It also holds the step when it cannot remove an annotation within 30 minutes after the start of the step.
 

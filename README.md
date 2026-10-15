@@ -473,7 +473,7 @@ A pod that refuses a step stays on its revision, also in mode `Recommend`. The o
 
 - The spec limit is above the limit before the step and below the limit of the step. The template does not change.
 - The spec limit is equal to the limit of a step that is `Applying` or `Held`. The step continues. A refusal or the timeout then holds the step, because a revert cannot lower the template.
-- The state is lost, not valid, behind the StatefulSet, of another owner or of a newer operator. Until the next change of the spec, each raise to the limit of the StatefulSet can be a step.
+- The state is lost, not valid, behind the StatefulSet, of another owner or of a newer operator. Until the next change of the spec, each raise to the limit of the StatefulSet can be a step. A pod with a larger limit up to `memoryMax` also keeps its limit, unless the user lowers the spec limit.
 
 Changes of the user:
 
