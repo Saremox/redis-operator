@@ -91,6 +91,11 @@ rules:
   - apiGroups: [""]
     resources: ["services", "configmaps"]
     verbs: ["get"]
+  # autoscale_state_lost deletes the state ConfigMap rfa-<name> of the
+  # autoscaler.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["delete"]
   # The tester and auth_add create the auth Secrets. A reset deletes and
   # creates them again. password_rotate_offline_forget deletes the Secret
   # rfr-auth-applied-<name> of the operator.

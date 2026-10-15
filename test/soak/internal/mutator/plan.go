@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/test/soak/internal/autoscale"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/maxmem"
 )
@@ -76,6 +77,9 @@ type plan struct {
 	// outside it, and only its mixed window is measured.
 	edge *transition
 	flip *transition
+	// allow is what the mutation may do to the redis pods, for the judge of
+	// the autoscaler steps. nil may do all of it.
+	allow *autoscale.Allow
 	// action applies a mutation that is neither a patch nor a delete;
 	// offline is scenario C.
 	action  func(context.Context) error
@@ -172,7 +176,8 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 		}
 	case config.RedisMemory, config.MaxMemoryPolicy, config.MaxMemoryPercent, config.FillBurst,
 		config.ImageUpgrade, config.SentinelImageUpgrade, config.Reset, config.SentinelImageFlip,
-		config.SentinelResetKillMaster:
+		config.SentinelResetKillMaster, config.AutoscaleLoad, config.AutoscaleLimit, config.AutoscaleMemoryMax, config.AutoscaleMode,
+		config.AutoscaleStateLost, config.AutoscaleKillMaster, config.AutoscaleKillReplica:
 		// The maxMemory switch below plans the maxMemory kinds. Mutator.plan
 		// plans the other kinds.
 	}
@@ -234,7 +239,8 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 		config.KillMasterForce, config.KillReplica, config.KillSentinel, config.PasswordRotate,
 		config.AuthAdd, config.AuthRemove, config.SentinelToggle, config.PasswordRotateOffline,
 		config.PasswordRotateOfflineForget, config.ImageUpgrade, config.SentinelImageUpgrade,
-		config.Reset, config.SentinelImageFlip, config.SentinelResetKillMaster:
+		config.Reset, config.SentinelImageFlip, config.SentinelResetKillMaster, config.AutoscaleLoad, config.AutoscaleLimit, config.AutoscaleMemoryMax, config.AutoscaleMode,
+		config.AutoscaleStateLost, config.AutoscaleKillMaster, config.AutoscaleKillReplica:
 		// The first switch or Mutator.plan plans these kinds.
 	}
 	return skipped(kind, "unknown kind")
@@ -366,7 +372,8 @@ func planAuth(kind config.Kind, s state) plan {
 		config.KillMasterForce, config.KillReplica, config.KillSentinel, config.RedisMemory,
 		config.MaxMemoryPolicy, config.MaxMemoryPercent, config.FillBurst, config.SentinelToggle,
 		config.ImageUpgrade, config.SentinelImageUpgrade, config.Reset, config.SentinelImageFlip,
-		config.SentinelResetKillMaster:
+		config.SentinelResetKillMaster, config.AutoscaleLoad, config.AutoscaleLimit, config.AutoscaleMemoryMax, config.AutoscaleMode,
+		config.AutoscaleStateLost, config.AutoscaleKillMaster, config.AutoscaleKillReplica:
 		// newPlan calls planAuth for the auth kinds only.
 	}
 	p.fetch = fetchOpts{password: &password, sentinelMaster: s.rf.SentinelEnabled()}

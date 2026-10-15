@@ -128,6 +128,7 @@ type Instance struct {
 	Chain           *Chain     `json:"chain"`
 	Bootstrap       *Bootstrap `json:"bootstrap"`
 	Data            *Data      `json:"data"`
+	Autoscale       *Autoscale `json:"autoscale"`
 	Mutations       Mutations  `json:"mutations"`
 }
 
@@ -284,6 +285,9 @@ func (c *Config) validate() error {
 		}
 		if err := in.validateData(); err != nil {
 			return fmt.Errorf("instance %q: %w", in.Name, err)
+		}
+		if err := in.validateAutoscale(); err != nil {
+			return fmt.Errorf("instance %q: autoscale: %w", in.Name, err)
 		}
 		if err := c.validateBootstrap(in); err != nil {
 			return fmt.Errorf("instance %q: bootstrap: %w", in.Name, err)

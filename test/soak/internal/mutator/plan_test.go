@@ -337,6 +337,13 @@ func TestLossless(t *testing.T) {
 		{plan{kind: config.KillReplica}, false, false},
 		{plan{kind: config.ImageUpgrade, edge: ok}, false, true},
 		{plan{kind: config.ImageUpgrade, edge: unknown}, false, false},
+		// An autoscale kind that may not recreate a pod stops none.
+		{plan{kind: config.AutoscaleLoad, allow: allowNone}, true, true},
+		{plan{kind: config.AutoscaleMode, allow: allowNone}, true, true},
+		{plan{kind: config.AutoscaleMode, allow: allowResize}, false, false},
+		{plan{kind: config.AutoscaleLimit, allow: allowResize}, false, false},
+		{plan{kind: config.AutoscaleKillReplica, allow: allowKill}, false, false},
+		{plan{kind: config.AutoscaleKillMaster, allow: allowFailover}, false, true},
 	}
 	m := versionMutator(t, "chain")
 	for _, c := range cases {

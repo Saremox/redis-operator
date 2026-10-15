@@ -435,6 +435,49 @@ func TestBurst(t *testing.T) {
 	}
 }
 
+func TestLoad(t *testing.T) {
+	d, m, fi, _ := newTestData(t, false)
+	ctx := context.Background()
+	d.writeFill(ctx, 100)
+	calls := 0
+	skip, err := d.Load(ctx, 97, time.Minute, func(context.Context) (bool, error) {
+		calls++
+		// 97 percent of 400 keys.
+		if n := len(m.Keys()); n < 388 || n > 400 {
+			t.Errorf("%d keys at the hold", n)
+		}
+		return calls == 2, nil
+	})
+	if skip != "" || err != nil || calls != 2 {
+		t.Fatalf("skip %q, err %v, %d calls", skip, err, calls)
+	}
+	// Only the fill keys are left.
+	if n := len(m.Keys()); n != 100 {
+		t.Errorf("%d keys left", n)
+	}
+
+	// The hold ends the wait, and an error of until ends it at once.
+	if _, err := d.Load(ctx, 97, 10*time.Millisecond, func(context.Context) (bool, error) { return false, nil }); err != nil {
+		t.Errorf("hold: %v", err)
+	}
+	failed := errors.New("failed")
+	if _, err := d.Load(ctx, 97, time.Minute, func(context.Context) (bool, error) { return false, failed }); !errors.Is(err, failed) {
+		t.Errorf("until failed: %v", err)
+	}
+	fi.oomAbove.Store(300)
+	if _, err := d.Load(ctx, 97, time.Minute, func(context.Context) (bool, error) { return true, nil }); err == nil {
+		t.Error("an OOM rejection is no error")
+	}
+	if n := len(m.Keys()); n != 100 {
+		t.Errorf("%d keys left after the OOM rejection", n)
+	}
+	policy := "volatile-lru"
+	fi.policy.Store(&policy)
+	if skip, _ := d.Load(ctx, 97, time.Minute, nil); skip == "" {
+		t.Error("a load without noeviction")
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)

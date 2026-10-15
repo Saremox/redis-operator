@@ -414,3 +414,37 @@ spec:
     resources:
       requests: {cpu: 50m, memory: 64Mi}
       limits: {memory: 192Mi}
+---
+# Mode Auto needs a memory request equal to the limit. maxmemory is 35
+# percent of the limit, so a load of 97 percent of maxmemory fits two times
+# in the limit, for a fork.
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: auto
+spec:
+  sentinel:
+    enabled: false
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 128Mi}
+    maxMemory: {percent: 35, policy: noeviction}
+    autoscaling: {mode: Auto, memoryMax: 384Mi}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: auto-sent
+spec:
+  sentinel:
+    enabled: true
+    replicas: 3
+  redis:
+    replicas: 3
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 128Mi}
+    maxMemory: {percent: 35, policy: noeviction}
+    autoscaling: {mode: Auto, memoryMax: 384Mi}
