@@ -266,10 +266,10 @@ func TestSentinelHealWithoutFailover(t *testing.T) {
 			assert.Zero(t, res.reads)
 			assert.Empty(t, res.monitored)
 
-			// The second change reads the state of its Sentinel again.
+			// Each change reads the state of its Sentinel again.
 			res = ft.reconcile(t, sfReconcile{wrong: sfSentinels[:2]})
 			assert.Equal(t, sfSentinels[:2], res.monitored)
-			assert.Equal(t, 4, res.reads)
+			assert.Equal(t, 5, res.reads)
 			assert.Empty(t, ft.requeues)
 			assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
 		})
@@ -278,7 +278,7 @@ func TestSentinelHealWithoutFailover(t *testing.T) {
 		ft := newSentinelFailoverTest(false)
 		res := ft.reconcile(t, sfReconcile{mismatch: sfSentinels[2:]})
 		assert.Equal(t, sfSentinels[2:], res.reset)
-		assert.Equal(t, 3, res.reads)
+		assert.Equal(t, 4, res.reads)
 		assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
 	})
 }
@@ -291,8 +291,30 @@ func TestSentinelFailoverStartsAfterTheFirstRead(t *testing.T) {
 		sfSentinels[2]: {{}, {InProgress: true, State: "wait_start", Timeout: 10 * time.Second}},
 	}})
 	assert.Equal(t, sfSentinels[:2], res.monitored)
-	assert.Equal(t, 5, res.reads)
+	assert.Equal(t, 6, res.reads)
 	ft.assertHold(t)
+}
+
+// TestSentinelFailoverStartsBeforeTheFirstChange covers a failover that
+// starts on the first target after the read of all the Sentinels. The read of
+// the target just before the change finds it.
+func TestSentinelFailoverStartsBeforeTheFirstChange(t *testing.T) {
+	for _, mismatch := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reset=%v", mismatch), func(t *testing.T) {
+			ft := newSentinelFailoverTest(false)
+			state := sfReconcile{wrong: sfSentinels[:1], failover: map[string][]redis.SentinelFailover{
+				sfSentinels[0]: {{}, {InProgress: true, State: "wait_start", Timeout: 10 * time.Second}},
+			}}
+			if mismatch {
+				state.wrong, state.mismatch = nil, sfSentinels[:1]
+			}
+			res := ft.reconcile(t, state)
+			assert.Empty(t, res.monitored)
+			assert.Empty(t, res.reset)
+			assert.Equal(t, 4, res.reads)
+			ft.assertHold(t)
+		})
+	}
 }
 
 // TestSentinelFailoverMissingMaster covers a Sentinel without the master,
@@ -321,10 +343,13 @@ func TestSentinelFailoverReadError(t *testing.T) {
 			state := sfReconcile{wrong: sfSentinels[1:], readErr: map[string]error{sfSentinels[2]: readErr}}
 			held := "warning: Sentinel 10.0.1.3 did not give its failover state, so the operator does not change it for 10s: " + readErr.Error()
 
+			waiting := "waiting to read the failover state of sentinel 10.0.1.3"
 			res := ft.reconcile(t, state)
 			assert.Equal(t, sfSentinels[1:2], res.monitored)
 			assert.Contains(t, ft.lines, held)
 			assert.Equal(t, []time.Duration{10 * time.Second}, ft.requeues)
+			assert.Equal(t, redisfailoverv1.NotHealthyState, ft.rf.Status.State)
+			assert.Equal(t, waiting, ft.rf.Status.Message)
 
 			// The Warning is logged one time.
 			ft.clock = ft.clock.Add(6 * time.Second)
@@ -332,11 +357,14 @@ func TestSentinelFailoverReadError(t *testing.T) {
 			assert.Equal(t, sfSentinels[1:2], res.monitored)
 			assert.NotContains(t, ft.lines, held)
 			assert.Equal(t, []time.Duration{4 * time.Second}, ft.requeues)
+			assert.Equal(t, waiting, ft.rf.Status.Message)
 
 			ft.clock = ft.clock.Add(4 * time.Second)
 			res = ft.reconcile(t, state)
 			assert.Equal(t, sfSentinels[1:], res.monitored)
 			assert.Contains(t, ft.lines, "warning: Sentinel 10.0.1.3 did not give its failover state for 10s, so the operator heals it: "+readErr.Error())
+			assert.Equal(t, redisfailoverv1.HealthyState, ft.rf.Status.State)
+			assert.Empty(t, ft.rf.Status.Message)
 
 			// A read without an error clears the time of the first error.
 			ft.clock = ft.clock.Add(time.Second)
