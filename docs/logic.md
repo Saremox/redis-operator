@@ -20,7 +20,7 @@ Each reconcile does these steps in this order:
 
    After a step, the spec limit can be smaller than the pods. Thus a state that is lost, not valid, of another owner or of a newer operator gives the limit of the live statefulset. Mode `Auto` reads the statefulset for such a state. Mode `Recommend` reads it when `status.autoscaling.effectiveMemory` is set, and one time after each operator start. A state with a larger limit and without a sample in the last 11 minutes also gives the limit of the live statefulset. A revert is the exception.
 
-   A lost or invalid state also lost its budget, its back-off and its step. A `status.autoscaling` or the ConfigMap shows such a loss. Step 8 then freezes the limit, also at the spec limit, and no step starts until the next change of the spec.
+   A lost or invalid state also lost its budget, its back-off and its step. A `status.autoscaling` or the ConfigMap shows such a loss. Step 8 then freezes the limit, also at the spec limit, and no step starts until the next change of the spec. A spec limit equal to the frozen limit does not change the template, and a pod can still refuse the lost step. Thus the freeze then becomes a `Held` step to that limit.
 6. Ensure: the operator creates or updates the objects below. It overwrites a manual change of these objects:
    - Redis service (if exporter enabled)
    - Redis master service and Redis replica service
