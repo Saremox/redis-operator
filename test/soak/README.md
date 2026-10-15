@@ -431,12 +431,14 @@ recreate a pod must lose no write.
 Each violation of a judge counts one time in `redis_soak_findings_total`,
 also inside a window, as `oom_killed` does:
 
-- `autoscale_step_size`: a step raises the limit by 25 percent, rounded up to
-  a multiple of 64Mi, and to `memoryMax` at most. Because the operator rounds
-  up, a small limit gets a larger step: 64Mi goes to 128Mi.
+- `autoscale_step_size`: a step raises the limit to one target: 25 percent
+  more, rounded up to a multiple of 64Mi, and `memoryMax` at most. A smaller
+  or a larger step is a violation. Because the operator rounds up, a small
+  limit gets a larger step: 64Mi goes to 128Mi.
 - `autoscale_step_timeout`: a step leaves `Applying` within 18 minutes after
   `lastStep`. This is the timeout of 15 minutes, the minute of `lastStep`, and
-  2 minutes for the reconcile that ends the step.
+  2 minutes for the reconcile that ends the step. After this time, the step
+  keeps no window open, so the window of a mutation can time out.
 - `autoscale_step_rate`: a step starts at least 5 minutes after the end of
   the last step. At most 6 steps start in 24 hours. After a revert,
   `retryAfter` is at least the back-off of 1 hour, which doubles at each
@@ -450,7 +452,8 @@ also inside a window, as `oom_killed` does:
 
 A user path that may do the change excuses it. The excuse covers the round
 of the user path and the next round, because a change can show one round
-late.
+late. For `autoscale_maxmemory`, a user path that may shrink a pod excuses
+it, because the operator lowers `maxmemory` one reconcile later.
 
 The status gives its times in full minutes. Each rate check uses the latest
 time that the minute allows, and a slack of 30 seconds for the clocks and the

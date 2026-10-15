@@ -2,6 +2,7 @@ package observer
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -100,6 +101,56 @@ func TestAutoscaleStep(t *testing.T) {
 	o.apply(at(35), unhealthy, 2, false)
 	if n := finding(invHealthy); n != 1 {
 		t.Errorf("healthy findings %v after the step", n)
+	}
+}
+
+// A step that stays Applying does not hold the window of a mutation for
+// ever: after the step timeout the window times out, and the mutation ends.
+func TestAutoscaleStepReleasesHold(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		phase func(minute int) string
+		// timedOut is whether the window times out within 40 minutes.
+		timedOut bool
+	}{
+		{"a step that never ends", func(int) string { return autoscale.PhaseApplying }, true},
+		{"a step that ends", func(m int) string {
+			if m < 3 {
+				return autoscale.PhaseApplying
+			}
+			return autoscale.PhaseDone
+		}, false},
+	} {
+		o, _ := newAutoscaleObserver(t)
+		base := time.Now().Truncate(time.Minute)
+		round := func(m int) {
+			s := autoscaled(c.phase(m), "u1")
+			s.rf.Status.Autoscaling.LastStep = base.UTC().Format(time.RFC3339)
+			o.takeHold()
+			o.apply(base.Add(time.Duration(m)*time.Minute), s, 1, o.converged(context.Background()))
+		}
+		o.apply(base.Add(-time.Minute), autoscaled("", "u1"), 1, false)
+		h := o.Hold(10*time.Minute, func(context.Context) error { return errors.New("the step is Applying") })
+		o.takeHold()
+		o.tracker.apply(base)
+		ended := -1
+		for m := 0; m <= 40 && ended < 0; m++ {
+			round(m)
+			select {
+			case <-h.Done():
+				ended = m
+			default:
+			}
+		}
+		switch {
+		case c.timedOut && (ended < 18 || ended > 30):
+			t.Errorf("%s: the window ended at minute %d", c.name, ended)
+		case !c.timedOut && ended >= 0 && ended < 12:
+			t.Errorf("%s: the window ended at minute %d, before the timeout of the mutation", c.name, ended)
+		}
+		if got := testutil.ToFloat64(o.findings.WithLabelValues(autoscale.JudgeTimeout)); got != map[bool]float64{true: 1, false: 0}[c.timedOut] {
+			t.Errorf("%s: step timeout findings %v", c.name, got)
+		}
 	}
 }
 

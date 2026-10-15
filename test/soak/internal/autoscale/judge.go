@@ -157,6 +157,8 @@ func NewJudge() *Judge {
 // Observe judges one round. It returns the step results and the violations.
 // settling is true while a step is Applying and in the round of its end,
 // because the operator sets maxmemory one reconcile after the last resize.
+// After the step timeout, settling is false, so that a window that a
+// mutation holds can time out.
 func (j *Judge) Observe(r Round) (events []Event, settling bool) {
 	prev := j.prev
 	j.prev = &r
@@ -180,8 +182,8 @@ func (j *Judge) Observe(r Round) (events []Event, settling bool) {
 	}
 	events = append(events, j.checkPods(r, active && prev != nil)...)
 	events = append(events, j.checkMaster(r, active && prev != nil)...)
-	events = append(events, j.checkMaxMemory(r)...)
-	return events, settling
+	events = append(events, j.checkMaxMemory(r, prev)...)
+	return events, settling && !j.timedOut
 }
 
 func isActive(phase string) bool {
@@ -225,19 +227,19 @@ func (j *Judge) start(prev, r Round) []Event {
 }
 
 // checkSize returns why a step from from to to breaks the step rule, or "".
-// The rule rounds up, so a step can be more than 25 percent of a small limit.
+// The rule gives one target: 25 percent more, rounded up to 64Mi, and
+// memoryMax at most. Thus a step can be more than 25 percent of a small
+// limit. A target at or below from gives no step.
 func checkSize(from, to, maxLimit int64) string {
-	most := roundUp(from+from*stepPercent/100, stepAlign)
+	want := roundUp(from+from*stepPercent/100, stepAlign)
 	if maxLimit > 0 {
-		most = min(most, maxLimit)
+		want = min(want, maxLimit)
 	}
 	switch {
-	case to <= from:
-		return fmt.Sprintf("the step from %s to %s does not raise the limit", format(from), format(to))
-	case to > most:
-		return fmt.Sprintf("the step from %s to %s is above %s: 25 percent rounded up to 64Mi, at most memoryMax", format(from), format(to), format(most))
-	case to%stepAlign != 0 && to != maxLimit:
-		return fmt.Sprintf("the step to %s is not a multiple of 64Mi and not memoryMax", format(to))
+	case want <= from:
+		return fmt.Sprintf("a step from %s to %s, but the limit is at memoryMax", format(from), format(to))
+	case to != want:
+		return fmt.Sprintf("the step from %s to %s, want %s: 25 percent rounded up to 64Mi, at most memoryMax", format(from), format(to), format(want))
 	}
 	return ""
 }
@@ -399,15 +401,17 @@ func (j *Judge) checkMaster(r Round, active bool) []Event {
 }
 
 // checkMaxMemory judges each pod once until its maxmemory is again at most
-// its limit.
-func (j *Judge) checkMaxMemory(r Round) []Event {
+// its limit. A user path that may shrink a pod excuses its round and the next
+// round, because the operator lowers maxmemory one reconcile later.
+func (j *Judge) checkMaxMemory(r Round, prev *Round) []Event {
+	excused := r.Allow.Shrink || prev != nil && prev.Allow.Shrink
 	var events []Event
 	for _, p := range r.Pods {
 		high := p.MaxMemory > 0 && p.Limit > 0 && p.MaxMemory > p.Limit
 		switch {
 		case !high:
 			delete(j.highMaxMemory, p.Name)
-		case !j.highMaxMemory[p.Name] && !r.Allow.Shrink:
+		case !j.highMaxMemory[p.Name] && !excused:
 			j.highMaxMemory[p.Name] = true
 			events = append(events, Event{Judge: JudgeMaxMemory, Step: j.step,
 				Message: fmt.Sprintf("%s has maxmemory %s above its limit %s", p.Name, format(p.MaxMemory), format(p.Limit))})

@@ -124,6 +124,12 @@ func TestCheckSize(t *testing.T) {
 		{"not aligned", 128 * mi, 130 * mi, 512 * mi, true},
 		{"no raise", 192 * mi, 192 * mi, 512 * mi, true},
 		{"a lower limit", 192 * mi, 128 * mi, 512 * mi, true},
+		// The rule gives one target.
+		{"512Mi", 512 * mi, 640 * mi, 1024 * mi, false},
+		{"less than the target", 512 * mi, 576 * mi, 1024 * mi, true},
+		{"aligned, but more than the target", 512 * mi, 704 * mi, 1024 * mi, true},
+		{"below memoryMax", 128 * mi, 150 * mi, 256 * mi, true},
+		{"a step at memoryMax", 150 * mi, 192 * mi, 150 * mi, true},
 	} {
 		if got := checkSize(c.from, c.to, c.max); (got != "") != c.bad {
 			t.Errorf("%s: %q", c.name, got)
@@ -143,6 +149,32 @@ func TestStepSizeJudge(t *testing.T) {
 	r.Spec = 160 * mi
 	if got := summary(observe(j, at(0), r)); !slices.Equal(got, []string{ResultStarted}) {
 		t.Errorf("after a spec change: %v", got)
+	}
+}
+
+// target is the step of the operator from limit, below memoryMax.
+func target(limit int64) int64 {
+	return roundUp(limit+limit/4, 64*mi)
+}
+
+// A step that stays Applying keeps no window open after its timeout, so
+// that a mutation that holds the window ends.
+func TestTimeoutEndsSettling(t *testing.T) {
+	j := NewJudge()
+	observe(j, at(0))
+	for _, m := range []float64{1, 10, 18} {
+		if _, settling := j.Observe(stepped(at(m), 1, PhaseApplying, "192Mi")); !settling {
+			t.Errorf("minute %v: no window", m)
+		}
+	}
+	for _, m := range []float64{20, 40} {
+		if _, settling := j.Observe(stepped(at(m), 1, PhaseApplying, "192Mi")); settling {
+			t.Errorf("minute %v: a window after the timeout", m)
+		}
+	}
+	// The next step settles again.
+	if _, settling := j.Observe(stepped(at(41), 41, PhaseApplying, "256Mi")); !settling {
+		t.Error("the next step has no window")
 	}
 }
 
@@ -190,8 +222,8 @@ func TestBudget(t *testing.T) {
 	limit := int64(128 * mi)
 	var e []Event
 	for i := range 7 {
-		e = done(j, 10+20*i, 11+20*i, limit, limit+64*mi)
-		limit += 64 * mi
+		e = done(j, 10+20*i, 11+20*i, limit, target(limit))
+		limit = target(limit)
 	}
 	if got := summary(e); !slices.Contains(got, JudgeRate) || !strings.Contains(e[1].Message, "7 steps") {
 		t.Errorf("seventh step: %v %v", got, e)
@@ -205,11 +237,11 @@ func TestBudget(t *testing.T) {
 		if i == 3 {
 			observe(j, withLimit(at(float64(5+20*i)), limit))
 		}
-		e = append(e[:0], done(j, 10+20*i, 11+20*i, limit, limit+64*mi)...)
+		e = append(e[:0], done(j, 10+20*i, 11+20*i, limit, target(limit))...)
 		if slices.Contains(summary(e), JudgeRate) {
 			t.Errorf("step %d after a reset: %v", i, e)
 		}
-		limit += 64 * mi
+		limit = target(limit)
 	}
 }
 
@@ -380,6 +412,15 @@ func TestMaxMemory(t *testing.T) {
 	}
 	if got := summary(observe(j, at(3), high(at(4)))); !slices.Equal(got, []string{JudgeMaxMemory}) {
 		t.Errorf("a report after the pod held again: %v", got)
+	}
+	// A change by hand lowers the limit one round before maxmemory follows.
+	j = NewJudge()
+	lowered := allow(high(at(6)), AllowAll)
+	if got := summary(observe(j, at(5), lowered, high(at(7)))); len(got) != 0 {
+		t.Errorf("the round after a user path: %v", got)
+	}
+	if got := summary(observe(j, high(at(8)))); !slices.Equal(got, []string{JudgeMaxMemory}) {
+		t.Errorf("two rounds after a user path: %v", got)
 	}
 	// An unknown maxmemory or limit is no violation.
 	r := at(5)
