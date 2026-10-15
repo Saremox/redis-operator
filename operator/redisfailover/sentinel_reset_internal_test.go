@@ -17,6 +17,7 @@ import (
 	mMetrics "github.com/saremox/redis-operator/mocks/metrics"
 	mRFService "github.com/saremox/redis-operator/mocks/operator/redisfailover/service"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
+	"github.com/saremox/redis-operator/service/redis"
 )
 
 // sentinelCheckRecorder records the status of each Sentinel check per
@@ -75,6 +76,7 @@ func (st *sentinelResetTest) reconcile(t *testing.T, sentinels []string, mismatc
 		st.check.On("CheckSentinelNumberInMemory", s, st.rf).Once().Return(err)
 		st.check.On("CheckSentinelSlavesNumberInMemory", s, st.rf).Once().Return(nil)
 		st.heal.On("RestoreSentinel", s).Maybe().Return(nil)
+		st.check.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 		st.heal.On("SetSentinelCustomConfig", s, st.rf).Once().Return(nil)
 	}
 	require.NoError(t, st.run(sentinels))
@@ -122,6 +124,7 @@ func TestSentinelResetOnceInAReconcile(t *testing.T) {
 	st.check.On("CheckSentinelNumberInMemory", s, st.rf).Once().Return(errors.New("sentinels in memory mismatch"))
 	st.check.On("CheckSentinelSlavesNumberInMemory", s, st.rf).Once().Return(errors.New("slaves in memory mismatch"))
 	st.heal.On("RestoreSentinel", s).Once().Return(nil)
+	st.check.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 	st.heal.On("SetSentinelCustomConfig", s, st.rf).Once().Return(nil)
 
 	require.NoError(t, st.run([]string{s}))
@@ -143,6 +146,7 @@ func TestSentinelResetFailedResetIsNotRecorded(t *testing.T) {
 	st.check.On("CheckSentinelNumberInMemory", a, st.rf).Once().Return(nil)
 	st.check.On("CheckSentinelNumberInMemory", b, st.rf).Once().Return(errors.New("sentinels in memory mismatch"))
 	st.heal.On("RestoreSentinel", b).Once().Return(errors.New("ERR unknown subcommand"))
+	st.check.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 
 	require.Error(t, st.run([]string{a, b}))
 
@@ -187,6 +191,7 @@ func TestSentinelCheckKubernetesErrorIsNotUnreachable(t *testing.T) {
 	st.check.On("CheckSentinelNumberInMemory", s, st.rf).Once().Return(nil)
 	st.check.On("CheckSentinelSlavesNumberInMemory", s, st.rf).Once().Return(apiErr)
 	st.heal.On("RestoreSentinel", s).Once().Return(nil)
+	st.check.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 	st.heal.On("SetSentinelCustomConfig", s, st.rf).Once().Return(nil)
 
 	require.NoError(t, st.run([]string{s}))
