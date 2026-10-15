@@ -72,6 +72,13 @@ func TestGetSentinelFailoverRejectsAnIncompleteReply(t *testing.T) {
 		"no flags":                 sentinelMasterReply("ip", "10.0.0.1", "port", "6379"),
 		"no ip":                    sentinelMasterReply("port", "6379", "flags", "master,failover_in_progress"),
 		"no port":                  sentinelMasterReply("ip", "10.0.0.1", "flags", "master"),
+		"empty flags":              sentinelMasterReply("ip", "10.0.0.1", "port", "6379", "flags", ""),
+		"empty ip":                 sentinelMasterReply("ip", "", "port", "6379", "flags", "master"),
+		"empty port":               sentinelMasterReply("ip", "10.0.0.1", "port", "", "flags", "master"),
+		"port abc":                 sentinelMasterReply("ip", "10.0.0.1", "port", "abc", "flags", "master"),
+		"port 0":                   sentinelMasterReply("ip", "10.0.0.1", "port", "0", "flags", "master"),
+		"port 70000":               sentinelMasterReply("ip", "10.0.0.1", "port", "70000", "flags", "master"),
+		"port above the int range": sentinelMasterReply("ip", "10.0.0.1", "port", "99999999999999999999", "flags", "master"),
 		"a value that is a number": "*6\r\n$2\r\nip\r\n$8\r\n10.0.0.1\r\n$4\r\nport\r\n$4\r\n6379\r\n$5\r\nflags\r\n:1\r\n",
 	} {
 		t.Run(name, func(t *testing.T) {

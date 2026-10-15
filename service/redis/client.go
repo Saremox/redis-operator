@@ -551,10 +551,10 @@ func (c *client) GetSentinelFailover(ip string) (SentinelFailover, error) {
 		// Without flags, the reply cannot show a failover. Without the
 		// address, the caller cannot tell two failovers apart. A truncated
 		// reply can lose these fields.
-		for _, field := range []string{"flags", "ip", "port"} {
-			if _, ok := info[field]; !ok {
-				err = errMalformedSentinelMaster
-			}
+		// Atoi gives 0 for a value that is not a number.
+		port, _ := strconv.Atoi(info["port"])
+		if info["flags"] == "" || info["ip"] == "" || port < 1 || port > 65535 {
+			err = errMalformedSentinelMaster
 		}
 	}
 	if err != nil {
