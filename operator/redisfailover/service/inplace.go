@@ -503,19 +503,7 @@ func (r *RedisFailoverHealer) inPlaceResources(rf *redisfailoverv1.RedisFailover
 	for _, c := range current.Spec.Containers {
 		old[c.Name] = withDefaultRequests(c.Resources)
 	}
-	// The pod's own resources are the base: admission (e.g. a LimitRange) may
-	// have added values that neither revision has.
-	actual, running := map[string]corev1.ResourceRequirements{}, map[string]corev1.ResourceRequirements{}
-	for _, c := range pod.Spec.Containers {
-		actual[c.Name], running[c.Name] = c.Resources, c.Resources
-	}
-	reported := false
-	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.Resources != nil {
-			running[cs.Name] = *cs.Resources
-			reported = reported || cs.Name == redisContainerName
-		}
-	}
+	actual, running, reported := podResources(pod)
 	if !reported {
 		// E.g. a kubelet without in-place resize support, which would leave
 		// the pod spec that maxmemory derives from ahead of the container.
@@ -525,43 +513,18 @@ func (r *RedisFailoverHealer) inPlaceResources(rf *redisfailoverv1.RedisFailover
 	lowersMemoryLimit := false
 	var loweredRedisLimit int64
 	for _, c := range update.Spec.Containers {
-		d, o := withDefaultRequests(c.Resources), old[c.Name]
-		for _, list := range [][2]corev1.ResourceList{{o.Requests, d.Requests}, {o.Limits, d.Limits}} {
-			if len(list[0]) != len(list[1]) {
-				return nil, "requests or limits are added or removed", ResizeUserRevision, nil
-			}
-			for name, q := range list[0] {
-				n, ok := list[1][name]
-				if !ok {
-					return nil, "requests or limits are added or removed", ResizeUserRevision, nil
-				}
-				if name != corev1.ResourceCPU && name != corev1.ResourceMemory && !q.Equal(n) {
-					return nil, "only cpu and memory can be resized in place", ResizeUserRevision, nil
-				}
-			}
+		d := withDefaultRequests(c.Resources)
+		if reason := notResizable(old[c.Name], d); reason != "" {
+			return nil, reason, ResizeUserRevision, nil
 		}
 		// The pod may already run a superseded revision's values.
 		base := actual[c.Name]
-		target := *base.DeepCopy()
-		target.Requests = overlay(target.Requests, d.Requests)
-		target.Limits = overlay(target.Limits, d.Limits)
-		if c.Name == redisContainerName && held != 0 {
-			target.Limits[corev1.ResourceMemory] = base.Limits[corev1.ResourceMemory]
-			if q, ok := base.Requests[corev1.ResourceMemory]; ok {
-				target.Requests[corev1.ResourceMemory] = q
-			}
-		}
+		target := inPlaceTarget(c.Name, base, d, held)
 		desired[c.Name] = target
-		if q, ok := running[c.Name].Limits[corev1.ResourceMemory]; ok && target.Limits.Memory().Cmp(q) < 0 {
-			lowersMemoryLimit = true
-			if c.Name == redisContainerName {
-				loweredRedisLimit = target.Limits.Memory().Value()
-			}
-		}
-		// Before Kubernetes 1.35, the API server also refuses a limit below
-		// the pod spec, also when the container runs with less.
-		if q, ok := base.Limits[corev1.ResourceMemory]; ok && target.Limits.Memory().Cmp(q) < 0 {
-			lowersMemoryLimit = true
+		belowRunning, belowSpec := lowersMemory(target, running[c.Name], base)
+		lowersMemoryLimit = lowersMemoryLimit || belowRunning || belowSpec
+		if belowRunning && c.Name == redisContainerName {
+			loweredRedisLimit = target.Limits.Memory().Value()
 		}
 	}
 	if lowersMemoryLimit && !support.MemoryLimitDecrease {
@@ -574,6 +537,74 @@ func (r *RedisFailoverHealer) inPlaceResources(rf *redisfailoverv1.RedisFailover
 		}
 	}
 	return desired, "", "", nil
+}
+
+// podResources returns the resources of the pod spec, and the running
+// resources that the kubelet reports, by container. The pod's own resources
+// are the base: admission (e.g. a LimitRange) may have added values that
+// neither revision has. reported is false when the kubelet does not report
+// the resources of the redis container.
+func podResources(pod *corev1.Pod) (actual, running map[string]corev1.ResourceRequirements, reported bool) {
+	actual, running = map[string]corev1.ResourceRequirements{}, map[string]corev1.ResourceRequirements{}
+	for _, c := range pod.Spec.Containers {
+		actual[c.Name], running[c.Name] = c.Resources, c.Resources
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Resources != nil {
+			running[cs.Name] = *cs.Resources
+			reported = reported || cs.Name == redisContainerName
+		}
+	}
+	return actual, running, reported
+}
+
+// notResizable returns the reason that an in-place resize cannot change the
+// resources o to d, or "".
+func notResizable(o, d corev1.ResourceRequirements) string {
+	for _, list := range [][2]corev1.ResourceList{{o.Requests, d.Requests}, {o.Limits, d.Limits}} {
+		if len(list[0]) != len(list[1]) {
+			return "requests or limits are added or removed"
+		}
+		for name, q := range list[0] {
+			n, ok := list[1][name]
+			if !ok {
+				return "requests or limits are added or removed"
+			}
+			if name != corev1.ResourceCPU && name != corev1.ResourceMemory && !q.Equal(n) {
+				return "only cpu and memory can be resized in place"
+			}
+		}
+	}
+	return ""
+}
+
+// inPlaceTarget returns base with the cpu and memory of d. With a held
+// limit, the redis container keeps the memory of base.
+func inPlaceTarget(container string, base, d corev1.ResourceRequirements, held int64) corev1.ResourceRequirements {
+	target := *base.DeepCopy()
+	target.Requests = overlay(target.Requests, d.Requests)
+	target.Limits = overlay(target.Limits, d.Limits)
+	if container == redisContainerName && held != 0 {
+		target.Limits[corev1.ResourceMemory] = base.Limits[corev1.ResourceMemory]
+		if q, ok := base.Requests[corev1.ResourceMemory]; ok {
+			target.Requests[corev1.ResourceMemory] = q
+		}
+	}
+	return target
+}
+
+// lowersMemory reports whether the memory limit of target is below the
+// running limit, and below the limit of the pod spec base. Before Kubernetes
+// 1.35, the API server also refuses a limit below the pod spec, also when the
+// container runs with less.
+func lowersMemory(target, running, base corev1.ResourceRequirements) (belowRunning, belowSpec bool) {
+	if q, ok := running.Limits[corev1.ResourceMemory]; ok && target.Limits.Memory().Cmp(q) < 0 {
+		belowRunning = true
+	}
+	if q, ok := base.Limits[corev1.ResourceMemory]; ok && target.Limits.Memory().Cmp(q) < 0 {
+		belowSpec = true
+	}
+	return belowRunning, belowSpec
 }
 
 // memoryInUseExceeds returns the reason to recreate the pod when the memory
