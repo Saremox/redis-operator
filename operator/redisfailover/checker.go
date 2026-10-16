@@ -51,160 +51,217 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 		masterIP, _ = r.rfChecker.GetMasterIP(rf)
 		r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("masterIP", masterIP).Debug("got master IP")
 	}
-	// No performed updates when nodes are syncing, still not connected, etc.
-	// The exception is an unsynced replica on a stale revision, for example on
-	// an image that cannot load the RDB of the master. It has no data to lose,
-	// and a wait for it can be infinite. Its replacement is on the update
-	// revision, so the rollout waits for it and does not replace it again.
-	ssUR := ""
-	var podNames map[string]string
-	var unsyncedStale []string
-	for _, rip := range redises {
-		if rip != masterIP {
-			ready, err := r.rfChecker.CheckRedisSlavesReady(rip, rf)
-			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("ready", ready).Debug("got secondary state")
-			if err != nil {
-				return err
-			}
-			if ready {
-				continue
-			}
-			unsynced = true
-			// Without a known master, rip can be the master. While bootstrapping,
-			// rip can hold the only copy of the data. Do not replace it.
-			if masterIP == "" {
-				wait, err = r.replicaRolloutWait(rf, rip)
-				return err
-			}
-			if podNames == nil {
-				if ssUR, wait, err = r.updateRevision(rf); err != nil || wait != nil {
-					return err
-				}
-				if podNames, err = r.redisPodNamesByIP(rf); err != nil {
-					return err
-				}
-			}
-			pod, ok := podNames[rip]
-			if !ok {
-				wait, err = r.replicaRolloutWait(rf, rip)
-				return err
-			}
-			revision, err := r.rfChecker.GetRedisRevisionHash(pod, rf)
-			if err != nil {
-				return err
-			}
-			if revision == ssUR {
-				wait, err = r.replicaRolloutWait(rf, rip)
-				return err
-			}
-			unsyncedStale = append(unsyncedStale, pod)
-		}
+	scan, wait, err := r.scanReplicas(rf, redises, masterIP)
+	unsynced = scan.unsynced
+	if err != nil || scan.done {
+		return err
 	}
-
-	if podNames == nil {
-		if ssUR, wait, err = r.updateRevision(rf); err != nil || wait != nil {
-			return err
-		}
-	}
+	ssUR := scan.updateRevision
 	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("ssUR", ssUR).Debug("got StatefulSet update revision")
 
-	redisesPods := unsyncedStale
+	redisesPods := scan.unsyncedStale
 	if len(redisesPods) == 0 {
 		redisesPods, err = r.rfChecker.GetRedisesSlavesPods(rf)
 		if err != nil {
 			return err
 		}
 	}
+	var done bool
+	if wait, done, err = r.replaceStaleReplica(rf, redisesPods, ssUR, len(scan.unsyncedStale) > 0); err != nil || done {
+		return err
+	}
+	if rf.Bootstrapping() {
+		return nil
+	}
+	wait, err = r.replaceStaleMaster(rf, masterIP, ssUR)
+	return err
+}
 
-	for _, pod := range redisesPods {
+// rolloutScan is what the check of the replicas finds before the rollout.
+// done is true when the rollout must end the reconcile.
+type rolloutScan struct {
+	updateRevision string
+	podNames       map[string]string
+	unsyncedStale  []string
+	unsynced       bool
+	done           bool
+}
+
+// scanReplicas checks the sync state of each replica. No performed updates
+// when nodes are syncing, still not connected, etc. The exception is an
+// unsynced replica on a stale revision, for example on an image that cannot
+// load the RDB of the master. It has no data to lose, and a wait for it can be
+// infinite. Its replacement is on the update revision, so the rollout waits
+// for it and does not replace it again.
+func (r *RedisFailoverHandler) scanReplicas(rf *redisfailoverv1.RedisFailover, redises []string, masterIP string) (rolloutScan, *rolloutWait, error) {
+	var scan rolloutScan
+	for _, rip := range redises {
+		if rip == masterIP {
+			continue
+		}
+		if wait, err := r.scanReplica(rf, rip, masterIP, &scan); err != nil || scan.done {
+			return scan, wait, err
+		}
+	}
+	if scan.podNames == nil {
+		var wait *rolloutWait
+		var err error
+		if scan.updateRevision, wait, err = r.updateRevision(rf); err != nil || wait != nil {
+			scan.done = true
+			return scan, wait, err
+		}
+	}
+	return scan, nil, nil
+}
+
+// scanReplica checks the replica at rip, and records an unsynced replica on a
+// stale revision in scan.
+func (r *RedisFailoverHandler) scanReplica(rf *redisfailoverv1.RedisFailover, rip, masterIP string, scan *rolloutScan) (*rolloutWait, error) {
+	ready, err := r.rfChecker.CheckRedisSlavesReady(rip, rf)
+	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("ready", ready).Debug("got secondary state")
+	if err != nil || ready {
+		return nil, err
+	}
+	scan.unsynced = true
+	// Without a known master, rip can be the master. While bootstrapping,
+	// rip can hold the only copy of the data. Do not replace it.
+	if masterIP == "" {
+		scan.done = true
+		return r.replicaRolloutWait(rf, rip)
+	}
+	if scan.podNames == nil {
+		var wait *rolloutWait
+		if scan.updateRevision, wait, err = r.updateRevision(rf); err != nil || wait != nil {
+			scan.done = true
+			return wait, err
+		}
+		if scan.podNames, err = r.redisPodNamesByIP(rf); err != nil {
+			return nil, err
+		}
+	}
+	pod, ok := scan.podNames[rip]
+	if !ok {
+		scan.done = true
+		return r.replicaRolloutWait(rf, rip)
+	}
+	revision, err := r.rfChecker.GetRedisRevisionHash(pod, rf)
+	if err != nil {
+		return nil, err
+	}
+	if revision == scan.updateRevision {
+		scan.done = true
+		return r.replicaRolloutWait(rf, rip)
+	}
+	scan.unsyncedStale = append(scan.unsyncedStale, pod)
+	return nil, nil
+}
+
+// replaceStaleReplica replaces the first pod in pods that is not on the
+// update revision. done is true when it found such a pod.
+func (r *RedisFailoverHandler) replaceStaleReplica(rf *redisfailoverv1.RedisFailover, pods []string, ssUR string, unsyncedStale bool) (*rolloutWait, bool, error) {
+	for _, pod := range pods {
 		revision, err := r.rfChecker.GetRedisRevisionHash(pod, rf)
 		if err != nil {
-			return err
+			return nil, true, err
 		}
-		if revision != ssUR {
-			if wait, err = r.redisPodsSettled(rf, ssUR); err != nil || wait != nil {
-				return err
-			}
-			if recreate, err := r.resizeInPlace(rf, pod, ssUR); err != nil || !recreate {
-				return err
-			}
-			// A master also fails the sync check, and sentinel can promote the
-			// candidate after GetMasterIP. Read the role again before the delete.
-			if len(unsyncedStale) > 0 {
-				replicas, err := r.rfChecker.GetRedisesSlavesPods(rf)
-				if err != nil || !slices.Contains(replicas, pod) {
-					return err
-				}
-			}
-			err = r.rfHealer.DeletePod(pod, rf)
-			if err != nil {
-				return err
-			}
-			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("revision", revision).WithField("pod", pod).Debug("deleted secondary pod")
-			return nil
+		if revision == ssUR {
+			continue
 		}
+		if wait, err := r.redisPodsSettled(rf, ssUR); err != nil || wait != nil {
+			return wait, true, err
+		}
+		if recreate, err := r.resizeInPlace(rf, pod, ssUR); err != nil || !recreate {
+			return nil, true, err
+		}
+		// A master also fails the sync check, and sentinel can promote the
+		// candidate after GetMasterIP. Read the role again before the delete.
+		if unsyncedStale {
+			replicas, err := r.rfChecker.GetRedisesSlavesPods(rf)
+			if err != nil || !slices.Contains(replicas, pod) {
+				return nil, true, err
+			}
+		}
+		err = r.rfHealer.DeletePod(pod, rf)
+		if err != nil {
+			return nil, true, err
+		}
+		r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("revision", revision).WithField("pod", pod).Debug("deleted secondary pod")
+		return nil, true, nil
+	}
+	return nil, false, nil
+}
+
+// replaceStaleMaster replaces the master pod when it is not on the update
+// revision.
+func (r *RedisFailoverHandler) replaceStaleMaster(rf *redisfailoverv1.RedisFailover, masterIP, ssUR string) (*rolloutWait, error) {
+	master, err := r.rfChecker.GetRedisesMasterPod(rf)
+	if err != nil {
+		return nil, err
 	}
 
-	if !rf.Bootstrapping() {
-		master, err := r.rfChecker.GetRedisesMasterPod(rf)
-		if err != nil {
-			return err
-		}
-
-		masterRevision, err := r.rfChecker.GetRedisRevisionHash(master, rf)
-		if err != nil {
-			return err
-		}
-		if masterRevision != ssUR {
-			// Resizing in place needs no failover, so it skips the gate below.
-			if wait, err = r.redisPodsSettled(rf, ssUR); err != nil || wait != nil {
-				return err
-			}
-			if recreate, err := r.resizeInPlace(rf, master, ssUR); err != nil || !recreate {
-				return err
-			}
-
-			// The deletion of the master makes Sentinel fail over. Sentinel uses
-			// its own list of replicas, and that list is slower than the Redis
-			// readiness checked above. Thus each Sentinel must know a quorum
-			// (majority) of the replicas first. Without a known replica, the
-			// failover fails with NOGOODSLAVE, and the outage is longer until the
-			// operator promotes a replica. One replica that stays unavailable
-			// must not block the master replacement, so a quorum is sufficient.
-			//
-			// In operator-managed mode, no Sentinel exists. With more than one
-			// pod, the master hands its role over to a replica first, so that a
-			// master exists at all times. Without FAILOVER, or with one pod,
-			// case 0 of checkAndHealOperatorManagedMode waits until the master pod
-			// stops, and then elects a master.
-			if !rf.OperatorManagedFailover() {
-				sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
-				if err != nil {
-					return err
-				}
-				for _, sip := range sentinels {
-					if err := r.rfChecker.CheckSentinelSlavesNumberQuorumInMemory(sip, rf); err != nil {
-						r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("Waiting for sentinels to see a quorum of slaves before replacing the master: %s", err.Error())
-						return nil
-					}
-				}
-			} else if rf.Spec.Redis.Replicas > 1 {
-				if handled, err := r.handOverMaster(rf, masterIP, master); err != nil || handled {
-					return err
-				}
-			}
-
-			err = r.rfHealer.DeletePod(master, rf)
-			if err != nil {
-				return err
-			}
-			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("revision", masterRevision).WithField("pod", master).Debug("deleted primary pod")
-			return nil
-		}
+	masterRevision, err := r.rfChecker.GetRedisRevisionHash(master, rf)
+	if err != nil {
+		return nil, err
+	}
+	if masterRevision == ssUR {
 		// The next rollout counts the refusals from zero.
 		r.handoverRetries.Delete(failoverKey(rf))
+		return nil, nil
 	}
-	return nil
+	// Resizing in place needs no failover, so it skips the gate below.
+	if wait, err := r.redisPodsSettled(rf, ssUR); err != nil || wait != nil {
+		return wait, err
+	}
+	if recreate, err := r.resizeInPlace(rf, master, ssUR); err != nil || !recreate {
+		return nil, err
+	}
+	if allowed, err := r.masterDeleteAllowed(rf, masterIP, master); err != nil || !allowed {
+		return nil, err
+	}
+
+	err = r.rfHealer.DeletePod(master, rf)
+	if err != nil {
+		return nil, err
+	}
+	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("revision", masterRevision).WithField("pod", master).Debug("deleted primary pod")
+	return nil, nil
+}
+
+// masterDeleteAllowed reports whether the rollout can delete the stale master
+// pod now.
+//
+// The deletion of the master makes Sentinel fail over. Sentinel uses its own
+// list of replicas, and that list is slower than the Redis readiness checked
+// before. Thus each Sentinel must know a quorum (majority) of the replicas
+// first. Without a known replica, the failover fails with NOGOODSLAVE, and the
+// outage is longer until the operator promotes a replica. One replica that
+// stays unavailable must not block the master replacement, so a quorum is
+// sufficient.
+//
+// In operator-managed mode, no Sentinel exists. With more than one pod, the
+// master hands its role over to a replica first, so that a master exists at
+// all times. Without FAILOVER, or with one pod, case 0 of
+// checkAndHealOperatorManagedMode waits until the master pod stops, and then
+// elects a master.
+func (r *RedisFailoverHandler) masterDeleteAllowed(rf *redisfailoverv1.RedisFailover, masterIP, master string) (bool, error) {
+	if rf.OperatorManagedFailover() {
+		if rf.Spec.Redis.Replicas <= 1 {
+			return true, nil
+		}
+		handled, err := r.handOverMaster(rf, masterIP, master)
+		return !handled, err
+	}
+	sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
+	if err != nil {
+		return false, err
+	}
+	for _, sip := range sentinels {
+		if err := r.rfChecker.CheckSentinelSlavesNumberQuorumInMemory(sip, rf); err != nil {
+			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("Waiting for sentinels to see a quorum of slaves before replacing the master: %s", err.Error())
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // updateRevision returns the update revision of the redis StatefulSet, or a
