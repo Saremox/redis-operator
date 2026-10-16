@@ -178,6 +178,22 @@ func TestHandleNotARedisFailover(t *testing.T) {
 	assert.Error(err)
 }
 
+type reconcileKey struct{}
+
+// reconcileCtx returns a cancelled context with a value, as Handle gets it
+// from a reconcile that runs on shutdown.
+func reconcileCtx() context.Context {
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), reconcileKey{}, "reconcile"))
+	cancel()
+	return ctx
+}
+
+// fromReconcile matches a context that keeps the value of reconcileCtx, but
+// not its cancel: the writes of a running reconcile finish on shutdown.
+var fromReconcile = mock.MatchedBy(func(ctx context.Context) bool {
+	return ctx.Value(reconcileKey{}) == "reconcile" && ctx.Err() == nil
+})
+
 // TestHandleValidateError verifies that Handle rejects a RedisFailover that
 // fails Validate() (here, a name longer than the 48-char limit) before ever
 // reaching Ensure or CheckAndHeal.
@@ -198,16 +214,16 @@ func TestHandleValidateError(t *testing.T) {
 
 	// Finalizer registration runs before Validate(), so it is still expected
 	// even though this RF fails validation.
-	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Twice().Return(nil)
+	mk.On("PatchRedisFailoverFinalizers", fromReconcile, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Twice().Return(nil)
 	// The status shows the error, because the last status is not correct.
 	var written redisfailoverv1.RedisFailoverStatus
-	mk.On("UpdateRedisFailoverStatus", mock.Anything, rf.Namespace, rf, mock.Anything).Once().Run(func(args mock.Arguments) {
+	mk.On("UpdateRedisFailoverStatus", fromReconcile, rf.Namespace, rf, mock.Anything).Once().Run(func(args mock.Arguments) {
 		written = args.Get(2).(*redisfailoverv1.RedisFailover).Status
 	})
 	rf.Status = redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.HealthyState, LastChanged: "2026-01-01T00:00:00Z"}
 
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
-	err := handler.Handle(context.Background(), rf)
+	err := handler.Handle(reconcileCtx(), rf)
 
 	require.Error(t, err)
 	assert.Equal(redisfailoverv1.NotHealthyState, written.State)
@@ -217,7 +233,7 @@ func TestHandleValidateError(t *testing.T) {
 	mrfc.AssertNotCalled(t, "IsRedisRunning", mock.Anything)
 
 	// An unchanged error is not written again.
-	require.Error(t, handler.Handle(context.Background(), rf))
+	require.Error(t, handler.Handle(reconcileCtx(), rf))
 	mk.AssertExpectations(t)
 }
 
@@ -267,14 +283,14 @@ func TestHandleEnsureNameConflict(t *testing.T) {
 	mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
 	mrfs.On("EnsureNotPresentRedisService", rf).Once().Return(conflict)
-	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Once().Return(nil)
+	mk.On("PatchRedisFailoverFinalizers", fromReconcile, rf.Namespace, rf.Name, mock.Anything, mock.Anything).Once().Return(nil)
 	var written redisfailoverv1.RedisFailoverStatus
-	mk.On("UpdateRedisFailoverStatus", mock.Anything, rf.Namespace, rf, mock.Anything).Once().Run(func(args mock.Arguments) {
+	mk.On("UpdateRedisFailoverStatus", fromReconcile, rf.Namespace, rf, mock.Anything).Once().Run(func(args mock.Arguments) {
 		written = args.Get(2).(*redisfailoverv1.RedisFailover).Status
 	})
 
 	handler := rfOperator.NewRedisFailoverHandler(generateConfig(), mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
-	err := handler.Handle(context.Background(), rf)
+	err := handler.Handle(reconcileCtx(), rf)
 
 	assert.Equal(conflict, err)
 	assert.Equal(redisfailoverv1.NotHealthyState, written.State)
@@ -465,10 +481,10 @@ func TestHandleAddsFinalizerOnFreshRF(t *testing.T) {
 	mrfh.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	mrfs := &mRFService.RedisFailoverClient{}
 
-	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name,
+	mk.On("PatchRedisFailoverFinalizers", fromReconcile, rf.Namespace, rf.Name,
 		[]string{"some.other/finalizer", redisFailoverFinalizerMirror}, mock.Anything).Once().Return(nil)
 	// CheckAndHeal always defers updateStatus, on every return path.
-	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mk.On("UpdateRedisFailoverStatus", fromReconcile, mock.Anything, mock.Anything, mock.Anything).Return()
 
 	mrfs.On("EnsureNotPresentRedisService", rf).Once().Return(nil)
 	mrfs.On("EnsureNotPresentSentinelResources", rf).Once().Return(nil)
@@ -483,7 +499,7 @@ func TestHandleAddsFinalizerOnFreshRF(t *testing.T) {
 	mk.On("GetStatefulSetPods", rf.Namespace, mock.Anything).Once().Return(&corev1.PodList{}, nil)
 
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
-	err := handler.Handle(context.Background(), rf)
+	err := handler.Handle(reconcileCtx(), rf)
 
 	require.NoError(t, err)
 	mk.AssertExpectations(t)
@@ -514,11 +530,11 @@ func TestHandleDeletionCleansUpMetricsAndRemovesFinalizer(t *testing.T) {
 	mrfs := &mRFService.RedisFailoverClient{}
 	mClient := &fakeRecorder{Recorder: metrics.Dummy}
 
-	mk.On("PatchRedisFailoverFinalizers", mock.Anything, rf.Namespace, rf.Name,
+	mk.On("PatchRedisFailoverFinalizers", fromReconcile, rf.Namespace, rf.Name,
 		[]string{"some.other/finalizer"}, mock.Anything).Once().Return(nil)
 
 	handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, mClient, log.Dummy)
-	err := handler.Handle(context.Background(), rf)
+	err := handler.Handle(reconcileCtx(), rf)
 
 	require.NoError(t, err)
 	assert.Equal([]string{rf.Namespace + "/" + rf.Name}, mClient.deleteClusterCalls)

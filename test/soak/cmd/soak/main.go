@@ -140,7 +140,8 @@ func run(configPath, listen string, log *slog.Logger) error {
 	}
 	wg.Go(func() {
 		<-ctx.Done()
-		_ = srv.Shutdown(context.Background())
+		// ctx is done here, and the shutdown must wait for open requests.
+		_ = srv.Shutdown(context.WithoutCancel(ctx))
 	})
 
 	log.Info("starting", "version", version, "instances", len(cfg.Instances), "listen", listen,

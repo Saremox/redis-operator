@@ -2,6 +2,7 @@ package redisfailover
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,6 +18,8 @@ func trackState(t *testing.T, h *RedisFailoverHandler, rf *redisfailoverv1.Redis
 	h.unreachableCleared.Store(failoverKey(rf), true)
 	h.maxMemoryLogged.Store(failoverKey(rf), maxMemoryOutcome{message: "kept", hold: true})
 	h.appliedSecretLogged.Store(failoverKey(rf), appliedSecretLog{err: "forbidden"})
+	h.sentinelFailovers.Store(failoverKey(rf), time.Unix(1000, 0))
+	h.sentinelReadErrors.Store(failoverKey(rf), map[string]time.Time{"10.0.1.1": time.Unix(1000, 0)})
 }
 
 func assertTracked(t *testing.T, h *RedisFailoverHandler, key string, want bool) {
@@ -26,7 +29,9 @@ func assertTracked(t *testing.T, h *RedisFailoverHandler, key string, want bool)
 	_, cleared := h.unreachableCleared.Load(key)
 	_, logged := h.maxMemoryLogged.Load(key)
 	_, secretLogged := h.appliedSecretLogged.Load(key)
-	assert.Equal(t, []bool{want, want, want, want, want}, []bool{passwords, waits, cleared, logged, secretLogged}, key)
+	_, failover := h.sentinelFailovers.Load(key)
+	_, readErrors := h.sentinelReadErrors.Load(key)
+	assert.Equal(t, []bool{want, want, want, want, want, want, want}, []bool{passwords, waits, cleared, logged, secretLogged, failover, readErrors}, key)
 }
 
 func TestForgetDropsTheStateOfOneRedisFailover(t *testing.T) {

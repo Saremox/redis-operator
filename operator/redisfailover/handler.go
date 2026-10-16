@@ -81,6 +81,12 @@ type RedisFailoverHandler struct {
 	// sentinelResets holds, per namespace/name, the time of the last SENTINEL
 	// RESET or SENTINEL MONITOR of each Sentinel IP.
 	sentinelResets sync.Map
+	// sentinelFailovers holds, per namespace/name, the sentinelFailover that
+	// the Sentinel heal waits for.
+	sentinelFailovers sync.Map
+	// sentinelReadErrors holds, per namespace/name, the time of the first read
+	// error of the failover state of each Sentinel IP.
+	sentinelReadErrors sync.Map
 	// autoscaleReads holds, per namespace/name, the autoscaleRead of the
 	// current reconcile.
 	autoscaleReads sync.Map
@@ -139,15 +145,20 @@ func (r *RedisFailoverHandler) Forget(key string) {
 	r.handoverRetries.Delete(key)
 	r.handoverFallbackLogged.Delete(key)
 	r.sentinelResets.Delete(key)
+	r.sentinelFailovers.Delete(key)
+	r.sentinelReadErrors.Delete(key)
 	r.forgetAutoscaler(key)
 }
 
 // Handle will ensure the redis failover is in the expected state.
-func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) error {
+func (r *RedisFailoverHandler) Handle(ctx context.Context, obj runtime.Object) error {
 	rf, ok := obj.(*redisfailoverv1.RedisFailover)
 	if !ok {
 		return fmt.Errorf("can't handle the received object: not a redisfailover")
 	}
+	// The controller waits for a running reconcile on shutdown, and the heal
+	// steps ignore a cancel. Thus the writes keep only the values of ctx.
+	ctx = context.WithoutCancel(ctx)
 
 	// Deletion cleanup and finalizer registration run before anything else,
 	// including Validate(): an object that never passes validation must
@@ -162,12 +173,12 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 		remaining := slices.DeleteFunc(slices.Clone(rf.Finalizers), func(f string) bool {
 			return f == redisFailoverFinalizer
 		})
-		return r.k8sservice.PatchRedisFailoverFinalizers(context.Background(), rf.Namespace, rf.Name, remaining, metav1.PatchOptions{})
+		return r.k8sservice.PatchRedisFailoverFinalizers(ctx, rf.Namespace, rf.Name, remaining, metav1.PatchOptions{})
 	}
 
 	if !slices.Contains(rf.Finalizers, redisFailoverFinalizer) {
 		finalizers := append(slices.Clone(rf.Finalizers), redisFailoverFinalizer)
-		if err := r.k8sservice.PatchRedisFailoverFinalizers(context.Background(), rf.Namespace, rf.Name, finalizers, metav1.PatchOptions{}); err != nil {
+		if err := r.k8sservice.PatchRedisFailoverFinalizers(ctx, rf.Namespace, rf.Name, finalizers, metav1.PatchOptions{}); err != nil {
 			return err
 		}
 	}
@@ -180,7 +191,7 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 
 	if err := rf.Validate(); err != nil {
 		r.mClient.SetClusterError(rf.Namespace, rf.Name)
-		r.reportInvalid(rf, err)
+		r.reportInvalid(ctx, rf, err)
 		return err
 	}
 
@@ -200,12 +211,12 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 		r.mClient.SetClusterError(rf.Namespace, rf.Name)
 		var other *k8s.ControlledByOtherError
 		if errors.As(err, &other) {
-			r.reportInvalid(rf, err)
+			r.reportInvalid(ctx, rf, err)
 		}
 		return err
 	}
 
-	if err := r.CheckAndHeal(rf); err != nil {
+	if err := r.checkAndHeal(ctx, rf); err != nil {
 		r.mClient.SetClusterError(rf.Namespace, rf.Name)
 		return err
 	}
@@ -295,7 +306,7 @@ func (r *RedisFailoverHandler) getLabels(rf *redisfailoverv1.RedisFailover) map[
 // reportInvalid shows a validation error or an object name conflict in the
 // status. The operator does not reconcile such a RedisFailover, so the last
 // status can be wrong.
-func (r *RedisFailoverHandler) reportInvalid(rf *redisfailoverv1.RedisFailover, err error) {
+func (r *RedisFailoverHandler) reportInvalid(ctx context.Context, rf *redisfailoverv1.RedisFailover, err error) {
 	status := redisfailoverv1.RedisFailoverStatus{
 		State:       redisfailoverv1.NotHealthyState,
 		Message:     err.Error(),
@@ -309,7 +320,7 @@ func (r *RedisFailoverHandler) reportInvalid(rf *redisfailoverv1.RedisFailover, 
 		status.LastChanged = time.Now().Format(time.RFC3339)
 	}
 	rf.Status = status
-	r.k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
+	r.k8sservice.UpdateRedisFailoverStatus(ctx, rf.Namespace, rf, metav1.PatchOptions{})
 }
 
 func (r *RedisFailoverHandler) createOwnerReferences(rf *redisfailoverv1.RedisFailover) []metav1.OwnerReference {

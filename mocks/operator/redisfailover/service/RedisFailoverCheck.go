@@ -587,6 +587,34 @@ func (_m *RedisFailoverCheck) GetReplicaReplicationOffsets(rFailover *v1.RedisFa
 	return r0, r1
 }
 
+// GetSentinelFailover provides a mock function with given fields: sentinel
+func (_m *RedisFailoverCheck) GetSentinelFailover(sentinel string) (redis.SentinelFailover, error) {
+	ret := _m.Called(sentinel)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetSentinelFailover")
+	}
+
+	var r0 redis.SentinelFailover
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string) (redis.SentinelFailover, error)); ok {
+		return rf(sentinel)
+	}
+	if rf, ok := ret.Get(0).(func(string) redis.SentinelFailover); ok {
+		r0 = rf(sentinel)
+	} else {
+		r0 = ret.Get(0).(redis.SentinelFailover)
+	}
+
+	if rf, ok := ret.Get(1).(func(string) error); ok {
+		r1 = rf(sentinel)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetSentinelsIPs provides a mock function with given fields: rFailover
 func (_m *RedisFailoverCheck) GetSentinelsIPs(rFailover *v1.RedisFailover) ([]string, error) {
 	ret := _m.Called(rFailover)

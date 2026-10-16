@@ -411,7 +411,7 @@ func TestRFControllerRunsUnderLeaderElection(t *testing.T) {
 	mrec := &queueLengthMetrics{Recorder: metrics.Dummy}
 	c, err := newRFController(&recordingHandler{}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, runner, mrec, log.Dummy)
 	require.NoError(t, err)
-	c.enqueue("ns/rf")
+	c.enqueue(context.Background(), "ns/rf")
 	assert.Equal(t, 1, mrec.queueLen(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -788,9 +788,41 @@ func TestRFControllerCountsOneEventPerUpdate(t *testing.T) {
 func TestRFControllerEnqueueAfter(t *testing.T) {
 	c, err := newRFController(&recordingHandler{}, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
 	require.NoError(t, err)
-	c.enqueueAfter("ns/rf", 50*time.Millisecond)
+	c.enqueueAfter(context.Background(), "ns/rf", 50*time.Millisecond)
 	assert.Equal(t, 0, c.queue.Len())
 	assert.Eventually(t, func() bool { return c.queue.Len() == 1 }, 5*time.Second, 10*time.Millisecond)
+}
+
+// ctxMetrics records the context value that IncResourceEventQueued gets.
+type ctxMetrics struct {
+	metrics.Recorder
+	mu    sync.Mutex
+	value any
+}
+
+func (m *ctxMetrics) IncResourceEventQueued(ctx context.Context, _ string, _ bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.value = ctx.Value(ctxKey{})
+}
+
+func (m *ctxMetrics) get() any {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.value
+}
+
+func TestRFControllerRetryAfterAConflictKeepsTheReconcileContext(t *testing.T) {
+	mrec := &ctxMetrics{Recorder: metrics.Dummy}
+	h := errorHandler{err: apierrors.NewConflict(schema.GroupResource{Resource: "redisfailovers"}, "rf", errors.New("changed"))}
+	c, err := newRFController(h, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, mrec, log.Dummy)
+	require.NoError(t, err)
+	require.NoError(t, c.rfInformer.GetIndexer().Add(&redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "rf", Namespace: "ns"}}))
+	c.queue.Add("ns/rf")
+
+	require.True(t, c.processNext(context.WithValue(context.Background(), ctxKey{}, "v")))
+
+	assert.Eventually(t, func() bool { return mrec.get() == "v" }, 5*time.Second, 10*time.Millisecond)
 }
 
 type mutatingHandler struct{}

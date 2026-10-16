@@ -683,7 +683,7 @@ func TestAutoscalingStatusCarryOver(t *testing.T) {
 			patched = args.Get(2).(*redisfailoverv1.RedisFailover).Status
 		}).Once().Return()
 
-		at.h.reportInvalid(at.rf, errors.New("invalid"))
+		at.h.reportInvalid(context.Background(), at.rf, errors.New("invalid"))
 
 		assert.Equal(t, observed, patched.Autoscaling)
 		assert.Equal(t, "invalid", patched.Message)
@@ -707,12 +707,12 @@ func TestAutoscalingStatusCarryOver(t *testing.T) {
 		at := newAutoscaleTest(t, "")
 		at.rf.Status.Autoscaling = observed
 		observedStatus := at.rf.Status
-		updateStatus(at.mk, at.rf, observedStatus)
+		updateStatus(context.Background(), at.mk, at.rf, observedStatus)
 		at.mk.AssertNotCalled(t, "UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 
 		at.mk.On("UpdateRedisFailoverStatus", mock.Anything, "testns", at.rf, mock.Anything).Once().Return()
 		at.rf.Status.Autoscaling.HighWindows = 2
-		updateStatus(at.mk, at.rf, observedStatus)
+		updateStatus(context.Background(), at.mk, at.rf, observedStatus)
 		at.mk.AssertExpectations(t)
 	})
 }

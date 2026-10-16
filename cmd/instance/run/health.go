@@ -136,7 +136,7 @@ func (h *HealthServer) Start(ctx context.Context) error {
 	// Bind before anything else, so that a bind failure gets to the caller
 	// and Start leaves nothing to clean up.
 	addr := fmt.Sprintf(":%d", h.port)
-	listener, err := net.Listen("tcp", addr)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}

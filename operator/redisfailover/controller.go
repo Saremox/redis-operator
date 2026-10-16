@@ -178,7 +178,7 @@ func (c *rfController) podOwner(obj any) (string, bool) {
 func (c *rfController) eventHandler(keyOf func(any) (string, bool)) cache.ResourceEventHandler {
 	enqueue := func(obj any) {
 		if key, ok := keyOf(obj); ok {
-			c.enqueue(key)
+			c.enqueue(context.Background(), key)
 		}
 	}
 	return cache.ResourceEventHandlerFuncs{
@@ -188,10 +188,10 @@ func (c *rfController) eventHandler(keyOf func(any) (string, bool)) cache.Resour
 			oldKey, oldOK := keyOf(old)
 			key, ok := keyOf(obj)
 			if oldOK && (!ok || oldKey != key) {
-				c.enqueue(oldKey)
+				c.enqueue(context.Background(), oldKey)
 			}
 			if ok {
-				c.enqueue(key)
+				c.enqueue(context.Background(), key)
 			}
 		},
 		DeleteFunc: enqueue,
@@ -209,7 +209,7 @@ func (c *rfController) secretEventHandler() cache.ResourceEventHandler {
 		}
 		rfKeys, _ := c.rfInformer.GetIndexer().IndexKeys(authSecretIndex, key)
 		for _, k := range rfKeys {
-			c.enqueue(k)
+			c.enqueue(context.Background(), k)
 		}
 	}
 	return cache.ResourceEventHandlerFuncs{
@@ -229,19 +229,21 @@ func (c *rfController) secretEventHandler() cache.ResourceEventHandler {
 	}
 }
 
-func (c *rfController) enqueue(key string) {
+// enqueue queues key. The informer event handlers have no context of their
+// own, so they pass context.Background.
+func (c *rfController) enqueue(ctx context.Context, key string) {
 	c.mu.Lock()
 	if _, ok := c.queuedAt[key]; !ok {
 		c.queuedAt[key] = time.Now()
 	}
 	c.mu.Unlock()
-	c.metrics.IncResourceEventQueued(context.Background(), controllerName, false)
+	c.metrics.IncResourceEventQueued(ctx, controllerName, false)
 	c.queue.Add(key)
 }
 
 // enqueueAfter uses a timer, because the queue has no delay.
-func (c *rfController) enqueueAfter(key string, d time.Duration) {
-	time.AfterFunc(d, func() { c.enqueue(key) })
+func (c *rfController) enqueueAfter(ctx context.Context, key string, d time.Duration) {
+	time.AfterFunc(d, func() { c.enqueue(ctx, key) })
 }
 
 // Run satisfies Controller.
@@ -312,7 +314,7 @@ func (c *rfController) processNext(ctx context.Context) bool {
 			// The write used an old copy of the object. A reconcile with the
 			// new copy fixes that, so it is not a fault.
 			logger.Infof("the object changed before the write, the reconcile runs again: %v", err)
-			c.enqueueAfter(key, conflictRetryDelay)
+			c.enqueueAfter(ctx, key, conflictRetryDelay)
 			return true
 		}
 		logger.Errorf("error on object processing: %v", err)

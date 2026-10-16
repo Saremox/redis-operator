@@ -967,6 +967,51 @@ func TestGetNumberSentinelsInMemory_TooMany(t *testing.T) {
 	assert.Zero(t, n)
 }
 
+// TestGetNumberSentinelsInMemory_Bounds checks the int32 range check at its
+// limits. A count above the int64 range is also too many, not a parse fault.
+func TestGetNumberSentinelsInMemory_Bounds(t *testing.T) {
+	const target = "127.0.0.2"
+	for _, tc := range []struct {
+		count   string
+		want    int32
+		reason  string
+		errText string
+	}{
+		{count: "0", want: 0, reason: metrics.NOT_APPLICABLE},
+		{count: "65536", want: 65536, reason: metrics.NOT_APPLICABLE},
+		{count: "65537", reason: metrics.SENTINEL_TOO_MANY, errText: "more than 65536"},
+		{count: "9223372036854775808", reason: metrics.SENTINEL_TOO_MANY, errText: "more than 65536"},
+		{count: "18446744073709551616", reason: metrics.MISC, errText: "value out of range"},
+	} {
+		t.Run(tc.count, func(t *testing.T) {
+			startFakeSentinel(t, target, "# Sentinel\r\nsentinel_masters:1\r\n"+
+				"master0:name=mymaster,status=ok,address=10.0.0.1:6379,slaves="+tc.count+",sentinels="+tc.count+"\r\n")
+			result := metrics.SUCCESS
+			if tc.errText != "" {
+				result = metrics.FAIL
+			}
+			rec := &mMetrics.Recorder{}
+			rec.On("RecordRedisOperation", metrics.KIND_SENTINEL, target, metrics.GET_NUM_SENTINELS_IN_MEM, result, tc.reason).Once()
+			rec.On("RecordRedisOperation", metrics.KIND_SENTINEL, target, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, result, tc.reason).Once()
+			c := New(rec)
+
+			sentinels, err := c.GetNumberSentinelsInMemory(target)
+			replicas, err2 := c.GetNumberSentinelSlavesInMemory(target)
+
+			if tc.errText == "" {
+				require.NoError(t, err)
+				require.NoError(t, err2)
+			} else {
+				require.ErrorContains(t, err, tc.errText)
+				require.ErrorContains(t, err2, tc.errText)
+			}
+			assert.Equal(t, tc.want, sentinels)
+			assert.Equal(t, tc.want, replicas)
+			rec.AssertExpectations(t)
+		})
+	}
+}
+
 // ---------------------------------------------------------------------
 // MonitorRedisWithPort / SetCustomSentinelConfig / ResetSentinel /
 // SentinelCheckQuorum
