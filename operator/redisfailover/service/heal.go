@@ -261,41 +261,45 @@ func (r *RedisFailoverHealer) SetMasterOnAll(masterIP string, rf *redisfailoverv
 				return err
 			}
 			return fmt.Errorf("refusing to continue: %s is no longer the master, bailing out this round", masterIP)
-		} else {
-			if pod.Status.PodIP == masterIP {
-				continue
-			}
-			if pod.Status.PodIP == "" {
-				podLogger.Debugf("Pod %s has no IP yet, skipped", pod.Name)
-				continue
-			}
-			podLogger.Infof("Making pod %s slave of %s", pod.Name, masterIP)
-			unlabelledMaster, err := r.isUnlabelledMaster(pod, port, password)
-			if redis.IsUnreachableError(err) {
-				// REPLICAOF would wait for the same timeout and fail too.
-				podLogger.Warningf("Make slave skipped, pod %s does not answer: %v", pod.Name, err)
-				continue
-			}
-			if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, masterIP, port, password); err != nil {
-				// The pod does not answer, usually the old master on a lost node.
-				// Skip it, so that the other replicas still change. When the pod
-				// answers again, a later reconcile makes it a replica.
-				redisErrorLogf(podLogger, err)("Make slave failed, slave ip: %s, master ip: %s, error: %v", pod.Status.PodIP, masterIP, err)
-				continue
-			}
-
-			// The pod is a replica now, so the disconnect does not wait for the
-			// label: a failed label update must not keep the clients connected.
-			if unlabelledMaster {
-				r.opts.disconnector.DisconnectDemoted(rf, pod, port, password)
-			}
-			err = r.setSlaveLabelIfNecessary(rf, pod, port, password)
-			if err != nil {
-				return err
-			}
+		}
+		if pod.Status.PodIP == masterIP {
+			continue
+		}
+		if pod.Status.PodIP == "" {
+			podLogger.Debugf("Pod %s has no IP yet, skipped", pod.Name)
+			continue
+		}
+		if err := r.makeReplicaOfMaster(podLogger, rf, pod, masterIP, port, password); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// makeReplicaOfMaster makes pod a replica of masterIP. It skips a pod that
+// does not answer.
+func (r *RedisFailoverHealer) makeReplicaOfMaster(podLogger log.Logger, rf *redisfailoverv1.RedisFailover, pod v1.Pod, masterIP, port, password string) error {
+	podLogger.Infof("Making pod %s slave of %s", pod.Name, masterIP)
+	unlabelledMaster, err := r.isUnlabelledMaster(pod, port, password)
+	if redis.IsUnreachableError(err) {
+		// REPLICAOF would wait for the same timeout and fail too.
+		podLogger.Warningf("Make slave skipped, pod %s does not answer: %v", pod.Name, err)
+		return nil
+	}
+	if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, masterIP, port, password); err != nil {
+		// The pod does not answer, usually the old master on a lost node.
+		// Skip it, so that the other replicas still change. When the pod
+		// answers again, a later reconcile makes it a replica.
+		redisErrorLogf(podLogger, err)("Make slave failed, slave ip: %s, master ip: %s, error: %v", pod.Status.PodIP, masterIP, err)
+		return nil
+	}
+
+	// The pod is a replica now, so the disconnect does not wait for the
+	// label: a failed label update must not keep the clients connected.
+	if unlabelledMaster {
+		r.opts.disconnector.DisconnectDemoted(rf, pod, port, password)
+	}
+	return r.setSlaveLabelIfNecessary(rf, pod, port, password)
 }
 
 // isUnlabelledMaster tells if pod answers as a Redis master but has no master
