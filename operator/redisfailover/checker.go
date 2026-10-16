@@ -1804,54 +1804,60 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 	}
 
 	if rf.SentinelsAllowed() {
-		if !r.rfChecker.IsSentinelRunning(rf) {
-			errorMsg := "not all replicas running"
-			rf.Status = redisfailoverv1.RedisFailoverStatus{
-				State:   redisfailoverv1.NotHealthyState,
-				Message: errorMsg,
-			}
-			setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
-			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of sentinel mismatch, waiting for sentinel deployment reconcile")
-			return nil
-		}
-
-		sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
-		if err != nil {
-			rf.Status = redisfailoverv1.RedisFailoverStatus{
-				State:   redisfailoverv1.NotHealthyState,
-				Message: "unable to get sentinels IPs",
-			}
-			return err
-		}
-		heal := r.startSentinelHeal(rf)
-		defer r.saveSentinelResets(heal, sentinels)
-		for _, sip := range sentinels {
-			err = r.rfChecker.CheckSentinelMonitor(sip, bootstrapSettings.Host, bootstrapSettings.Port)
-			setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
-			if heal.skip(sip, err) {
-				continue
-			}
-			if err != nil {
-				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Fixing sentinel not monitoring expected master: %s", err.Error())
-				if !r.sentinelChangeAllowed(rf, sentinels, heal, sip) {
-					continue
-				}
-				if err := r.rfHealer.NewSentinelMonitorWithPort(sip, bootstrapSettings.Host, bootstrapSettings.Port, rf); err != nil {
-					if heal.skip(sip, err) {
-						continue
-					}
-					rf.Status = redisfailoverv1.RedisFailoverStatus{
-						State:   redisfailoverv1.NotHealthyState,
-						Message: "unable to check sentinel monitor",
-					}
-					return err
-				}
-				heal.resets[sip] = r.now()
-			}
-		}
-		return r.checkAndHealSentinels(rf, sentinels, heal)
+		return r.healBootstrapSentinels(rf, bootstrapSettings)
 	}
 	return nil
+}
+
+// healBootstrapSentinels makes each Sentinel monitor the bootstrap node, and
+// then heals the Sentinels.
+func (r *RedisFailoverHandler) healBootstrapSentinels(rf *redisfailoverv1.RedisFailover, bootstrapSettings *redisfailoverv1.BootstrapSettings) error {
+	if !r.rfChecker.IsSentinelRunning(rf) {
+		errorMsg := "not all replicas running"
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: errorMsg,
+		}
+		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
+		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of sentinel mismatch, waiting for sentinel deployment reconcile")
+		return nil
+	}
+
+	sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to get sentinels IPs",
+		}
+		return err
+	}
+	heal := r.startSentinelHeal(rf)
+	defer r.saveSentinelResets(heal, sentinels)
+	for _, sip := range sentinels {
+		err = r.rfChecker.CheckSentinelMonitor(sip, bootstrapSettings.Host, bootstrapSettings.Port)
+		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
+		if heal.skip(sip, err) {
+			continue
+		}
+		if err != nil {
+			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Fixing sentinel not monitoring expected master: %s", err.Error())
+			if !r.sentinelChangeAllowed(rf, sentinels, heal, sip) {
+				continue
+			}
+			if err := r.rfHealer.NewSentinelMonitorWithPort(sip, bootstrapSettings.Host, bootstrapSettings.Port, rf); err != nil {
+				if heal.skip(sip, err) {
+					continue
+				}
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: "unable to check sentinel monitor",
+				}
+				return err
+			}
+			heal.resets[sip] = r.now()
+		}
+	}
+	return r.checkAndHealSentinels(rf, sentinels, heal)
 }
 
 func (r *RedisFailoverHandler) applyRedisCustomConfig(rf *redisfailoverv1.RedisFailover) error {
