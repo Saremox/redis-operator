@@ -327,7 +327,7 @@ func (c *client) MonitorRedisWithPort(ip, monitor, port, quorum, password string
 	cmd = rediscli.NewBoolCmd(context.TODO(), "SENTINEL", "MONITOR", masterName, monitor, port, quorum)
 	err := rClient.Process(context.TODO(), cmd)
 	if err != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.MONITOR_REDIS_WITH_PORT, metrics.FAIL, getRedisError(err))
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.MONITOR_REDIS_WITH_PORT, metrics.FAIL, getRedisError(err))
 		return fmt.Errorf("SENTINEL MONITOR: %w", err)
 	}
 
@@ -335,11 +335,11 @@ func (c *client) MonitorRedisWithPort(ip, monitor, port, quorum, password string
 		cmd = rediscli.NewBoolCmd(context.TODO(), "SENTINEL", "SET", masterName, "auth-pass", password)
 		err := rClient.Process(context.TODO(), cmd)
 		if err != nil {
-			c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.MONITOR_REDIS_WITH_PORT, metrics.FAIL, getRedisError(err))
+			c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.MONITOR_REDIS_WITH_PORT, metrics.FAIL, getRedisError(err))
 			return fmt.Errorf("SENTINEL SET auth-pass: %w", err)
 		}
 	}
-	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.MONITOR_REDIS_WITH_PORT, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.MONITOR_REDIS_WITH_PORT, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return nil
 }
 
