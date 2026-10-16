@@ -357,9 +357,14 @@ func (o *Observer) round(ctx context.Context, due time.Time) time.Time {
 
 func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 	start := o.now()
+	// A failed read of the API keeps its time, because a slow API is a cause
+	// of a slow round.
+	failed := func(err error) (snapshot, int64, error) {
+		return snapshot{kubeTime: o.now().Sub(start)}, 0, err
+	}
 	rf, err := o.rfs.DatabasesV1().RedisFailovers(o.in.Namespace).Get(ctx, o.in.Name, metav1.GetOptions{})
 	if err != nil {
-		return snapshot{}, 0, err
+		return failed(err)
 	}
 	o.auth.Update(rf)
 	// Validate applies the operator defaults.
@@ -383,7 +388,7 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 		LabelSelector: "app.kubernetes.io/part-of=redis-failover,app.kubernetes.io/name=" + o.in.Name,
 	})
 	if err != nil {
-		return snapshot{}, 0, err
+		return failed(err)
 	}
 	slices.SortFunc(pods.Items, func(a, b corev1.Pod) int { return strings.Compare(a.Name, b.Name) })
 	s.redis, s.sentinels = snapshotPods(pods.Items)
@@ -392,7 +397,7 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 		LabelSelector: discoveryv1.LabelServiceName + "=rfrm-" + o.in.Name,
 	})
 	if err != nil {
-		return snapshot{}, 0, err
+		return failed(err)
 	}
 	s.endpoints = readyAddresses(eps.Items)
 	read := o.now()

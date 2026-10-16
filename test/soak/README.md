@@ -661,9 +661,10 @@ instance. No alert uses them.
 
 - `observer round slow`: a round took more than 1 second, or started more
   than 1 second after its tick or after the end of the round before it.
-  The fields give the time of the API reads,
-  the pod reads and the checks. The other rounds log `observer round` at
-  debug level, which the tester does not enable.
+  The fields give the time of the API reads, the pod reads and the checks.
+  The other rounds log `observer round` at debug level, which the tester
+  does not enable. When a read of the API fails, `kube_seconds` holds its
+  time, `read_seconds` is 0, and the histograms record the round.
 - `observer read slow`: a read of a pod failed or took more than 1 second.
   The field `phase` tells where a read failed:
   - `dial`: the tester made no connection.

@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -413,6 +414,36 @@ func TestCollectTimes(t *testing.T) {
 	}
 	if s.kubeTime != time.Second || s.readTime != time.Second {
 		t.Errorf("kube %v, read %v", s.kubeTime, s.readTime)
+	}
+}
+
+// A round whose read of the API fails after a delay gives the delay to the
+// API reads, for each of the three reads.
+func TestCollectFailedTimes(t *testing.T) {
+	for _, tc := range []struct{ verb, resource string }{
+		{"get", "redisfailovers"},
+		{"list", "pods"},
+		{"list", "endpointslices"},
+	} {
+		t.Run(tc.resource, func(t *testing.T) {
+			o, lines := timingObserver(t)
+			var clock atomic.Int64
+			o.now = func() time.Time { return time.Unix(0, clock.Load()) }
+			slow := func(k8stesting.Action) (bool, runtime.Object, error) {
+				clock.Add(int64(2 * time.Second))
+				return true, nil, errors.New("the server was unable to return a response in the time allotted")
+			}
+			if tc.resource == "redisfailovers" {
+				o.rfs.(*rffake.Clientset).PrependReactor(tc.verb, tc.resource, slow)
+			} else {
+				o.kube.(*fake.Clientset).PrependReactor(tc.verb, tc.resource, slow)
+			}
+			o.round(context.Background(), o.now())
+			got := roundLines(lines())
+			if len(got) != 1 || got[0]["msg"] != "observer round slow" || got[0]["kube_seconds"] != 2.0 || got[0]["read_seconds"] != 0.0 {
+				t.Errorf("log %v", got)
+			}
+		})
 	}
 }
 
