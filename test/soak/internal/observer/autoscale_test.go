@@ -170,6 +170,22 @@ func TestAutoscaleRaiseDoesNotExcuseShrink(t *testing.T) {
 	}
 }
 
+// The first round of the observer, for example after a restart of the
+// tester, is no user change. A change of the generation after it is.
+func TestAutoscaleFirstRoundIsNoUserChange(t *testing.T) {
+	recreated := func(uid string, generation int64, want float64) {
+		t.Helper()
+		o, _ := newAutoscaleObserver(t)
+		o.apply(at(0), autoscaled(autoscale.PhaseApplying, "u1"), 3, false)
+		o.apply(at(5), autoscaled(autoscale.PhaseApplying, uid), generation, false)
+		if n := testutil.ToFloat64(o.findings.WithLabelValues(autoscale.JudgeRestart)); n != want {
+			t.Errorf("generation 3 -> %d: autoscale_restart findings %v, want %v", generation, n, want)
+		}
+	}
+	recreated("u1-new", 3, 1)
+	recreated("u1-new", 4, 0)
+}
+
 // A chaos action may change each pod.
 func TestAutoscaleChaos(t *testing.T) {
 	o, _ := newAutoscaleObserver(t)

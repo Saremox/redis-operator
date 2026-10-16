@@ -540,13 +540,16 @@ func (o *Observer) converged(ctx context.Context) bool {
 
 func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged bool) {
 	changed := generation != o.generation
+	// The first round, for example after a restart of the tester, sees the
+	// generation but no change of it.
+	userChange := changed && o.generation != 0
 	if changed {
 		o.tracker.openWindow(now)
 		o.log.Info("convergence window opened", "generation", generation, "previous_generation", o.generation)
 		o.generation = generation
 	}
 	o.externalWindow(now)
-	o.judgeAutoscale(now, s, generation, changed)
+	o.judgeAutoscale(now, s, generation, userChange)
 	all := evaluate(s)
 	o.dropInvariants(all)
 	var checks []check
