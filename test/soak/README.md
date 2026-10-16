@@ -453,6 +453,22 @@ also inside a window, as `oom_killed` does:
   master does not change.
 - `autoscale_shrink`: the applied limit of a pod does not decrease.
 - `autoscale_maxmemory`: the `maxmemory` of a pod is not above its limit.
+- `autoscale_status`: each field of `status.autoscaling` has a value that
+  the operator writes. A phase is `Idle`, `Applying`, `Done`, `Reverted`,
+  `Held` or empty. `lastStep` is a time, not after the round, and not before
+  the last step. `Applying` and `Reverted` have a `lastStep`.
+  `effectiveMemory` is empty or a positive quantity. A field counts again
+  only when its value changes.
+
+The other judges then use a safe default. An unknown phase is no step in
+progress, and the size check skips an `effectiveMemory` that is not valid.
+Without a `lastStep` that parses, the rate checks skip the step. A step
+timeout never counts from later than the first round in `Applying`. A
+`Reverted` step without a `retryAfter` that parses is an `autoscale_step_rate`
+violation, and the back-off counts from the revert that the tester saw. An
+empty `status.autoscaling` is mode `Off` or a lost state, and starts the
+budget again. An unknown pod limit or `maxmemory` keeps the last known
+limit and gives no `autoscale_maxmemory` check.
 
 A user path that may do the change excuses it. The excuse covers the round
 of the user path and the next round, because a change can show one round

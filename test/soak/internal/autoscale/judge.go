@@ -50,10 +50,14 @@ const (
 	JudgeHandover  = "autoscale_handover"
 	JudgeShrink    = "autoscale_shrink"
 	JudgeMaxMemory = "autoscale_maxmemory"
+	// JudgeStatus is a status field that the operator never writes: a time
+	// or a quantity that does not parse, an unknown phase, or a lastStep that
+	// is missing, in the future or before the last one.
+	JudgeStatus = "autoscale_status"
 )
 
 // Judges lists each judge.
-var Judges = []string{JudgeSize, JudgeTimeout, JudgeRate, JudgeRestart, JudgeHandover, JudgeShrink, JudgeMaxMemory}
+var Judges = []string{JudgeSize, JudgeTimeout, JudgeRate, JudgeRestart, JudgeHandover, JudgeShrink, JudgeMaxMemory, JudgeStatus}
 
 // The step results, the values of the result label.
 const (
@@ -150,11 +154,14 @@ type Judge struct {
 	revertGen int64
 	// highMaxMemory are the pods with a reported maxmemory above the limit.
 	highMaxMemory map[string]bool
+	// badStatus is the last reported value of each status field that is not
+	// valid. A field is reported again when its value changes.
+	badStatus map[string]string
 }
 
 // NewJudge returns the judge of one instance.
 func NewJudge() *Judge {
-	return &Judge{pods: map[string]baseline{}, highMaxMemory: map[string]bool{}, ended: true}
+	return &Judge{pods: map[string]baseline{}, highMaxMemory: map[string]bool{}, badStatus: map[string]string{}, ended: true}
 }
 
 // Observe judges one round. It returns the step results and the violations.
@@ -173,6 +180,7 @@ func (j *Judge) Observe(r Round) (events []Event, settling bool) {
 	// A step that ended between two rounds still covers the interval.
 	active := newStep || isActive(j.phase) || isActive(r.Status.Phase)
 	settling = newStep || j.phase == PhaseApplying || r.Status.Phase == PhaseApplying
+	events = append(events, j.checkStatus(r)...)
 	switch {
 	case step == "" && j.step != "":
 		// Mode Off or a lost state ConfigMap starts a state without steps.
@@ -211,11 +219,19 @@ func (j *Judge) reset() {
 // start judges a step that the previous round did not show.
 func (j *Judge) start(prev, r Round) []Event {
 	step := r.Status.LastStep
-	from, to := effective(prev), effective(r)
+	from, fromOK := effective(prev)
+	to, toOK := effective(r)
 	events := []Event{{Result: ResultStarted, Step: step, Message: fmt.Sprintf("from %s to %s", format(from), format(to))}}
+	if at, err := parseTime(step); err == nil {
+		if last, err := parseTime(j.step); err == nil && at.Before(last) {
+			events = append(events, Event{Judge: JudgeStatus, Step: step, Message: fmt.Sprintf("lastStep %s is before the last step %s", step, j.step)})
+		}
+	}
 	// A revert shows the limit before the step, and a user change of the
-	// bounds in the same interval changes the limit too.
-	if prev.Spec == r.Spec && prev.Max == r.Max && r.Status.Phase != PhaseReverted {
+	// bounds in the same interval changes the limit too. checkStatus reports
+	// an effectiveMemory that is not valid, and a spec without a limit has no
+	// autoscaling.
+	if prev.Spec == r.Spec && prev.Max == r.Max && r.Status.Phase != PhaseReverted && fromOK && toOK && from > 0 {
 		if msg := checkSize(from, to, r.Max); msg != "" {
 			events = append(events, Event{Judge: JudgeSize, Step: step, Message: msg})
 		}
@@ -303,8 +319,8 @@ func (j *Judge) follow(prev, r Round) []Event {
 }
 
 // checkTimeout judges the time of the phase Applying. It counts from
-// lastStep, or from the first round in Applying when lastStep does not
-// parse, so that each step window has a bound.
+// lastStep, and at most from the first round in Applying, so that each step
+// window has a bound.
 func (j *Judge) checkTimeout(r Round) []Event {
 	if r.Status.Phase != PhaseApplying {
 		j.applyingSince = time.Time{}
@@ -317,9 +333,14 @@ func (j *Judge) checkTimeout(r Round) []Event {
 			j.timedOut = false
 		}
 	}
+	// A lastStep in the future does not move the bound of the window.
 	deadline := j.applyingSince.Add(applyTimeout + timeoutMargin)
 	if at, err := parseTime(r.Status.LastStep); err == nil {
-		deadline = at.Add(applyTimeout + minute + timeoutMargin)
+		if d := at.Add(applyTimeout + minute + timeoutMargin); d.Before(deadline.Add(minute)) {
+			deadline = d
+		} else {
+			deadline = deadline.Add(minute)
+		}
 	}
 	if j.timedOut || !r.Now.After(deadline) {
 		return nil
@@ -349,13 +370,17 @@ func (j *Judge) revert(prev, r Round) []Event {
 	}
 	j.reverts++
 	j.revertGen = r.Generation
+	want := backOffFor(j.reverts)
 	retry, err := parseTime(r.Status.RetryAfter)
 	if err != nil {
-		j.retryAt = time.Time{}
-		return nil
+		// The revert is after the previous round, so the back-off ends after
+		// this time.
+		j.retryAt = prev.Now.Add(want - slack)
+		return []Event{{Judge: JudgeRate, Step: j.step,
+			Message: fmt.Sprintf("revert %d: retryAfter %q is not a time", j.reverts, r.Status.RetryAfter)}}
 	}
 	j.retryAt = retry
-	if want := backOffFor(j.reverts); retry.Add(minute + slack).Before(prev.Now.Add(want)) {
+	if retry.Add(minute + slack).Before(prev.Now.Add(want)) {
 		return []Event{{Judge: JudgeRate, Step: j.step,
 			Message: fmt.Sprintf("revert %d: retryAfter %s is less than %s after the revert", j.reverts, r.Status.RetryAfter, want)}}
 	}
@@ -444,12 +469,55 @@ func (j *Judge) checkMaxMemory(r Round, prev *Round) []Event {
 	return events
 }
 
-// effective returns the memory limit of the pods that the status gives.
-func effective(r Round) int64 {
-	if q, err := resource.ParseQuantity(r.Status.EffectiveMemory); err == nil {
-		return q.Value()
+// effective returns the memory limit of the pods that the status gives. ok
+// is false for an effectiveMemory that is not a positive quantity, and the
+// limit is then the spec limit.
+func effective(r Round) (limit int64, ok bool) {
+	if r.Status.EffectiveMemory == "" {
+		return r.Spec, true
 	}
-	return r.Spec
+	if q, err := resource.ParseQuantity(r.Status.EffectiveMemory); err == nil && q.Value() > 0 {
+		return q.Value(), true
+	}
+	return r.Spec, false
+}
+
+// checkStatus reports each status field that the operator never writes. The
+// other judges then use a safe default: an unknown phase is no step in
+// progress, a time that does not parse gives no rate check, and the timeout
+// counts from the first round in Applying.
+func (j *Judge) checkStatus(r Round) []Event {
+	st := r.Status
+	bad := map[string]string{}
+	switch st.Phase {
+	case "", "Idle", PhaseApplying, PhaseDone, PhaseReverted, PhaseHeld:
+	default:
+		bad["phase"] = fmt.Sprintf("phase %q is unknown", st.Phase)
+	}
+	if at, err := parseTime(st.LastStep); st.LastStep != "" && err != nil {
+		bad["lastStep"] = fmt.Sprintf("lastStep %q is not a time", st.LastStep)
+	} else if err == nil && at.After(r.Now.Add(minute+slack)) {
+		bad["lastStep"] = fmt.Sprintf("lastStep %s is after the round at %s", st.LastStep, r.Now.UTC().Format(time.RFC3339))
+	} else if st.LastStep == "" && (st.Phase == PhaseApplying || st.Phase == PhaseReverted) {
+		// Only the start of a step gives these phases, and it sets lastStep.
+		// A held step of a lost state has no lastStep.
+		bad["lastStep"] = "no lastStep in phase " + st.Phase
+	}
+	if _, ok := effective(r); !ok {
+		bad["effectiveMemory"] = fmt.Sprintf("effectiveMemory %q is not a positive quantity", st.EffectiveMemory)
+	}
+	var events []Event
+	for _, field := range []string{"phase", "lastStep", "effectiveMemory"} {
+		msg, isBad := bad[field]
+		switch {
+		case !isBad:
+			delete(j.badStatus, field)
+		case j.badStatus[field] != msg:
+			j.badStatus[field] = msg
+			events = append(events, Event{Judge: JudgeStatus, Step: st.LastStep, Message: msg})
+		}
+	}
+	return events
 }
 
 func parseTime(s string) (time.Time, error) {

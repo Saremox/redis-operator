@@ -324,16 +324,99 @@ func TestBackOff(t *testing.T) {
 	}
 }
 
-// A revert without retryAfter starts no back-off check.
-func TestRevertWithoutRetryAfter(t *testing.T) {
+// Each status field that the operator never writes is a finding of
+// autoscale_status, or of the judge that needs it. The other judges then use
+// a safe default, and no window stays open without a bound.
+func TestBadStatus(t *testing.T) {
+	withStatus := func(r Round, phase, lastStep, effective string) Round {
+		r.Status = redisfailoverv1.AutoscalingStatus{Phase: phase, LastStep: lastStep, EffectiveMemory: effective}
+		return r
+	}
+	reverted := func(retryAfter string) Round {
+		r := stepped(at(2), 1, PhaseReverted, "")
+		r.Status.RetryAfter = retryAfter
+		return r
+	}
+	for _, c := range []struct {
+		name   string
+		rounds []Round
+		want   []string
+	}{
+		{"unknown phase", []Round{at(0), withStatus(at(1), "Resizing", minuteOf(1), "192Mi")},
+			[]string{JudgeStatus, ResultStarted}},
+		{"lastStep is no time", []Round{at(0), withStatus(at(1), PhaseApplying, "soon", "192Mi")},
+			[]string{JudgeStatus, ResultStarted}},
+		{"lastStep in the future", []Round{at(0), withStatus(at(1), PhaseApplying, minuteOf(30), "192Mi")},
+			[]string{JudgeStatus, ResultStarted}},
+		{"no lastStep in Applying", []Round{at(0), withStatus(at(1), PhaseApplying, "", "192Mi")},
+			[]string{JudgeStatus}},
+		{"no lastStep in Reverted", []Round{at(0), withStatus(at(1), PhaseReverted, "", "")},
+			[]string{JudgeStatus}},
+		// A lost state gives a held step without lastStep.
+		{"no lastStep in Held", []Round{at(0), withStatus(at(1), PhaseHeld, "", "192Mi")}, nil},
+		{"lastStep before the last step", []Round{at(0), withLimit(stepped(at(10), 9, PhaseDone, "192Mi"), 192*mi),
+			withLimit(stepped(at(11), 5, PhaseDone, "256Mi"), 256*mi)},
+			[]string{ResultStarted, ResultDone, ResultStarted, JudgeStatus, ResultDone}},
+		// The size check needs both limits.
+		{"effectiveMemory is no quantity", []Round{at(0), withStatus(at(1), PhaseApplying, minuteOf(1), "lots")},
+			[]string{JudgeStatus, ResultStarted}},
+		{"effectiveMemory is negative", []Round{at(0), withStatus(at(1), PhaseApplying, minuteOf(1), "-64Mi")},
+			[]string{JudgeStatus, ResultStarted}},
+		{"effectiveMemory is 0", []Round{at(0), withStatus(at(1), PhaseApplying, minuteOf(1), "0")},
+			[]string{JudgeStatus, ResultStarted}},
+		{"no retryAfter", []Round{at(0), stepped(at(1), 1, PhaseApplying, "192Mi"), reverted("")},
+			[]string{ResultStarted, ResultReverted, JudgeRate}},
+		{"retryAfter is no time", []Round{at(0), stepped(at(1), 1, PhaseApplying, "192Mi"), reverted("later")},
+			[]string{ResultStarted, ResultReverted, JudgeRate}},
+		// The back-off still counts from the revert that the tester saw.
+		{"a step in the back-off without retryAfter", []Round{at(0), stepped(at(1), 1, PhaseApplying, "192Mi"), reverted(""),
+			stepped(at(10), 10, PhaseApplying, "192Mi")},
+			[]string{ResultStarted, ResultReverted, JudgeRate, ResultStarted, JudgeRate}},
+		// Mode Off and a lost state remove the status.
+		{"no status", []Round{stepped(at(0), 0, PhaseDone, "192Mi"), at(1)}, nil},
+		// A spec without a limit has no autoscaling: no size check.
+		{"no spec limit", []Round{spec(at(0), 0), spec(stepped(at(1), 1, PhaseApplying, "192Mi"), 0)},
+			[]string{ResultStarted}},
+		// Without memoryMax, the target has no cap.
+		{"no memoryMax", []Round{noMax(at(0)), noMax(stepped(at(1), 1, PhaseApplying, "192Mi"))},
+			[]string{ResultStarted}},
+	} {
+		j := NewJudge()
+		events := observe(j, c.rounds...)
+		if got := summary(events); !slices.Equal(got, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+		// The same status 40 minutes later holds no window.
+		last := c.rounds[len(c.rounds)-1]
+		last.Now = last.Now.Add(40 * time.Minute)
+		if _, settling := j.Observe(last); settling {
+			t.Errorf("%s: a window after 40 minutes", c.name)
+		}
+	}
+}
+
+// A field that stays wrong counts one time, and again after it changes.
+func TestBadStatusOnce(t *testing.T) {
 	j := NewJudge()
-	e := observe(j, at(0), stepped(at(1), 1, PhaseApplying, "192Mi"), stepped(at(2), 1, PhaseReverted, ""))
-	if got := summary(e); !slices.Equal(got, []string{ResultStarted, ResultReverted}) || !j.retryAt.IsZero() {
-		t.Fatalf("%v, retryAt %s", got, j.retryAt)
+	r := func(m float64, phase string) Round {
+		r := at(m)
+		r.Status.Phase = phase
+		return r
 	}
-	if got := summary(observe(j, stepped(at(3), 3, PhaseApplying, "192Mi"))); !slices.Equal(got, []string{ResultStarted}) {
-		t.Errorf("the next step: %v", got)
+	got := summary(observe(j, r(0, "Foo"), r(1, "Foo"), r(2, "Bar"), r(3, ""), r(4, "Bar")))
+	if !slices.Equal(got, []string{JudgeStatus, JudgeStatus, JudgeStatus}) {
+		t.Errorf("%v", got)
 	}
+}
+
+func spec(r Round, limit int64) Round {
+	r.Spec = limit
+	return r
+}
+
+func noMax(r Round) Round {
+	r.Max = 0
+	return r
 }
 
 func TestBackOffFor(t *testing.T) {
@@ -428,6 +511,10 @@ func TestShrink(t *testing.T) {
 		{"without a user path", []Round{withLimit(at(0), 192*mi), at(1)}, []string{JudgeShrink, JudgeShrink, JudgeShrink}},
 		{"mode Off", []Round{withLimit(at(0), 192*mi), allow(withLimit(at(1), 192*mi), Allow{Shrink: true}), at(2)}, nil},
 		{"a raise", []Round{at(0), withLimit(at(1), 192*mi)}, nil},
+		// An unknown limit keeps the last known one.
+		{"an unknown limit", []Round{withLimit(at(0), 192*mi), withLimit(at(1), 0), withLimit(at(2), 192*mi)}, nil},
+		{"a shrink after an unknown limit", []Round{withLimit(at(0), 192*mi), withLimit(at(1), 0), at(2)},
+			[]string{JudgeShrink, JudgeShrink, JudgeShrink}},
 		{"a recreated pod with a lower limit", []Round{withLimit(at(0), 192*mi), allow(recreatedAll(at(1)), Allow{Recreate: true})},
 			[]string{JudgeShrink, JudgeShrink, JudgeShrink}},
 	} {
