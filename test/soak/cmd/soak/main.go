@@ -56,19 +56,7 @@ func run(configPath, listen string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	restCfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		clientcmd.NewDefaultClientConfigLoadingRules(), nil).ClientConfig()
-	if err != nil {
-		return err
-	}
-	// The observers list pods, EndpointSlices and RedisFailovers for every
-	// instance every few seconds.
-	restCfg.QPS, restCfg.Burst = 50, 100
-	kube, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		return err
-	}
-	rfs, err := versioned.NewForConfig(restCfg)
+	kube, rfs, err := clients()
 	if err != nil {
 		return err
 	}
@@ -90,15 +78,7 @@ func run(configPath, listen string, log *slog.Logger) error {
 		return err
 	}
 	lock := &global.Lock{}
-	observers := map[string]*observer.Observer{}
-	datas := map[string]*data.Data{}
-	for _, in := range cfg.Instances {
-		o := observer.New(in, cfg, kube, rfs, sources[in.Name], lock, m, log)
-		observers[in.Name] = o
-		if in.Data != nil {
-			datas[in.Name] = data.New(in, cfg, o, sources[in.Name], m, log)
-		}
-	}
+	observers, datas := newObservers(cfg, kube, rfs, sources, lock, m, log)
 
 	var wg sync.WaitGroup
 	wg.Go(func() { reportBuildInfo(ctx, kube, cfg.Operator, m, log) })
@@ -125,14 +105,7 @@ func run(configPath, listen string, log *slog.Logger) error {
 			wg.Go(func() { mu.Run(ctx) })
 		}
 		wg.Go(func() { o.Run(ctx) })
-		// An outage counts for the chaos action, or else the mutation, that
-		// ran when it started.
-		r.SetEvent(func() string {
-			if k := lock.Chaos(); k != "" || mu == nil {
-				return k
-			}
-			return mu.Current()
-		})
+		r.SetEvent(outageEvent(lock, mu))
 		wg.Go(func() { r.Run(ctx, func() []string { return prober.Names(in, o.SentinelPath()) }) })
 		lane = append(lane, chaos.Instance{Name: in.Name, Namespace: in.Namespace, Observer: o, Data: d})
 	}
@@ -155,6 +128,54 @@ func run(configPath, listen string, log *slog.Logger) error {
 		return nil
 	}
 	return err
+}
+
+// outageEvent returns the event of an outage: the chaos action, or else the
+// mutation of mu, that ran when it started.
+func outageEvent(lock *global.Lock, mu *mutator.Mutator) func() string {
+	return func() string {
+		if k := lock.Chaos(); k != "" || mu == nil {
+			return k
+		}
+		return mu.Current()
+	}
+}
+
+// clients returns the clients of the cluster that the kubeconfig or the
+// in-cluster config names.
+func clients() (*kubernetes.Clientset, *versioned.Clientset, error) {
+	restCfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		clientcmd.NewDefaultClientConfigLoadingRules(), nil).ClientConfig()
+	if err != nil {
+		return nil, nil, err
+	}
+	// The observers list pods, EndpointSlices and RedisFailovers for every
+	// instance every few seconds.
+	restCfg.QPS, restCfg.Burst = 50, 100
+	kube, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	rfs, err := versioned.NewForConfig(restCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return kube, rfs, nil
+}
+
+// newObservers returns the observer of each instance, and the data of each
+// instance with data, by instance name.
+func newObservers(cfg *config.Config, kube kubernetes.Interface, rfs versioned.Interface, sources map[string]*auth.Source, lock *global.Lock, m *metrics.Metrics, log *slog.Logger) (map[string]*observer.Observer, map[string]*data.Data) {
+	observers := map[string]*observer.Observer{}
+	datas := map[string]*data.Data{}
+	for _, in := range cfg.Instances {
+		o := observer.New(in, cfg, kube, rfs, sources[in.Name], lock, m, log)
+		observers[in.Name] = o
+		if in.Data != nil {
+			datas[in.Name] = data.New(in, cfg, o, sources[in.Name], m, log)
+		}
+	}
+	return observers, datas
 }
 
 // ensureInstances creates each instance with a template that does not exist

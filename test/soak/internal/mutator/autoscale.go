@@ -64,18 +64,7 @@ func (m *Mutator) planAutoscale(r *rand.Rand, kind config.Kind, s state) plan {
 	replicas := s.rf.Spec.Redis.Replicas
 	converged := autoscaleConverged(replicas)
 	if kind == config.AutoscaleMode {
-		want := nextMode[a.Mode]
-		p := plan{
-			kind:      kind,
-			params:    fmt.Sprintf("redis.autoscaling.mode %s -> %s", a.Mode, want),
-			patch:     mergePatch(map[string]any{"redis": map[string]any{"autoscaling": map[string]any{"mode": want}}}),
-			allow:     allowNone,
-			converged: modeConverged(want, replicas),
-		}
-		if want == redisfailoverv1.AutoscalingModeOff {
-			p.allow = allowResize
-		}
-		return p
+		return planMode(a, replicas)
 	}
 	if a.Mode != redisfailoverv1.AutoscalingModeAuto {
 		return skipped(kind, "mode %s", a.Mode)
@@ -84,63 +73,9 @@ func (m *Mutator) planAutoscale(r *rand.Rand, kind config.Kind, s state) plan {
 	case config.AutoscaleLimit:
 		return planLimit(r, m.in.Autoscale.Limit, s)
 	case config.AutoscaleMemoryMax:
-		cur := a.MemoryMax.Value()
-		want := pickOther(r, m.in.Autoscale.MemoryMax, cur/mi) * mi
-		if spec := s.rf.Spec.Redis.Resources.Limits.Memory().Value(); want < spec {
-			return skipped(kind, "memoryMax %s is below the limit %s", maxmem.FormatBytes(want), maxmem.FormatBytes(spec))
-		}
-		q := resource.NewQuantity(want, resource.BinarySI)
-		// Only a memoryMax below the limit of a pod lowers that pod.
-		allow := allowNone
-		if want < largestLimit(s) {
-			allow = allowResize
-		}
-		return plan{
-			kind:   kind,
-			params: fmt.Sprintf("redis.autoscaling.memoryMax %s -> %s", a.MemoryMax.String(), q.String()),
-			patch:  mergePatch(map[string]any{"redis": map[string]any{"autoscaling": map[string]any{"memoryMax": q.String()}}}),
-			allow:  allow,
-			converged: func(s state) error {
-				if mm := s.rf.Spec.Redis.Autoscaling; mm == nil || mm.MemoryMax == nil || mm.MemoryMax.Value() != want {
-					return errors.New("the RedisFailover does not have the change yet")
-				}
-				return converged(s)
-			},
-		}
+		return planMemoryMax(r, m.in.Autoscale.MemoryMax, s, converged)
 	case config.AutoscaleStateLost:
-		name := "rfa-" + m.in.Name
-		configMaps := m.kube.CoreV1().ConfigMaps(m.in.Namespace)
-		var deleted types.UID
-		return plan{
-			kind:   kind,
-			params: "delete the ConfigMap " + name,
-			allow:  allowNone,
-			action: func(ctx context.Context) error {
-				cm, err := configMaps.Get(ctx, name, metav1.GetOptions{})
-				if apierrors.IsNotFound(err) {
-					return notApplied{fmt.Errorf("no ConfigMap %s", name)}
-				}
-				if err != nil {
-					return err
-				}
-				deleted = cm.UID
-				return configMaps.Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &deleted}})
-			},
-			// The operator does not watch the ConfigMap, and the unchanged
-			// instance converges at once. The operator writes the state again
-			// after it sees the loss.
-			probe: func(ctx context.Context) error {
-				cm, err := configMaps.Get(ctx, name, metav1.GetOptions{})
-				switch {
-				case err != nil:
-					return fmt.Errorf("the operator did not write the state again: %w", err)
-				case cm.UID == deleted:
-					return fmt.Errorf("the ConfigMap %s is not deleted yet", name)
-				}
-				return nil
-			},
-			converged: converged,
-		}
+		return m.planStateLost(converged)
 	case config.AutoscaleLoad:
 		return m.planLoad(kind, s, "", "", converged)
 	case config.AutoscaleKillMaster:
@@ -158,6 +93,88 @@ func (m *Mutator) planAutoscale(r *rand.Rand, kind config.Kind, s state) plan {
 		return m.planLoad(kind, s, pod.Name, pod.UID, converged)
 	}
 	return skipped(kind, "unknown kind")
+}
+
+// planMode changes the mode to the next in the cycle.
+func planMode(a *redisfailoverv1.AutoscalingSettings, replicas int32) plan {
+	want := nextMode[a.Mode]
+	p := plan{
+		kind:      config.AutoscaleMode,
+		params:    fmt.Sprintf("redis.autoscaling.mode %s -> %s", a.Mode, want),
+		patch:     mergePatch(map[string]any{"redis": map[string]any{"autoscaling": map[string]any{"mode": want}}}),
+		allow:     allowNone,
+		converged: modeConverged(want, replicas),
+	}
+	if want == redisfailoverv1.AutoscalingModeOff {
+		p.allow = allowResize
+	}
+	return p
+}
+
+// planMemoryMax changes memoryMax within rg, to at least the spec limit.
+func planMemoryMax(r *rand.Rand, rg config.Range, s state, converged func(state) error) plan {
+	const kind = config.AutoscaleMemoryMax
+	a := s.rf.Spec.Redis.Autoscaling
+	cur := a.MemoryMax.Value()
+	want := pickOther(r, rg, cur/mi) * mi
+	if spec := s.rf.Spec.Redis.Resources.Limits.Memory().Value(); want < spec {
+		return skipped(kind, "memoryMax %s is below the limit %s", maxmem.FormatBytes(want), maxmem.FormatBytes(spec))
+	}
+	q := resource.NewQuantity(want, resource.BinarySI)
+	// Only a memoryMax below the limit of a pod lowers that pod.
+	allow := allowNone
+	if want < largestLimit(s) {
+		allow = allowResize
+	}
+	return plan{
+		kind:   kind,
+		params: fmt.Sprintf("redis.autoscaling.memoryMax %s -> %s", a.MemoryMax.String(), q.String()),
+		patch:  mergePatch(map[string]any{"redis": map[string]any{"autoscaling": map[string]any{"memoryMax": q.String()}}}),
+		allow:  allow,
+		converged: func(s state) error {
+			if mm := s.rf.Spec.Redis.Autoscaling; mm == nil || mm.MemoryMax == nil || mm.MemoryMax.Value() != want {
+				return errors.New("the RedisFailover does not have the change yet")
+			}
+			return converged(s)
+		},
+	}
+}
+
+// planStateLost deletes the state ConfigMap of the autoscaler.
+func (m *Mutator) planStateLost(converged func(state) error) plan {
+	name := "rfa-" + m.in.Name
+	configMaps := m.kube.CoreV1().ConfigMaps(m.in.Namespace)
+	var deleted types.UID
+	return plan{
+		kind:   config.AutoscaleStateLost,
+		params: "delete the ConfigMap " + name,
+		allow:  allowNone,
+		action: func(ctx context.Context) error {
+			cm, err := configMaps.Get(ctx, name, metav1.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				return notApplied{fmt.Errorf("no ConfigMap %s", name)}
+			}
+			if err != nil {
+				return err
+			}
+			deleted = cm.UID
+			return configMaps.Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &deleted}})
+		},
+		// The operator does not watch the ConfigMap, and the unchanged
+		// instance converges at once. The operator writes the state again
+		// after it sees the loss.
+		probe: func(ctx context.Context) error {
+			cm, err := configMaps.Get(ctx, name, metav1.GetOptions{})
+			switch {
+			case err != nil:
+				return fmt.Errorf("the operator did not write the state again: %w", err)
+			case cm.UID == deleted:
+				return fmt.Errorf("the ConfigMap %s is not deleted yet", name)
+			}
+			return nil
+		},
+		converged: converged,
+	}
 }
 
 // planLimit changes the spec limit, and a memory request with it, because

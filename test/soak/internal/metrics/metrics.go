@@ -64,186 +64,12 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 	labels := func(extra ...string) []string {
 		return append(append([]string{}, instanceLabels...), extra...)
 	}
-	m := &Metrics{
-		ProbeTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "probe_total",
-			Help:      "Probe commands by path, client style, operation and classified result.",
-		}, labels("path", "client", "op", "result")),
-		ProbeDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: namespace,
-			Name:      "probe_duration_seconds",
-			Help:      "Probe command latency, including the dial for fresh clients.",
-			Buckets:   prometheus.ExponentialBuckets(0.0005, 2, 14),
-		}, labels("path", "client", "op")),
-		Writable: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "writable",
-			Help:      "1 if the last write probe succeeded.",
-		}, labels("path", "client")),
-		Readable: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "readable",
-			Help:      "1 if the last read probe succeeded.",
-		}, labels("path", "client")),
-		LastSuccess: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "last_success_timestamp_seconds",
-			Help:      "Unix time of the last successful probe command.",
-		}, labels("path", "client", "op")),
-		OutageDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: namespace,
-			Name:      "outage_duration_seconds",
-			Help:      "Time from the first failed probe to the next successful one, by the chaos kind or the instance's mutation kind running when it started, or none.",
-			Buckets:   []float64{0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1800},
-		}, labels("path", "client", "event")),
-		BuildInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "build_info",
-			Help:      "Always 1. The operator version is the image tag of its Deployment.",
-		}, []string{"operator_version", "tester_version"}),
-		InvariantOK: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "invariant_ok",
-			Help:      "1 if the invariant held at the last check.",
-		}, labels("invariant")),
-		InvariantViolation: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: namespace,
-			Name:      "invariant_violation_seconds",
-			Help:      "How long an invariant stayed violated.",
-			Buckets:   []float64{1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1800, 3600},
-		}, labels("invariant")),
-		Findings: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "findings_total",
-			Help:      "Invariant violations outside a convergence window.",
-		}, labels("invariant")),
-		Masters: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "masters",
-			Help:      "Redis pods reporting the master role. 1 is right.",
-		}, labels()),
-		Failovers: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "failovers_total",
-			Help:      "Changes of the master's identity.",
-		}, labels()),
-		ReplicationLag: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "replication_lag_bytes",
-			Help:      "The master's replication offset minus the replica's.",
-		}, labels("pod")),
-		RFHealthy: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "rf_healthy",
-			Help:      "1 if the RedisFailover's status.state is Healthy.",
-		}, labels()),
-		WindowOpen: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "window_open",
-			Help:      "1 while a convergence window is open: violations are expected, not findings.",
-		}, labels()),
-		AutoscaleSteps: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "autoscale_steps_total",
-			Help:      "Steps of the memory autoscaler by result: started, or the first end of the step: done, reverted or held.",
-		}, labels("result")),
-		MutationTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "mutation_total",
-			Help:      "Mutations by kind and result: converged, timeout, stuck_restored, rejected or skipped.",
-		}, labels("kind", "result")),
-		MutationConverge: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: namespace,
-			Name:      "mutation_converge_seconds",
-			Help:      "Time from applying a mutation to its convergence window closing.",
-			Buckets:   convergeBuckets(convergenceTimeout),
-		}, labels("kind")),
-		PodsRecreated: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "pods_recreated_total",
-			Help:      "Redis pods a mutation replaced by a new pod of the same name.",
-		}, labels("kind")),
-		MutationInProgress: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "mutation_in_progress",
-			Help:      "1 while a mutation of the kind is converging.",
-		}, labels("kind")),
-		NoMasterRecovery: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "no_master_recovery_total",
-			Help:      "Converged sentinel_reset_kill_master mutations by recovery path: sentinel, operator or unknown.",
-		}, labels("path")),
-		MutationStalled: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "mutation_stalled_seconds",
-			Help:      "How long the mutator has waited for a quiet instance, 0 while the instance is quiet or the mutator mutates.",
-		}, labels()),
-		WaitAckedReplicas: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "wait_acked_replicas",
-			Help:      "Replicas that acknowledged the last sampled probe write within the WAIT timeout.",
-		}, labels()),
-		OOMRejections: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "oom_rejections_total",
-			Help:      "Fill and ledger writes rejected with OOM.",
-		}, labels()),
-		LostWrites: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "lost_writes_total",
-			Help:      "Acknowledged writes found missing or wrong, by the mutation kind or failover they were verified after.",
-		}, labels("event")),
-		UnexpectedLost: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "unexpected_lost_writes_total",
-			Help:      "Lost writes of an event that must lose none, and source writes that a caught-up bootstrap pod misses.",
-		}, labels("event")),
-		LedgerVerified: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "ledger_verified_total",
-			Help:      "Verifications of the acknowledged writes, by the mutation kind or failover they ran after.",
-		}, labels("event")),
-		VersionTransition: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "version_transition_total",
-			Help:      "Version changes by the configured names of the versions, the edge's expectation and the result: ok, failed_safe or failed_unsafe.",
-		}, labels("from", "to", "expect", "result")),
-		VersionMixed: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: namespace,
-			Name:      "version_mixed_seconds",
-			Help:      "How long an instance ran two versions of its redis or sentinel component: from the first pod on the new version until the last pod on the old one was gone.",
-			Buckets:   []float64{10, 20, 30, 45, 60, 90, 120, 180, 300, 600, 900, 1200, 1800, 3600},
-		}, labels("from", "to", "component")),
-		ChaosTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "chaos_total",
-			Help:      "Chaos actions by kind and result: converged, timeout, failed or skipped.",
-		}, []string{"kind", "result"}),
-		ChaosConverge: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: namespace,
-			Name:      "chaos_converge_seconds",
-			Help:      "Time from a chaos action's disruption until every instance converged: a restart's delete, each upgrade's helm upgrade, a drain's cordon.",
-			Buckets:   convergeBuckets(convergenceTimeout),
-		}, []string{"kind"}),
-		ChaosInProgress: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "chaos_in_progress",
-			Help:      "1 while a chaos action of the kind runs.",
-		}, []string{"kind"}),
-		ChaosOperatorDown: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: namespace,
-			Name:      "chaos_operator_down_seconds",
-			Help:      "Time without a leading operator: from the old leader's deletion until a new one acquired the lease.",
-			Buckets:   []float64{1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 300},
-		}, []string{"kind"}),
-		ChaosEvictionBlocked: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Namespace: namespace,
-			Name:      "chaos_eviction_blocked_seconds",
-			Help:      "How long a PodDisruptionBudget blocked a drain's eviction of a pod.",
-			Buckets:   []float64{1, 2, 5, 10, 20, 30, 60, 120, 300, 600},
-		}),
-	}
+	m := &Metrics{}
+	m.addProbe(labels)
+	m.addInvariant(labels)
+	m.addMutation(labels, convergenceTimeout)
+	m.addData(labels)
+	m.addChaos(convergenceTimeout)
 	reg.MustRegister(
 		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration, m.BuildInfo,
 		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.WindowOpen, m.AutoscaleSteps,
@@ -255,6 +81,204 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 	return m
+}
+
+// addProbe creates the probe metrics.
+func (m *Metrics) addProbe(labels func(...string) []string) {
+	m.ProbeTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "probe_total",
+		Help:      "Probe commands by path, client style, operation and classified result.",
+	}, labels("path", "client", "op", "result"))
+	m.ProbeDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "probe_duration_seconds",
+		Help:      "Probe command latency, including the dial for fresh clients.",
+		Buckets:   prometheus.ExponentialBuckets(0.0005, 2, 14),
+	}, labels("path", "client", "op"))
+	m.Writable = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "writable",
+		Help:      "1 if the last write probe succeeded.",
+	}, labels("path", "client"))
+	m.Readable = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "readable",
+		Help:      "1 if the last read probe succeeded.",
+	}, labels("path", "client"))
+	m.LastSuccess = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "last_success_timestamp_seconds",
+		Help:      "Unix time of the last successful probe command.",
+	}, labels("path", "client", "op"))
+	m.OutageDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "outage_duration_seconds",
+		Help:      "Time from the first failed probe to the next successful one, by the chaos kind or the instance's mutation kind running when it started, or none.",
+		Buckets:   []float64{0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1800},
+	}, labels("path", "client", "event"))
+	m.BuildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "build_info",
+		Help:      "Always 1. The operator version is the image tag of its Deployment.",
+	}, []string{"operator_version", "tester_version"})
+}
+
+// addInvariant creates the metrics of the invariants and of the master.
+func (m *Metrics) addInvariant(labels func(...string) []string) {
+	m.InvariantOK = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "invariant_ok",
+		Help:      "1 if the invariant held at the last check.",
+	}, labels("invariant"))
+	m.InvariantViolation = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "invariant_violation_seconds",
+		Help:      "How long an invariant stayed violated.",
+		Buckets:   []float64{1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1800, 3600},
+	}, labels("invariant"))
+	m.Findings = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "findings_total",
+		Help:      "Invariant violations outside a convergence window.",
+	}, labels("invariant"))
+	m.Masters = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "masters",
+		Help:      "Redis pods reporting the master role. 1 is right.",
+	}, labels())
+	m.Failovers = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "failovers_total",
+		Help:      "Changes of the master's identity.",
+	}, labels())
+	m.ReplicationLag = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "replication_lag_bytes",
+		Help:      "The master's replication offset minus the replica's.",
+	}, labels("pod"))
+	m.RFHealthy = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "rf_healthy",
+		Help:      "1 if the RedisFailover's status.state is Healthy.",
+	}, labels())
+	m.WindowOpen = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "window_open",
+		Help:      "1 while a convergence window is open: violations are expected, not findings.",
+	}, labels())
+	m.AutoscaleSteps = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "autoscale_steps_total",
+		Help:      "Steps of the memory autoscaler by result: started, or the first end of the step: done, reverted or held.",
+	}, labels("result"))
+}
+
+// addMutation creates the mutation metrics.
+func (m *Metrics) addMutation(labels func(...string) []string, convergenceTimeout time.Duration) {
+	m.MutationTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "mutation_total",
+		Help:      "Mutations by kind and result: converged, timeout, stuck_restored, rejected or skipped.",
+	}, labels("kind", "result"))
+	m.MutationConverge = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "mutation_converge_seconds",
+		Help:      "Time from applying a mutation to its convergence window closing.",
+		Buckets:   convergeBuckets(convergenceTimeout),
+	}, labels("kind"))
+	m.PodsRecreated = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "pods_recreated_total",
+		Help:      "Redis pods a mutation replaced by a new pod of the same name.",
+	}, labels("kind"))
+	m.MutationInProgress = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "mutation_in_progress",
+		Help:      "1 while a mutation of the kind is converging.",
+	}, labels("kind"))
+	m.NoMasterRecovery = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "no_master_recovery_total",
+		Help:      "Converged sentinel_reset_kill_master mutations by recovery path: sentinel, operator or unknown.",
+	}, labels("path"))
+	m.MutationStalled = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "mutation_stalled_seconds",
+		Help:      "How long the mutator has waited for a quiet instance, 0 while the instance is quiet or the mutator mutates.",
+	}, labels())
+}
+
+// addData creates the metrics of the data and of the version changes.
+func (m *Metrics) addData(labels func(...string) []string) {
+	m.WaitAckedReplicas = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "wait_acked_replicas",
+		Help:      "Replicas that acknowledged the last sampled probe write within the WAIT timeout.",
+	}, labels())
+	m.OOMRejections = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "oom_rejections_total",
+		Help:      "Fill and ledger writes rejected with OOM.",
+	}, labels())
+	m.LostWrites = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "lost_writes_total",
+		Help:      "Acknowledged writes found missing or wrong, by the mutation kind or failover they were verified after.",
+	}, labels("event"))
+	m.UnexpectedLost = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "unexpected_lost_writes_total",
+		Help:      "Lost writes of an event that must lose none, and source writes that a caught-up bootstrap pod misses.",
+	}, labels("event"))
+	m.LedgerVerified = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "ledger_verified_total",
+		Help:      "Verifications of the acknowledged writes, by the mutation kind or failover they ran after.",
+	}, labels("event"))
+	m.VersionTransition = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "version_transition_total",
+		Help:      "Version changes by the configured names of the versions, the edge's expectation and the result: ok, failed_safe or failed_unsafe.",
+	}, labels("from", "to", "expect", "result"))
+	m.VersionMixed = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "version_mixed_seconds",
+		Help:      "How long an instance ran two versions of its redis or sentinel component: from the first pod on the new version until the last pod on the old one was gone.",
+		Buckets:   []float64{10, 20, 30, 45, 60, 90, 120, 180, 300, 600, 900, 1200, 1800, 3600},
+	}, labels("from", "to", "component"))
+}
+
+// addChaos creates the chaos metrics.
+func (m *Metrics) addChaos(convergenceTimeout time.Duration) {
+	m.ChaosTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "chaos_total",
+		Help:      "Chaos actions by kind and result: converged, timeout, failed or skipped.",
+	}, []string{"kind", "result"})
+	m.ChaosConverge = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "chaos_converge_seconds",
+		Help:      "Time from a chaos action's disruption until every instance converged: a restart's delete, each upgrade's helm upgrade, a drain's cordon.",
+		Buckets:   convergeBuckets(convergenceTimeout),
+	}, []string{"kind"})
+	m.ChaosInProgress = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "chaos_in_progress",
+		Help:      "1 while a chaos action of the kind runs.",
+	}, []string{"kind"})
+	m.ChaosOperatorDown = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "chaos_operator_down_seconds",
+		Help:      "Time without a leading operator: from the old leader's deletion until a new one acquired the lease.",
+		Buckets:   []float64{1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 300},
+	}, []string{"kind"})
+	m.ChaosEvictionBlocked = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "chaos_eviction_blocked_seconds",
+		Help:      "How long a PodDisruptionBudget blocked a drain's eviction of a pod.",
+		Buckets:   []float64{1, 2, 5, 10, 20, 30, 60, 120, 300, 600},
+	})
 }
 
 func convergeBuckets(timeout time.Duration) []float64 {

@@ -4,7 +4,6 @@ package observer
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net"
 	"slices"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/redis/go-redis/v9"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -346,15 +344,7 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 		return snapshot{}, 0, err
 	}
 	slices.SortFunc(pods.Items, func(a, b corev1.Pod) int { return strings.Compare(a.Name, b.Name) })
-	for i := range pods.Items {
-		p := &pods.Items[i]
-		switch p.Labels["app.kubernetes.io/component"] {
-		case "redis":
-			s.redis = append(s.redis, redisPod{pod: newPod(p), limit: maxmem.RedisLimit(p), restarts: restarts(p, "redis")})
-		case "sentinel":
-			s.sentinels = append(s.sentinels, sentinelPod{pod: newPod(p)})
-		}
-	}
+	s.redis, s.sentinels = snapshotPods(pods.Items)
 
 	eps, err := o.kube.DiscoveryV1().EndpointSlices(o.in.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: discoveryv1.LabelServiceName + "=rfrm-" + o.in.Name,
@@ -362,22 +352,51 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 	if err != nil {
 		return snapshot{}, 0, err
 	}
-	for _, slice := range eps.Items {
+	s.endpoints = readyAddresses(eps.Items)
+	o.readPods(ctx, &s)
+	return s, rf.Generation, nil
+}
+
+// snapshotPods returns the redis pods and the Sentinel pods, in the order of
+// pods.
+func snapshotPods(pods []corev1.Pod) (redisPods []redisPod, sentinels []sentinelPod) {
+	for i := range pods {
+		p := &pods[i]
+		switch p.Labels["app.kubernetes.io/component"] {
+		case "redis":
+			redisPods = append(redisPods, redisPod{pod: newPod(p), limit: maxmem.RedisLimit(p), restarts: restarts(p, "redis")})
+		case "sentinel":
+			sentinels = append(sentinels, sentinelPod{pod: newPod(p)})
+		}
+	}
+	return redisPods, sentinels
+}
+
+// readyAddresses returns each address of the ready endpoints once, in the
+// order of the slices.
+func readyAddresses(items []discoveryv1.EndpointSlice) []string {
+	var addrs []string
+	for _, slice := range items {
 		for _, ep := range slice.Endpoints {
 			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
 				continue
 			}
 			for _, addr := range ep.Addresses {
-				if !slices.Contains(s.endpoints, addr) {
-					s.endpoints = append(s.endpoints, addr)
+				if !slices.Contains(addrs, addr) {
+					addrs = append(addrs, addr)
 				}
 			}
 		}
 	}
+	return addrs
+}
 
+// readPods asks every pod of s, and the master of the source of a
+// bootstrapping instance, in parallel.
+func (o *Observer) readPods(ctx context.Context, s *snapshot) {
 	var wg sync.WaitGroup
-	keys := customconfig.RedisKeys(spec)
-	if spec.Spec.Redis.MaxMemory != nil {
+	keys := customconfig.RedisKeys(s.rf)
+	if s.rf.Spec.Redis.MaxMemory != nil {
 		keys = append(keys, "maxmemory", "maxmemory-policy")
 	}
 	for i := range s.redis {
@@ -392,126 +411,6 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 		wg.Go(func() { s.sourceReplID, s.sourceOffset, s.sourceErr = o.source.masterPosition(ctx) })
 	}
 	wg.Wait()
-	return s, rf.Generation, nil
-}
-
-func newPod(p *corev1.Pod) pod {
-	return pod{Name: p.Name, UID: string(p.UID), IP: p.Status.PodIP, Ready: Ready(p), OOMKills: oomKills(p)}
-}
-
-// Ready reports whether a pod is Ready and not in deletion.
-func Ready(p *corev1.Pod) bool {
-	if p.DeletionTimestamp != nil {
-		return false
-	}
-	for _, c := range p.Status.Conditions {
-		if c.Type == corev1.PodReady {
-			return c.Status == corev1.ConditionTrue
-		}
-	}
-	return false
-}
-
-var errNoIP = errors.New("no pod IP")
-
-// Client connects to one pod without retries, so that each failure shows.
-// creds gives the password of each new connection.
-func Client(addr string, creds func() (string, string), timeout time.Duration) *redis.Client {
-	return redis.NewClient(&redis.Options{
-		Addr:                  addr,
-		CredentialsProvider:   creds,
-		DialTimeout:           timeout,
-		ReadTimeout:           timeout,
-		WriteTimeout:          timeout,
-		ContextTimeoutEnabled: true,
-		MaxRetries:            -1,
-	})
-}
-
-// client connects to a pod, authenticating with a's current password, or
-// with none for a nil a.
-func (o *Observer) client(ip string, port int, a *auth.Source) *redis.Client {
-	return Client(net.JoinHostPort(ip, strconv.Itoa(port)), a.Provider(), o.timeout)
-}
-
-// redisInfo sends INFO to the pod, and CONFIG GET keys.
-func (o *Observer) redisInfo(ctx context.Context, p *redisPod, port int, keys []string) {
-	if p.IP == "" {
-		p.err, p.configErr = errNoIP, errNoIP
-		return
-	}
-	c := o.client(p.IP, port, o.auth)
-	defer func() { _ = c.Close() }()
-	ctx, cancel := context.WithTimeout(ctx, o.timeout)
-	defer cancel()
-	s, err := c.Info(ctx).Result()
-	if err == nil {
-		p.info = ParseInfo(s)
-	}
-	p.err = err
-	if len(keys) > 0 {
-		p.config, p.configErr = ConfigGet(ctx, c, keys)
-	}
-}
-
-// ConfigGet reads several keys with one CONFIG GET, which Redis and Valkey
-// accept from 7.0 on.
-func ConfigGet(ctx context.Context, c *redis.Client, keys []string) (map[string]string, error) {
-	args := []any{"config", "get"}
-	for _, k := range keys {
-		args = append(args, k)
-	}
-	cmd := redis.NewMapStringStringCmd(ctx, args...)
-	_ = c.Process(ctx, cmd)
-	return cmd.Result()
-}
-
-// sentinelInfo asks a Sentinel for the master's address, as clients do,
-// and for SENTINEL MASTER mymaster's fields.
-func (o *Observer) sentinelInfo(ctx context.Context, p *sentinelPod) {
-	if p.IP == "" {
-		p.err = errNoIP
-		return
-	}
-	c := o.client(p.IP, sentinelPort, nil)
-	defer func() { _ = c.Close() }()
-	ctx, cancel := context.WithTimeout(ctx, o.timeout)
-	defer cancel()
-	addr, err := c.Do(ctx, "SENTINEL", "get-master-addr-by-name", sentinelMasterName).StringSlice()
-	if err == nil && len(addr) != 2 {
-		err = errors.New("no master known")
-	}
-	if err != nil {
-		p.err = err
-		return
-	}
-	p.master = net.JoinHostPort(addr[0], addr[1])
-	p.fields, p.err = SentinelMaster(ctx, c)
-}
-
-// SentinelMaster returns SENTINEL MASTER mymaster's fields.
-func SentinelMaster(ctx context.Context, c *redis.Client) (map[string]string, error) {
-	cmd := redis.NewMapStringStringCmd(ctx, "SENTINEL", "MASTER", sentinelMasterName)
-	_ = c.Process(ctx, cmd)
-	return cmd.Result()
-}
-
-// masterPosition returns the master's replication ID and offset.
-func (o *Observer) masterPosition(ctx context.Context) (string, int64, error) {
-	v := o.view.Load()
-	if v == nil || v.masterIP == "" {
-		return "", 0, errNoMaster
-	}
-	c := o.client(v.masterIP, o.in.Port, o.auth)
-	defer func() { _ = c.Close() }()
-	ctx, cancel := context.WithTimeout(ctx, o.timeout)
-	defer cancel()
-	s, err := c.Info(ctx, "replication").Result()
-	if err != nil {
-		return "", 0, err
-	}
-	i := info(ParseInfo(s))
-	return i["master_replid"], i.int("master_repl_offset"), nil
 }
 
 func (o *Observer) takeHold() {
@@ -552,35 +451,14 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 	o.judgeAutoscale(now, s, generation, userChange)
 	all := evaluate(s)
 	o.dropInvariants(all)
-	var checks []check
-	for _, c := range all {
-		if o.reportOnly[c.invariant] {
-			o.note(now, c)
-			continue
-		}
-		o.findings.WithLabelValues(c.invariant)
-		checks = append(checks, c)
-	}
-	var failing []string
+	checks := o.findingChecks(now, all)
 	// A recreated RedisFailover has new Sentinels behind a new Service: its
 	// Sentinel path is dropped, with its clients, for a round at least.
 	recreated := o.rfUID != "" && o.rfUID != s.uid
 	if recreated {
 		o.sentinelUp = false
 	}
-	allOK := true
-	for _, c := range checks {
-		o.ok.WithLabelValues(c.invariant).Set(gauge(c.err == nil))
-		allOK = allOK && c.err == nil
-		if c.err != nil {
-			failing = append(failing, c.invariant)
-		}
-		// The Sentinel Service routes to Ready pods only.
-		if c.invariant == invSentinelAgreement && c.err == nil && !recreated &&
-			podsReady("sentinel", sentinelPods(s), s.sentinelReplicas) == nil {
-			o.sentinelUp = true
-		}
-	}
+	failing, allOK := o.recordChecks(s, checks, recreated)
 	o.sentinelUp = o.sentinelUp && s.sentinel
 	for _, e := range o.tracker.update(now, checks, converged) {
 		o.record(e)
@@ -603,12 +481,53 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 	if _, err := s.master(); err == nil {
 		v.masterIP = o.master.IP
 	}
-	for _, p := range s.redis {
-		if p.IP != "" {
-			v.redis = append(v.redis, PodAddr{Name: p.Name, Addr: net.JoinHostPort(p.IP, strconv.Itoa(s.port))})
+	v.redis = redisAddrs(s)
+	o.view.Store(v)
+}
+
+// findingChecks notes the checks of the report-only invariants, and returns
+// the others, whose violations are findings.
+func (o *Observer) findingChecks(now time.Time, all []check) []check {
+	var checks []check
+	for _, c := range all {
+		if o.reportOnly[c.invariant] {
+			o.note(now, c)
+			continue
+		}
+		o.findings.WithLabelValues(c.invariant)
+		checks = append(checks, c)
+	}
+	return checks
+}
+
+// recordChecks sets the gauge of each check, and the Sentinel path once the
+// Sentinels agree. It returns the failing invariants, and whether all hold.
+func (o *Observer) recordChecks(s snapshot, checks []check, recreated bool) (failing []string, allOK bool) {
+	allOK = true
+	for _, c := range checks {
+		o.ok.WithLabelValues(c.invariant).Set(gauge(c.err == nil))
+		allOK = allOK && c.err == nil
+		if c.err != nil {
+			failing = append(failing, c.invariant)
+		}
+		// The Sentinel Service routes to Ready pods only.
+		if c.invariant == invSentinelAgreement && c.err == nil && !recreated &&
+			podsReady("sentinel", sentinelPods(s), s.sentinelReplicas) == nil {
+			o.sentinelUp = true
 		}
 	}
-	o.view.Store(v)
+	return failing, allOK
+}
+
+// redisAddrs returns the address of each redis pod with an IP.
+func redisAddrs(s snapshot) []PodAddr {
+	var addrs []PodAddr
+	for _, p := range s.redis {
+		if p.IP != "" {
+			addrs = append(addrs, PodAddr{Name: p.Name, Addr: net.JoinHostPort(p.IP, strconv.Itoa(s.port))})
+		}
+	}
+	return addrs
 }
 
 // externalWindow keeps a window open while a disturbance outside the instance

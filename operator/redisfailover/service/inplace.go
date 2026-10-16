@@ -12,6 +12,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/service/k8s"
 )
 
@@ -106,49 +107,20 @@ func rejectedByResourceLimits(err error) bool {
 // UpdateRedisesPods then treats as up to date. The StatefulSet uses OnDelete,
 // so its controller never replaces the relabelled pod.
 func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover, podName, updateRevision string, limits AutoscalerLimits) (ResizeResult, error) {
-	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).WithField("pod", podName)
-	autoscaler := false
-	result := func(action ResizeAction, class ResizeClass, message string) (ResizeResult, error) {
-		return ResizeResult{Action: action, Class: class, Message: message, AutoscalerRevision: autoscaler}, nil
+	s := &podResize{
+		r:              r,
+		rf:             rf,
+		podName:        podName,
+		updateRevision: updateRevision,
+		logger:         r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).WithField("pod", podName),
 	}
-	recreate := func(class ResizeClass, reason string) (ResizeResult, error) {
-		// The handler logs the refusal of an autoscaler revision, because it
-		// repeats at each reconcile.
-		if !autoscaler || class != ResizePermanent {
-			logger.Infof("Recreating the pod instead of resizing it in place: %s", reason)
-		}
-		return result(ResizeRecreate, class, reason)
-	}
-	waiting := func(class ResizeClass, format string, args ...any) (ResizeResult, error) {
-		return result(ResizeWaiting, class, fmt.Sprintf(format, args...))
-	}
-	keep := func(message string) (ResizeResult, error) {
-		if err := r.k8sService.UpdatePodLabels(rf.Namespace, podName, map[string]string{appsv1.ControllerRevisionHashLabelKey: updateRevision}); err != nil {
-			return ResizeResult{}, err
-		}
-		if err := r.ClearResizeRequested(rf, podName); err != nil {
-			return ResizeResult{}, err
-		}
-		logger.Info(message)
-		return result(ResizeDone, "", "")
-	}
-
-	unsupported := ""
-	support := k8s.PodResizeSupport{}
-	if rf.Spec.Redis.InPlaceResize == "Disabled" {
-		unsupported = "redis.inPlaceResize is Disabled"
-	} else {
-		var err error
-		if support, err = r.k8sService.PodResizeSupport(); err != nil {
-			return ResizeResult{}, err
-		}
-		if !support.Supported {
-			unsupported = "an in-place resize needs Kubernetes 1.33 or later"
-		}
+	unsupported, support, err := r.inPlaceResizeSupport(rf)
+	if err != nil {
+		return ResizeResult{}, err
 	}
 	if unsupported != "" && limits == (AutoscalerLimits{}) {
 		// Without a step, no revision needs a read.
-		return result(ResizeRecreate, ResizePermanent, unsupported)
+		return s.result(ResizeRecreate, ResizePermanent, unsupported)
 	}
 	pod, err := r.k8sService.GetPod(rf.Namespace, podName)
 	if err != nil {
@@ -160,125 +132,211 @@ func (r *RedisFailoverHealer) ResizePodInPlace(rf *redisfailoverv1.RedisFailover
 	}
 	if reason != "" {
 		// A revision that the operator cannot read can be a step.
-		autoscaler = limits != (AutoscalerLimits{})
-		return recreate(ResizePermanent, reason)
+		s.autoscaler = limits != (AutoscalerLimits{})
+		return s.recreate(ResizePermanent, reason)
 	}
-	if limits.Step != 0 && autoscalerRevision(update, current, AutoscalerLimits{Effective: limits.Step}) || stepRevision(update, current, limits.StepMax) {
-		// The StatefulSet created the pod from the template of a step, and
-		// the update revision has the limit before it, for example after a
-		// revert. A resize or a recreate would shrink the pod, so it only
-		// moves to the update revision with its larger limit.
-		return keep("Kept the memory limit of the autoscaler step on the pod")
-	}
-	var ul int64
-	if c := redisContainer(update); c != nil {
-		ul = c.Resources.Limits.Memory().Value()
-	}
-	autoscaler = autoscalerRevision(current, update, limits)
-	if (pod.Labels[appsv1.ControllerRevisionHashLabelKey] == updateRevision || autoscaler) && keepsTemplate(pod, update) {
-		// Only the resize request makes the pod stale, for example a request
-		// of a step after its revert, or the pod already runs with the limit
-		// of a step, for example after a resize from outside. The pod runs
-		// with the template limit or a larger one, so it keeps its resources.
-		return keep("Kept the memory limit of the pod, which has the resources of the update revision")
+	if message := s.keepMessage(pod, current, update, limits); message != "" {
+		return s.keep(message)
 	}
 	var held int64
-	requested := RequestedRedisMemoryLimit(pod)
-	if !support.MemoryLimitDecrease && requested > ul && (requested == limits.Step || requested <= limits.StepMax) {
+	if requested, ok := heldStepRequest(pod, update, support, limits); ok {
 		// The pod requests the step since a revert. Before Kubernetes 1.35,
 		// the API server refuses a lower limit in the pod spec, and the user
 		// path would recreate the pod. The pod keeps the request.
-		held, autoscaler = requested, true
+		held, s.autoscaler = requested, true
 	}
 	if unsupported != "" {
-		return result(ResizeRecreate, ResizePermanent, unsupported)
+		return s.result(ResizeRecreate, ResizePermanent, unsupported)
 	}
 	desired, reason, class, err := r.inPlaceResources(rf, pod, current, update, support, held)
 	if err != nil {
 		return ResizeResult{}, err
 	}
 	if reason != "" {
-		return recreate(class, reason)
+		return s.recreate(class, reason)
 	}
-
 	if !podRequests(pod, desired) {
-		if err := r.k8sService.ResizePod(rf.Namespace, podName, desired); err != nil {
-			// The same admission rejects the recreated pod, which then stays missing.
-			if apierrors.IsForbidden(err) && rejectedByResourceLimits(err) {
-				logger.Debugf("A ResourceQuota or LimitRange blocks the resize: %v", err)
-				return waiting(ResizePermanent, "resize of pod %s is blocked by a ResourceQuota or LimitRange: %v", podName, err)
-			}
-			// Rejected by the API server, e.g. missing RBAC or a disabled feature gate.
-			if apierrors.IsForbidden(err) || apierrors.IsInvalid(err) || apierrors.IsNotFound(err) || apierrors.IsMethodNotSupported(err) {
-				return recreate(ResizePermanent, "resize rejected: "+err.Error())
-			}
-			return ResizeResult{}, err
-		}
-		// The annotation change queues the next reconcile, so a held resize must not write it.
-		if err := r.markResizeRequested(rf, podName); err != nil {
-			return ResizeResult{}, err
-		}
-		logger.Infof("Resizing the pod in place")
-		return waiting(ResizeTransient, "resizing pod %s in place", podName)
+		return s.requestResize(desired)
 	}
+	return s.followKubelet(pod, desired)
+}
 
-	if autoscaler && !ResizeRequested(pod) && !podApplied(pod, desired) && !infeasible(pod) {
+// podResize holds one call of ResizePodInPlace. autoscaler is the
+// AutoscalerRevision of the result.
+type podResize struct {
+	r                       *RedisFailoverHealer
+	rf                      *redisfailoverv1.RedisFailover
+	podName, updateRevision string
+	logger                  log.Logger
+	autoscaler              bool
+}
+
+func (s *podResize) result(action ResizeAction, class ResizeClass, message string) (ResizeResult, error) {
+	return ResizeResult{Action: action, Class: class, Message: message, AutoscalerRevision: s.autoscaler}, nil
+}
+
+func (s *podResize) recreate(class ResizeClass, reason string) (ResizeResult, error) {
+	// The handler logs the refusal of an autoscaler revision, because it
+	// repeats at each reconcile.
+	if !s.autoscaler || class != ResizePermanent {
+		s.logger.Infof("Recreating the pod instead of resizing it in place: %s", reason)
+	}
+	return s.result(ResizeRecreate, class, reason)
+}
+
+func (s *podResize) waiting(class ResizeClass, format string, args ...any) (ResizeResult, error) {
+	return s.result(ResizeWaiting, class, fmt.Sprintf(format, args...))
+}
+
+// relabel moves the pod to the update revision.
+func (s *podResize) relabel() error {
+	if err := s.r.k8sService.UpdatePodLabels(s.rf.Namespace, s.podName, map[string]string{appsv1.ControllerRevisionHashLabelKey: s.updateRevision}); err != nil {
+		return err
+	}
+	return s.r.ClearResizeRequested(s.rf, s.podName)
+}
+
+// keepMessage returns the log message when the pod keeps its resources and
+// only moves to the update revision, or "".
+func (s *podResize) keepMessage(pod *corev1.Pod, current, update *corev1.PodTemplateSpec, limits AutoscalerLimits) string {
+	if limits.Step != 0 && autoscalerRevision(update, current, AutoscalerLimits{Effective: limits.Step}) || stepRevision(update, current, limits.StepMax) {
+		// The StatefulSet created the pod from the template of a step, and
+		// the update revision has the limit before it, for example after a
+		// revert. A resize or a recreate would shrink the pod, so it only
+		// moves to the update revision with its larger limit.
+		return "Kept the memory limit of the autoscaler step on the pod"
+	}
+	s.autoscaler = autoscalerRevision(current, update, limits)
+	if (pod.Labels[appsv1.ControllerRevisionHashLabelKey] == s.updateRevision || s.autoscaler) && keepsTemplate(pod, update) {
+		// Only the resize request makes the pod stale, for example a request
+		// of a step after its revert, or the pod already runs with the limit
+		// of a step, for example after a resize from outside. The pod runs
+		// with the template limit or a larger one, so it keeps its resources.
+		return "Kept the memory limit of the pod, which has the resources of the update revision"
+	}
+	return ""
+}
+
+func (s *podResize) keep(message string) (ResizeResult, error) {
+	if err := s.relabel(); err != nil {
+		return ResizeResult{}, err
+	}
+	s.logger.Info(message)
+	return s.result(ResizeDone, "", "")
+}
+
+// requestResize writes the desired resources to the pod spec.
+func (s *podResize) requestResize(desired map[string]corev1.ResourceRequirements) (ResizeResult, error) {
+	if err := s.r.k8sService.ResizePod(s.rf.Namespace, s.podName, desired); err != nil {
+		// The same admission rejects the recreated pod, which then stays missing.
+		if apierrors.IsForbidden(err) && rejectedByResourceLimits(err) {
+			s.logger.Debugf("A ResourceQuota or LimitRange blocks the resize: %v", err)
+			return s.waiting(ResizePermanent, "resize of pod %s is blocked by a ResourceQuota or LimitRange: %v", s.podName, err)
+		}
+		// Rejected by the API server, e.g. missing RBAC or a disabled feature gate.
+		if apierrors.IsForbidden(err) || apierrors.IsInvalid(err) || apierrors.IsNotFound(err) || apierrors.IsMethodNotSupported(err) {
+			return s.recreate(ResizePermanent, "resize rejected: "+err.Error())
+		}
+		return ResizeResult{}, err
+	}
+	// The annotation change queues the next reconcile, so a held resize must not write it.
+	if err := s.r.markResizeRequested(s.rf, s.podName); err != nil {
+		return ResizeResult{}, err
+	}
+	s.logger.Infof("Resizing the pod in place")
+	return s.waiting(ResizeTransient, "resizing pod %s in place", s.podName)
+}
+
+// followKubelet waits for the kubelet to apply the requested resources.
+func (s *podResize) followKubelet(pod *corev1.Pod, desired map[string]corev1.ResourceRequirements) (ResizeResult, error) {
+	if s.autoscaler && !ResizeRequested(pod) && !podApplied(pod, desired) && !infeasible(pod) {
 		// The spec requests the target of the step since an earlier step
 		// that the operator reverted. Without a request time, a deferred
 		// resize would time out at once.
-		if err := r.markResizeRequested(rf, podName); err != nil {
+		if err := s.r.markResizeRequested(s.rf, s.podName); err != nil {
 			return ResizeResult{}, err
 		}
-		return waiting(ResizeTransient, "resize of pod %s in progress", podName)
-	}
-
-	// A condition keeps its transition time when a newer resize supersedes
-	// the one it reported on.
-	sinceLatest := func(t time.Time) time.Duration {
-		if requested, err := time.Parse(time.RFC3339, pod.Annotations[resizeRequestedAnnotation]); err == nil && requested.After(t) {
-			t = requested
-		}
-		return time.Since(t)
+		return s.waiting(ResizeTransient, "resize of pod %s in progress", s.podName)
 	}
 	if c := podCondition(pod, corev1.PodResizePending); c != nil {
 		if infeasible(pod) {
-			return recreate(ResizePermanent, "resize infeasible: "+c.Message)
+			return s.recreate(ResizePermanent, "resize infeasible: "+c.Message)
 		}
-		if sinceLatest(c.LastTransitionTime.Time) > inPlaceResizeTimeout {
-			return recreate(ResizePermanent, "resize deferred for too long: "+c.Message)
+		if sinceLatestRequest(pod, c.LastTransitionTime.Time) > inPlaceResizeTimeout {
+			return s.recreate(ResizePermanent, "resize deferred for too long: "+c.Message)
 		}
-		return waiting(ResizeTransient, "resize of pod %s deferred: %s", podName, c.Message)
+		return s.waiting(ResizeTransient, "resize of pod %s deferred: %s", s.podName, c.Message)
 	}
 	if c := podCondition(pod, corev1.PodResizeInProgress); c != nil {
 		// The usage includes the page cache, so the kubelet refuses a memory
 		// limit below the usage again on each retry. Only the message
 		// identifies this error.
-		if c.Reason == corev1.PodReasonError && (refusesDesiredMemory(pod, c, desired) || sinceLatest(c.LastTransitionTime.Time) > inPlaceResizeTimeout) {
-			return recreate(ResizePermanent, "resize failed: "+c.Message)
+		if c.Reason == corev1.PodReasonError && (refusesDesiredMemory(pod, c, desired) || sinceLatestRequest(pod, c.LastTransitionTime.Time) > inPlaceResizeTimeout) {
+			return s.recreate(ResizePermanent, "resize failed: "+c.Message)
 		}
-		return waiting(ResizeTransient, "resize of pod %s in progress", podName)
+		return s.waiting(ResizeTransient, "resize of pod %s in progress", s.podName)
 	}
+	return s.finish(pod, desired)
+}
+
+// finish moves the pod to the update revision once the kubelet applied the
+// desired resources.
+func (s *podResize) finish(pod *corev1.Pod, desired map[string]corev1.ResourceRequirements) (ResizeResult, error) {
 	if !podApplied(pod, desired) {
 		// The kubelet may not have picked the resize up yet.
 		requested, err := time.Parse(time.RFC3339, pod.Annotations[resizeRequestedAnnotation])
 		if err != nil {
-			if err := r.markResizeRequested(rf, podName); err != nil {
+			if err := s.r.markResizeRequested(s.rf, s.podName); err != nil {
 				return ResizeResult{}, err
 			}
 		} else if time.Since(requested) > inPlaceResizeTimeout {
-			return recreate(ResizePermanent, "resize not applied by the kubelet")
+			return s.recreate(ResizePermanent, "resize not applied by the kubelet")
 		}
-		return waiting(ResizeTransient, "resize of pod %s in progress", podName)
+		return s.waiting(ResizeTransient, "resize of pod %s in progress", s.podName)
 	}
 
-	if err := r.k8sService.UpdatePodLabels(rf.Namespace, podName, map[string]string{appsv1.ControllerRevisionHashLabelKey: updateRevision}); err != nil {
+	if err := s.relabel(); err != nil {
 		return ResizeResult{}, err
 	}
-	if err := r.ClearResizeRequested(rf, podName); err != nil {
-		return ResizeResult{}, err
+	s.logger.Infof("Resized the pod in place")
+	return s.result(ResizeDone, "", "")
+}
+
+// sinceLatestRequest returns the time since t or since the latest resize
+// request. A condition keeps its transition time when a newer resize
+// supersedes the one it reported on.
+func sinceLatestRequest(pod *corev1.Pod, t time.Time) time.Duration {
+	if requested, err := time.Parse(time.RFC3339, pod.Annotations[resizeRequestedAnnotation]); err == nil && requested.After(t) {
+		t = requested
 	}
-	logger.Infof("Resized the pod in place")
-	return result(ResizeDone, "", "")
+	return time.Since(t)
+}
+
+// inPlaceResizeSupport returns the reason that no in-place resize is
+// possible, or "".
+func (r *RedisFailoverHealer) inPlaceResizeSupport(rf *redisfailoverv1.RedisFailover) (string, k8s.PodResizeSupport, error) {
+	if rf.Spec.Redis.InPlaceResize == "Disabled" {
+		return "redis.inPlaceResize is Disabled", k8s.PodResizeSupport{}, nil
+	}
+	support, err := r.k8sService.PodResizeSupport()
+	if err != nil {
+		return "", k8s.PodResizeSupport{}, err
+	}
+	if !support.Supported {
+		return "an in-place resize needs Kubernetes 1.33 or later", support, nil
+	}
+	return "", support, nil
+}
+
+// heldStepRequest returns the requested redis memory limit and true when it
+// is the limit of a step above the update revision that the pod has to keep.
+func heldStepRequest(pod *corev1.Pod, update *corev1.PodTemplateSpec, support k8s.PodResizeSupport, limits AutoscalerLimits) (int64, bool) {
+	var ul int64
+	if c := redisContainer(update); c != nil {
+		ul = c.Resources.Limits.Memory().Value()
+	}
+	requested := RequestedRedisMemoryLimit(pod)
+	return requested, !support.MemoryLimitDecrease && requested > ul && (requested == limits.Step || requested <= limits.StepMax)
 }
 
 // ClearResizeRequested removes the time of the last resize request from the
@@ -445,19 +503,7 @@ func (r *RedisFailoverHealer) inPlaceResources(rf *redisfailoverv1.RedisFailover
 	for _, c := range current.Spec.Containers {
 		old[c.Name] = withDefaultRequests(c.Resources)
 	}
-	// The pod's own resources are the base: admission (e.g. a LimitRange) may
-	// have added values that neither revision has.
-	actual, running := map[string]corev1.ResourceRequirements{}, map[string]corev1.ResourceRequirements{}
-	for _, c := range pod.Spec.Containers {
-		actual[c.Name], running[c.Name] = c.Resources, c.Resources
-	}
-	reported := false
-	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.Resources != nil {
-			running[cs.Name] = *cs.Resources
-			reported = reported || cs.Name == redisContainerName
-		}
-	}
+	actual, running, reported := podResources(pod)
 	if !reported {
 		// E.g. a kubelet without in-place resize support, which would leave
 		// the pod spec that maxmemory derives from ahead of the container.
@@ -467,43 +513,18 @@ func (r *RedisFailoverHealer) inPlaceResources(rf *redisfailoverv1.RedisFailover
 	lowersMemoryLimit := false
 	var loweredRedisLimit int64
 	for _, c := range update.Spec.Containers {
-		d, o := withDefaultRequests(c.Resources), old[c.Name]
-		for _, list := range [][2]corev1.ResourceList{{o.Requests, d.Requests}, {o.Limits, d.Limits}} {
-			if len(list[0]) != len(list[1]) {
-				return nil, "requests or limits are added or removed", ResizeUserRevision, nil
-			}
-			for name, q := range list[0] {
-				n, ok := list[1][name]
-				if !ok {
-					return nil, "requests or limits are added or removed", ResizeUserRevision, nil
-				}
-				if name != corev1.ResourceCPU && name != corev1.ResourceMemory && !q.Equal(n) {
-					return nil, "only cpu and memory can be resized in place", ResizeUserRevision, nil
-				}
-			}
+		d := withDefaultRequests(c.Resources)
+		if reason := notResizable(old[c.Name], d); reason != "" {
+			return nil, reason, ResizeUserRevision, nil
 		}
 		// The pod may already run a superseded revision's values.
 		base := actual[c.Name]
-		target := *base.DeepCopy()
-		target.Requests = overlay(target.Requests, d.Requests)
-		target.Limits = overlay(target.Limits, d.Limits)
-		if c.Name == redisContainerName && held != 0 {
-			target.Limits[corev1.ResourceMemory] = base.Limits[corev1.ResourceMemory]
-			if q, ok := base.Requests[corev1.ResourceMemory]; ok {
-				target.Requests[corev1.ResourceMemory] = q
-			}
-		}
+		target := inPlaceTarget(c.Name, base, d, held)
 		desired[c.Name] = target
-		if q, ok := running[c.Name].Limits[corev1.ResourceMemory]; ok && target.Limits.Memory().Cmp(q) < 0 {
-			lowersMemoryLimit = true
-			if c.Name == redisContainerName {
-				loweredRedisLimit = target.Limits.Memory().Value()
-			}
-		}
-		// Before Kubernetes 1.35, the API server also refuses a limit below
-		// the pod spec, also when the container runs with less.
-		if q, ok := base.Limits[corev1.ResourceMemory]; ok && target.Limits.Memory().Cmp(q) < 0 {
-			lowersMemoryLimit = true
+		belowRunning, belowSpec := lowersMemory(target, running[c.Name], base)
+		lowersMemoryLimit = lowersMemoryLimit || belowRunning || belowSpec
+		if belowRunning && c.Name == redisContainerName {
+			loweredRedisLimit = target.Limits.Memory().Value()
 		}
 	}
 	if lowersMemoryLimit && !support.MemoryLimitDecrease {
@@ -516,6 +537,74 @@ func (r *RedisFailoverHealer) inPlaceResources(rf *redisfailoverv1.RedisFailover
 		}
 	}
 	return desired, "", "", nil
+}
+
+// podResources returns the resources of the pod spec, and the running
+// resources that the kubelet reports, by container. The pod's own resources
+// are the base: admission (e.g. a LimitRange) may have added values that
+// neither revision has. reported is false when the kubelet does not report
+// the resources of the redis container.
+func podResources(pod *corev1.Pod) (actual, running map[string]corev1.ResourceRequirements, reported bool) {
+	actual, running = map[string]corev1.ResourceRequirements{}, map[string]corev1.ResourceRequirements{}
+	for _, c := range pod.Spec.Containers {
+		actual[c.Name], running[c.Name] = c.Resources, c.Resources
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Resources != nil {
+			running[cs.Name] = *cs.Resources
+			reported = reported || cs.Name == redisContainerName
+		}
+	}
+	return actual, running, reported
+}
+
+// notResizable returns the reason that an in-place resize cannot change the
+// resources o to d, or "".
+func notResizable(o, d corev1.ResourceRequirements) string {
+	for _, list := range [][2]corev1.ResourceList{{o.Requests, d.Requests}, {o.Limits, d.Limits}} {
+		if len(list[0]) != len(list[1]) {
+			return "requests or limits are added or removed"
+		}
+		for name, q := range list[0] {
+			n, ok := list[1][name]
+			if !ok {
+				return "requests or limits are added or removed"
+			}
+			if name != corev1.ResourceCPU && name != corev1.ResourceMemory && !q.Equal(n) {
+				return "only cpu and memory can be resized in place"
+			}
+		}
+	}
+	return ""
+}
+
+// inPlaceTarget returns base with the cpu and memory of d. With a held
+// limit, the redis container keeps the memory of base.
+func inPlaceTarget(container string, base, d corev1.ResourceRequirements, held int64) corev1.ResourceRequirements {
+	target := *base.DeepCopy()
+	target.Requests = overlay(target.Requests, d.Requests)
+	target.Limits = overlay(target.Limits, d.Limits)
+	if container == redisContainerName && held != 0 {
+		target.Limits[corev1.ResourceMemory] = base.Limits[corev1.ResourceMemory]
+		if q, ok := base.Requests[corev1.ResourceMemory]; ok {
+			target.Requests[corev1.ResourceMemory] = q
+		}
+	}
+	return target
+}
+
+// lowersMemory reports whether the memory limit of target is below the
+// running limit, and below the limit of the pod spec base. Before Kubernetes
+// 1.35, the API server also refuses a limit below the pod spec, also when the
+// container runs with less.
+func lowersMemory(target, running, base corev1.ResourceRequirements) (belowRunning, belowSpec bool) {
+	if q, ok := running.Limits[corev1.ResourceMemory]; ok && target.Limits.Memory().Cmp(q) < 0 {
+		belowRunning = true
+	}
+	if q, ok := base.Limits[corev1.ResourceMemory]; ok && target.Limits.Memory().Cmp(q) < 0 {
+		belowSpec = true
+	}
+	return belowRunning, belowSpec
 }
 
 // memoryInUseExceeds returns the reason to recreate the pod when the memory
@@ -635,25 +724,31 @@ func keepsTemplate(pod *corev1.Pod, t *corev1.PodTemplateSpec) bool {
 	}
 	for _, c := range t.Spec.Containers {
 		for _, got := range []*corev1.ResourceRequirements{spec[c.Name], applied[c.Name]} {
-			if got == nil {
-				return false
-			}
-			want := withDefaultRequests(c.Resources)
-			if q, ok := want.Limits[corev1.ResourceMemory]; ok && c.Name == redisContainerName {
-				if got.Limits.Memory().Cmp(q) < 0 {
-					return false
-				}
-				want.Limits[corev1.ResourceMemory] = got.Limits[corev1.ResourceMemory]
-				if r, ok := got.Requests[corev1.ResourceMemory]; ok && want.Requests.Memory().Equal(q) {
-					want.Requests[corev1.ResourceMemory] = r
-				}
-			}
-			if !sameResizable(*got, want) {
+			if !keepsResources(got, c) {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+// keepsResources reports whether got has the resources of the template
+// container c, with a redis memory limit at or above the one of c.
+func keepsResources(got *corev1.ResourceRequirements, c corev1.Container) bool {
+	if got == nil {
+		return false
+	}
+	want := withDefaultRequests(c.Resources)
+	if q, ok := want.Limits[corev1.ResourceMemory]; ok && c.Name == redisContainerName {
+		if got.Limits.Memory().Cmp(q) < 0 {
+			return false
+		}
+		want.Limits[corev1.ResourceMemory] = got.Limits[corev1.ResourceMemory]
+		if r, ok := got.Requests[corev1.ResourceMemory]; ok && want.Requests.Memory().Equal(q) {
+			want.Requests[corev1.ResourceMemory] = r
+		}
+	}
+	return sameResizable(*got, want)
 }
 
 func sameResizable(a, b corev1.ResourceRequirements) bool {

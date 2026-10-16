@@ -5,6 +5,7 @@ import (
 	"time"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/service/k8s"
 	"github.com/saremox/redis-operator/service/redis"
 )
@@ -75,19 +76,36 @@ func (r *RedisFailoverHealer) HandOverMaster(masterIP, targetIP string, rf *redi
 		if targetRunID, err = r.redisClient.GetRunID(targetIP, port, password); err != nil {
 			return 0, err
 		}
-		err = r.redisClient.FailoverTo(masterIP, port, password, targetIP, handoverWritePause)
-		switch {
-		case err == nil:
-		case redis.ReplyHasPrefix(err, "ERR unknown command"):
-			return HandoverUnsupported, nil
-		case redis.ReplyHasPrefix(err, "ERR FAILOVER"), redis.ReplyHasPrefix(err, "NOPERM"):
-			logger.Warningf("FAILOVER to %s refused: %v", targetIP, err)
-			return HandoverRefused, nil
-		default:
-			return 0, err
+		if result, started, err := r.startFailover(logger, masterIP, targetIP, port, password); !started {
+			return result, err
 		}
 	}
+	if err := r.awaitFailover(logger, masterIP, targetIP, port, password, &targetRunID); err != nil {
+		return 0, err
+	}
+	return r.handoverResult(logger, masterIP, targetIP, port, password, targetRunID)
+}
 
+// startFailover sends FAILOVER to the master. It returns false with the
+// result when the master does not start the failover.
+func (r *RedisFailoverHealer) startFailover(logger log.Logger, masterIP, targetIP, port, password string) (HandoverResult, bool, error) {
+	err := r.redisClient.FailoverTo(masterIP, port, password, targetIP, handoverWritePause)
+	switch {
+	case err == nil:
+		return 0, true, nil
+	case redis.ReplyHasPrefix(err, "ERR unknown command"):
+		return HandoverUnsupported, false, nil
+	case redis.ReplyHasPrefix(err, "ERR FAILOVER"), redis.ReplyHasPrefix(err, "NOPERM"):
+		logger.Warningf("FAILOVER to %s refused: %v", targetIP, err)
+		return HandoverRefused, false, nil
+	default:
+		return 0, false, err
+	}
+}
+
+// awaitFailover waits for the end of the failover, and aborts a failover
+// that does not end in the wait or whose target stops.
+func (r *RedisFailoverHealer) awaitFailover(logger log.Logger, masterIP, targetIP, port, password string, targetRunID *string) error {
 	deadline := time.Now().Add(handoverWritePause + handoverWaitMargin)
 	var ended bool
 	for {
@@ -95,25 +113,32 @@ func (r *RedisFailoverHealer) HandOverMaster(masterIP, targetIP string, rf *redi
 		// and the abort after it ends a failover that still runs.
 		state, err := r.redisClient.GetFailoverState(masterIP, port, password)
 		ended = err == nil && state == noFailover
-		if ended || !time.Now().Before(deadline) || r.targetRestarted(targetIP, port, password, &targetRunID) {
+		if ended || !time.Now().Before(deadline) || r.targetRestarted(targetIP, port, password, targetRunID) {
 			break
 		}
 		time.Sleep(handoverPollInterval)
 	}
-	if !ended {
-		// The abort keeps the old master with all its data. A target that took
-		// the role at the same time has no client writes, and the check of
-		// multiple masters makes it a replica again.
-		err = r.redisClient.FailoverAbort(masterIP, port, password)
-		switch {
-		case err == nil:
-			logger.Warningf("FAILOVER to %s aborted: it did not end in the wait, or the target stopped", targetIP)
-		// The role change ended just before the abort.
-		case !redis.ReplyHasPrefix(err, "ERR No failover in progress"):
-			return 0, err
-		}
+	if ended {
+		return nil
 	}
-	if info, err = r.redisClient.GetReplicationInfo(masterIP, port, password); err != nil {
+	// The abort keeps the old master with all its data. A target that took
+	// the role at the same time has no client writes, and the check of
+	// multiple masters makes it a replica again.
+	err := r.redisClient.FailoverAbort(masterIP, port, password)
+	switch {
+	case err == nil:
+		logger.Warningf("FAILOVER to %s aborted: it did not end in the wait, or the target stopped", targetIP)
+	// The role change ended just before the abort.
+	case !redis.ReplyHasPrefix(err, "ERR No failover in progress"):
+		return err
+	}
+	return nil
+}
+
+// handoverResult reads the roles after the failover.
+func (r *RedisFailoverHealer) handoverResult(logger log.Logger, masterIP, targetIP, port, password, targetRunID string) (HandoverResult, error) {
+	info, err := r.redisClient.GetReplicationInfo(masterIP, port, password)
+	if err != nil {
 		return 0, err
 	}
 	switch {

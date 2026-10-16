@@ -111,13 +111,9 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 	if err != nil {
 		return err
 	}
-	for i := range ssp.Items {
-		// A terminating Ready master still accepts writes. Another master
-		// gives two writable masters.
-		if pod := &ssp.Items[i]; pod.DeletionTimestamp != nil && IsMasterPod(pod) && util.PodIsReady(pod) {
-			logger.WithField("pod", pod.Name).Infof("Master pod %s is stopping, waiting for it to exit before electing a master", pod.Name)
-			return nil
-		}
+	if pod := stoppingReadyMaster(ssp.Items); pod != nil {
+		logger.WithField("pod", pod.Name).Infof("Master pod %s is stopping, waiting for it to exit before electing a master", pod.Name)
+		return nil
 	}
 	pods := masterCandidates(ssp.Items)
 	if len(pods) < 1 {
@@ -133,46 +129,64 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 	newMasterIP := ""
 	for _, pod := range pods {
 		podLogger := logger.WithField("pod", pod.Name)
-		if newMasterIP == "" {
-			if pod.Status.PodIP == "" {
-				podLogger.Debugf("Pod %s has no IP yet, so it cannot be the master", pod.Name)
-				continue
-			}
-			newMasterIP = pod.Status.PodIP
-			podLogger.Infof("New master is %s with ip %s", pod.Name, newMasterIP)
-			if err := r.redisClient.MakeMaster(newMasterIP, port, password); err != nil {
-				newMasterIP = ""
-				redisErrorLogf(podLogger, err)("Make new master failed, master ip: %s, error: %v", pod.Status.PodIP, err)
-				continue
-			}
-
-			err = r.setMasterLabelIfNecessary(rf, pod)
-			if err != nil {
+		if newMasterIP != "" {
+			if err := r.makeReplicaOf(podLogger, rf, pod, newMasterIP, port, password); err != nil {
 				return err
 			}
-
-			newMasterIP = pod.Status.PodIP
-		} else {
-			if pod.Status.PodIP == "" {
-				podLogger.Debugf("Pod %s has no IP yet, so it is not made a replica", pod.Name)
-			} else {
-				podLogger.Infof("Making pod %s slave of %s", pod.Name, newMasterIP)
-				if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, newMasterIP, port, password); err != nil {
-					redisErrorLogf(podLogger, err)("Make slave failed, slave pod ip: %s, master ip: %s, error: %v", pod.Status.PodIP, newMasterIP, err)
-				}
-			}
-
-			err = r.setSlaveLabelIfNecessary(rf, pod, port, password)
-			if err != nil {
-				return err
-			}
+			continue
+		}
+		if newMasterIP, err = r.electMaster(podLogger, rf, pod, port, password); err != nil {
+			return err
 		}
 	}
 	if newMasterIP == "" {
 		return errors.New("SetOldestAsMaster- unable to set master")
-	} else {
-		return nil
 	}
+	return nil
+}
+
+// stoppingReadyMaster returns a terminating Ready master pod, or nil. Such a
+// pod still accepts writes. Another master gives two writable masters.
+func stoppingReadyMaster(items []v1.Pod) *v1.Pod {
+	for i := range items {
+		if pod := &items[i]; pod.DeletionTimestamp != nil && IsMasterPod(pod) && util.PodIsReady(pod) {
+			return pod
+		}
+	}
+	return nil
+}
+
+// electMaster makes pod the master. It returns the IP of the pod, or "" when
+// the pod has no IP or does not become the master.
+func (r *RedisFailoverHealer) electMaster(podLogger log.Logger, rf *redisfailoverv1.RedisFailover, pod v1.Pod, port, password string) (string, error) {
+	if pod.Status.PodIP == "" {
+		podLogger.Debugf("Pod %s has no IP yet, so it cannot be the master", pod.Name)
+		return "", nil
+	}
+	newMasterIP := pod.Status.PodIP
+	podLogger.Infof("New master is %s with ip %s", pod.Name, newMasterIP)
+	if err := r.redisClient.MakeMaster(newMasterIP, port, password); err != nil {
+		redisErrorLogf(podLogger, err)("Make new master failed, master ip: %s, error: %v", pod.Status.PodIP, err)
+		return "", nil
+	}
+	if err := r.setMasterLabelIfNecessary(rf, pod); err != nil {
+		return "", err
+	}
+	return newMasterIP, nil
+}
+
+// makeReplicaOf makes pod a replica of newMasterIP. A failed REPLICAOF only
+// logs, and the pod still gets the replica label.
+func (r *RedisFailoverHealer) makeReplicaOf(podLogger log.Logger, rf *redisfailoverv1.RedisFailover, pod v1.Pod, newMasterIP, port, password string) error {
+	if pod.Status.PodIP == "" {
+		podLogger.Debugf("Pod %s has no IP yet, so it is not made a replica", pod.Name)
+	} else {
+		podLogger.Infof("Making pod %s slave of %s", pod.Name, newMasterIP)
+		if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, newMasterIP, port, password); err != nil {
+			redisErrorLogf(podLogger, err)("Make slave failed, slave pod ip: %s, master ip: %s, error: %v", pod.Status.PodIP, newMasterIP, err)
+		}
+	}
+	return r.setSlaveLabelIfNecessary(rf, pod, port, password)
 }
 
 // redisErrorLogf logs at Warning when the pod does not answer or loads its
@@ -247,41 +261,45 @@ func (r *RedisFailoverHealer) SetMasterOnAll(masterIP string, rf *redisfailoverv
 				return err
 			}
 			return fmt.Errorf("refusing to continue: %s is no longer the master, bailing out this round", masterIP)
-		} else {
-			if pod.Status.PodIP == masterIP {
-				continue
-			}
-			if pod.Status.PodIP == "" {
-				podLogger.Debugf("Pod %s has no IP yet, skipped", pod.Name)
-				continue
-			}
-			podLogger.Infof("Making pod %s slave of %s", pod.Name, masterIP)
-			unlabelledMaster, err := r.isUnlabelledMaster(pod, port, password)
-			if redis.IsUnreachableError(err) {
-				// REPLICAOF would wait for the same timeout and fail too.
-				podLogger.Warningf("Make slave skipped, pod %s does not answer: %v", pod.Name, err)
-				continue
-			}
-			if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, masterIP, port, password); err != nil {
-				// The pod does not answer, usually the old master on a lost node.
-				// Skip it, so that the other replicas still change. When the pod
-				// answers again, a later reconcile makes it a replica.
-				redisErrorLogf(podLogger, err)("Make slave failed, slave ip: %s, master ip: %s, error: %v", pod.Status.PodIP, masterIP, err)
-				continue
-			}
-
-			// The pod is a replica now, so the disconnect does not wait for the
-			// label: a failed label update must not keep the clients connected.
-			if unlabelledMaster {
-				r.opts.disconnector.DisconnectDemoted(rf, pod, port, password)
-			}
-			err = r.setSlaveLabelIfNecessary(rf, pod, port, password)
-			if err != nil {
-				return err
-			}
+		}
+		if pod.Status.PodIP == masterIP {
+			continue
+		}
+		if pod.Status.PodIP == "" {
+			podLogger.Debugf("Pod %s has no IP yet, skipped", pod.Name)
+			continue
+		}
+		if err := r.makeReplicaOfMaster(podLogger, rf, pod, masterIP, port, password); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// makeReplicaOfMaster makes pod a replica of masterIP. It skips a pod that
+// does not answer.
+func (r *RedisFailoverHealer) makeReplicaOfMaster(podLogger log.Logger, rf *redisfailoverv1.RedisFailover, pod v1.Pod, masterIP, port, password string) error {
+	podLogger.Infof("Making pod %s slave of %s", pod.Name, masterIP)
+	unlabelledMaster, err := r.isUnlabelledMaster(pod, port, password)
+	if redis.IsUnreachableError(err) {
+		// REPLICAOF would wait for the same timeout and fail too.
+		podLogger.Warningf("Make slave skipped, pod %s does not answer: %v", pod.Name, err)
+		return nil
+	}
+	if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, masterIP, port, password); err != nil {
+		// The pod does not answer, usually the old master on a lost node.
+		// Skip it, so that the other replicas still change. When the pod
+		// answers again, a later reconcile makes it a replica.
+		redisErrorLogf(podLogger, err)("Make slave failed, slave ip: %s, master ip: %s, error: %v", pod.Status.PodIP, masterIP, err)
+		return nil
+	}
+
+	// The pod is a replica now, so the disconnect does not wait for the
+	// label: a failed label update must not keep the clients connected.
+	if unlabelledMaster {
+		r.opts.disconnector.DisconnectDemoted(rf, pod, port, password)
+	}
+	return r.setSlaveLabelIfNecessary(rf, pod, port, password)
 }
 
 // isUnlabelledMaster tells if pod answers as a Redis master but has no master
@@ -385,6 +403,7 @@ func (r *RedisFailoverHealer) DeletePod(podName string, rFailover *redisfailover
 // its replicas. The operator-managed failover uses it, and electMasterForSentinel
 // uses it when no Sentinel can fail over.
 func (r *RedisFailoverHealer) PromoteBestReplica(newMasterIP string, rf *redisfailoverv1.RedisFailover) error {
+	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
 	password, err := k8s.GetRedisPassword(r.k8sService, rf)
 	if err != nil {
 		return err
@@ -400,35 +419,25 @@ func (r *RedisFailoverHealer) PromoteBestReplica(newMasterIP string, rf *redisfa
 	}
 	if !podIPBelongsTo(rps, newMasterIP) {
 		err := fmt.Errorf("refusing to promote %s: it is not currently a pod of %s/%s, bailing out this round", newMasterIP, rf.Namespace, rf.Name)
-		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Error(err.Error())
+		logger.Error(err.Error())
 		return err
 	}
 
 	// Step 1: Promote the selected replica to master
-	r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
-		Infof("Promoting replica %s to master", newMasterIP)
+	logger.Infof("Promoting replica %s to master", newMasterIP)
 
 	if err := r.redisClient.MakeMaster(newMasterIP, port, password); err != nil {
-		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
-			Errorf("Failed to promote replica %s to master: %v", newMasterIP, err)
+		logger.Errorf("Failed to promote replica %s to master: %v", newMasterIP, err)
 		return err
 	}
 
 	// Step 2: Update pod labels for the new master
-	for _, rp := range rps.Items {
-		if rp.Status.PodIP == newMasterIP {
-			if err := r.setMasterLabelIfNecessary(rf, rp); err != nil {
-				r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
-					Errorf("Failed to set master label on pod %s: %v", rp.Name, err)
-				return err
-			}
-			break
-		}
+	if err := r.labelPromotedMaster(logger, rf, rps, newMasterIP); err != nil {
+		return err
 	}
 
 	// Step 3: Reconfigure all other replicas to point to the new master
-	r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
-		Infof("Reconfiguring replicas to use new master %s", newMasterIP)
+	logger.Infof("Reconfiguring replicas to use new master %s", newMasterIP)
 
 	var reconcileErrs []error
 	for _, rp := range rps.Items {
@@ -438,38 +447,53 @@ func (r *RedisFailoverHealer) PromoteBestReplica(newMasterIP string, rf *redisfa
 		if rp.Status.Phase != v1.PodRunning || rp.DeletionTimestamp != nil {
 			continue
 		}
-
-		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
-			Infof("Making pod %s slave of %s", rp.Name, newMasterIP)
-
-		if err := r.redisClient.MakeSlaveOfWithPort(rp.Status.PodIP, port, newMasterIP, port, password); err != nil {
-			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
-				Errorf("Failed to make %s slave of %s: %v", rp.Status.PodIP, newMasterIP, err)
-			reconcileErrs = append(reconcileErrs, err)
-			// The old master that does not answer loses its master label, so
-			// that the new master is the only pod with the label when the old
-			// one answers again as a master.
-			if rp.Labels[redisRoleLabelKey] == redisRoleLabelMaster {
-				if err := r.setSlaveLabelIfNecessary(rf, rp, port, password); err != nil {
-					reconcileErrs = append(reconcileErrs, err)
-				}
-			}
-			continue
-		}
-
-		if err := r.setSlaveLabelIfNecessary(rf, rp, port, password); err != nil {
-			r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
-				Errorf("Failed to set slave label on pod %s: %v", rp.Name, err)
-			reconcileErrs = append(reconcileErrs, err)
-		}
+		reconcileErrs = append(reconcileErrs, r.repointReplica(logger, rf, rp, newMasterIP, port, password)...)
 	}
 
 	if joinedErr := errors.Join(reconcileErrs...); joinedErr != nil {
 		return fmt.Errorf("%w: %w", ErrPartialReconciliation, joinedErr)
 	}
 
-	r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).
-		Infof("Failover completed: %s is now master", newMasterIP)
+	logger.Infof("Failover completed: %s is now master", newMasterIP)
 
+	return nil
+}
+
+// labelPromotedMaster gives the pod with newMasterIP the master label.
+func (r *RedisFailoverHealer) labelPromotedMaster(logger log.Logger, rf *redisfailoverv1.RedisFailover, rps *v1.PodList, newMasterIP string) error {
+	for _, rp := range rps.Items {
+		if rp.Status.PodIP == newMasterIP {
+			if err := r.setMasterLabelIfNecessary(rf, rp); err != nil {
+				logger.Errorf("Failed to set master label on pod %s: %v", rp.Name, err)
+				return err
+			}
+			break
+		}
+	}
+	return nil
+}
+
+// repointReplica makes rp a replica of newMasterIP and returns the errors.
+func (r *RedisFailoverHealer) repointReplica(logger log.Logger, rf *redisfailoverv1.RedisFailover, rp v1.Pod, newMasterIP, port, password string) []error {
+	logger.Infof("Making pod %s slave of %s", rp.Name, newMasterIP)
+
+	if err := r.redisClient.MakeSlaveOfWithPort(rp.Status.PodIP, port, newMasterIP, port, password); err != nil {
+		logger.Errorf("Failed to make %s slave of %s: %v", rp.Status.PodIP, newMasterIP, err)
+		errs := []error{err}
+		// The old master that does not answer loses its master label, so
+		// that the new master is the only pod with the label when the old
+		// one answers again as a master.
+		if rp.Labels[redisRoleLabelKey] == redisRoleLabelMaster {
+			if err := r.setSlaveLabelIfNecessary(rf, rp, port, password); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errs
+	}
+
+	if err := r.setSlaveLabelIfNecessary(rf, rp, port, password); err != nil {
+		logger.Errorf("Failed to set slave label on pod %s: %v", rp.Name, err)
+		return []error{err}
+	}
 	return nil
 }

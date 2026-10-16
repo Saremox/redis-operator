@@ -1,0 +1,42 @@
+ProbeTotal: Desc{fqName: "redis_soak_probe_total", help: "Probe commands by path, client style, operation and classified result.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,path,client,op,result}}
+ProbeDuration: Desc{fqName: "redis_soak_probe_duration_seconds", help: "Probe command latency, including the dial for fresh clients.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,path,client,op}}
+  buckets: 0.0005 0.001 0.002 0.004 0.008 0.016 0.032 0.064 0.128 0.256 0.512 1.024 2.048 4.096
+Writable: Desc{fqName: "redis_soak_writable", help: "1 if the last write probe succeeded.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,path,client}}
+Readable: Desc{fqName: "redis_soak_readable", help: "1 if the last read probe succeeded.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,path,client}}
+LastSuccess: Desc{fqName: "redis_soak_last_success_timestamp_seconds", help: "Unix time of the last successful probe command.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,path,client,op}}
+OutageDuration: Desc{fqName: "redis_soak_outage_duration_seconds", help: "Time from the first failed probe to the next successful one, by the chaos kind or the instance's mutation kind running when it started, or none.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,path,client,event}}
+  buckets: 0.5 1 2 5 10 20 30 60 120 300 600 1800
+BuildInfo: Desc{fqName: "redis_soak_build_info", help: "Always 1. The operator version is the image tag of its Deployment.", unit: "", constLabels: {}, variableLabels: {operator_version,tester_version}}
+InvariantOK: Desc{fqName: "redis_soak_invariant_ok", help: "1 if the invariant held at the last check.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,invariant}}
+InvariantViolation: Desc{fqName: "redis_soak_invariant_violation_seconds", help: "How long an invariant stayed violated.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,invariant}}
+  buckets: 1 2 5 10 20 30 60 120 300 600 1800 3600
+Findings: Desc{fqName: "redis_soak_findings_total", help: "Invariant violations outside a convergence window.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,invariant}}
+Masters: Desc{fqName: "redis_soak_masters", help: "Redis pods reporting the master role. 1 is right.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode}}
+Failovers: Desc{fqName: "redis_soak_failovers_total", help: "Changes of the master's identity.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode}}
+ReplicationLag: Desc{fqName: "redis_soak_replication_lag_bytes", help: "The master's replication offset minus the replica's.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,pod}}
+RFHealthy: Desc{fqName: "redis_soak_rf_healthy", help: "1 if the RedisFailover's status.state is Healthy.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode}}
+WindowOpen: Desc{fqName: "redis_soak_window_open", help: "1 while a convergence window is open: violations are expected, not findings.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode}}
+AutoscaleSteps: Desc{fqName: "redis_soak_autoscale_steps_total", help: "Steps of the memory autoscaler by result: started, or the first end of the step: done, reverted or held.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,result}}
+MutationTotal: Desc{fqName: "redis_soak_mutation_total", help: "Mutations by kind and result: converged, timeout, stuck_restored, rejected or skipped.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,kind,result}}
+MutationConverge: Desc{fqName: "redis_soak_mutation_converge_seconds", help: "Time from applying a mutation to its convergence window closing.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,kind}}
+  buckets: 1 2 5 10 15 20 30 45 60 90 120 180 300 420
+PodsRecreated: Desc{fqName: "redis_soak_pods_recreated_total", help: "Redis pods a mutation replaced by a new pod of the same name.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,kind}}
+MutationInProgress: Desc{fqName: "redis_soak_mutation_in_progress", help: "1 while a mutation of the kind is converging.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,kind}}
+NoMasterRecovery: Desc{fqName: "redis_soak_no_master_recovery_total", help: "Converged sentinel_reset_kill_master mutations by recovery path: sentinel, operator or unknown.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,path}}
+MutationStalled: Desc{fqName: "redis_soak_mutation_stalled_seconds", help: "How long the mutator has waited for a quiet instance, 0 while the instance is quiet or the mutator mutates.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode}}
+WaitAckedReplicas: Desc{fqName: "redis_soak_wait_acked_replicas", help: "Replicas that acknowledged the last sampled probe write within the WAIT timeout.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode}}
+OOMRejections: Desc{fqName: "redis_soak_oom_rejections_total", help: "Fill and ledger writes rejected with OOM.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode}}
+LostWrites: Desc{fqName: "redis_soak_lost_writes_total", help: "Acknowledged writes found missing or wrong, by the mutation kind or failover they were verified after.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,event}}
+UnexpectedLost: Desc{fqName: "redis_soak_unexpected_lost_writes_total", help: "Lost writes of an event that must lose none, and source writes that a caught-up bootstrap pod misses.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,event}}
+LedgerVerified: Desc{fqName: "redis_soak_ledger_verified_total", help: "Verifications of the acknowledged writes, by the mutation kind or failover they ran after.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,event}}
+VersionTransition: Desc{fqName: "redis_soak_version_transition_total", help: "Version changes by the configured names of the versions, the edge's expectation and the result: ok, failed_safe or failed_unsafe.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,from,to,expect,result}}
+VersionMixed: Desc{fqName: "redis_soak_version_mixed_seconds", help: "How long an instance ran two versions of its redis or sentinel component: from the first pod on the new version until the last pod on the old one was gone.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,from,to,component}}
+  buckets: 10 20 30 45 60 90 120 180 300 600 900 1200 1800 3600
+ChaosTotal: Desc{fqName: "redis_soak_chaos_total", help: "Chaos actions by kind and result: converged, timeout, failed or skipped.", unit: "", constLabels: {}, variableLabels: {kind,result}}
+ChaosConverge: Desc{fqName: "redis_soak_chaos_converge_seconds", help: "Time from a chaos action's disruption until every instance converged: a restart's delete, each upgrade's helm upgrade, a drain's cordon.", unit: "", constLabels: {}, variableLabels: {kind}}
+  buckets: 1 2 5 10 15 20 30 45 60 90 120 180 300 420
+ChaosInProgress: Desc{fqName: "redis_soak_chaos_in_progress", help: "1 while a chaos action of the kind runs.", unit: "", constLabels: {}, variableLabels: {kind}}
+ChaosOperatorDown: Desc{fqName: "redis_soak_chaos_operator_down_seconds", help: "Time without a leading operator: from the old leader's deletion until a new one acquired the lease.", unit: "", constLabels: {}, variableLabels: {kind}}
+  buckets: 1 2 5 10 15 20 30 45 60 90 120 300
+ChaosEvictionBlocked: Desc{fqName: "redis_soak_chaos_eviction_blocked_seconds", help: "How long a PodDisruptionBudget blocked a drain's eviction of a pod.", unit: "", constLabels: {}, variableLabels: {}}
+  buckets: 1 2 5 10 20 30 60 120 300 600

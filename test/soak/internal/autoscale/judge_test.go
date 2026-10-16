@@ -75,7 +75,7 @@ func TestStep(t *testing.T) {
 	if got := summary(e); !slices.Equal(got, []string{ResultStarted}) || !settling {
 		t.Fatalf("start: %v, settling %t", got, settling)
 	}
-	if e[0].Message != "from 128Mi to 192Mi" {
+	if e[0].Message != "from 128Mi" {
 		t.Errorf("message %q", e[0].Message)
 	}
 	done := withLimit(stepped(at(2), 1, PhaseDone, "192Mi"), 192*mi)
@@ -219,6 +219,64 @@ func TestTimeoutEndsSettling(t *testing.T) {
 	// The next step settles again.
 	if _, settling := j.Observe(stepped(at(41), 41, PhaseApplying, "256Mi")); !settling {
 		t.Error("the next step has no window")
+	}
+}
+
+// The operator writes the step to the state first, and the status shows the
+// limit of the step one reconcile later. Thus the first round of a step can
+// show the earlier effectiveMemory, and the size check waits until the
+// status shows the step limit, or the step ends.
+func TestStepSizeAfterTheFirstRound(t *testing.T) {
+	applying := func(m float64, effective string) Round {
+		return stepped(at(m), 1, PhaseApplying, effective)
+	}
+	ended := func(m float64, phase, effective string, limit int64) Round {
+		return withLimit(stepped(at(m), 1, phase, effective), limit)
+	}
+	for _, c := range []struct {
+		name   string
+		rounds []Round
+		want   []string
+	}{
+		{"the limit shows in the second round", []Round{at(0), applying(1, ""), applying(1.1, "192Mi"), ended(2, PhaseDone, "192Mi", 192*mi)},
+			[]string{ResultStarted, ResultDone}},
+		{"the earlier limit in the first round", []Round{withLimit(stepped(at(0), 0, PhaseDone, "192Mi"), 192*mi),
+			withLimit(stepped(at(30), 30, PhaseApplying, "192Mi"), 192*mi), withLimit(stepped(at(30.1), 30, PhaseApplying, "256Mi"), 192*mi),
+			withLimit(stepped(at(31), 30, PhaseDone, "256Mi"), 256*mi)},
+			[]string{ResultStarted, ResultDone}},
+		{"a wrong limit in the second round", []Round{at(0), applying(1, ""), applying(1.1, "160Mi"), ended(2, PhaseDone, "160Mi", 160*mi)},
+			[]string{ResultStarted, JudgeSize, ResultDone}},
+		{"a step to 576Mi from 512Mi", []Round{withLimit(spec(at(0), 512*mi), 512*mi), withLimit(spec(applying(1, ""), 512*mi), 512*mi),
+			withLimit(spec(applying(1.1, "576Mi"), 512*mi), 512*mi)},
+			[]string{ResultStarted, JudgeSize}},
+		// A fast step ends before the status shows Applying with its limit.
+		{"Done in the first round", []Round{at(0), ended(1, PhaseDone, "192Mi", 192*mi)}, []string{ResultStarted, ResultDone}},
+		{"Done with a wrong limit", []Round{at(0), applying(1, ""), ended(2, PhaseDone, "160Mi", 160*mi)},
+			[]string{ResultStarted, ResultDone, JudgeSize}},
+		{"Done without a raise", []Round{at(0), applying(1, ""), ended(2, PhaseDone, "", 128*mi)},
+			[]string{ResultStarted, ResultDone, JudgeSize}},
+		// A held step keeps the limit of the step.
+		{"Held", []Round{at(0), applying(1, ""), ended(2, PhaseHeld, "192Mi", 192*mi)}, []string{ResultStarted, ResultHeld}},
+		// A revert shows the limit before the step: no size to check.
+		{"Reverted", []Round{at(0), applying(1, ""), stepped(at(2), 1, PhaseReverted, "")}, []string{ResultStarted, ResultReverted}},
+		// A user change of the bounds changes the limit, so the size of the
+		// step is not known.
+		{"a spec change in the step", []Round{at(0), applying(1, ""), spec(applying(1.1, "256Mi"), 160*mi)}, []string{ResultStarted}},
+		{"a memoryMax change in the step", []Round{at(0), applying(1, ""), noMax(applying(1.1, "160Mi"))}, []string{ResultStarted}},
+	} {
+		j := NewJudge()
+		var got []string
+		for _, r := range c.rounds {
+			e, _ := j.Observe(r)
+			for _, x := range summary(e) {
+				if x != JudgeRate {
+					got = append(got, x)
+				}
+			}
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 
