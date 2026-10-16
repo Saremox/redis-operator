@@ -185,34 +185,14 @@ func Observe(s State, in Input) State {
 	now := in.Now.Unix()
 	s.LastSample = now
 	info := in.Info
-	switch {
-	case !in.Healthy:
-		return s.withReason(ReasonNotHealthy)
-	case info == nil:
-		return s.withReason(ReasonNoInfo)
-	case info.Role != "master":
-		return s.withReason(ReasonNotMaster)
+	if reason := skipReason(in); reason != "" {
+		return s.withReason(reason)
 	}
-	if info.RunID != s.RunID {
-		// A restart loses the data or loads it again, so the earlier windows
-		// do not show the memory use after the restart. The first sample only
-		// sets the baseline of the OOM count.
-		restarted := s.RunID != ""
-		s.RunID, s.OOMErrors = info.RunID, info.OOMErrors
-		s.Window = Window{}
-		s.setHighWindows(0, now)
-		s.setRecommended(0, now)
-		if restarted {
-			return s.withReason(ReasonRestarted)
-		}
+	if s.observeRunID(info, now) {
+		return s.withReason(ReasonRestarted)
 	}
-	switch {
-	case info.UptimeSeconds < int64(MinUptime/time.Second):
-		return s.withReason(ReasonWarmUp)
-	case info.Loading:
-		return s.withReason(ReasonLoading)
-	case info.SyncInProgress:
-		return s.withReason(ReasonSyncing)
+	if reason := warmUpReason(info); reason != "" {
+		return s.withReason(reason)
 	}
 
 	// CONFIG RESETSTAT sets the counter to 0 without a restart. Only a growth
@@ -227,15 +207,71 @@ func Observe(s State, in Input) State {
 		return s.withReason(ReasonCache)
 	}
 
-	if s.Limit != in.Limit {
+	closed := s.advanceWindow(in.Limit, now)
+	r := usedRatio(info, in.Limit)
+	s.Window.PeakRatio = max(s.Window.PeakRatio, r)
+	s.Window.PeakUsed = max(s.Window.PeakUsed, roundUp(info.UsedMemory, 1<<20))
+
+	s.evaluate(in, now, oom, r, closed)
+	return s
+}
+
+// skipReason returns why the input gives no sample of the master, or "".
+func skipReason(in Input) string {
+	info := in.Info
+	switch {
+	case !in.Healthy:
+		return ReasonNotHealthy
+	case info == nil:
+		return ReasonNoInfo
+	case info.Role != "master":
+		return ReasonNotMaster
+	}
+	return ""
+}
+
+// observeRunID starts the windows again when the run_id of Redis changed. It
+// reports whether Redis restarted after an earlier sample.
+func (s *State) observeRunID(info *redis.AutoscalerInfo, now int64) bool {
+	if info.RunID == s.RunID {
+		return false
+	}
+	// A restart loses the data or loads it again, so the earlier windows
+	// do not show the memory use after the restart. The first sample only
+	// sets the baseline of the OOM count.
+	restarted := s.RunID != ""
+	s.RunID, s.OOMErrors = info.RunID, info.OOMErrors
+	s.Window = Window{}
+	s.setHighWindows(0, now)
+	s.setRecommended(0, now)
+	return restarted
+}
+
+// warmUpReason returns why the memory use of Redis does not count yet, or "".
+func warmUpReason(info *redis.AutoscalerInfo) string {
+	switch {
+	case info.UptimeSeconds < int64(MinUptime/time.Second):
+		return ReasonWarmUp
+	case info.Loading:
+		return ReasonLoading
+	case info.SyncInProgress:
+		return ReasonSyncing
+	}
+	return ""
+}
+
+// advanceWindow starts the window again after a change of the limit or of the
+// clock, and closes the window that ended. It reports whether a window closed.
+func (s *State) advanceWindow(limit, now int64) bool {
+	if s.Limit != limit {
 		// The peaks of the earlier limit do not show the use with this one.
 		// Without the reset, the window open at a step ends high, and a
 		// second step follows at once.
-		if in.Limit < s.Limit {
+		if limit < s.Limit {
 			// The recommendation is a step from the earlier, higher limit.
 			s.setRecommended(0, now)
 		}
-		s.Limit, s.Window = in.Limit, Window{}
+		s.Limit, s.Window = limit, Window{}
 		s.setHighWindows(0, now)
 	}
 	if s.Window.Start > now {
@@ -250,10 +286,12 @@ func Observe(s State, in Input) State {
 	if s.Window.Start == 0 {
 		s.Window.Start = now
 	}
-	r := usedRatio(info, in.Limit)
-	s.Window.PeakRatio = max(s.Window.PeakRatio, r)
-	s.Window.PeakUsed = max(s.Window.PeakUsed, roundUp(info.UsedMemory, 1<<20))
+	return closed
+}
 
+// evaluate sets the recommendation and the reason of the sample with the used
+// ratio r.
+func (s *State) evaluate(in Input, now int64, oom bool, r float64, closed bool) {
 	switch {
 	case oom:
 		s.recommend(in.Limit, in.Max, now, ReasonOOM)
@@ -274,7 +312,6 @@ func Observe(s State, in Input) State {
 	default:
 		s.Reason = ReasonHigh
 	}
-	return s
 }
 
 // Report returns the status view of the state for the current limit and
