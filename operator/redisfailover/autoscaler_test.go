@@ -16,7 +16,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/utils/ptr"
 
 	v1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -59,7 +58,7 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 			mrfh.On("SetSentinelCustomConfig", sentinel, rf).Return(nil)
 		},
 		"operator-managed": func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
-			rf.Spec.Sentinel.Enabled = ptr.To(false)
+			rf.Spec.Sentinel.Enabled = new(false)
 			mrfc.On("IsRedisRunning", rf).Return(true)
 			mrfc.On("GetNumberMasters", rf).Return(1, nil)
 			mrfc.On("CheckMasterHealth", rf).Return(true, master, nil)
@@ -142,7 +141,7 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 		t.Run(autoscaling, func(t *testing.T) {
 			rf := generateRF(false, false)
 			rf.Finalizers = []string{"redisfailovers.databases.spotahome.com/finalizer"}
-			rf.Spec.Sentinel.Enabled = ptr.To(false)
+			rf.Spec.Sentinel.Enabled = new(false)
 			rf.Spec.Redis.Resources.Limits = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}
 			if autoscaling != "unset" {
 				max := resource.MustParse("2Gi")

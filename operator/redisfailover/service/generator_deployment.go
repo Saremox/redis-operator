@@ -58,7 +58,7 @@ func generateSentinelPodSpec(rf *redisfailoverv1.RedisFailover, labels map[strin
 		NodeSelector:                 rf.Spec.Sentinel.NodeSelector,
 		SecurityContext:              getSecurityContext(rf.Spec.Sentinel.SecurityContext),
 		HostNetwork:                  rf.Spec.Sentinel.HostNetwork,
-		DNSPolicy:                    getDnsPolicy(rf.Spec.Sentinel.DNSPolicy),
+		DNSPolicy:                    getDNSPolicy(rf.Spec.Sentinel.DNSPolicy),
 		ImagePullSecrets:             rf.Spec.Sentinel.ImagePullSecrets,
 		PriorityClassName:            rf.Spec.Sentinel.PriorityClassName,
 		ServiceAccountName:           serviceAccountName,

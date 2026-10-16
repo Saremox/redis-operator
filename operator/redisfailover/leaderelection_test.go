@@ -256,7 +256,7 @@ func TestLeaseRunnerLeavesALeaseTakenOverByAnotherReplica(t *testing.T) {
 		takenOver.Store(true)
 		lease, err := kube.CoordinationV1().Leases("ns").Get(context.Background(), lockKey, metav1.GetOptions{})
 		require.NoError(t, err)
-		lease.Spec.HolderIdentity = ptr.To("other")
+		lease.Spec.HolderIdentity = new("other")
 		_, err = kube.CoordinationV1().Leases("ns").Update(context.Background(), lease, metav1.UpdateOptions{})
 		require.NoError(t, err)
 		return nil

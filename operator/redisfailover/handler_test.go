@@ -14,7 +14,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -308,7 +307,7 @@ func TestHandleCheckAndHealError(t *testing.T) {
 	// minimal Ensure() call graph (see TestEnsure `don't use exporter` case,
 	// with sentinels also disabled).
 	rf := generateRF(false, false)
-	rf.Spec.Sentinel.Enabled = ptr.To(false)
+	rf.Spec.Sentinel.Enabled = new(false)
 
 	checkErr := errors.New("get number masters boom")
 

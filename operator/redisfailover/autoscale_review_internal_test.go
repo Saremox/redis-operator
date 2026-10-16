@@ -16,7 +16,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
@@ -68,7 +67,7 @@ func TestAutoscaleRevertWithALaggingStatefulSetStatus(t *testing.T) {
 				it.check.On("GetRedisesSlavesPods", it.rf).Return([]string{}, nil)
 			}
 			if p.sentinel {
-				it.rf.Spec.Sentinel.Enabled = ptr.To(true)
+				it.rf.Spec.Sentinel.Enabled = new(true)
 			}
 			it.k8s.On("DeletePod", "testns", mock.Anything).Return(nil)
 			it.resizeErr = forbidden

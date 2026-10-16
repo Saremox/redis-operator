@@ -377,17 +377,16 @@ func TestSplitLines(t *testing.T) {
 	}
 }
 
-func TestIndexByte(t *testing.T) {
-	assert.Equal(t, 3, indexByte("foo:bar", ':'))
-	assert.Equal(t, -1, indexByte("foobar", ':'))
-	assert.Equal(t, 0, indexByte(":foo", ':'))
+// A line splits at its first colon. A line without a key is not a field.
+func TestParseRedisInfoSplitsAtTheFirstColon(t *testing.T) {
+	result := parseRedisInfo("foo:bar:baz\nfoobar\n:foo\n")
+	assert.Equal(t, map[string]string{"foo": "bar:baz"}, result)
 }
 
 func TestHealthServerStartStop(t *testing.T) {
 	h := NewHealthServer(0, "6379", "") // Port 0 = random available port
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Start should not error (even without Redis)
 	err := h.Start(ctx)
@@ -415,8 +414,7 @@ func TestHealthServerStartReturnsBindError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := t.Context()
 
 			h := NewHealthServer(tt.port, "6379", "")
 			err := h.Start(ctx)
@@ -434,8 +432,7 @@ func TestHealthServerStartServesHealthz(t *testing.T) {
 	// Port "0" makes the Redis ping fail, so /healthz reports unhealthy.
 	h := NewHealthServer(0, "0", "")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	require.NoError(t, h.Start(ctx))
 	defer func() {
@@ -475,9 +472,7 @@ func (f *fakeRedis) start(t *testing.T) string {
 		conns []net.Conn
 		wg    sync.WaitGroup
 	)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
@@ -486,13 +481,11 @@ func (f *fakeRedis) start(t *testing.T) string {
 			mu.Lock()
 			conns = append(conns, conn)
 			mu.Unlock()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				f.serve(conn)
-			}()
+			})
 		}
-	}()
+	})
 	t.Cleanup(func() {
 		_ = ln.Close()
 		mu.Lock()
@@ -619,8 +612,7 @@ func TestHealthServerReportsReadyRedis(t *testing.T) {
 	port := (&fakeRedis{info: "role:master\r\nloading:0\r\nconnected_clients:3\r\n"}).start(t)
 	h := NewHealthServer(0, port, "")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	require.NoError(t, h.Start(ctx))
 	defer func() {
