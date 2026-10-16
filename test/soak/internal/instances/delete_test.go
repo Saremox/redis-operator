@@ -25,17 +25,23 @@ import (
 )
 
 // deleteEnv records the calls of both fakes in one order, without repeats in
-// a row.
+// a row. It cancels the run at the 40th call, so that a wait that never ends
+// repeats a few times.
 type deleteEnv struct {
-	kube  *fake.Clientset
-	rfs   *rffake.Clientset
-	mu    sync.Mutex
-	calls []string
+	kube   *fake.Clientset
+	rfs    *rffake.Clientset
+	mu     sync.Mutex
+	calls  []string
+	n      int
+	cancel context.CancelFunc
 }
 
 func (e *deleteEnv) record(a k8stesting.Action) (bool, runtime.Object, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.n++; e.n == 40 {
+		e.cancel()
+	}
 	c := a.GetVerb() + " " + a.GetResource().Resource
 	if n := len(e.calls); n == 0 || e.calls[n-1] != c {
 		e.calls = append(e.calls, c)
@@ -54,7 +60,7 @@ func fail(err error) k8stesting.ReactionFunc {
 }
 
 // Delete calls the API in a fixed order, and stops at the first fault. A
-// fault in a wait repeats the wait until ctx is done.
+// fault in a wait repeats the wait until ctx is canceled.
 func TestDeleteOrder(t *testing.T) {
 	labels := map[string]string{"app.kubernetes.io/part-of": "redis-failover", "app.kubernetes.io/name": "chain"}
 	denied := errors.New("denied")
@@ -79,29 +85,29 @@ func TestDeleteOrder(t *testing.T) {
 		},
 			calls: "delete redisfailovers, " + waitObjects + ", " + waitVolumes + ", delete secrets"},
 		{name: "RedisFailover stays", setup: func(e *deleteEnv) { e.rfs.PrependReactor("get", "redisfailovers", fail(denied)) },
-			calls: "delete redisfailovers, get redisfailovers", err: context.DeadlineExceeded.Error()},
+			calls: "delete redisfailovers, get redisfailovers", err: context.Canceled.Error()},
 		{name: "StatefulSet stays", objects: []runtime.Object{&appsv1.StatefulSet{ObjectMeta: object("sts", "rfr-chain", labels)}},
-			calls: "delete redisfailovers, get redisfailovers, get statefulsets, get redisfailovers, get statefulsets", err: context.DeadlineExceeded.Error()},
+			calls: "delete redisfailovers, get redisfailovers, get statefulsets, get redisfailovers, get statefulsets", err: context.Canceled.Error()},
 		{name: "Deployment stays", objects: []runtime.Object{&appsv1.Deployment{ObjectMeta: object("deploy", "rfs-chain", labels)}},
-			calls: "delete redisfailovers, get redisfailovers, get statefulsets, get deployments, get redisfailovers", err: context.DeadlineExceeded.Error()},
+			calls: "delete redisfailovers, get redisfailovers, get statefulsets, get deployments, get redisfailovers", err: context.Canceled.Error()},
 		{name: "pod list fails", setup: func(e *deleteEnv) { e.kube.PrependReactor("list", "pods", fail(denied)) },
-			calls: "delete redisfailovers, " + waitObjects + ", get redisfailovers", err: context.DeadlineExceeded.Error()},
+			calls: "delete redisfailovers, " + waitObjects + ", get redisfailovers", err: context.Canceled.Error()},
 		{name: "pod stays", objects: []runtime.Object{&corev1.Pod{ObjectMeta: object("pod", "rfr-chain-0", labels)}},
-			calls: "delete redisfailovers, " + waitObjects + ", get redisfailovers", err: context.DeadlineExceeded.Error()},
+			calls: "delete redisfailovers, " + waitObjects + ", get redisfailovers", err: context.Canceled.Error()},
 		{name: "volume list fails", setup: func(e *deleteEnv) { e.kube.PrependReactor("list", "persistentvolumeclaims", fail(denied)) },
-			calls: "delete redisfailovers, " + waitObjects + ", " + waitVolumes, err: context.DeadlineExceeded.Error()},
+			calls: "delete redisfailovers, " + waitObjects + ", " + waitVolumes, err: context.Canceled.Error()},
 		{name: "volume delete fails", objects: []runtime.Object{&corev1.PersistentVolumeClaim{ObjectMeta: object("pvc", "data-0", labels)}},
 			setup: func(e *deleteEnv) { e.kube.PrependReactor("delete", "persistentvolumeclaims", fail(denied)) },
-			calls: "delete redisfailovers, " + waitObjects + ", " + waitVolumes + ", delete persistentvolumeclaims, " + waitVolumes, err: context.DeadlineExceeded.Error()},
+			calls: "delete redisfailovers, " + waitObjects + ", " + waitVolumes + ", delete persistentvolumeclaims, " + waitVolumes, err: context.Canceled.Error()},
 		{name: "volume delete not found", objects: []runtime.Object{&corev1.PersistentVolumeClaim{ObjectMeta: object("pvc", "data-0", labels)}},
 			setup: func(e *deleteEnv) { e.kube.PrependReactor("delete", "persistentvolumeclaims", fail(notFound)) },
-			calls: "delete redisfailovers, " + waitObjects + ", " + waitVolumes + ", delete persistentvolumeclaims, " + waitVolumes, err: context.DeadlineExceeded.Error()},
+			calls: "delete redisfailovers, " + waitObjects + ", " + waitVolumes + ", delete persistentvolumeclaims, " + waitVolumes, err: context.Canceled.Error()},
 		{name: "volume in deletion", objects: []runtime.Object{&corev1.PersistentVolumeClaim{ObjectMeta: func() metav1.ObjectMeta {
 			m := object("pvc", "data-0", labels)
 			m.DeletionTimestamp = &metav1.Time{Time: time.Now()}
 			m.Finalizers = []string{"x"}
 			return m
-		}()}}, calls: "delete redisfailovers, " + waitObjects + ", " + waitVolumes, err: context.DeadlineExceeded.Error()},
+		}()}}, calls: "delete redisfailovers, " + waitObjects + ", " + waitVolumes, err: context.Canceled.Error()},
 		{name: "secret delete fails", setup: func(e *deleteEnv) { e.kube.PrependReactor("delete", "secrets", fail(denied)) },
 			calls: "delete redisfailovers, " + waitObjects + ", " + waitVolumes + ", delete secrets", err: "denied"},
 		{name: "secret not found", setup: func(e *deleteEnv) { e.kube.PrependReactor("delete", "secrets", fail(notFound)) },
@@ -109,7 +115,10 @@ func TestDeleteOrder(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			e := &deleteEnv{kube: fake.NewClientset(c.objects...), rfs: rffake.NewSimpleClientset(&redisfailoverv1.RedisFailover{ObjectMeta: object("rf", "chain", nil)})}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			e := &deleteEnv{kube: fake.NewClientset(c.objects...), rfs: rffake.NewSimpleClientset(&redisfailoverv1.RedisFailover{ObjectMeta: object("rf", "chain", nil)}),
+				cancel: cancel}
 			if c.setup != nil {
 				c.setup(e)
 			}
@@ -119,9 +128,7 @@ func TestDeleteOrder(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			i.poll = 10 * time.Millisecond
-			ctx, cancel := context.WithTimeout(context.Background(), 35*time.Millisecond)
-			defer cancel()
+			i.poll = time.Millisecond
 			got := ""
 			if err := i.Delete(ctx); err != nil {
 				got = err.Error()
@@ -136,7 +143,7 @@ func TestDeleteOrder(t *testing.T) {
 				t.Errorf("calls %s\nwant  %s", e.got(), c.calls)
 			}
 			// A wait that fails never reaches a later step.
-			if c.err == context.DeadlineExceeded.Error() && slices.Contains(e.calls, "delete secrets") {
+			if c.err == context.Canceled.Error() && slices.Contains(e.calls, "delete secrets") {
 				t.Errorf("calls %s reach the Secret", e.got())
 			}
 		})
