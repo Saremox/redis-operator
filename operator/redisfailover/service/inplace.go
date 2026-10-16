@@ -724,25 +724,31 @@ func keepsTemplate(pod *corev1.Pod, t *corev1.PodTemplateSpec) bool {
 	}
 	for _, c := range t.Spec.Containers {
 		for _, got := range []*corev1.ResourceRequirements{spec[c.Name], applied[c.Name]} {
-			if got == nil {
-				return false
-			}
-			want := withDefaultRequests(c.Resources)
-			if q, ok := want.Limits[corev1.ResourceMemory]; ok && c.Name == redisContainerName {
-				if got.Limits.Memory().Cmp(q) < 0 {
-					return false
-				}
-				want.Limits[corev1.ResourceMemory] = got.Limits[corev1.ResourceMemory]
-				if r, ok := got.Requests[corev1.ResourceMemory]; ok && want.Requests.Memory().Equal(q) {
-					want.Requests[corev1.ResourceMemory] = r
-				}
-			}
-			if !sameResizable(*got, want) {
+			if !keepsResources(got, c) {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+// keepsResources reports whether got has the resources of the template
+// container c, with a redis memory limit at or above the one of c.
+func keepsResources(got *corev1.ResourceRequirements, c corev1.Container) bool {
+	if got == nil {
+		return false
+	}
+	want := withDefaultRequests(c.Resources)
+	if q, ok := want.Limits[corev1.ResourceMemory]; ok && c.Name == redisContainerName {
+		if got.Limits.Memory().Cmp(q) < 0 {
+			return false
+		}
+		want.Limits[corev1.ResourceMemory] = got.Limits[corev1.ResourceMemory]
+		if r, ok := got.Requests[corev1.ResourceMemory]; ok && want.Requests.Memory().Equal(q) {
+			want.Requests[corev1.ResourceMemory] = r
+		}
+	}
+	return sameResizable(*got, want)
 }
 
 func sameResizable(a, b corev1.ResourceRequirements) bool {
