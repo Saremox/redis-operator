@@ -1585,6 +1585,17 @@ func TestSlaveIsReady_IPv6MetricLabel(t *testing.T) {
 	rec.AssertExpectations(t)
 }
 
+// MonitorRedisWithPort sends the command to a Sentinel. The metrics find the
+// pod name of the IP by the kind.
+func TestMonitorRedisWithPort_MetricKind(t *testing.T) {
+	rec := &mMetrics.Recorder{}
+	rec.On("RecordRedisOperation", metrics.KIND_SENTINEL, "127.0.0.2", metrics.MONITOR_REDIS_WITH_PORT, metrics.FAIL, mock.Anything).Once()
+	c := New(rec)
+
+	require.Error(t, c.MonitorRedisWithPort("127.0.0.2", "10.0.0.1", "6379", "2", ""))
+	rec.AssertExpectations(t)
+}
+
 func TestApplyRedisConfig_IPv6MetricLabel(t *testing.T) {
 	port, err := findFreePort()
 	require.NoError(t, err)

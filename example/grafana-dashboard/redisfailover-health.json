@@ -46,7 +46,7 @@
         "type": "prometheus",
         "uid": "FoDDSbR7k"
       },
-      "description": "in check and heal process, if any of the sentinel checks are failing, it is reported here.\n\n```\nIP of sentinel instance (if applicable) -> Check / Operation performed that failed\n```",
+      "description": "in check and heal process, if any of the sentinel checks are failing, it is reported here.\n\n```\nPod of sentinel instance (if applicable) -> Check / Operation performed that failed\n```",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -175,9 +175,9 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": " (rate(redis_operator_controller_sentinel_checks_total{instance=~\"$sentinel_pod_ip\",status=\"UNHEALTHY\"}[$bucket_interval]) * 60) > bool 0",
+          "expr": " (rate(redis_operator_controller_sentinel_checks_total{pod_name=~\"$sentinel_pod\",status=\"UNHEALTHY\"}[$bucket_interval]) * 60) > bool 0",
           "instant": false,
-          "legendFormat": "{{instance}} -> {{indicator}}",
+          "legendFormat": "{{pod_name}} -> {{indicator}}",
           "range": true,
           "refId": "A"
         }
@@ -190,7 +190,7 @@
         "type": "prometheus",
         "uid": "FoDDSbR7k"
       },
-      "description": "in check and heal process, if any of the redis checks are failing, it is reported here.\n\n```\nIP of redis instance (if applicable) -> Check / Operation performed\n```",
+      "description": "in check and heal process, if any of the redis checks are failing, it is reported here.\n\n```\nPod of redis instance (if applicable) -> Check / Operation performed\n```",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -343,9 +343,9 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": " (rate(redis_operator_controller_redis_checks_total{instance=~\"$redis_pod_ip|NA\",status=\"UNHEALTHY\"}[$bucket_interval]) * 60) > bool 0",
+          "expr": " (rate(redis_operator_controller_redis_checks_total{pod_name=~\"$redis_pod|NA\",status=\"UNHEALTHY\"}[$bucket_interval]) * 60) > bool 0",
           "instant": false,
-          "legendFormat": "{{indicator}} {{instance}} {{resource}}",
+          "legendFormat": "{{indicator}} {{pod_name}} {{resource}}",
           "range": true,
           "refId": "A"
         }
@@ -358,7 +358,7 @@
         "type": "prometheus",
         "uid": "FoDDSbR7k"
       },
-      "description": "in check and heal process, steps that have been successfully executed are reported here\n\nin check and heal process, steps that have been successfully executed are reported here\n\nreading the legend\n```\nIP of sentinel instance (if applicable) -> Check / Operation performed\n```",
+      "description": "in check and heal process, steps that have been successfully executed are reported here\n\nin check and heal process, steps that have been successfully executed are reported here\n\nreading the legend\n```\nPod of sentinel instance (if applicable) -> Check / Operation performed\n```",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -487,8 +487,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(min by (indicator, instance) (rate(redis_operator_controller_sentinel_checks_total{ instance=~\"$sentinel_pod_ip\", status=\"HEALTHY\"}[$bucket_interval])) != bool 0) > 0",
-          "legendFormat": "{{instance}} {{indicator}}",
+          "expr": "(min by (indicator, pod_name) (rate(redis_operator_controller_sentinel_checks_total{ pod_name=~\"$sentinel_pod\", status=\"HEALTHY\"}[$bucket_interval])) != bool 0) > 0",
+          "legendFormat": "{{pod_name}} {{indicator}}",
           "range": true,
           "refId": "A"
         }
@@ -501,7 +501,7 @@
         "type": "prometheus",
         "uid": "FoDDSbR7k"
       },
-      "description": "in check and heal process, steps that have been successfully executed are reported here\n\nreading the legend\n```\nIP of redis instance (if applicable) -> Check / Operation performed\n```\n\n```",
+      "description": "in check and heal process, steps that have been successfully executed are reported here\n\nreading the legend\n```\nPod of redis instance (if applicable) -> Check / Operation performed\n```\n\n```",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -630,8 +630,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(min by (indicator, instance, resource) (rate(redis_operator_controller_redis_checks_total{instance=~\"$redis_pod_ip|NA\",status=\"HEALTHY\"}[$bucket_interval])) != bool 0 ) > 0",
-          "legendFormat": "{{instance}} {{indicator}}",
+          "expr": "(min by (indicator, pod_name, resource) (rate(redis_operator_controller_redis_checks_total{pod_name=~\"$redis_pod|NA\",status=\"HEALTHY\"}[$bucket_interval])) != bool 0 ) > 0",
+          "legendFormat": "{{pod_name}} {{indicator}}",
           "range": true,
           "refId": "A"
         }
@@ -744,7 +744,7 @@
         "type": "prometheus",
         "uid": "FoDDSbR7k"
       },
-      "description": "Reading the legend\n```\nREDIS/SENTINEL -> IP address -> Operation Performed -> Error Encounted\n```",
+      "description": "Reading the legend\n```\nREDIS/SENTINEL -> Pod name -> Operation Performed -> Error Encounted\n```",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -829,8 +829,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (namespace, kind, operation, status, IP, err) (rate(redis_operator_controller_redis_operations_total{IP=~\"$redis_pod_ip|$sentinel_pod_ip\",status=\"FAIL\", err!=\"SENTINEL_REGEX_NOT_FOUND\"}[$bucket_interval])) > 0",
-          "legendFormat": "{{kind}} {{IP}} {{operation}} {{err}} ",
+          "expr": "sum by (namespace, kind, operation, status, pod_name, err) (rate(redis_operator_controller_redis_operations_total{pod_name=~\"$redis_pod|$sentinel_pod\",status=\"FAIL\", err!=\"SENTINEL_REGEX_NOT_FOUND\"}[$bucket_interval])) > 0",
+          "legendFormat": "{{kind}} {{pod_name}} {{operation}} {{err}} ",
           "range": true,
           "refId": "A"
         }
@@ -942,7 +942,7 @@
         "type": "prometheus",
         "uid": "FoDDSbR7k"
       },
-      "description": "redis / sentinel calls made per second.\n\nreading the legend:\n```\nREDIS/SENTINEL -> IP address -> Operation Performed -> Status\n```",
+      "description": "redis / sentinel calls made per second.\n\nreading the legend:\n```\nREDIS/SENTINEL -> Pod name -> Operation Performed -> Status\n```",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1027,8 +1027,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (kind, operation, status, IP) (rate(redis_operator_controller_redis_operations_total{IP=~\"$redis_pod_ip|$sentinel_pod_ip\"}[$bucket_interval]))  > 0",
-          "legendFormat": "{{kind}} {{IP}} {{operation}} {{status}} ",
+          "expr": "sum by (kind, operation, status, pod_name) (rate(redis_operator_controller_redis_operations_total{pod_name=~\"$redis_pod|$sentinel_pod\"}[$bucket_interval]))  > 0",
+          "legendFormat": "{{kind}} {{pod_name}} {{operation}} {{status}} ",
           "range": true,
           "refId": "A"
         }
@@ -2675,14 +2675,14 @@
           "type": "prometheus",
           "uid": "FoDDSbR7k"
         },
-        "definition": "label_values(kube_pod_info{created_by_kind=\"StatefulSet\", created_by_name=~\"rfr-$tenant\"}, pod_ip)",
+        "definition": "label_values(kube_pod_info{created_by_kind=\"StatefulSet\", created_by_name=~\"rfr-$tenant\"}, pod)",
         "hide": 2,
         "includeAll": true,
         "multi": false,
-        "name": "redis_pod_ip",
+        "name": "redis_pod",
         "options": [],
         "query": {
-          "query": "label_values(kube_pod_info{created_by_kind=\"StatefulSet\", created_by_name=~\"rfr-$tenant\"}, pod_ip)",
+          "query": "label_values(kube_pod_info{created_by_kind=\"StatefulSet\", created_by_name=~\"rfr-$tenant\"}, pod)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
@@ -2702,14 +2702,14 @@
           "type": "prometheus",
           "uid": "FoDDSbR7k"
         },
-        "definition": "label_values(kube_pod_info{ created_by_kind=\"ReplicaSet\", created_by_name=~\"rfs-$tenant-[0-9a-z]*\"}, pod_ip)",
+        "definition": "label_values(kube_pod_info{ created_by_kind=\"ReplicaSet\", created_by_name=~\"rfs-$tenant-[0-9a-z]*\"}, pod)",
         "hide": 2,
         "includeAll": true,
         "multi": false,
-        "name": "sentinel_pod_ip",
+        "name": "sentinel_pod",
         "options": [],
         "query": {
-          "query": "label_values(kube_pod_info{ created_by_kind=\"ReplicaSet\", created_by_name=~\"rfs-$tenant-[0-9a-z]*\"}, pod_ip)",
+          "query": "label_values(kube_pod_info{ created_by_kind=\"ReplicaSet\", created_by_name=~\"rfs-$tenant-[0-9a-z]*\"}, pod)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,

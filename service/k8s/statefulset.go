@@ -80,6 +80,8 @@ func (s *StatefulSetService) GetStatefulSetPods(namespace, name string) (*corev1
 		}
 	}
 	pods.Items = owned
+	// The redis pods are the only StatefulSet pods that the operator lists.
+	setPodIPs(metrics.KIND_REDIS, pods.Items, s.metricsRecorder)
 	return pods, nil
 }
 

@@ -77,6 +77,8 @@ func (d *DeploymentService) GetDeploymentPods(namespace, name string) (*corev1.P
 		}
 	}
 	pods.Items = owned
+	// The sentinel pods are the only Deployment pods that the operator lists.
+	setPodIPs(metrics.KIND_SENTINEL, pods.Items, d.metricsRecorder)
 	return pods, nil
 }
 
