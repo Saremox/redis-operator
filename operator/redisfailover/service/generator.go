@@ -523,7 +523,6 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 	name := GetRedisName(rf)
 	namespace := rf.Namespace
 
-	redisCommand := getRedisCommand(rf)
 	selectorLabels := generateSelectorLabels(redisRoleName, rf.Name)
 	labels = util.MergeLabels(labels, selectorLabels)
 	// The operator changes the role label of the master pod, so a pod
@@ -531,18 +530,11 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 	affinityLabels := labels
 	labels = util.MergeLabels(labels, generateRedisDefaultRoleLabel())
 
-	mac := hmac.New(sha256.New, []byte(rf.Namespace+"/"+rf.Name))
-	_, _ = mac.Write([]byte(password))
-	authSecretChecksum := fmt.Sprintf("%x", mac.Sum(nil))
 	podAnnotations := util.MergeAnnotations(rf.Spec.Redis.PodAnnotations, map[string]string{
-		redisAuthSecretChecksumAnnotation: authSecretChecksum,
+		redisAuthSecretChecksumAnnotation: redisAuthSecretChecksum(rf, password),
 	})
 
-	volumeMounts := getRedisVolumeMounts(rf)
-	volumes := getRedisVolumes(rf)
-	terminationGracePeriodSeconds := getTerminationGracePeriodSeconds(rf)
-
-	ss := &appsv1.StatefulSet{
+	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations:     rf.Annotations,
 			Name:            name,
@@ -565,161 +557,195 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 					Labels:      labels,
 					Annotations: podAnnotations,
 				},
-				Spec: corev1.PodSpec{
-					Affinity:                      getAffinity(rf.Spec.Redis.Affinity, affinityLabels),
-					Tolerations:                   rf.Spec.Redis.Tolerations,
-					TopologySpreadConstraints:     rf.Spec.Redis.TopologySpreadConstraints,
-					NodeSelector:                  rf.Spec.Redis.NodeSelector,
-					SecurityContext:               getSecurityContext(rf.Spec.Redis.SecurityContext),
-					HostNetwork:                   rf.Spec.Redis.HostNetwork,
-					DNSPolicy:                     getDnsPolicy(rf.Spec.Redis.DNSPolicy),
-					ImagePullSecrets:              rf.Spec.Redis.ImagePullSecrets,
-					PriorityClassName:             rf.Spec.Redis.PriorityClassName,
-					ServiceAccountName:            rf.Spec.Redis.ServiceAccountName,
-					AutomountServiceAccountToken:  automountServiceAccountToken(rf.Spec.Redis.ServiceAccountName),
-					EnableServiceLinks:            new(false),
-					TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
-					Containers: []corev1.Container{
-						{
-							Name:            redisContainerName,
-							Image:           rf.Spec.Redis.Image,
-							ImagePullPolicy: pullPolicy(rf.Spec.Redis.ImagePullPolicy),
-							SecurityContext: getContainerSecurityContext(rf.Spec.Redis.ContainerSecurityContext),
-							Ports: []corev1.ContainerPort{
-								{
-									Name:          "redis",
-									ContainerPort: rf.Spec.Redis.Port,
-									Protocol:      corev1.ProtocolTCP,
-								},
-							},
-							VolumeMounts: volumeMounts,
-							Command:      redisCommand,
-							Resources:    rf.Spec.Redis.Resources,
-							Lifecycle: &corev1.Lifecycle{
-								PreStop: &corev1.LifecycleHandler{
-									Exec: &corev1.ExecAction{
-										Command: []string{"/bin/sh", "/redis-shutdown/shutdown.sh"},
-									},
-								},
-							},
-						},
-					},
-					Volumes: volumes,
-				},
+				Spec: generateRedisPodSpec(rf, affinityLabels),
 			},
+			VolumeClaimTemplates: redisVolumeClaimTemplates(rf, ownerRefs),
 		},
 	}
+}
 
-	if rf.Spec.Redis.Storage.PersistentVolumeClaim != nil {
-		pvc := corev1.PersistentVolumeClaim{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: "v1",
-				Kind:       "PersistentVolumeClaim",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:              rf.Spec.Redis.Storage.PersistentVolumeClaim.Name,
-				Labels:            rf.Spec.Redis.Storage.PersistentVolumeClaim.Labels,
-				Annotations:       rf.Spec.Redis.Storage.PersistentVolumeClaim.Annotations,
-				CreationTimestamp: metav1.Time{},
-			},
-			Spec:   rf.Spec.Redis.Storage.PersistentVolumeClaim.Spec,
-			Status: rf.Spec.Redis.Storage.PersistentVolumeClaim.Status,
-		}
-		if !rf.Spec.Redis.Storage.KeepAfterDeletion {
-			// The owner reference makes Kubernetes delete the PVCs with the
-			// RedisFailover.
-			pvc.OwnerReferences = ownerRefs
-		}
-		ss.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{
-			pvc,
-		}
-	}
+func generateRedisPodSpec(rf *redisfailoverv1.RedisFailover, affinityLabels map[string]string) corev1.PodSpec {
+	terminationGracePeriodSeconds := getTerminationGracePeriodSeconds(rf)
 
-	if rf.Spec.Redis.CustomLivenessProbe != nil {
-		ss.Spec.Template.Spec.Containers[0].LivenessProbe = rf.Spec.Redis.CustomLivenessProbe
-	} else {
-		ss.Spec.Template.Spec.Containers[0].LivenessProbe = &corev1.Probe{
-			InitialDelaySeconds: graceTime,
-			TimeoutSeconds:      5,
-			FailureThreshold:    6,
-			PeriodSeconds:       15,
-			ProbeHandler: corev1.ProbeHandler{
-				Exec: &corev1.ExecAction{
-					Command: []string{
-						"sh",
-						"-c",
-						// Bounded like ready.sh: a frozen server never answers.
-						// redis-cli exits 0 on an error reply. With a Redis password,
-						// a refused login gets NOAUTH, and the grep fails the probe.
-						// A server that loads its dataset answers LOADING and is
-						// alive: a restart starts the load again.
-						fmt.Sprintf("t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p %[1]v --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'", rf.Spec.Redis.Port),
-					},
-				},
-			},
-		}
-	}
-
-	if rf.Spec.Redis.CustomReadinessProbe != nil {
-		ss.Spec.Template.Spec.Containers[0].ReadinessProbe = rf.Spec.Redis.CustomReadinessProbe
-	} else {
-		ss.Spec.Template.Spec.Containers[0].ReadinessProbe = &corev1.Probe{
-			InitialDelaySeconds: graceTime,
-			TimeoutSeconds:      5,
-			ProbeHandler: corev1.ProbeHandler{
-				Exec: &corev1.ExecAction{
-					Command: []string{"/bin/sh", "/redis-readiness/ready.sh"},
-				},
-			},
-		}
-	}
-
-	if rf.Spec.Redis.CustomStartupProbe != nil {
-		ss.Spec.Template.Spec.Containers[0].StartupProbe = rf.Spec.Redis.CustomStartupProbe
-	} else if rf.Spec.Redis.StartupConfigMap != "" {
-		ss.Spec.Template.Spec.Containers[0].StartupProbe = &corev1.Probe{
-			InitialDelaySeconds: graceTime,
-			TimeoutSeconds:      5,
-			FailureThreshold:    6,
-			PeriodSeconds:       15,
-			ProbeHandler: corev1.ProbeHandler{
-				Exec: &corev1.ExecAction{
-					Command: []string{"/bin/sh", "/redis-startup/startup.sh"},
-				},
-			},
-		}
+	spec := corev1.PodSpec{
+		Affinity:                      getAffinity(rf.Spec.Redis.Affinity, affinityLabels),
+		Tolerations:                   rf.Spec.Redis.Tolerations,
+		TopologySpreadConstraints:     rf.Spec.Redis.TopologySpreadConstraints,
+		NodeSelector:                  rf.Spec.Redis.NodeSelector,
+		SecurityContext:               getSecurityContext(rf.Spec.Redis.SecurityContext),
+		HostNetwork:                   rf.Spec.Redis.HostNetwork,
+		DNSPolicy:                     getDnsPolicy(rf.Spec.Redis.DNSPolicy),
+		ImagePullSecrets:              rf.Spec.Redis.ImagePullSecrets,
+		PriorityClassName:             rf.Spec.Redis.PriorityClassName,
+		ServiceAccountName:            rf.Spec.Redis.ServiceAccountName,
+		AutomountServiceAccountToken:  automountServiceAccountToken(rf.Spec.Redis.ServiceAccountName),
+		EnableServiceLinks:            new(false),
+		TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
+		Containers:                    []corev1.Container{generateRedisContainer(rf)},
+		Volumes:                       getRedisVolumes(rf),
 	}
 
 	if rf.Spec.Redis.Exporter.Enabled {
 		exporter := createRedisExporterContainer(rf)
-		ss.Spec.Template.Spec.Containers = append(ss.Spec.Template.Spec.Containers, exporter)
+		spec.Containers = append(spec.Containers, exporter)
 	}
 
 	// Runs before any user-supplied init container, so a restore or migration
 	// step starts from a directory with no stale tempfiles in it.
-	ss.Spec.Template.Spec.InitContainers = append(
+	spec.InitContainers = append(
 		[]corev1.Container{createRDBTempfileCleanupContainer(rf)},
-		ss.Spec.Template.Spec.InitContainers...,
+		spec.InitContainers...,
 	)
 
 	if rf.Spec.Redis.InitContainers != nil {
 		initContainers := getInitContainersWithRedisEnv(rf)
-		ss.Spec.Template.Spec.InitContainers = append(ss.Spec.Template.Spec.InitContainers, initContainers...)
+		spec.InitContainers = append(spec.InitContainers, initContainers...)
 	}
 
 	if rf.Spec.Redis.ExtraContainers != nil {
 		extraContainers := getExtraContainersWithRedisEnv(rf)
-		ss.Spec.Template.Spec.Containers = append(ss.Spec.Template.Spec.Containers, extraContainers...)
+		spec.Containers = append(spec.Containers, extraContainers...)
 	}
 
 	// The env of the user comes before the env of the operator. On a duplicate
 	// name the last one wins, so the user cannot replace REDIS_ADDR, REDIS_PORT,
 	// REDIS_USER, and REDIS_PASSWORD (only set with auth.secretPath).
 	redisEnv := getRedisEnv(rf)
-	mainEnv := append(ss.Spec.Template.Spec.Containers[0].Env, rf.Spec.Redis.Env...)
-	ss.Spec.Template.Spec.Containers[0].Env = append(mainEnv, redisEnv...)
+	mainEnv := append(spec.Containers[0].Env, rf.Spec.Redis.Env...)
+	spec.Containers[0].Env = append(mainEnv, redisEnv...)
 
-	return ss
+	return spec
+}
+
+func redisAuthSecretChecksum(rf *redisfailoverv1.RedisFailover, password string) string {
+	mac := hmac.New(sha256.New, []byte(rf.Namespace+"/"+rf.Name))
+	_, _ = mac.Write([]byte(password))
+	return fmt.Sprintf("%x", mac.Sum(nil))
+}
+
+// generateRedisContainer returns the Redis container without its env.
+func generateRedisContainer(rf *redisfailoverv1.RedisFailover) corev1.Container {
+	return corev1.Container{
+		Name:            redisContainerName,
+		Image:           rf.Spec.Redis.Image,
+		ImagePullPolicy: pullPolicy(rf.Spec.Redis.ImagePullPolicy),
+		SecurityContext: getContainerSecurityContext(rf.Spec.Redis.ContainerSecurityContext),
+		Ports: []corev1.ContainerPort{
+			{
+				Name:          "redis",
+				ContainerPort: rf.Spec.Redis.Port,
+				Protocol:      corev1.ProtocolTCP,
+			},
+		},
+		VolumeMounts: getRedisVolumeMounts(rf),
+		Command:      getRedisCommand(rf),
+		Resources:    rf.Spec.Redis.Resources,
+		Lifecycle: &corev1.Lifecycle{
+			PreStop: &corev1.LifecycleHandler{
+				Exec: &corev1.ExecAction{
+					Command: []string{"/bin/sh", "/redis-shutdown/shutdown.sh"},
+				},
+			},
+		},
+		LivenessProbe:  redisLivenessProbe(rf),
+		ReadinessProbe: redisReadinessProbe(rf),
+		StartupProbe:   redisStartupProbe(rf),
+	}
+}
+
+func redisVolumeClaimTemplates(rf *redisfailoverv1.RedisFailover, ownerRefs []metav1.OwnerReference) []corev1.PersistentVolumeClaim {
+	if rf.Spec.Redis.Storage.PersistentVolumeClaim == nil {
+		return nil
+	}
+	pvc := corev1.PersistentVolumeClaim{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "PersistentVolumeClaim",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              rf.Spec.Redis.Storage.PersistentVolumeClaim.Name,
+			Labels:            rf.Spec.Redis.Storage.PersistentVolumeClaim.Labels,
+			Annotations:       rf.Spec.Redis.Storage.PersistentVolumeClaim.Annotations,
+			CreationTimestamp: metav1.Time{},
+		},
+		Spec:   rf.Spec.Redis.Storage.PersistentVolumeClaim.Spec,
+		Status: rf.Spec.Redis.Storage.PersistentVolumeClaim.Status,
+	}
+	if !rf.Spec.Redis.Storage.KeepAfterDeletion {
+		// The owner reference makes Kubernetes delete the PVCs with the
+		// RedisFailover.
+		pvc.OwnerReferences = ownerRefs
+	}
+	return []corev1.PersistentVolumeClaim{
+		pvc,
+	}
+}
+
+func redisLivenessProbe(rf *redisfailoverv1.RedisFailover) *corev1.Probe {
+	if rf.Spec.Redis.CustomLivenessProbe != nil {
+		return rf.Spec.Redis.CustomLivenessProbe
+	}
+	return &corev1.Probe{
+		InitialDelaySeconds: graceTime,
+		TimeoutSeconds:      5,
+		FailureThreshold:    6,
+		PeriodSeconds:       15,
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{
+					"sh",
+					"-c",
+					// Bounded like ready.sh: a frozen server never answers.
+					// redis-cli exits 0 on an error reply. With a Redis password,
+					// a refused login gets NOAUTH, and the grep fails the probe.
+					// A server that loads its dataset answers LOADING and is
+					// alive: a restart starts the load again.
+					fmt.Sprintf("t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p %[1]v --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'", rf.Spec.Redis.Port),
+				},
+			},
+		},
+	}
+}
+
+func redisReadinessProbe(rf *redisfailoverv1.RedisFailover) *corev1.Probe {
+	if rf.Spec.Redis.CustomReadinessProbe != nil {
+		return rf.Spec.Redis.CustomReadinessProbe
+	}
+	return &corev1.Probe{
+		InitialDelaySeconds: graceTime,
+		TimeoutSeconds:      5,
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{"/bin/sh", "/redis-readiness/ready.sh"},
+			},
+		},
+	}
+}
+
+func redisStartupProbe(rf *redisfailoverv1.RedisFailover) *corev1.Probe {
+	if rf.Spec.Redis.CustomStartupProbe != nil {
+		return rf.Spec.Redis.CustomStartupProbe
+	}
+	if rf.Spec.Redis.StartupConfigMap == "" {
+		return nil
+	}
+	return startupScriptProbe("/redis-startup/startup.sh")
+}
+
+// startupScriptProbe returns the startup probe that runs the startup.sh of a
+// startupConfigMap.
+func startupScriptProbe(script string) *corev1.Probe {
+	return &corev1.Probe{
+		InitialDelaySeconds: graceTime,
+		TimeoutSeconds:      5,
+		FailureThreshold:    6,
+		PeriodSeconds:       15,
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{"/bin/sh", script},
+			},
+		},
+	}
 }
 
 func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *appsv1.Deployment {
