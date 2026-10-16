@@ -161,6 +161,37 @@ The invariants follow the current mode. When an invariant does not apply,
 for example `sentinel_agreement` after Sentinel is off, the tester removes
 its series.
 
+### A full master under noeviction
+
+The operator sets `maxmemory` below the used memory only with an
+`allkeys-*` policy. With other policies, it keeps `maxmemory`. Thus a
+master under `noeviction` refuses writes with `OOM` when its data reaches
+`maxmemory`, for example after `fill_burst`, a load or a lower percent.
+Nothing frees the memory until a change of the data, the policy, the
+percent or the limit. This is by design, and not a finding.
+
+The master is full when its policy is `noeviction` and `used_memory` minus
+`mem_not_counted_for_evict` is at least `maxmemory` minus a margin. The
+margin is 1 percent of `maxmemory`, 1Mi at least, because the used memory
+changes between the refused write and the `INFO` of the observer. The
+observer reads these fields in its `INFO` of each pod.
+
+A write probe that fails with `OOM` while the master is full sets
+`redis_soak_expected_not_writable{reason="noeviction_full"}` to 1, and adds
+the probe interval to `redis_soak_expected_not_writable_seconds_total`.
+`RedisSoakNotWritable` ignores such a client. Another error of the probe
+is not expected, also while the master is full.
+
+A full state is expected for `observer.noevictionFullLimit`, 30 minutes by
+default. After that time, it counts one time as the finding
+`noeviction_full`, and `RedisSoakNotWritable` fires again, because the
+fill, the ledger and the mutations that need writes stop.
+
+The finding `maxmemory_below_used` counts a `maxmemory` of a pod that
+decreased between two rounds below the used memory of that pod, plus the
+margin, under a policy that is not `allkeys-*`. Both findings count also
+inside a window, as `oom_killed` does.
+
 ### Convergence windows
 
 A mutation opens a window before the mutator applies it. The window closes
@@ -598,7 +629,8 @@ the last scrape in `bin/kind-e2e-artifacts/`. The workflow
 window" is `redis_soak_window_open == 0`.
 
 - `RedisSoakNotWritable`: a path is not writable for 1 minute outside a
-  window.
+  window, and the client does not get the expected `OOM` of a full master
+  (see [A full master under noeviction](#a-full-master-under-noeviction)).
 - `RedisSoakMasters`: an instance has no master or more than one outside a
   window.
 - `RedisSoakFinding`: a finding.

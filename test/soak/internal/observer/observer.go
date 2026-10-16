@@ -89,6 +89,13 @@ type Observer struct {
 	// mutation tells what the running mutation may do to the pods.
 	judge    *autoscale.Judge
 	mutation func() (autoscale.Allow, bool)
+	// fullSince is when the master became full under noeviction, zero when it
+	// is not, and fullFound whether that became a finding after fullLimit.
+	// maxmemory is the last maxmemory of each redis pod, by UID.
+	fullSince time.Time
+	fullFound bool
+	fullLimit time.Duration
+	maxmemory map[string]int64
 
 	ok         *prometheus.GaugeVec
 	violation  prometheus.ObserverVec
@@ -115,6 +122,7 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		lock:       lock,
 		log:        log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
 		tracker:    newTracker(cfg.Observer.ConvergenceTimeout.Duration, config.MinDwell),
+		fullLimit:  cfg.Observer.NoevictionFullLimit.Duration,
 		holds:      make(chan *Hold, 1),
 		lagPods:    map[string]bool{},
 		failoverCh: make(chan string, 1),
@@ -134,6 +142,10 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 	// Alerts use the increase of findings_total, which does not show a series
 	// that starts at 1.
 	o.findings.WithLabelValues(invOOMKilled)
+	if in.MaxMemoryPolicy != "" {
+		o.findings.WithLabelValues(invNoevictionFull)
+		o.findings.WithLabelValues(invMaxmemoryBelowUsed)
+	}
 	if in.Autoscale != nil {
 		o.judge = autoscale.NewJudge()
 		for _, j := range autoscale.Judges {
@@ -197,6 +209,9 @@ type view struct {
 	// and agree on the master, so it can be probed through them.
 	sentinelPath bool
 	redis        []PodAddr
+	// noevictionFull is a master that refuses writes by design, see
+	// NoevictionFull.
+	noevictionFull bool
 }
 
 // PodAddr is a redis pod's address.
@@ -467,6 +482,7 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 	o.rfHealthy.Set(gauge(s.state == redisfailoverv1.HealthyState))
 	o.observeMaster(s)
 	o.observeOOMKills(s)
+	o.judgeMaxmemory(s)
 	v := &view{
 		at:           now,
 		failing:      failing,
@@ -478,6 +494,7 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 		master:       o.master.Name,
 		sentinelPath: o.sentinelUp,
 	}
+	v.noevictionFull = o.judgeNoeviction(now, s)
 	if _, err := s.master(); err == nil {
 		v.masterIP = o.master.IP
 	}
