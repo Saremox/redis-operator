@@ -54,22 +54,14 @@ func (p *ConfigMapService) GetConfigMap(namespace, name string) (*corev1.ConfigM
 func (p *ConfigMapService) CreateConfigMap(namespace string, configMap *corev1.ConfigMap) error {
 	_, err := p.kubeClient.CoreV1().ConfigMaps(namespace).Create(context.TODO(), configMap, metav1.CreateOptions{})
 	recordMetrics(namespace, "ConfigMap", configMap.GetName(), "CREATE", err, p.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("create configmap %s/%s: %w", namespace, configMap.Name, err)
-	}
-	p.logger.WithField("namespace", namespace).WithField("configMap", configMap.Name).Debugf("configMap created")
-	return nil
+	return writeResult(err, p.logger, namespace, "configMap", configMap.Name, "create configmap", "configMap created")
 }
 
 // UpdateConfigMap replaces the stored ConfigMap with the given ConfigMap.
 func (p *ConfigMapService) UpdateConfigMap(namespace string, configMap *corev1.ConfigMap) error {
 	_, err := p.kubeClient.CoreV1().ConfigMaps(namespace).Update(context.TODO(), configMap, metav1.UpdateOptions{})
 	recordMetrics(namespace, "ConfigMap", configMap.GetName(), "UPDATE", err, p.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("update configmap %s/%s: %w", namespace, configMap.Name, err)
-	}
-	p.logger.WithField("namespace", namespace).WithField("configMap", configMap.Name).Debugf("configMap updated")
-	return nil
+	return writeResult(err, p.logger, namespace, "configMap", configMap.Name, "update configmap", "configMap updated")
 }
 
 // CreateOrUpdateConfigMap creates the ConfigMap, or updates the stored

@@ -86,22 +86,14 @@ func (d *DeploymentService) GetDeploymentPods(namespace, name string) (*corev1.P
 func (d *DeploymentService) CreateDeployment(namespace string, deployment *appsv1.Deployment) error {
 	_, err := d.kubeClient.AppsV1().Deployments(namespace).Create(context.TODO(), deployment, metav1.CreateOptions{})
 	recordMetrics(namespace, "Deployment", deployment.GetName(), "CREATE", err, d.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("create deployment %s/%s: %w", namespace, deployment.Name, err)
-	}
-	d.logger.WithField("namespace", namespace).WithField("deployment", deployment.ObjectMeta.Name).Debugf("deployment created")
-	return nil
+	return writeResult(err, d.logger, namespace, "deployment", deployment.Name, "create deployment", "deployment created")
 }
 
 // UpdateDeployment will update the given deployment.
 func (d *DeploymentService) UpdateDeployment(namespace string, deployment *appsv1.Deployment) error {
 	_, err := d.kubeClient.AppsV1().Deployments(namespace).Update(context.TODO(), deployment, metav1.UpdateOptions{})
 	recordMetrics(namespace, "Deployment", deployment.GetName(), "UPDATE", err, d.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("update deployment %s/%s: %w", namespace, deployment.Name, err)
-	}
-	d.logger.WithField("namespace", namespace).WithField("deployment", deployment.ObjectMeta.Name).Debugf("deployment updated")
-	return nil
+	return writeResult(err, d.logger, namespace, "deployment", deployment.Name, "update deployment", "deployment updated")
 }
 
 // CreateOrUpdateDeployment will update the given deployment or create it if does not exist.

@@ -103,22 +103,14 @@ func hasOrdinalName(name, prefix string) bool {
 func (s *StatefulSetService) CreateStatefulSet(namespace string, statefulSet *appsv1.StatefulSet) error {
 	_, err := s.kubeClient.AppsV1().StatefulSets(namespace).Create(context.TODO(), statefulSet, metav1.CreateOptions{})
 	recordMetrics(namespace, "StatefulSet", statefulSet.GetName(), "CREATE", err, s.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("create statefulset %s/%s: %w", namespace, statefulSet.Name, err)
-	}
-	s.logger.WithField("namespace", namespace).WithField("statefulSet", statefulSet.ObjectMeta.Name).Debugf("statefulSet created")
-	return nil
+	return writeResult(err, s.logger, namespace, "statefulSet", statefulSet.Name, "create statefulset", "statefulSet created")
 }
 
 // UpdateStatefulSet will update the given statefulset.
 func (s *StatefulSetService) UpdateStatefulSet(namespace string, statefulSet *appsv1.StatefulSet) error {
 	_, err := s.kubeClient.AppsV1().StatefulSets(namespace).Update(context.TODO(), statefulSet, metav1.UpdateOptions{})
 	recordMetrics(namespace, "StatefulSet", statefulSet.GetName(), "UPDATE", err, s.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("update statefulset %s/%s: %w", namespace, statefulSet.Name, err)
-	}
-	s.logger.WithField("namespace", namespace).WithField("statefulSet", statefulSet.ObjectMeta.Name).Debugf("statefulSet updated")
-	return nil
+	return writeResult(err, s.logger, namespace, "statefulSet", statefulSet.Name, "update statefulset", "statefulSet updated")
 }
 
 // CreateOrUpdateStatefulSet will update the statefulset or create it if does not exist.

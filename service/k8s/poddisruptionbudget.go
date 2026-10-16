@@ -52,11 +52,7 @@ func (p *PodDisruptionBudgetService) GetPodDisruptionBudget(namespace, name stri
 func (p *PodDisruptionBudgetService) CreatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
 	_, err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Create(context.TODO(), podDisruptionBudget, metav1.CreateOptions{})
 	recordMetrics(namespace, "PodDisruptionBudget", podDisruptionBudget.GetName(), "CREATE", err, p.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("create poddisruptionbudget %s/%s: %w", namespace, podDisruptionBudget.Name, err)
-	}
-	p.logger.WithField("namespace", namespace).WithField("podDisruptionBudget", podDisruptionBudget.Name).Debugf("podDisruptionBudget created")
-	return nil
+	return writeResult(err, p.logger, namespace, "podDisruptionBudget", podDisruptionBudget.Name, "create poddisruptionbudget", "podDisruptionBudget created")
 }
 
 // UpdatePodDisruptionBudget replaces the stored PodDisruptionBudget with the given
@@ -64,11 +60,7 @@ func (p *PodDisruptionBudgetService) CreatePodDisruptionBudget(namespace string,
 func (p *PodDisruptionBudgetService) UpdatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
 	_, err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Update(context.TODO(), podDisruptionBudget, metav1.UpdateOptions{})
 	recordMetrics(namespace, "PodDisruptionBudget", podDisruptionBudget.GetName(), "UPDATE", err, p.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("update poddisruptionbudget %s/%s: %w", namespace, podDisruptionBudget.Name, err)
-	}
-	p.logger.WithField("namespace", namespace).WithField("podDisruptionBudget", podDisruptionBudget.Name).Debugf("podDisruptionBudget updated")
-	return nil
+	return writeResult(err, p.logger, namespace, "podDisruptionBudget", podDisruptionBudget.Name, "update poddisruptionbudget", "podDisruptionBudget updated")
 }
 
 // CreateOrUpdatePodDisruptionBudget creates the PodDisruptionBudget, or

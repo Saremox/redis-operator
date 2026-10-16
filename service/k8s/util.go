@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -90,6 +91,16 @@ func createOrUpdate[T metav1.Object](namespace string, desired T, calls objectCa
 	}
 
 	return calls.update(namespace, desired)
+}
+
+// writeResult returns the error of a create or an update with failed and the
+// object. Without an error, it logs done.
+func writeResult(err error, logger log.Logger, namespace, field, name, failed, done string) error {
+	if err != nil {
+		return fmt.Errorf("%s %s/%s: %w", failed, namespace, name, err)
+	}
+	logger.WithField("namespace", namespace).WithField(field, name).Debugf("%s", done)
+	return nil
 }
 
 func controllerGroup(ref *metav1.OwnerReference) string {
