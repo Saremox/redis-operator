@@ -12,12 +12,21 @@ import (
 
 // The values of redis.autoscaling.mode and redis.autoscaling.workload.
 const (
-	AutoscalingModeOff       = "Off"
+	// AutoscalingModeOff disables the autoscaler.
+	AutoscalingModeOff = "Off"
+	// AutoscalingModeRecommend shows a memory limit in the status and
+	// changes no pod.
 	AutoscalingModeRecommend = "Recommend"
-	AutoscalingModeAuto      = "Auto"
+	// AutoscalingModeAuto also raises the memory limit of the pods in place.
+	AutoscalingModeAuto = "Auto"
 
-	AutoscalingWorkloadAuto  = "Auto"
+	// AutoscalingWorkloadAuto derives Store or Cache from the
+	// maxmemory-policy.
+	AutoscalingWorkloadAuto = "Auto"
+	// AutoscalingWorkloadStore is a Redis whose clients need all the keys.
 	AutoscalingWorkloadStore = "Store"
+	// AutoscalingWorkloadCache is a Redis whose clients accept the loss of
+	// keys.
 	AutoscalingWorkloadCache = "Cache"
 )
 

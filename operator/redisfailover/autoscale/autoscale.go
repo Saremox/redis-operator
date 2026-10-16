@@ -53,23 +53,42 @@ const (
 // The reasons in the status. They are constant texts, so that the status changes
 // only when the outcome changes.
 const (
-	ReasonNoSample     = "no sample yet"
-	ReasonNotHealthy   = "the RedisFailover is not Healthy"
-	ReasonNoInfo       = "no INFO sample of the master"
-	ReasonNotMaster    = "the sampled pod is not the master"
-	ReasonRestarted    = "Redis restarted, the windows start again"
-	ReasonWarmUp       = "Redis runs for less than 10 minutes"
-	ReasonLoading      = "Redis loads its data"
-	ReasonSyncing      = "a sync with the master is in progress"
-	ReasonCache        = "cache decisions are not available"
-	ReasonLow          = "memory use is below the threshold"
-	ReasonHigh         = "memory use is high"
-	ReasonSustained    = "memory use is high in 3 consecutive windows"
-	ReasonUrgent       = "memory use is at 95 percent or more"
-	ReasonOOM          = "Redis refused commands with OOM"
-	ReasonMaximum      = "the limit is at memoryMax"
+	// ReasonNoSample tells that the autoscaler has no sample yet.
+	ReasonNoSample = "no sample yet"
+	// ReasonNotHealthy tells that the RedisFailover is not Healthy.
+	ReasonNotHealthy = "the RedisFailover is not Healthy"
+	// ReasonNoInfo tells that the sample has no INFO of the master.
+	ReasonNoInfo = "no INFO sample of the master"
+	// ReasonNotMaster tells that the sampled pod is not the master.
+	ReasonNotMaster = "the sampled pod is not the master"
+	// ReasonRestarted tells that Redis restarted and the windows start again.
+	ReasonRestarted = "Redis restarted, the windows start again"
+	// ReasonWarmUp tells that Redis runs for less than 10 minutes.
+	ReasonWarmUp = "Redis runs for less than 10 minutes"
+	// ReasonLoading tells that Redis loads its data.
+	ReasonLoading = "Redis loads its data"
+	// ReasonSyncing tells that a sync with the master is in progress.
+	ReasonSyncing = "a sync with the master is in progress"
+	// ReasonCache tells that the autoscaler makes no decision for a cache.
+	ReasonCache = "cache decisions are not available"
+	// ReasonLow tells that the memory use is below the threshold.
+	ReasonLow = "memory use is below the threshold"
+	// ReasonHigh tells that the memory use is high, but not yet for a step.
+	ReasonHigh = "memory use is high"
+	// ReasonSustained tells that the memory use is high in 3 windows in a
+	// row.
+	ReasonSustained = "memory use is high in 3 consecutive windows"
+	// ReasonUrgent tells that the memory use is at 95 percent or more.
+	ReasonUrgent = "memory use is at 95 percent or more"
+	// ReasonOOM tells that Redis refused commands with OOM.
+	ReasonOOM = "Redis refused commands with OOM"
+	// ReasonMaximum tells that the limit is at memoryMax.
+	ReasonMaximum = "the limit is at memoryMax"
+	// ReasonStepIsActive tells that the limit has the recommended value.
 	ReasonStepIsActive = "the limit has the recommended value"
-	ReasonNewerState   = "the state ConfigMap has a newer version"
+	// ReasonNewerState tells that the state ConfigMap has a newer version.
+	ReasonNewerState = "the state ConfigMap has a newer version"
+	// ReasonForeignState tells that the state ConfigMap has another owner.
 	ReasonForeignState = "the state ConfigMap has another owner"
 )
 

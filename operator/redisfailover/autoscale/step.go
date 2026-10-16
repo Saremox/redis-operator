@@ -8,11 +8,16 @@ import (
 
 // The phases of a step of mode Auto.
 const (
-	PhaseIdle     = "Idle"
+	// PhaseIdle is the phase without a step.
+	PhaseIdle = "Idle"
+	// PhaseApplying is the phase of a step that the operator applies.
 	PhaseApplying = "Applying"
-	PhaseDone     = "Done"
+	// PhaseDone is the phase after the end of a step.
+	PhaseDone = "Done"
+	// PhaseReverted is the phase of a step that the operator reverted.
 	PhaseReverted = "Reverted"
-	PhaseHeld     = "Held"
+	// PhaseHeld is the phase of a step that the operator holds.
+	PhaseHeld = "Held"
 )
 
 // The step rules.
@@ -25,12 +30,14 @@ const (
 	UrgentCooldown = 5 * time.Minute
 	// StepBudget is the maximum number of steps in BudgetPeriod. memoryMax
 	// limits the total, and the budget limits the speed.
-	StepBudget   = 6
+	StepBudget = 6
+	// BudgetPeriod is the period of StepBudget.
 	BudgetPeriod = 24 * time.Hour
 	// BackOff is the wait after a revert. It doubles at each further revert
 	// up to MaxBackOff, because the cause of a refusal, for example a
 	// ResourceQuota, often stays.
-	BackOff    = time.Hour
+	BackOff = time.Hour
+	// MaxBackOff is the longest wait after a revert.
 	MaxBackOff = 24 * time.Hour
 	// ApplyTimeout is three in-place resize timeouts of 5 minutes, one for
 	// each pod of a RedisFailover with 3 replicas.
@@ -56,23 +63,44 @@ const (
 // The reasons in the status of mode Auto. A reason with a refusal adds the
 // refusal that the state holds, so the text changes only at a transition.
 const (
-	ReasonHeld     = "the operator holds the step"
+	// ReasonHeld tells that the operator holds the step.
+	ReasonHeld = "the operator holds the step"
+	// ReasonReverted tells that the operator reverted the step.
 	ReasonReverted = "the operator reverted the step"
-	ReasonFrozen   = "the state ConfigMap is missing or not valid, so the pods keep the StatefulSet limit until a change of the spec"
+	// ReasonFrozen tells that the pods keep the StatefulSet limit, because
+	// the state ConfigMap is missing or not valid.
+	ReasonFrozen = "the state ConfigMap is missing or not valid, so the pods keep the StatefulSet limit until a change of the spec"
 	// ReasonResizeRefused shows a refusal outside a step, for example of a
 	// change of the spec while the operator cannot read a revision.
 	ReasonResizeRefused = "the operator keeps a pod on its revision, because the resize failed"
-	// The reasons that a recommended step does not start.
-	ReasonNotSettled          = "a step waits until the rollout is complete and the RedisFailover is Healthy"
-	ReasonCooldown            = "a step waits for the cooldown after the last step"
-	ReasonBudget              = "a step waits, because 6 steps in 24 hours is the maximum"
-	ReasonNoInPlaceResize     = "a step needs an in-place resize, which needs Kubernetes 1.33 or later"
-	ReasonInPlaceDisabled     = "a step needs redis.inPlaceResize Enabled"
-	ReasonNoRevisionAccess    = "a step needs the permission to get controllerrevisions"
-	ReasonVPA                 = "a VerticalPodAutoscaler changes the redis pods"
-	ReasonRestartOnResize     = "a step needs a redis container without the memory resizePolicy RestartContainer"
-	ReasonCustomMaxMemory     = "a step needs a maxmemory that the operator manages, not customConfig"
-	ReasonNoManagedMaxMemory  = "a step needs redis.maxMemory"
+
+	// The reasons below tell why a recommended step does not start.
+
+	// ReasonNotSettled waits for the end of the rollout and a Healthy
+	// RedisFailover.
+	ReasonNotSettled = "a step waits until the rollout is complete and the RedisFailover is Healthy"
+	// ReasonCooldown waits for the cooldown after the last step.
+	ReasonCooldown = "a step waits for the cooldown after the last step"
+	// ReasonBudget waits, because the steps in BudgetPeriod used StepBudget.
+	ReasonBudget = "a step waits, because 6 steps in 24 hours is the maximum"
+	// ReasonNoInPlaceResize needs Kubernetes 1.33 or later for an in-place
+	// resize.
+	ReasonNoInPlaceResize = "a step needs an in-place resize, which needs Kubernetes 1.33 or later"
+	// ReasonInPlaceDisabled needs redis.inPlaceResize Enabled.
+	ReasonInPlaceDisabled = "a step needs redis.inPlaceResize Enabled"
+	// ReasonNoRevisionAccess needs the permission to get controllerrevisions.
+	ReasonNoRevisionAccess = "a step needs the permission to get controllerrevisions"
+	// ReasonVPA tells that a VerticalPodAutoscaler changes the redis pods.
+	ReasonVPA = "a VerticalPodAutoscaler changes the redis pods"
+	// ReasonRestartOnResize needs a redis container without the memory
+	// resizePolicy RestartContainer.
+	ReasonRestartOnResize = "a step needs a redis container without the memory resizePolicy RestartContainer"
+	// ReasonCustomMaxMemory needs a maxmemory that the operator manages.
+	ReasonCustomMaxMemory = "a step needs a maxmemory that the operator manages, not customConfig"
+	// ReasonNoManagedMaxMemory needs redis.maxMemory.
+	ReasonNoManagedMaxMemory = "a step needs redis.maxMemory"
+	// ReasonPreconditionUnknown waits, because a check before the step
+	// failed.
 	ReasonPreconditionUnknown = "a step waits, because a check before the step failed"
 )
 
@@ -85,11 +113,16 @@ type Action string
 
 // The actions of Plan.
 const (
-	ActionNone   Action = ""
-	ActionStart  Action = "Start"
-	ActionDone   Action = "Done"
+	// ActionNone tells the handler that Plan made no transition.
+	ActionNone Action = ""
+	// ActionStart tells the handler to start a step.
+	ActionStart Action = "Start"
+	// ActionDone tells the handler that a step ended.
+	ActionDone Action = "Done"
+	// ActionRevert tells the handler to revert a step.
 	ActionRevert Action = "Revert"
-	ActionHold   Action = "Hold"
+	// ActionHold tells the handler to hold a step.
+	ActionHold Action = "Hold"
 )
 
 // Observation is what the handler knows at a reconcile.
