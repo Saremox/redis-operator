@@ -38,12 +38,14 @@ type loader interface {
 // no step to disturb. Its result is skipped.
 type notApplied struct{ error }
 
-// The user paths of the autoscale kinds. Mode Off, a lower memoryMax and a
-// change of the spec limit may recreate and shrink a pod. A load, mode
-// Recommend or Auto and a lost state may not.
+// The user paths of the autoscale kinds. Mode Off, a lower spec limit and a
+// memoryMax below a pod limit may recreate and shrink a pod. A higher spec
+// limit changes the template, so it may recreate a pod. A load, mode
+// Recommend or Auto, a lost state and another memoryMax may do neither.
 var (
 	allowNone     = &autoscale.Allow{}
 	allowResize   = &autoscale.Allow{Recreate: true, Shrink: true}
+	allowRaise    = &autoscale.Allow{Recreate: true}
 	allowKill     = &autoscale.Allow{Recreate: true}
 	allowFailover = &autoscale.Allow{Recreate: true, Handover: true}
 )
@@ -89,11 +91,16 @@ func (m *Mutator) planAutoscale(r *rand.Rand, kind config.Kind, s state) plan {
 			return skipped(kind, "memoryMax %s is below the limit %s", maxmem.FormatBytes(want), maxmem.FormatBytes(spec))
 		}
 		q := resource.NewQuantity(want, resource.BinarySI)
+		// Only a memoryMax below the limit of a pod lowers that pod.
+		allow := allowNone
+		if want < largestLimit(s) {
+			allow = allowResize
+		}
 		return plan{
 			kind:   kind,
 			params: fmt.Sprintf("redis.autoscaling.memoryMax %s -> %s", a.MemoryMax.String(), q.String()),
 			patch:  mergePatch(map[string]any{"redis": map[string]any{"autoscaling": map[string]any{"memoryMax": q.String()}}}),
-			allow:  allowResize,
+			allow:  allow,
 			converged: func(s state) error {
 				if mm := s.rf.Spec.Redis.Autoscaling; mm == nil || mm.MemoryMax == nil || mm.MemoryMax.Value() != want {
 					return errors.New("the RedisFailover does not have the change yet")
@@ -169,11 +176,15 @@ func planLimit(r *rand.Rand, rg config.Range, s state) plan {
 		patch["requests"] = map[string]string{"memory": want.String()}
 	}
 	converged := autoscaleConverged(s.rf.Spec.Redis.Replicas)
+	allow := allowRaise
+	if want.Cmp(*lim) < 0 {
+		allow = allowResize
+	}
 	return plan{
 		kind:   kind,
 		params: fmt.Sprintf("memory %s -> %s", lim.String(), want.String()),
 		patch:  mergePatch(map[string]any{"redis": map[string]any{"resources": patch}}),
-		allow:  allowResize,
+		allow:  allow,
 		converged: func(s state) error {
 			if !s.rf.Spec.Redis.Resources.Limits.Memory().Equal(*want) {
 				return errors.New("the RedisFailover does not have the change yet")
@@ -305,6 +316,19 @@ func modeConverged(mode string, replicas int32) func(state) error {
 		}
 		return nil
 	}
+}
+
+// largestLimit returns the largest applied limit of the redis pods, and at
+// least the limit of the status or the spec.
+func largestLimit(s state) int64 {
+	l := s.rf.Spec.Redis.Resources.Limits.Memory().Value()
+	if q, err := resource.ParseQuantity(s.rf.Status.Autoscaling.EffectiveMemory); err == nil {
+		l = max(l, q.Value())
+	}
+	for i := range s.redis {
+		l = max(l, maxmem.RedisLimit(&s.redis[i]))
+	}
+	return l
 }
 
 // templateLimit returns the memory limit of the redis container of the

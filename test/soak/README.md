@@ -412,8 +412,8 @@ The kinds, and what each kind may do to the redis pods:
 | `autoscale_load` | Write keys up to 97 percent of `maxmemory`, wait at most 3 minutes for a step, and delete the keys. | nothing |
 | `autoscale_kill_master` | The load, and a graceful delete of the master while the step is `Applying`. | recreate, hand over |
 | `autoscale_kill_replica` | The load, and a graceful delete of a replica while the step is `Applying`, as a node drain does. | recreate |
-| `autoscale_limit` | Set the memory limit and request of the spec to a value in `autoscale.limit`. | recreate, shrink |
-| `autoscale_memory_max` | Set `memoryMax` to a value in `autoscale.memoryMax`. | recreate, shrink |
+| `autoscale_limit` | Set the memory limit and request of the spec to a value in `autoscale.limit`. | lower: recreate, shrink; higher: recreate |
+| `autoscale_memory_max` | Set `memoryMax` to a value in `autoscale.memoryMax`. | below the largest pod limit: recreate, shrink; else nothing |
 | `autoscale_mode` | Change the mode in the cycle `Auto`, `Recommend`, `Off`. | `Off`: recreate, shrink |
 | `autoscale_state_lost` | Delete the state ConfigMap `rfa-<name>`. | nothing |
 

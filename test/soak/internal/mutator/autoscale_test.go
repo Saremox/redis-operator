@@ -116,15 +116,21 @@ func TestPlanAutoscaleLimit(t *testing.T) {
 			continue
 		}
 		planned++
-		if p.allow != allowResize || !strings.Contains(string(p.patch), `"requests":{"memory":`) {
+		if !strings.Contains(string(p.patch), `"requests":{"memory":`) {
 			t.Fatalf("%+v %s", p, p.patch)
 		}
 		var want string
 		for _, part := range strings.Split(p.params, " ") {
 			want = part
 		}
-		if q := resource.MustParse(want); q.Value() > 384*mi || q.Value() < 128*mi {
+		q := resource.MustParse(want)
+		if q.Value() > 384*mi || q.Value() < 128*mi {
 			t.Errorf("limit %s", want)
+		}
+		// Only a lower limit may shrink a pod. A raise changes the template,
+		// so it may recreate a pod.
+		if wantAllow := map[bool]*autoscale.Allow{true: allowResize, false: allowRaise}[q.Value() < 192*mi]; p.allow != wantAllow {
+			t.Errorf("limit %s: allow %+v", want, p.allow)
 		}
 		if err := p.converged(s); err == nil {
 			t.Error("converged before the change")
@@ -149,7 +155,7 @@ func TestPlanAutoscaleMemoryMax(t *testing.T) {
 	m, _, _ := autoscaleMutator(s, nil)
 	m.in.Autoscale.MemoryMax = config.Range{Min: 192, Max: 512}
 	p := m.plan(stepRand(1, m.in, 1), config.AutoscaleMemoryMax, s)
-	if p.skip != "" || p.allow != allowResize || !strings.Contains(string(p.patch), `"memoryMax":"`) {
+	if p.skip != "" || p.allow != allowNone || !strings.Contains(string(p.patch), `"memoryMax":"`) {
 		t.Fatalf("%+v %s", p, p.patch)
 	}
 	if err := p.converged(s); err == nil {
@@ -160,6 +166,32 @@ func TestPlanAutoscaleMemoryMax(t *testing.T) {
 	changed.rf.Spec.Redis.Autoscaling.MemoryMax = &q
 	if err := p.converged(changed); err != nil {
 		t.Errorf("after the change: %v", err)
+	}
+}
+
+// A memoryMax below the largest pod limit may recreate and shrink a pod. A
+// memoryMax at or above it changes no pod.
+func TestPlanAutoscaleMemoryMaxAllow(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		pod       string
+		memoryMax config.Range
+		allow     *autoscale.Allow
+	}{
+		{"above the pods", "192Mi", config.Range{Min: 256, Max: 257}, allowNone},
+		{"at the pods", "192Mi", config.Range{Min: 192, Max: 193}, allowNone},
+		{"below a pod", "320Mi", config.Range{Min: 256, Max: 257}, allowResize},
+	} {
+		s := autoscaled("Auto")
+		s.redis[2].Status.ContainerStatuses[0].Resources.Limits = quantities("memory", c.pod)
+		m, _, _ := autoscaleMutator(s, nil)
+		m.in.Autoscale.MemoryMax = c.memoryMax
+		for step := 1; step <= 10; step++ {
+			p := m.plan(stepRand(1, m.in, step), config.AutoscaleMemoryMax, s)
+			if p.skip != "" || p.allow != c.allow {
+				t.Errorf("%s, step %d: %+v", c.name, step, p)
+			}
+		}
 	}
 }
 

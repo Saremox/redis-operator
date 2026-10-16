@@ -154,6 +154,22 @@ func TestAutoscaleStepReleasesHold(t *testing.T) {
 	}
 }
 
+// A mutation that may recreate but not shrink a pod, for example a higher
+// spec limit, does not excuse a lower pod limit, also in the next round.
+func TestAutoscaleRaiseDoesNotExcuseShrink(t *testing.T) {
+	o, _ := newAutoscaleObserver(t)
+	// The first round is a change of the generation, which may do all of it.
+	o.apply(at(0), autoscaled("", "u1"), 1, false)
+	o.apply(at(5), autoscaled("", "u1"), 1, false)
+	o.SetMutation(func() (autoscale.Allow, bool) { return autoscale.Allow{Recreate: true}, true })
+	lowered := autoscaled("", "u1")
+	lowered.redis[1].limit = 64 << 20
+	o.apply(at(10), lowered, 2, false)
+	if n := testutil.ToFloat64(o.findings.WithLabelValues(autoscale.JudgeShrink)); n != 1 {
+		t.Errorf("autoscale_shrink findings %v", n)
+	}
+}
+
 // A chaos action may change each pod.
 func TestAutoscaleChaos(t *testing.T) {
 	o, _ := newAutoscaleObserver(t)
