@@ -39,15 +39,14 @@ type loader interface {
 type notApplied struct{ error }
 
 // The user paths of the autoscale kinds. Mode Off, a lower spec limit and a
-// memoryMax below a pod limit may recreate and shrink a pod. A higher spec
-// limit changes the template, so it may recreate a pod. A load, mode
-// Recommend or Auto, a lost state and another memoryMax may do neither.
+// memoryMax below a pod limit change the template of each pod, so they may
+// recreate and shrink each pod. A higher spec limit may recreate each pod. A
+// load, mode Recommend or Auto, a lost state and another memoryMax may do
+// neither. A kill may recreate only the killed pod, see planLoad.
 var (
-	allowNone     = &autoscale.Allow{}
-	allowResize   = &autoscale.Allow{Recreate: true, Shrink: true}
-	allowRaise    = &autoscale.Allow{Recreate: true}
-	allowKill     = &autoscale.Allow{Recreate: true}
-	allowFailover = &autoscale.Allow{Recreate: true, Handover: true}
+	allowNone   = &autoscale.Allow{}
+	allowResize = &autoscale.Allow{Recreate: true, Shrink: true}
+	allowRaise  = &autoscale.Allow{Recreate: true}
 )
 
 // nextMode is the cycle of autoscale_mode.
@@ -224,10 +223,9 @@ func (m *Mutator) planLoad(kind config.Kind, s state, pod string, uid types.UID,
 	}
 	if pod != "" {
 		p.params += fmt.Sprintf(", delete pod %s (graceful) while the step is Applying", pod)
-		p.allow = allowKill
-		if kind == config.AutoscaleKillMaster {
-			p.allow = allowFailover
-		}
+		// The StatefulSet gives the replacement the name of the killed pod.
+		// The master role moves to another pod.
+		p.allow = &autoscale.Allow{Recreate: true, Handover: kind == config.AutoscaleKillMaster, Pod: pod}
 		p.converged = func(s state) error {
 			if err := redisPodReplaced(pod, uid)(s); err != nil {
 				return err

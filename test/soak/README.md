@@ -410,8 +410,8 @@ The kinds, and what each kind may do to the redis pods:
 | Kind | Change | May |
 |------|--------|-----|
 | `autoscale_load` | Write keys up to 97 percent of `maxmemory`, wait at most 3 minutes for a step, and delete the keys. | nothing |
-| `autoscale_kill_master` | The load, and a graceful delete of the master while the step is `Applying`. | recreate, hand over |
-| `autoscale_kill_replica` | The load, and a graceful delete of a replica while the step is `Applying`, as a node drain does. | recreate |
+| `autoscale_kill_master` | The load, and a graceful delete of the master while the step is `Applying`. | recreate the killed pod, hand over |
+| `autoscale_kill_replica` | The load, and a graceful delete of a replica while the step is `Applying`, as a node drain does. | recreate the killed pod |
 | `autoscale_limit` | Set the memory limit and request of the spec to a value in `autoscale.limit`. | lower: recreate, shrink; higher: recreate |
 | `autoscale_memory_max` | Set `memoryMax` to a value in `autoscale.memoryMax`. | below the largest pod limit: recreate, shrink; else nothing |
 | `autoscale_mode` | Change the mode in the cycle `Auto`, `Recommend`, `Off`. | `Off`: recreate, shrink |
@@ -476,7 +476,9 @@ A `Done` step gives the cooldown from `lastStep`. A `Reverted` step gives
 the back-off up to `retryAfter`, or 1 hour after `lastStep` without a
 `retryAfter` that parses, which is an `autoscale_step_rate` violation. The
 judge follows the phase also without `lastStep`, because the held step of a
-lost state has none.
+lost state has none. `lastStep` has a resolution of a minute, so `Applying`
+after `Done`, `Reverted` or `Held` is a further step, also with the same
+`lastStep`.
 
 A user path that may do the change excuses it. The excuse covers the round
 of the user path and the next round, because a change can show one round

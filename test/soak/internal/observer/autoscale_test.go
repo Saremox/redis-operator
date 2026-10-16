@@ -186,6 +186,23 @@ func TestAutoscaleFirstRoundIsNoUserChange(t *testing.T) {
 	recreated("u1-new", 4, 0)
 }
 
+// A kill in a step excuses only the killed pod.
+func TestAutoscaleKillExcusesThePod(t *testing.T) {
+	for _, c := range []struct {
+		killed string
+		want   float64
+	}{{"rfr-x-1", 0}, {"rfr-x-2", 1}, {"", 0}} {
+		o, _ := newAutoscaleObserver(t)
+		o.apply(at(0), autoscaled(autoscale.PhaseApplying, "u1"), 1, false)
+		o.apply(at(5), autoscaled(autoscale.PhaseApplying, "u1"), 1, false)
+		o.SetMutation(func() (autoscale.Allow, bool) { return autoscale.Allow{Recreate: true, Pod: c.killed}, true })
+		o.apply(at(10), autoscaled(autoscale.PhaseApplying, "u1-new"), 1, false)
+		if n := testutil.ToFloat64(o.findings.WithLabelValues(autoscale.JudgeRestart)); n != c.want {
+			t.Errorf("killed %q, rfr-x-1 recreated: autoscale_restart findings %v, want %v", c.killed, n, c.want)
+		}
+	}
+}
+
 // A chaos action may change each pod.
 func TestAutoscaleChaos(t *testing.T) {
 	o, _ := newAutoscaleObserver(t)

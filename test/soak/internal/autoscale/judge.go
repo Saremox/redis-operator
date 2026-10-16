@@ -75,6 +75,20 @@ var Results = []string{ResultStarted, ResultDone, ResultReverted, ResultHeld}
 type Allow struct {
 	// Recreate also covers a restart of the redis container.
 	Recreate, Shrink, Handover bool
+	// Pod limits Recreate and Shrink to the pod of that name, for example the
+	// pod that a mutation deletes. Its replacement has the same name. "" is
+	// each pod.
+	Pod string
+}
+
+// forPod returns what a may do to the pod name. Handover is about the master
+// role, so it stays.
+func (a Allow) forPod(name string) Allow {
+	if a.Pod != "" && a.Pod != name {
+		a.Recreate, a.Shrink = false, false
+	}
+	a.Pod = ""
+	return a
 }
 
 // AllowAll is a user path that may change the pods in each way, for example
@@ -173,7 +187,9 @@ func (j *Judge) Observe(r Round) (events []Event, settling bool) {
 	prev := j.prev
 	j.prev = &r
 	step := r.Status.LastStep
-	newStep := prev != nil && step != "" && step != j.step
+	// lastStep has a resolution of a minute. Applying after the end of a step
+	// is a further step, also in the same minute.
+	newStep := prev != nil && step != "" && (step != j.step || r.Status.Phase == PhaseApplying && isEnd(j.phase))
 	if prev == nil {
 		events = append(events, j.adopt(r)...)
 	}
@@ -198,6 +214,10 @@ func (j *Judge) Observe(r Round) (events []Event, settling bool) {
 	events = append(events, j.checkMaster(r, active && prev != nil)...)
 	events = append(events, j.checkMaxMemory(r, prev)...)
 	return events, settling && !j.timedOut
+}
+
+func isEnd(phase string) bool {
+	return phase == PhaseDone || phase == PhaseReverted || phase == PhaseHeld
 }
 
 func isActive(phase string) bool {
@@ -429,8 +449,9 @@ func (j *Judge) checkPods(r Round, active bool) []Event {
 	for _, p := range r.Pods {
 		seen[p.Name] = true
 		b, ok := j.pods[p.Name]
+		mine := r.Allow.forPod(p.Name)
 		if ok {
-			allow := b.allow.or(r.Allow)
+			allow := b.allow.or(mine)
 			if (active || b.active) && !allow.Recreate {
 				switch {
 				case p.UID != b.uid:
@@ -448,11 +469,11 @@ func (j *Judge) checkPods(r Round, active bool) []Event {
 		if limit == 0 {
 			limit = b.limit
 		}
-		j.pods[p.Name] = baseline{uid: p.UID, restarts: p.Restarts, limit: limit, allow: r.Allow, active: active}
+		j.pods[p.Name] = baseline{uid: p.UID, restarts: p.Restarts, limit: limit, allow: mine, active: active}
 	}
 	for name, b := range j.pods {
 		if !seen[name] {
-			b.allow, b.active = b.allow.or(r.Allow), b.active || active
+			b.allow, b.active = b.allow.or(r.Allow.forPod(name)), b.active || active
 			j.pods[name] = b
 		}
 	}
@@ -479,9 +500,9 @@ func (j *Judge) checkMaster(r Round, active bool) []Event {
 // its limit. A user path that may shrink a pod excuses its round and the next
 // round, because the operator lowers maxmemory one reconcile later.
 func (j *Judge) checkMaxMemory(r Round, prev *Round) []Event {
-	excused := r.Allow.Shrink || prev != nil && prev.Allow.Shrink
 	var events []Event
 	for _, p := range r.Pods {
+		excused := r.Allow.forPod(p.Name).Shrink || prev != nil && prev.Allow.forPod(p.Name).Shrink
 		high := p.MaxMemory > 0 && p.Limit > 0 && p.MaxMemory > p.Limit
 		switch {
 		case !high:

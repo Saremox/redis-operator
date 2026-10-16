@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/test/soak/internal/autoscale"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 )
 
@@ -342,8 +343,8 @@ func TestLossless(t *testing.T) {
 		{plan{kind: config.AutoscaleMode, allow: allowNone}, true, true},
 		{plan{kind: config.AutoscaleMode, allow: allowResize}, false, false},
 		{plan{kind: config.AutoscaleLimit, allow: allowResize}, false, false},
-		{plan{kind: config.AutoscaleKillReplica, allow: allowKill}, false, false},
-		{plan{kind: config.AutoscaleKillMaster, allow: allowFailover}, false, true},
+		{plan{kind: config.AutoscaleKillReplica, allow: &autoscale.Allow{Recreate: true, Pod: "rfr-x-1"}}, false, false},
+		{plan{kind: config.AutoscaleKillMaster, allow: &autoscale.Allow{Recreate: true, Handover: true, Pod: "rfr-x-0"}}, false, true},
 	}
 	m := versionMutator(t, "chain")
 	for _, c := range cases {

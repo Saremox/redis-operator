@@ -337,8 +337,13 @@ func TestPlanLoad(t *testing.T) {
 		if c.deleted == "" && gone != "" || c.deleted != "" && !strings.HasPrefix(gone, c.deleted) {
 			t.Errorf("%s: deleted %q", c.name, gone)
 		}
-		if want := c.deleted != ""; want && p.allow == allowNone || !want && c.kind == config.AutoscaleLoad && p.allow != allowNone {
+		if c.kind == config.AutoscaleLoad && p.allow != allowNone {
 			t.Errorf("%s: allow %+v", c.name, p.allow)
+		}
+		// A kill may recreate only the killed pod, and kill_master may move
+		// the master role.
+		if want := (autoscale.Allow{Recreate: true, Handover: c.kind == config.AutoscaleKillMaster, Pod: gone}); c.deleted != "" && *p.allow != want {
+			t.Errorf("%s: allow %+v, want %+v", c.name, *p.allow, want)
 		}
 	}
 }
@@ -430,8 +435,9 @@ func TestAllowed(t *testing.T) {
 	if a, ok := m.Allowed(); !ok || a != autoscale.AllowAll {
 		t.Errorf("a kind without its own rule: %+v", a)
 	}
-	m.allowed.Store(allowKill)
-	if a, ok := m.Allowed(); !ok || a != *allowKill {
+	killed := &autoscale.Allow{Recreate: true, Pod: "rfr-x-1"}
+	m.allowed.Store(killed)
+	if a, ok := m.Allowed(); !ok || a != *killed {
 		t.Errorf("autoscale_kill_replica: %+v", a)
 	}
 }

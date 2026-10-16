@@ -444,10 +444,15 @@ func TestStateMachine(t *testing.T) {
 					// The step of the second round started there when its
 					// lastStep changed. Else the adopted step continues, and
 					// only an adopted Applying has its result still to come.
-					started := step != "" && step != adoptStep
+					// lastStep has a resolution of a minute, so Applying after
+					// the end of a step is a further step in the same minute.
+					started := step != "" && (step != adoptStep || next == PhaseApplying && isEnd(adoptPhase))
 					wantResult := results[resultOf(next)] && (started || adoptPhase == PhaseApplying && step == adoptStep)
 					if got := countResults(second, results); got != map[bool]int{true: 1, false: 0}[wantResult] {
 						t.Errorf("%s: %d results in %v", name, got, summary(second))
+					}
+					if got := slices.Contains(summary(second), ResultStarted); got != started {
+						t.Errorf("%s: started %t in %v", name, got, summary(second))
 					}
 					if j.phase != next {
 						t.Errorf("%s: cached phase %q", name, j.phase)
@@ -472,6 +477,40 @@ func TestStateMachine(t *testing.T) {
 			}
 		}
 	}
+}
+
+// A further step in the same minute as the last one counts as a step, with
+// its checks, and its end counts again.
+func TestStepInTheSameMinute(t *testing.T) {
+	for _, c := range []struct {
+		end  string
+		want []string
+	}{
+		{PhaseDone, []string{ResultStarted, JudgeRate, ResultDone}},
+		{PhaseReverted, []string{ResultStarted, JudgeRate, ResultDone}},
+		{PhaseHeld, []string{ResultStarted, ResultDone}},
+	} {
+		j := NewJudge()
+		first := withLimit(stepped(at(0.2), 0, PhaseApplying, "192Mi"), 128*mi)
+		ended := withLimit(stepped(at(0.4), 0, c.end, "192Mi"), 192*mi)
+		if c.end == PhaseReverted {
+			ended = withLimit(stepped(at(0.4), 0, c.end, ""), 128*mi)
+			ended.Status.RetryAfter = minuteOf(60)
+		}
+		observe(j, at(0), first, ended)
+		// The step from the limit of the end round.
+		again := withLimit(stepped(at(0.6), 0, PhaseApplying, ""), effectiveOf(ended))
+		again.Status.EffectiveMemory = format(target(effectiveOf(ended)))
+		done := withLimit(stepped(at(0.8), 0, PhaseDone, again.Status.EffectiveMemory), target(effectiveOf(ended)))
+		if got := summary(observe(j, again, done)); !slices.Equal(got, c.want) {
+			t.Errorf("after %s: %v, want %v", c.end, got, c.want)
+		}
+	}
+}
+
+func effectiveOf(r Round) int64 {
+	l, _ := effective(r)
+	return l
 }
 
 func countResults(events []Event, results map[string]bool) int {
@@ -551,6 +590,21 @@ func TestRestart(t *testing.T) {
 		// The user path ran in the round before the change showed.
 		{"a user path one round before", []Round{at(0), allow(stepped(at(1), 1, PhaseApplying, "192Mi"), Allow{Recreate: true}), recreated(stepped(at(2), 1, PhaseApplying, "192Mi"))},
 			[]string{ResultStarted}},
+		// A kill excuses only the killed pod. Its replacement has its name.
+		{"the killed pod", []Round{at(0), stepped(at(1), 1, PhaseApplying, "192Mi"),
+			recreated(allow(stepped(at(2), 1, PhaseApplying, "192Mi"), Allow{Recreate: true, Pod: "rfr-x-1"}))},
+			[]string{ResultStarted}},
+		{"another pod than the killed pod", []Round{at(0), stepped(at(1), 1, PhaseApplying, "192Mi"),
+			recreated(allow(stepped(at(2), 1, PhaseApplying, "192Mi"), Allow{Recreate: true, Pod: "rfr-x-2"}))},
+			[]string{ResultStarted, JudgeRestart}},
+		{"another pod than the killed pod, absent for a while", []Round{at(0), stepped(at(1), 1, PhaseApplying, "192Mi"),
+			without(allow(stepped(at(2), 1, PhaseApplying, "192Mi"), Allow{Recreate: true, Pod: "rfr-x-2"}), 1),
+			recreated(allow(stepped(at(3), 1, PhaseApplying, "192Mi"), Allow{Recreate: true, Pod: "rfr-x-2"}))},
+			[]string{ResultStarted, JudgeRestart}},
+		{"the killed pod, absent for a while", []Round{at(0), stepped(at(1), 1, PhaseApplying, "192Mi"),
+			without(allow(stepped(at(2), 1, PhaseApplying, "192Mi"), Allow{Recreate: true, Pod: "rfr-x-1"}), 1),
+			recreated(stepped(at(3), 1, PhaseApplying, "192Mi"))},
+			[]string{ResultStarted}},
 		{"a pod that is absent for a while", []Round{at(0), stepped(at(1), 1, PhaseApplying, "192Mi"), without(stepped(at(2), 1, PhaseDone, "192Mi"), 1),
 			recreated(stepped(at(3), 1, PhaseDone, "192Mi"))}, []string{ResultStarted, ResultDone, JudgeRestart}},
 	} {
@@ -586,12 +640,30 @@ func TestHandover(t *testing.T) {
 			moved(stepped(at(3), 1, PhaseDone, "192Mi"))}, []string{ResultStarted, ResultDone, JudgeHandover}},
 		{"kill_master in a step", []Round{at(0), stepped(at(1), 1, PhaseApplying, "192Mi"), moved(allow(stepped(at(2), 1, PhaseApplying, "192Mi"), Allow{Recreate: true, Handover: true}))},
 			[]string{ResultStarted}},
+		// The handover moves the master role to another pod, but only the
+		// killed master may be recreated.
+		{"kill_master and the recreate of a replica", []Round{at(0), stepped(at(1), 1, PhaseApplying, "192Mi"),
+			replicaRecreated(moved(allow(stepped(at(2), 1, PhaseApplying, "192Mi"), Allow{Recreate: true, Handover: true, Pod: "rfr-x-0"})))},
+			[]string{ResultStarted, JudgeRestart}},
+		{"kill_master and its recreate", []Round{at(0), stepped(at(1), 1, PhaseApplying, "192Mi"),
+			masterRecreated(moved(allow(stepped(at(2), 1, PhaseApplying, "192Mi"), Allow{Recreate: true, Handover: true, Pod: "rfr-x-0"})))},
+			[]string{ResultStarted}},
 		{"outside a step", []Round{at(0), moved(at(1))}, nil},
 	} {
 		if got := summary(observe(NewJudge(), c.rounds...)); !slices.Equal(got, c.want) {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)
 		}
 	}
+}
+
+func replicaRecreated(r Round) Round {
+	r.Pods[2].UID = "new"
+	return r
+}
+
+func masterRecreated(r Round) Round {
+	r.Pods[0].UID = "new"
+	return r
 }
 
 func noMaster(r Round) Round {
