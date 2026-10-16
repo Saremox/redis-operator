@@ -938,7 +938,7 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 	key := passwordKey(rf)
 	v, known := r.passwords.Load(key)
 	state, _ := v.(passwordState)
-	if known && state.redis == password && state.applied == password && state.sentinel == password && !state.stale && !state.retrySecret {
+	if known && state.current(password) {
 		return nil
 	}
 
@@ -946,34 +946,8 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 	if !known || state.retrySecret {
 		saved, save, state.retrySecret = r.loadAppliedPasswords(rf)
 	}
-	if !known || state.stale || state.redis != password || state.applied != password {
-		previous := []string{password}
-		if known {
-			previous = []string{state.redis}
-			if state.applied != state.redis {
-				previous = append(previous, state.applied)
-			}
-		} else {
-			for _, p := range []string{saved.redis, saved.applied} {
-				if p != "" && !slices.Contains(previous, p) {
-					previous = append(previous, p)
-				}
-			}
-		}
-		complete, stale, err := r.rfHealer.ApplyPassword(rf, password, previous)
-		if err != nil {
-			return err
-		}
-		state.applied = password
-		state.stale = stale
-		// A pod yet to start keeps the old password in play. With none known,
-		// not even in the Secret, the one every running pod accepts is the
-		// best there is.
-		if complete {
-			state.redis = password
-		} else if !known {
-			state.redis = cmp.Or(saved.redis, password)
-		}
+	if err := r.applyRedisPassword(rf, password, known, saved, &state); err != nil {
+		return err
 	}
 	if save && (state.redis != saved.redis || state.applied != saved.applied) {
 		r.saveAppliedPasswords(rf, &state)
@@ -981,14 +955,8 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 
 	// Every running Redis now accepts the password, so the Sentinels need it
 	// to reach them.
-	if state.sentinel != password {
-		complete, err := r.rfHealer.ApplySentinelPassword(rf, password)
-		if err != nil {
-			return err
-		}
-		if complete {
-			state.sentinel = password
-		}
+	if err := r.applySentinelPassword(rf, password, &state); err != nil {
+		return err
 	}
 	// Without the Secret, state.redis can miss the password of a pod yet to
 	// start, so the next reconcile starts again without a state.
@@ -996,6 +964,64 @@ func (r *RedisFailoverHandler) applyPassword(rf *redisfailoverv1.RedisFailover) 
 		return nil
 	}
 	r.passwords.Store(key, state)
+	return nil
+}
+
+// current reports whether the Redis pods and the Sentinels are on password,
+// and no check or Secret write is due.
+func (s passwordState) current(password string) bool {
+	return s.redis == password && s.applied == password && s.sentinel == password && !s.stale && !s.retrySecret
+}
+
+// applyRedisPassword brings the running Redis pods onto password, unless the
+// known state shows them on it already. saved holds the passwords of the
+// Secret.
+func (r *RedisFailoverHandler) applyRedisPassword(rf *redisfailoverv1.RedisFailover, password string, known bool, saved passwordState, state *passwordState) error {
+	if known && !state.stale && state.redis == password && state.applied == password {
+		return nil
+	}
+	previous := []string{password}
+	if known {
+		previous = []string{state.redis}
+		if state.applied != state.redis {
+			previous = append(previous, state.applied)
+		}
+	} else {
+		for _, p := range []string{saved.redis, saved.applied} {
+			if p != "" && !slices.Contains(previous, p) {
+				previous = append(previous, p)
+			}
+		}
+	}
+	complete, stale, err := r.rfHealer.ApplyPassword(rf, password, previous)
+	if err != nil {
+		return err
+	}
+	state.applied = password
+	state.stale = stale
+	// A pod yet to start keeps the old password in play. With none known,
+	// not even in the Secret, the one every running pod accepts is the
+	// best there is.
+	if complete {
+		state.redis = password
+	} else if !known {
+		state.redis = cmp.Or(saved.redis, password)
+	}
+	return nil
+}
+
+// applySentinelPassword gives the Sentinels the password.
+func (r *RedisFailoverHandler) applySentinelPassword(rf *redisfailoverv1.RedisFailover, password string, state *passwordState) error {
+	if state.sentinel == password {
+		return nil
+	}
+	complete, err := r.rfHealer.ApplySentinelPassword(rf, password)
+	if err != nil {
+		return err
+	}
+	if complete {
+		state.sentinel = password
+	}
 	return nil
 }
 
