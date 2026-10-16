@@ -327,45 +327,11 @@ func (m *Mutator) execute(ctx context.Context, step int, s state, p plan, log *s
 		m.current.Store(nil)
 		m.allowed.Store(nil)
 	}()
-	// An edge that may fail is observed for its timeout only, or until it
-	// is stuck, and its window held on, for the reset that follows.
-	bound := time.Duration(0)
-	hold := timeout
-	if p.flip != nil {
-		m.mixed = &mixedWindow{t: p.flip}
-	}
-	if p.edge != nil {
-		m.mixed = &mixedWindow{t: p.edge}
-		if p.edge.edge.Expect != config.ExpectOK {
-			bound, hold = timeout, 2*timeout
-		}
-	}
-	// A reset that failed can leave no RedisFailover. Then the observer
-	// does not end the window.
-	if kind == config.Reset {
-		bound = 2 * timeout
-	}
+	bound, hold := m.window(p, timeout)
 	// A rejected mutation changed nothing, so its window only waits for
 	// the invariants.
 	var applied, rejected atomic.Bool
-	h := m.hold(hold, func(ctx context.Context) error {
-		switch {
-		case rejected.Load():
-			return nil
-		case !applied.Load():
-			return errors.New("still being applied")
-		}
-		if p.probe != nil {
-			if err := p.probe(ctx); err != nil {
-				return err
-			}
-		}
-		s, err := m.fetch(ctx, p.fetch)
-		if err != nil {
-			return err
-		}
-		return p.converged(s)
-	})
+	h := m.hold(hold, m.windowCheck(p, &applied, &rejected))
 	if m.data != nil {
 		m.data.Begin()
 	}
@@ -398,6 +364,71 @@ func (m *Mutator) execute(ctx context.Context, step int, s state, p plan, log *s
 		log.Warn("reset did not complete", "finding", true, "bound_seconds", bound.Seconds())
 	}
 
+	var result string
+	result, log = m.result(p, applyErr, converged, restored, d, appliedAt, log)
+	log = m.recordRecovery(ctx, p, result, log)
+	if !judged(p.edge, applyErr, converged) {
+		m.total.WithLabelValues(string(kind), result).Inc()
+	}
+
+	recreated := m.recordRecreated(ctx, kind, before)
+	level := slog.LevelInfo
+	if result != resultConverged {
+		level = slog.LevelWarn
+	}
+	log.Log(ctx, level, "mutation done", "result", result, "duration_seconds", d.Seconds(), "pods_recreated", recreated)
+	return m.verifyAndJudge(ctx, step, s, p, applyErr, converged, log)
+}
+
+// window opens the mixed window of a version change, and returns how long
+// execute waits for the mutation, 0 without a bound, and how long the
+// convergence window holds.
+func (m *Mutator) window(p plan, timeout time.Duration) (bound, hold time.Duration) {
+	// An edge that may fail is observed for its timeout only, or until it
+	// is stuck, and its window held on, for the reset that follows.
+	hold = timeout
+	if p.flip != nil {
+		m.mixed = &mixedWindow{t: p.flip}
+	}
+	if p.edge != nil {
+		m.mixed = &mixedWindow{t: p.edge}
+		if p.edge.edge.Expect != config.ExpectOK {
+			bound, hold = timeout, 2*timeout
+		}
+	}
+	// A reset that failed can leave no RedisFailover. Then the observer
+	// does not end the window.
+	if p.kind == config.Reset {
+		bound = 2 * timeout
+	}
+	return bound, hold
+}
+
+// windowCheck returns the convergence check of the window of the plan p.
+func (m *Mutator) windowCheck(p plan, applied, rejected *atomic.Bool) func(context.Context) error {
+	return func(ctx context.Context) error {
+		switch {
+		case rejected.Load():
+			return nil
+		case !applied.Load():
+			return errors.New("still being applied")
+		}
+		if p.probe != nil {
+			if err := p.probe(ctx); err != nil {
+				return err
+			}
+		}
+		s, err := m.fetch(ctx, p.fetch)
+		if err != nil {
+			return err
+		}
+		return p.converged(s)
+	}
+}
+
+// result returns the result of a mutation, and log with its reason or
+// error. It records the convergence time of a converged mutation.
+func (m *Mutator) result(p plan, applyErr error, converged, restored bool, d time.Duration, appliedAt time.Time, log *slog.Logger) (string, *slog.Logger) {
 	result := resultTimeout
 	var exp expectation
 	var na notApplied
@@ -412,7 +443,7 @@ func (m *Mutator) execute(ctx context.Context, step int, s state, p plan, log *s
 		log = log.With("error", applyErr.Error())
 	case converged:
 		result = resultConverged
-		m.converge.WithLabelValues(string(kind)).Observe(d.Seconds())
+		m.converge.WithLabelValues(string(p.kind)).Observe(d.Seconds())
 		if p.offline != nil {
 			log.Info("scenario phase done", "phase", p.offline.phases+1, "phase_name", "expect the rotation to converge",
 				"duration_seconds", time.Since(appliedAt).Seconds())
@@ -420,22 +451,24 @@ func (m *Mutator) execute(ctx context.Context, step int, s state, p plan, log *s
 	case restored:
 		result = resultStuckRestored
 	}
-	log = m.recordRecovery(ctx, p, result, log)
-	if !judged(p.edge, applyErr, converged) {
-		m.total.WithLabelValues(string(kind), result).Inc()
-	}
+	return result, log
+}
 
+// recordRecreated counts the redis pods that the mutation replaced, -1 if
+// the instance cannot be read.
+func (m *Mutator) recordRecreated(ctx context.Context, kind config.Kind, before map[string]types.UID) int {
 	recreated := -1
 	if s, err := m.fetch(ctx, fetchOpts{}); err == nil {
 		recreated = countRecreated(before, s.redis)
 		m.recreated.WithLabelValues(string(kind)).Add(float64(recreated))
 	}
-	level := slog.LevelInfo
-	if result != resultConverged {
-		level = slog.LevelWarn
-	}
-	log.Log(ctx, level, "mutation done", "result", result, "duration_seconds", d.Seconds(), "pods_recreated", recreated)
-	event := string(kind)
+	return recreated
+}
+
+// verifyAndJudge verifies the data after the mutation, and judges a version
+// change. It returns config.Reset if the instance must be reset next.
+func (m *Mutator) verifyAndJudge(ctx context.Context, step int, s state, p plan, applyErr error, converged bool, log *slog.Logger) config.Kind {
+	event := string(p.kind)
 	if p.reset {
 		event = config.EventReset
 	}
