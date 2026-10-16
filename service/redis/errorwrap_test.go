@@ -36,6 +36,14 @@ func TestReplyHasPrefix(t *testing.T) {
 	}
 }
 
+func TestIsNoSuchMasterErrorReadsTheReply(t *testing.T) {
+	const reply = "ERR No such master with that name"
+	assert.True(t, IsNoSuchMasterError(fmt.Errorf("SENTINEL MASTER: %w", replyError(reply))))
+	assert.True(t, IsNoSuchMasterError(errors.New(reply)))
+	assert.False(t, IsNoSuchMasterError(errors.New("SENTINEL MASTER: "+reply)))
+	assert.False(t, IsNoSuchMasterError(fmt.Errorf("SENTINEL MASTER: %w", replyError("ERR other"))))
+}
+
 func TestGetNumberSentinelsInMemory_CountOutOfRange(t *testing.T) {
 	const target = "127.0.0.2"
 	startFakeSentinel(t, target, "# Sentinel\r\nsentinel_masters:1\r\n"+
@@ -43,10 +51,10 @@ func TestGetNumberSentinelsInMemory_CountOutOfRange(t *testing.T) {
 	c := newTestClient()
 
 	_, err := c.GetNumberSentinelsInMemory(target)
-	require.EqualError(t, err, `read the sentinel count: strconv.Atoi: parsing "99999999999999999999": value out of range`)
+	require.EqualError(t, err, `read the sentinel count: strconv.ParseUint: parsing "99999999999999999999": value out of range`)
 
 	_, err = c.GetNumberSentinelSlavesInMemory(target)
-	assert.EqualError(t, err, `read the replica count: strconv.Atoi: parsing "99999999999999999999": value out of range`)
+	assert.EqualError(t, err, `read the replica count: strconv.ParseUint: parsing "99999999999999999999": value out of range`)
 }
 
 func TestMonitorRedisWithPort_AuthPassError(t *testing.T) {

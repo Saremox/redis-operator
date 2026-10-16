@@ -518,7 +518,7 @@ type SentinelFailover struct {
 // IsNoSuchMasterError reports whether err is the reply of a Sentinel that
 // does not monitor mymaster, for example after SENTINEL REMOVE.
 func IsNoSuchMasterError(err error) bool {
-	return err != nil && err.Error() == "ERR No such master with that name"
+	return err != nil && replyText(err) == "ERR No such master with that name"
 }
 
 // GetSentinelFailover returns the failover state of the Sentinel.
@@ -1184,13 +1184,18 @@ func IsAuthError(err error) bool {
 
 // ReplyHasPrefix reports whether the error reply of Redis in err starts with
 // prefix. The client methods wrap the reply, so a check of err.Error() does
-// not see the reply at the start. An error without a reply is checked by its
-// text.
+// not see the reply at the start.
 func ReplyHasPrefix(err error, prefix string) bool {
+	return err != nil && strings.HasPrefix(replyText(err), prefix)
+}
+
+// replyText returns the error reply of Redis in err, or the text of err when
+// err holds no reply.
+func replyText(err error) string {
 	if reply, ok := errors.AsType[rediscli.Error](err); ok {
-		return strings.HasPrefix(reply.Error(), prefix)
+		return reply.Error()
 	}
-	return err != nil && strings.HasPrefix(err.Error(), prefix)
+	return err.Error()
 }
 
 // IsNoPasswordError reports whether Redis was given a password while it has
