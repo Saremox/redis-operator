@@ -459,86 +459,15 @@ func (f *resizeRefusal) String() string {
 // rf.Status.Autoscaling. The Recommend mode only reports, so an error is
 // logged and never fails the reconcile or makes the RedisFailover NotHealthy.
 func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, observed redisfailoverv1.AutoscalingStatus) {
-	key := failoverKey(rf)
-	v, ok := r.autoscaleReads.LoadAndDelete(key)
-	if !rf.AutoscalingEnabled() {
-		// Without an earlier status, Handle removed the state. This keeps the
-		// API calls of the checks of an instance without autoscaling.
-		if observed != (redisfailoverv1.AutoscalingStatus{}) {
-			r.stopAutoscaler(rf, observed)
-		}
-		return
-	}
-	r.autoscaleOff.Delete(key)
-
-	master, _ := r.autoscaleMasters.LoadAndDelete(key)
-	read, _ := v.(autoscaleRead)
-	if !ok {
-		// CheckAndHeal ran without Handle.
-		var err error
-		if read, err = r.readAutoscale(rf); err != nil {
-			rf.Status.Autoscaling = observed
-			r.logAutoscale(rf, err)
-			return
-		}
-	}
-	// The autoscaler cannot use a state of another owner or of a newer
-	// operator, and it does not overwrite it. No metric value is known.
-	if read.blocked != "" {
-		rf.Status.Autoscaling = autoscale.ReportStep(redisfailoverv1.AutoscalingStatus{Reason: read.blocked}, autoscale.State{}, read.spec, read.effective)
-		r.mClient.DeleteAutoscaler(rf.Namespace, rf.Name)
-		r.logAutoscale(rf, read.err)
+	read, fromHandle, master, run := r.autoscaleInput(rf, observed)
+	if !run {
 		return
 	}
 	stored, cm := read.state, read.cm
 	limit := read.effective
 	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
 	now := r.now()
-	sample, _ := r.autoscaleSamples.Load(key)
-	last, found := sample.(autoscaleSample)
-	if !found {
-		last.ratio = stored.Window.PeakRatio
-	}
-	// While the writes fail, each sample must continue from the last sample
-	// and not from the stored state, or the status changes at each reconcile.
-	// A write of another operator changes the resourceVersion, and then the
-	// ConfigMap wins. The sample times cannot tell this, because the clock
-	// can go back.
-	version := ""
-	if cm != nil {
-		version = cm.ResourceVersion
-	}
-	state := stored
-	// A lost state can have the version of the sample, for example no
-	// ConfigMap after a delete.
-	lost := read.lost || stateLost(read, observed)
-	if last.sampled && last.version == version && !read.resumed && !lost {
-		state = last.state
-	}
-	unbound := state
-	if state.Version == 0 && (limit != read.spec || lost) {
-		// The write of the state keeps the limit that readAutoscale froze, and
-		// no step starts from it. A lost state also lost its budget, its
-		// back-off and its step.
-		state.Version, state.Effective, state.SpecLimit = autoscale.StateVersion, limit, read.spec
-		state.Frozen, state.Generation = true, rf.Generation
-	}
-	if state.Frozen && state.Generation != rf.Generation {
-		// A change of the spec ends the freeze in each mode. Plan runs only
-		// in mode Auto.
-		state = autoscale.Unfreeze(state)
-	}
-	state = autoscale.Bound(state, read.spec, maxLimit)
-	if ok && read.state.Phase == autoscale.PhaseReverted && !read.state.RevertApplied && state.Phase == autoscale.PhaseReverted {
-		// Ensure of this reconcile applied the limit before the step.
-		state.RevertApplied = true
-	}
-	// The next reconcile gives the pods the limit of the stored state, so a
-	// change of the limit cannot wait for the next sample.
-	write := state != unbound || read.resumed
-	// A leftover state, for example of a mode change to Off that the status
-	// did not show, must not give a recommendation of an earlier time.
-	state = autoscale.Expire(state, now)
+	state, last, version, write := r.continueAutoscaleState(rf, observed, read, fromHandle, now)
 	var errs []error
 	// The persisted time limits the samples after an operator restart. It is
 	// written only with other changes, so the time in memory is necessary too.
@@ -551,19 +480,10 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 			Workload: rf.Spec.Redis.Autoscaling.Workload,
 			Policy:   rf.MaxMemoryPolicy(),
 		}
-		if ip, _ := master.(string); in.Healthy && ip != "" {
-			info, err := r.rfChecker.GetAutoscalerInfo(rf, ip)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("no autoscaler sample of %s: %w", ip, err))
-			}
-			in.Info = info
+		var err error
+		if state, err = r.sampleAutoscaler(rf, master, in, state, &last, version); err != nil {
+			errs = append(errs, err)
 		}
-		state = autoscale.Observe(state, in)
-		last.at, last.state, last.version, last.sampled = now, state, version, true
-		if in.Info != nil {
-			last.ratio = autoscale.UsedRatio(in.Info, limit)
-		}
-		r.autoscaleSamples.Store(key, last)
 		// A write changes the resourceVersion, so the next reconcile reads
 		// this state from the ConfigMap.
 		write = write || cm == nil || state.NeedsWrite(stored)
@@ -584,7 +504,145 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 		}
 	}
 	r.autoscaleStepWritten(rf, state.Phase, next, action)
+	r.reportAutoscale(rf, read, next, wait, last.ratio)
+	r.logAutoscale(rf, errors.Join(errs...))
+}
 
+// autoscaleInput returns the state that Handle read, or reads it. It also
+// returns whether Handle read the state, and the IP of the master of the
+// checks. It returns run false when the autoscaler does not run in this
+// reconcile.
+func (r *RedisFailoverHandler) autoscaleInput(rf *redisfailoverv1.RedisFailover, observed redisfailoverv1.AutoscalingStatus) (read autoscaleRead, fromHandle bool, master string, run bool) {
+	key := failoverKey(rf)
+	v, ok := r.autoscaleReads.LoadAndDelete(key)
+	if !rf.AutoscalingEnabled() {
+		// Without an earlier status, Handle removed the state. This keeps the
+		// API calls of the checks of an instance without autoscaling.
+		if observed != (redisfailoverv1.AutoscalingStatus{}) {
+			r.stopAutoscaler(rf, observed)
+		}
+		return autoscaleRead{}, false, "", false
+	}
+	r.autoscaleOff.Delete(key)
+
+	m, _ := r.autoscaleMasters.LoadAndDelete(key)
+	master, _ = m.(string)
+	read, _ = v.(autoscaleRead)
+	if !ok {
+		// CheckAndHeal ran without Handle.
+		var err error
+		if read, err = r.readAutoscale(rf); err != nil {
+			rf.Status.Autoscaling = observed
+			r.logAutoscale(rf, err)
+			return read, ok, master, false
+		}
+	}
+	// The autoscaler cannot use a state of another owner or of a newer
+	// operator, and it does not overwrite it. No metric value is known.
+	if read.blocked != "" {
+		rf.Status.Autoscaling = autoscale.ReportStep(redisfailoverv1.AutoscalingStatus{Reason: read.blocked}, autoscale.State{}, read.spec, read.effective)
+		r.mClient.DeleteAutoscaler(rf.Namespace, rf.Name)
+		r.logAutoscale(rf, read.err)
+		return read, ok, master, false
+	}
+	return read, ok, master, true
+}
+
+// continueAutoscaleState returns the state that this reconcile continues, the
+// last sample in memory, the resourceVersion of the state ConfigMap, and
+// whether the state needs a write. fromHandle tells that Handle read the
+// state before Ensure.
+func (r *RedisFailoverHandler) continueAutoscaleState(rf *redisfailoverv1.RedisFailover, observed redisfailoverv1.AutoscalingStatus, read autoscaleRead, fromHandle bool, now time.Time) (autoscale.State, autoscaleSample, string, bool) {
+	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
+	last, version := r.lastAutoscaleSample(rf, read)
+	state := read.state
+	// A lost state can have the version of the sample, for example no
+	// ConfigMap after a delete.
+	lost := read.lost || stateLost(read, observed)
+	if last.sampled && last.version == version && !read.resumed && !lost {
+		state = last.state
+	}
+	unbound := state
+	state = freezeAutoscaleState(rf, read, state, lost)
+	state = autoscale.Bound(state, read.spec, maxLimit)
+	if fromHandle && read.state.Phase == autoscale.PhaseReverted && !read.state.RevertApplied && state.Phase == autoscale.PhaseReverted {
+		// Ensure of this reconcile applied the limit before the step.
+		state.RevertApplied = true
+	}
+	// The next reconcile gives the pods the limit of the stored state, so a
+	// change of the limit cannot wait for the next sample.
+	write := state != unbound || read.resumed
+	// A leftover state, for example of a mode change to Off that the status
+	// did not show, must not give a recommendation of an earlier time.
+	state = autoscale.Expire(state, now)
+	return state, last, version, write
+}
+
+// lastAutoscaleSample returns the last sample in memory, and the
+// resourceVersion of the state ConfigMap or "".
+func (r *RedisFailoverHandler) lastAutoscaleSample(rf *redisfailoverv1.RedisFailover, read autoscaleRead) (autoscaleSample, string) {
+	sample, _ := r.autoscaleSamples.Load(failoverKey(rf))
+	last, found := sample.(autoscaleSample)
+	if !found {
+		last.ratio = read.state.Window.PeakRatio
+	}
+	// While the writes fail, each sample must continue from the last sample
+	// and not from the stored state, or the status changes at each reconcile.
+	// A write of another operator changes the resourceVersion, and then the
+	// ConfigMap wins. The sample times cannot tell this, because the clock
+	// can go back.
+	version := ""
+	if read.cm != nil {
+		version = read.cm.ResourceVersion
+	}
+	return last, version
+}
+
+// freezeAutoscaleState freezes a state without a version at the limit of
+// readAutoscale, and ends a freeze after a change of the spec.
+func freezeAutoscaleState(rf *redisfailoverv1.RedisFailover, read autoscaleRead, state autoscale.State, lost bool) autoscale.State {
+	limit := read.effective
+	if state.Version == 0 && (limit != read.spec || lost) {
+		// The write of the state keeps the limit that readAutoscale froze, and
+		// no step starts from it. A lost state also lost its budget, its
+		// back-off and its step.
+		state.Version, state.Effective, state.SpecLimit = autoscale.StateVersion, limit, read.spec
+		state.Frozen, state.Generation = true, rf.Generation
+	}
+	if state.Frozen && state.Generation != rf.Generation {
+		// A change of the spec ends the freeze in each mode. Plan runs only
+		// in mode Auto.
+		state = autoscale.Unfreeze(state)
+	}
+	return state
+}
+
+// sampleAutoscaler adds a sample of the master at master to state, and keeps
+// it in last and in memory. The error tells why the sample has no INFO.
+func (r *RedisFailoverHandler) sampleAutoscaler(rf *redisfailoverv1.RedisFailover, master string, in autoscale.Input, state autoscale.State, last *autoscaleSample, version string) (autoscale.State, error) {
+	var err error
+	if in.Healthy && master != "" {
+		info, infoErr := r.rfChecker.GetAutoscalerInfo(rf, master)
+		if infoErr != nil {
+			err = fmt.Errorf("no autoscaler sample of %s: %w", master, infoErr)
+		}
+		in.Info = info
+	}
+	state = autoscale.Observe(state, in)
+	last.at, last.state, last.version, last.sampled = in.Now, state, version, true
+	if in.Info != nil {
+		last.ratio = autoscale.UsedRatio(in.Info, in.Limit)
+	}
+	r.autoscaleSamples.Store(failoverKey(rf), *last)
+	return state, err
+}
+
+// reportAutoscale sets rf.Status.Autoscaling and the metrics of the state
+// next. wait is the reason that a recommended step does not start, and ratio
+// the used ratio of the last sample.
+func (r *RedisFailoverHandler) reportAutoscale(rf *redisfailoverv1.RedisFailover, read autoscaleRead, next autoscale.State, wait string, ratio float64) {
+	limit := read.effective
+	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
 	shown := shownStep(rf, next)
 	report := autoscale.Report(next, limit, maxLimit)
 	if wait != "" && report.RecommendedMemory != "" {
@@ -598,9 +656,8 @@ func (r *RedisFailoverHandler) autoscale(rf *redisfailoverv1.RedisFailover, obse
 	if rf.Status.Autoscaling.RecommendedMemory != "" {
 		recommended = min(next.Recommended, maxLimit)
 	}
-	r.mClient.SetAutoscaler(rf.Namespace, rf.Name, recommended, last.ratio, next.HighWindows, limit)
+	r.mClient.SetAutoscaler(rf.Namespace, rf.Name, recommended, ratio, next.HighWindows, limit)
 	r.mClient.SetAutoscalerPhase(rf.Namespace, rf.Name, phaseValue(shown.Phase))
-	r.logAutoscale(rf, errors.Join(errs...))
 }
 
 // shownStep returns the step fields of s for the status. Mode Recommend
