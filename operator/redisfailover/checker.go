@@ -297,17 +297,20 @@ type maxMemoryOutcome struct {
 
 // logMaxMemoryOutcome logs an outcome at Warning when it differs from the last
 // one that was logged for the RedisFailover, and at Debug otherwise. The status
-// message shows an unchanged outcome to the user. The end of an outcome logs
-// at Info, so that the log shows how long it lasted.
+// message shows an unchanged outcome to the user. The end of a message or of
+// a hold logs at Info, so that the log shows how long it lasted.
 func (r *RedisFailoverHandler) logMaxMemoryOutcome(logger log.Logger, key string, result rfservice.MaxMemoryResult) {
-	if result.Message == "" && !result.HoldRollout {
+	outcome := maxMemoryOutcome{message: result.Message, hold: result.HoldRollout}
+	if outcome == (maxMemoryOutcome{}) {
 		if last, loaded := r.maxMemoryLogged.LoadAndDelete(key); loaded {
-			logMaxMemoryOutcomeEnd(logger, last)
+			logMaxMemoryOutcomeEnd(logger, last, outcome)
 		}
 		return
 	}
-	outcome := maxMemoryOutcome{message: result.Message, hold: result.HoldRollout}
 	last, loaded := r.maxMemoryLogged.Swap(key, outcome)
+	if loaded {
+		logMaxMemoryOutcomeEnd(logger, last, outcome)
+	}
 	logf := logger.Warningf
 	if loaded && last == outcome {
 		logf = logger.Debugf
@@ -320,15 +323,17 @@ func (r *RedisFailoverHandler) logMaxMemoryOutcome(logger log.Logger, key string
 	}
 }
 
-func logMaxMemoryOutcomeEnd(logger log.Logger, last any) {
-	outcome, ok := last.(maxMemoryOutcome)
+// logMaxMemoryOutcomeEnd logs each part of the last outcome that current
+// does not have. A changed message is a Warning of the new outcome.
+func logMaxMemoryOutcomeEnd(logger log.Logger, last any, current maxMemoryOutcome) {
+	previous, ok := last.(maxMemoryOutcome)
 	if !ok {
 		return
 	}
-	if outcome.message != "" {
-		logger.Infof("The maxmemory message ended: %s", outcome.message)
+	if previous.message != "" && current.message == "" {
+		logger.Infof("The maxmemory message ended: %s", previous.message)
 	}
-	if outcome.hold {
+	if previous.hold && !current.hold {
 		logger.Infof("The pod rollout continues: maxmemory fits the memory limit")
 	}
 }
