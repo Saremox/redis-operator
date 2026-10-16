@@ -136,6 +136,9 @@ type Judge struct {
 	// ended is true after the first result of the step.
 	step, phase     string
 	ended, timedOut bool
+	// applyingSince is the first round that saw the phase Applying, zero in
+	// another phase.
+	applyingSince time.Time
 	// starts are the start times of the steps for the budget.
 	starts []time.Time
 	// doneAfter is a time before the end of the last done step.
@@ -180,6 +183,7 @@ func (j *Judge) Observe(r Round) (events []Event, settling bool) {
 	if prev != nil && step != "" {
 		events = append(events, j.follow(*prev, r)...)
 	}
+	events = append(events, j.checkTimeout(r)...)
 	events = append(events, j.checkPods(r, active && prev != nil)...)
 	events = append(events, j.checkMaster(r, active && prev != nil)...)
 	events = append(events, j.checkMaxMemory(r, prev)...)
@@ -221,7 +225,7 @@ func (j *Judge) start(prev, r Round) []Event {
 			events = append(events, Event{Judge: JudgeRate, Step: step, Message: msg})
 		}
 	}
-	j.step, j.phase, j.ended, j.timedOut = step, "", false, false
+	j.step, j.phase, j.ended, j.timedOut, j.applyingSince = step, "", false, false, time.Time{}
 	j.doneAfter, j.retryAt = time.Time{}, time.Time{}
 	return events
 }
@@ -281,13 +285,6 @@ func (j *Judge) checkRate(at time.Time, generation int64) []string {
 func (j *Judge) follow(prev, r Round) []Event {
 	var events []Event
 	phase := r.Status.Phase
-	if phase == PhaseApplying && !j.timedOut {
-		if at, err := parseTime(j.step); err == nil && r.Now.Sub(at) > applyTimeout+minute+timeoutMargin {
-			j.timedOut = true
-			events = append(events, Event{Judge: JudgeTimeout, Step: j.step,
-				Message: fmt.Sprintf("the step is Applying for more than %s", applyTimeout+timeoutMargin)})
-		}
-	}
 	if phase == j.phase {
 		return events
 	}
@@ -303,6 +300,33 @@ func (j *Judge) follow(prev, r Round) []Event {
 	}
 	j.phase = phase
 	return events
+}
+
+// checkTimeout judges the time of the phase Applying. It counts from
+// lastStep, or from the first round in Applying when lastStep does not
+// parse, so that each step window has a bound.
+func (j *Judge) checkTimeout(r Round) []Event {
+	if r.Status.Phase != PhaseApplying {
+		j.applyingSince = time.Time{}
+		return nil
+	}
+	if j.applyingSince.IsZero() {
+		j.applyingSince = r.Now
+		if r.Status.LastStep == "" {
+			// No lastStep tells a step from the last one.
+			j.timedOut = false
+		}
+	}
+	deadline := j.applyingSince.Add(applyTimeout + timeoutMargin)
+	if at, err := parseTime(r.Status.LastStep); err == nil {
+		deadline = at.Add(applyTimeout + minute + timeoutMargin)
+	}
+	if j.timedOut || !r.Now.After(deadline) {
+		return nil
+	}
+	j.timedOut = true
+	return []Event{{Judge: JudgeTimeout, Step: r.Status.LastStep,
+		Message: fmt.Sprintf("the step is Applying for more than %s", applyTimeout+timeoutMargin)}}
 }
 
 func resultOf(phase string) string {

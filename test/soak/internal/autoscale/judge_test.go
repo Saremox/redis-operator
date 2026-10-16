@@ -159,6 +159,49 @@ func target(limit int64) int64 {
 
 // A step that stays Applying keeps no window open after its timeout, so
 // that a mutation that holds the window ends.
+// A step with a lastStep that does not parse, or without lastStep, times out
+// 17 minutes after the first round that saw it Applying.
+func TestTimeoutWithoutLastStep(t *testing.T) {
+	for _, lastStep := range []string{"not a time", ""} {
+		j := NewJudge()
+		observe(j, stepped(at(0), 0, PhaseDone, "192Mi"))
+		applying := func(m float64) Round {
+			r := stepped(at(m), 0, PhaseApplying, "256Mi")
+			r.Status.LastStep = lastStep
+			return r
+		}
+		var events []Event
+		for _, m := range []float64{1, 10, 17.5} {
+			e, settling := j.Observe(applying(m))
+			events = append(events, e...)
+			if !settling {
+				t.Errorf("%q, minute %v: no window", lastStep, m)
+			}
+		}
+		for _, m := range []float64{18.5, 40} {
+			e, settling := j.Observe(applying(m))
+			events = append(events, e...)
+			if settling {
+				t.Errorf("%q, minute %v: a window after the timeout", lastStep, m)
+			}
+		}
+		timeouts := 0
+		for _, e := range events {
+			if e.Judge == JudgeTimeout {
+				timeouts++
+			}
+		}
+		if timeouts != 1 {
+			t.Errorf("%q: %v, want one timeout", lastStep, summary(events))
+		}
+		// The phase Applying starts again after another phase.
+		observe(j, stepped(at(41), 0, PhaseDone, "256Mi"))
+		if _, settling := j.Observe(applying(42)); !settling {
+			t.Errorf("%q: no window for the next Applying", lastStep)
+		}
+	}
+}
+
 func TestTimeoutEndsSettling(t *testing.T) {
 	j := NewJudge()
 	observe(j, at(0))

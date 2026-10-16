@@ -40,7 +40,7 @@ func autoscaleMutator(s state, d Data) (*Mutator, *fake.Clientset, versioned.Int
 	in := config.Instance{Name: "x", Namespace: "ns", Autoscale: &config.Autoscale{
 		Limit: config.Range{Min: 128, Max: 512}, MemoryMax: config.Range{Min: 64, Max: 128},
 	}}
-	kube := fake.NewClientset(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "rfa-x", Namespace: "ns"}})
+	kube := fake.NewClientset(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "rfa-x", Namespace: "ns", UID: "rfa-1"}})
 	for i := range s.redis {
 		p := s.redis[i].DeepCopy()
 		p.Namespace = "ns"
@@ -175,6 +175,42 @@ func TestPlanAutoscaleStateLost(t *testing.T) {
 	}
 	if _, err := kube.CoreV1().ConfigMaps("ns").Get(context.Background(), "rfa-x", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Errorf("the ConfigMap is still there: %v", err)
+	}
+	// The mutation converges only after the operator wrote the state again,
+	// because the unchanged instance converges before the operator sees the
+	// loss.
+	probe := func() error {
+		if p.probe == nil {
+			return errors.New("no probe")
+		}
+		return p.probe(context.Background())
+	}
+	if err := p.converged(s); err != nil {
+		t.Fatalf("the instance: %v", err)
+	}
+	if probe() == nil {
+		t.Error("converged without a state ConfigMap")
+	}
+	// The deleted ConfigMap is no write of the operator.
+	deleted := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "rfa-x", Namespace: "ns", UID: "rfa-1"}}
+	if _, err := kube.CoreV1().ConfigMaps("ns").Create(context.Background(), deleted, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if probe() == nil {
+		t.Error("converged with the deleted ConfigMap")
+	}
+	if err := kube.CoreV1().ConfigMaps("ns").Delete(context.Background(), "rfa-x", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	written := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "rfa-x", Namespace: "ns", UID: "rfa-2"}}
+	if _, err := kube.CoreV1().ConfigMaps("ns").Create(context.Background(), written, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := probe(); err != nil {
+		t.Errorf("after the write of the operator: %v", err)
+	}
+	if err := kube.CoreV1().ConfigMaps("ns").Delete(context.Background(), "rfa-x", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
 	}
 	var na notApplied
 	if err := p.action(context.Background()); !errors.As(err, &na) {

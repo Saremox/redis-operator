@@ -425,8 +425,10 @@ An autoscale kind converges when no step is `Applying`, the rollout is
 complete, and no resize is pending. Each pod must also run the limit of its
 own spec, and at least the limit of the StatefulSet. `maxmemory` must follow,
 and the instance must be `Healthy`. Mode `Off` also needs an empty
-`status.autoscaling` and each pod on the spec limit. A kind that may not
-recreate a pod must lose no write.
+`status.autoscaling` and each pod on the spec limit. `autoscale_state_lost`
+also needs a state ConfigMap that the operator wrote again, because the
+operator does not watch the ConfigMap. A kind that may not recreate a pod
+must lose no write.
 
 Each violation of a judge counts one time in `redis_soak_findings_total`,
 also inside a window, as `oom_killed` does:
@@ -437,8 +439,10 @@ also inside a window, as `oom_killed` does:
   limit gets a larger step: 64Mi goes to 128Mi.
 - `autoscale_step_timeout`: a step leaves `Applying` within 18 minutes after
   `lastStep`. This is the timeout of 15 minutes, the minute of `lastStep`, and
-  2 minutes for the reconcile that ends the step. After this time, the step
-  keeps no window open, so the window of a mutation can time out.
+  2 minutes for the reconcile that ends the step. Without a `lastStep` that
+  parses, the limit is 17 minutes after the first round in `Applying`. After
+  this time, the step keeps no window open, so the window of a mutation can
+  time out.
 - `autoscale_step_rate`: a step starts at least 5 minutes after the end of
   the last step. At most 6 steps start in 24 hours. After a revert,
   `retryAfter` is at least the back-off of 1 hour, which doubles at each

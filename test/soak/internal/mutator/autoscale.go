@@ -103,16 +103,35 @@ func (m *Mutator) planAutoscale(r *rand.Rand, kind config.Kind, s state) plan {
 		}
 	case config.AutoscaleStateLost:
 		name := "rfa-" + m.in.Name
+		configMaps := m.kube.CoreV1().ConfigMaps(m.in.Namespace)
+		var deleted types.UID
 		return plan{
 			kind:   kind,
 			params: "delete the ConfigMap " + name,
 			allow:  allowNone,
 			action: func(ctx context.Context) error {
-				err := m.kube.CoreV1().ConfigMaps(m.in.Namespace).Delete(ctx, name, metav1.DeleteOptions{})
+				cm, err := configMaps.Get(ctx, name, metav1.GetOptions{})
 				if apierrors.IsNotFound(err) {
 					return notApplied{fmt.Errorf("no ConfigMap %s", name)}
 				}
-				return err
+				if err != nil {
+					return err
+				}
+				deleted = cm.UID
+				return configMaps.Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &deleted}})
+			},
+			// The operator does not watch the ConfigMap, and the unchanged
+			// instance converges at once. The operator writes the state again
+			// after it sees the loss.
+			probe: func(ctx context.Context) error {
+				cm, err := configMaps.Get(ctx, name, metav1.GetOptions{})
+				switch {
+				case err != nil:
+					return fmt.Errorf("the operator did not write the state again: %w", err)
+				case cm.UID == deleted:
+					return fmt.Errorf("the ConfigMap %s is not deleted yet", name)
+				}
+				return nil
 			},
 			converged: converged,
 		}
