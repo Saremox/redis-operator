@@ -96,13 +96,14 @@ func TestCheckSentinelsCannotFailoverCallsAndLogs(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, test.want, got)
-			var calls []string
+			calls := make([]string, 0, len(mr.Calls))
 			for _, c := range mr.Calls {
 				calls = append(calls, fmt.Sprintf("%s %v", c.Method, c.Arguments[0]))
 			}
 			assert.Equal(t, test.wantCalls, calls)
-			var lines []string
-			for _, e := range logs.all() {
+			entries := logs.all()
+			lines := make([]string, 0, len(entries))
+			for _, e := range entries {
 				lines = append(lines, e.level+" "+e.msg)
 			}
 			assert.Equal(t, test.wantLogs, lines)

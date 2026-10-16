@@ -113,8 +113,9 @@ func objectMeta(label string) metav1.ObjectMeta {
 }
 
 func verbs(cli *kubefake.Clientset) []string {
-	var out []string
-	for _, a := range cli.Actions() {
+	actions := cli.Actions()
+	out := make([]string, 0, len(actions))
+	for _, a := range actions {
 		out = append(out, a.GetVerb())
 	}
 	return out
