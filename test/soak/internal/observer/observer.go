@@ -24,6 +24,7 @@ import (
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/client/k8s/clientset/versioned"
 	"github.com/saremox/redis-operator/test/soak/internal/auth"
+	"github.com/saremox/redis-operator/test/soak/internal/autoscale"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/customconfig"
 	"github.com/saremox/redis-operator/test/soak/internal/global"
@@ -86,6 +87,10 @@ type Observer struct {
 	// each of them was violated.
 	reportOnly map[string]bool
 	noted      map[string]time.Time
+	// judge follows the autoscaler steps of an instance with autoscale.
+	// mutation tells what the running mutation may do to the pods.
+	judge    *autoscale.Judge
+	mutation func() (autoscale.Allow, bool)
 
 	ok         *prometheus.GaugeVec
 	violation  prometheus.ObserverVec
@@ -95,6 +100,7 @@ type Observer struct {
 	lag        *prometheus.GaugeVec
 	rfHealthy  prometheus.Gauge
 	windowOpen prometheus.Gauge
+	steps      *prometheus.CounterVec
 }
 
 // New returns the Observer of an instance.
@@ -125,10 +131,20 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		lag:        m.ReplicationLag.MustCurryWith(labels),
 		rfHealthy:  m.RFHealthy.With(labels),
 		windowOpen: m.WindowOpen.With(labels),
+		steps:      m.AutoscaleSteps.MustCurryWith(labels),
 	}
 	// Alerts use the increase of findings_total, which does not show a series
 	// that starts at 1.
 	o.findings.WithLabelValues(invOOMKilled)
+	if in.Autoscale != nil {
+		o.judge = autoscale.NewJudge()
+		for _, j := range autoscale.Judges {
+			o.findings.WithLabelValues(j)
+		}
+		for _, r := range autoscale.Results {
+			o.steps.WithLabelValues(r)
+		}
+	}
 	return o
 }
 
@@ -334,7 +350,7 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 		p := &pods.Items[i]
 		switch p.Labels["app.kubernetes.io/component"] {
 		case "redis":
-			s.redis = append(s.redis, redisPod{pod: newPod(p), limit: maxmem.RedisLimit(p)})
+			s.redis = append(s.redis, redisPod{pod: newPod(p), limit: maxmem.RedisLimit(p), restarts: restarts(p, "redis")})
 		case "sentinel":
 			s.sentinels = append(s.sentinels, sentinelPod{pod: newPod(p)})
 		}
@@ -523,12 +539,17 @@ func (o *Observer) converged(ctx context.Context) bool {
 }
 
 func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged bool) {
-	if generation != o.generation {
+	changed := generation != o.generation
+	// The first round, for example after a restart of the tester, sees the
+	// generation but no change of it.
+	userChange := changed && o.generation != 0
+	if changed {
 		o.tracker.openWindow(now)
 		o.log.Info("convergence window opened", "generation", generation, "previous_generation", o.generation)
 		o.generation = generation
 	}
 	o.externalWindow(now)
+	o.judgeAutoscale(now, s, generation, userChange)
 	all := evaluate(s)
 	o.dropInvariants(all)
 	var checks []check

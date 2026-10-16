@@ -25,6 +25,7 @@ import (
 
 	"github.com/saremox/redis-operator/client/k8s/clientset/versioned"
 	"github.com/saremox/redis-operator/test/soak/internal/auth"
+	"github.com/saremox/redis-operator/test/soak/internal/autoscale"
 	"github.com/saremox/redis-operator/test/soak/internal/config"
 	"github.com/saremox/redis-operator/test/soak/internal/global"
 	"github.com/saremox/redis-operator/test/soak/internal/instances"
@@ -110,8 +111,10 @@ type Mutator struct {
 	resets   int
 	mixed    *mixedWindow
 	resetWhy string
-	// current is the kind of the mutation running, "" between mutations.
+	// current is the kind of the mutation running, "" between mutations,
+	// and allowed what it may do to the redis pods.
 	current atomic.Pointer[config.Kind]
+	allowed atomic.Pointer[autoscale.Allow]
 
 	total        *prometheus.CounterVec
 	converge     prometheus.ObserverVec
@@ -191,6 +194,18 @@ func (m *Mutator) Current() string {
 		return string(*k)
 	}
 	return ""
+}
+
+// Allowed returns what the running mutation may do to the redis pods. ok is
+// false while no mutation runs. A kind without its own rule may do all of it.
+func (m *Mutator) Allowed() (a autoscale.Allow, ok bool) {
+	if m.current.Load() == nil {
+		return autoscale.Allow{}, false
+	}
+	if a := m.allowed.Load(); a != nil {
+		return *a, true
+	}
+	return autoscale.AllowAll, true
 }
 
 // Run waits for the data fill, then runs one mutation at a time until ctx is
@@ -312,10 +327,12 @@ func (m *Mutator) execute(ctx context.Context, step int, s state, p plan, log *s
 
 	inProgress := m.inProgress.WithLabelValues(string(kind))
 	inProgress.Set(1)
+	m.allowed.Store(p.allow)
 	m.current.Store(&kind)
 	defer func() {
 		inProgress.Set(0)
 		m.current.Store(nil)
+		m.allowed.Store(nil)
 	}()
 	// An edge that may fail is observed for its timeout only, or until it
 	// is stuck, and its window held on, for the reset that follows.
@@ -390,7 +407,11 @@ func (m *Mutator) execute(ctx context.Context, step int, s state, p plan, log *s
 
 	result := resultTimeout
 	var exp expectation
+	var na notApplied
 	switch {
+	case errors.As(applyErr, &na):
+		result = resultSkipped
+		log = log.With("reason", applyErr.Error())
 	case errors.As(applyErr, &exp):
 		log = log.With("error", applyErr.Error())
 	case applyErr != nil:
@@ -488,6 +509,12 @@ func (m *Mutator) lossless(p plan, s state) bool {
 		return volumes && waits
 	case config.ImageUpgrade:
 		return volumes && waits && p.edge != nil && p.edge.edge.Expect == config.ExpectOK
+	case config.AutoscaleKillMaster:
+		return volumes && waits
+	case config.AutoscaleLoad, config.AutoscaleLimit, config.AutoscaleMemoryMax, config.AutoscaleMode,
+		config.AutoscaleStateLost, config.AutoscaleKillReplica:
+		// A user path that may not recreate a pod stops none.
+		return p.allow != nil && !p.allow.Recreate
 	case config.SentinelReplicas, config.RedisResources, config.KillMasterForce, config.KillReplica,
 		config.KillSentinel, config.RedisMemory, config.MaxMemoryPolicy, config.MaxMemoryPercent,
 		config.FillBurst, config.SentinelImageUpgrade, config.Reset, config.SentinelResetKillMaster:
@@ -506,6 +533,9 @@ func (m *Mutator) plan(r *rand.Rand, kind config.Kind, s state) plan {
 		return m.planSentinelFlip(r, s)
 	case config.SentinelResetKillMaster:
 		return m.planNoMaster(s, m.observer.Master(), m.sentinelPort)
+	case config.AutoscaleLoad, config.AutoscaleLimit, config.AutoscaleMemoryMax, config.AutoscaleMode,
+		config.AutoscaleStateLost, config.AutoscaleKillMaster, config.AutoscaleKillReplica:
+		return m.planAutoscale(r, kind, s)
 	case config.Reset:
 		why := "picked"
 		if m.resetWhy != "" {

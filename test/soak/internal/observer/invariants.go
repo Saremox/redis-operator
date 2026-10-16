@@ -42,8 +42,10 @@ type redisPod struct {
 	pod
 	info info
 	err  error
-	// limit is the redis container's memory limit.
-	limit int64
+	// limit is the redis container's memory limit, and restarts its restart
+	// count.
+	limit    int64
+	restarts int32
 	// config holds the customConfig keys, and maxmemory and
 	// maxmemory-policy with maxMemory.
 	config    map[string]string

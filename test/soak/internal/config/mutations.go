@@ -58,6 +58,21 @@ const (
 	// pause writes and wait for the replicas, up to shutdown-timeout. A
 	// write is lost only if a replica lags.
 	SentinelResetKillMaster Kind = "sentinel_reset_kill_master"
+	// The autoscale kinds need an instance with autoscale. AutoscaleLoad
+	// writes keys up to 97 percent of maxmemory, which gives a step at the
+	// next sample, and deletes them after the step starts.
+	AutoscaleLoad      Kind = "autoscale_load"
+	AutoscaleLimit     Kind = "autoscale_limit"
+	AutoscaleMemoryMax Kind = "autoscale_memory_max"
+	// AutoscaleMode changes the mode in the cycle Auto, Recommend, Off.
+	AutoscaleMode Kind = "autoscale_mode"
+	// AutoscaleStateLost deletes the state ConfigMap of the autoscaler.
+	AutoscaleStateLost Kind = "autoscale_state_lost"
+	// AutoscaleKillMaster and AutoscaleKillReplica load the instance, and
+	// delete a pod gracefully while the step is Applying, as a node drain
+	// does.
+	AutoscaleKillMaster  Kind = "autoscale_kill_master"
+	AutoscaleKillReplica Kind = "autoscale_kill_replica"
 )
 
 var kinds = []Kind{
@@ -65,6 +80,8 @@ var kinds = []Kind{
 	RedisMemory, MaxMemoryPolicy, MaxMemoryPercent, FillBurst,
 	PasswordRotate, AuthAdd, AuthRemove, SentinelToggle, PasswordRotateOffline, PasswordRotateOfflineForget,
 	ImageUpgrade, SentinelImageUpgrade, Reset, SentinelImageFlip, SentinelResetKillMaster,
+	AutoscaleLoad, AutoscaleLimit, AutoscaleMemoryMax, AutoscaleMode, AutoscaleStateLost,
+	AutoscaleKillMaster, AutoscaleKillReplica,
 }
 
 // bootstrapKinds are the kinds of a bootstrapping instance, which has no
@@ -79,6 +96,11 @@ func Exclusive(k Kind) bool {
 
 func maxMemoryOnly(k Kind) bool {
 	return k == RedisMemory || k == MaxMemoryPolicy || k == MaxMemoryPercent || k == FillBurst
+}
+
+// AutoscaleOnly reports whether a kind needs an instance with autoscale.
+func AutoscaleOnly(k Kind) bool {
+	return strings.HasPrefix(string(k), "autoscale_")
 }
 
 func sentinelOnly(k Kind) bool {
@@ -184,6 +206,9 @@ func (m Mutations) validate(in Instance) error {
 		}
 		if maxMemoryOnly(k) && in.MaxMemoryPolicy == "" {
 			return fmt.Errorf("%s needs an instance with maxMemoryPolicy", k)
+		}
+		if AutoscaleOnly(k) && in.Autoscale == nil {
+			return fmt.Errorf("%s needs an instance with autoscale", k)
 		}
 		if in.Bootstrap != nil && !slices.Contains(bootstrapKinds, k) {
 			return fmt.Errorf("%s can't run on a bootstrapping instance", k)

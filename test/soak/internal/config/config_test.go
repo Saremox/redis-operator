@@ -34,11 +34,19 @@ func TestShippedConfigsParse(t *testing.T) {
 			"-f", "../../e2e/"+profile+".jq")
 		cmd.Stdin = bytes.NewReader(js)
 		out, err := cmd.Output()
+		var c *Config
 		if err == nil {
-			_, err = Parse(out)
+			c, err = Parse(out)
 		}
 		if err != nil {
 			t.Errorf("%s: %v", profile, err)
+			continue
+		}
+		// A step of the autoscaler takes longer than an e2e mutation.
+		for _, in := range c.Instances {
+			if in.Autoscale != nil {
+				t.Errorf("%s: %s has autoscale", profile, in.Name)
+			}
 		}
 	}
 }

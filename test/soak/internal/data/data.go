@@ -552,6 +552,59 @@ func (d *Data) Burst(ctx context.Context, hold time.Duration) (string, error) {
 	return "", nil
 }
 
+// Load writes keys on a noeviction master until used_memory reaches percent
+// of maxmemory. It checks used_memory after each batch, because a key uses
+// more memory than its value. Then it calls until each second, for at most
+// hold, and deletes the keys. If it did not start, it returns why.
+func (d *Data) Load(ctx context.Context, percent int64, hold time.Duration, until func(context.Context) (bool, error)) (string, error) {
+	mi, err := memoryInfo(ctx, d.client)
+	if err != nil {
+		return "", err
+	}
+	if mi.policy != "noeviction" || mi.maxMemory == 0 {
+		return fmt.Sprintf("maxmemory %d, policy %s", mi.maxMemory, mi.policy), nil
+	}
+	target := mi.maxMemory * percent / 100
+	lim := rate.NewLimiter(4*fillRate, fillBatch)
+	var n int64
+	for mi.used < target {
+		b := min(fillBatch, (target-mi.used)/fillValueBytes+1)
+		if err = lim.WaitN(ctx, int(b)); err != nil {
+			break
+		}
+		_, oom := d.writeBurst(ctx, n, b)
+		n += b
+		if oom > 0 {
+			err = fmt.Errorf("the load got an OOM rejection at %d keys", n)
+			break
+		}
+		if mi, err = memoryInfo(ctx, d.client); err != nil {
+			break
+		}
+	}
+	if err == nil {
+		d.log.Info("load written", "used_memory", mi.used, "maxmemory", mi.maxMemory, "keys", n)
+		deadline := time.Now().Add(hold)
+		for {
+			var ok bool
+			if ok, err = until(ctx); ok || err != nil || !time.Now().Before(deadline) {
+				break
+			}
+			if !sleep(ctx, time.Second) {
+				err = ctx.Err()
+				break
+			}
+		}
+	}
+	for !d.deleteRange(ctx, n) {
+		if !sleep(ctx, time.Second) {
+			return "", ctx.Err()
+		}
+	}
+	d.log.Info("load deleted", "keys", n)
+	return "", err
+}
+
 func sinceOrZero(t time.Time) float64 {
 	if t.IsZero() {
 		return 0

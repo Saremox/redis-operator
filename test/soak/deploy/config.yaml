@@ -414,3 +414,41 @@ instances:
         sentinel_image_flip: 1
       forceDeleteProbability: 0.5
       sentinelImages: [valkey-9, redis-7.2]
+  # Mode Auto of the memory autoscaler: the observer judges each step. A load
+  # gives a step at the next sample of the operator. The budget of 6 steps in
+  # 24 hours and memoryMax stop the steps. Mode Off and a lost state start
+  # the budget again, and the user paths lower the limit. The full e2e
+  # profile leaves these instances out.
+  - name: auto
+    template: instances.yaml
+    maxMemoryPolicy: noeviction
+    data:
+      fill: {percent: 10}
+      ledger: {}
+    autoscale:
+      limit: {min: 128, max: 192}
+      memoryMax: {min: 256, max: 384}
+    mutations:
+      kinds:
+        autoscale_load: 3
+        autoscale_kill_master: 1
+        autoscale_kill_replica: 1
+        autoscale_limit: 1
+        autoscale_memory_max: 1
+        autoscale_mode: 1
+        autoscale_state_lost: 1
+  # The same with Sentinels, for a master kill in a step in both modes.
+  - name: auto-sent
+    template: instances.yaml
+    mode: sentinel
+    maxMemoryPolicy: noeviction
+    data:
+      fill: {percent: 10}
+      ledger: {}
+    autoscale: {}
+    mutations:
+      kinds:
+        autoscale_load: 2
+        autoscale_kill_master: 1
+        autoscale_kill_replica: 1
+        autoscale_mode: 1

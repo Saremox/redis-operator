@@ -33,6 +33,7 @@ type Metrics struct {
 	ReplicationLag     *prometheus.GaugeVec
 	RFHealthy          *prometheus.GaugeVec
 	WindowOpen         *prometheus.GaugeVec
+	AutoscaleSteps     *prometheus.CounterVec
 
 	MutationTotal      *prometheus.CounterVec
 	MutationConverge   *prometheus.HistogramVec
@@ -142,6 +143,11 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 			Name:      "window_open",
 			Help:      "1 while a convergence window is open: violations are expected, not findings.",
 		}, labels()),
+		AutoscaleSteps: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "autoscale_steps_total",
+			Help:      "Steps of the memory autoscaler by result: started, or the first end of the step: done, reverted or held.",
+		}, labels("result")),
 		MutationTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "mutation_total",
@@ -240,7 +246,7 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 	}
 	reg.MustRegister(
 		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration, m.BuildInfo,
-		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.WindowOpen,
+		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.WindowOpen, m.AutoscaleSteps,
 		m.MutationTotal, m.MutationConverge, m.PodsRecreated, m.MutationInProgress, m.NoMasterRecovery, m.MutationStalled,
 		m.WaitAckedReplicas, m.OOMRejections, m.LostWrites, m.UnexpectedLost, m.LedgerVerified,
 		m.VersionTransition, m.VersionMixed,

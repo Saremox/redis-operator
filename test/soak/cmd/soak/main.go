@@ -117,12 +117,14 @@ func run(configPath, listen string, log *slog.Logger) error {
 			wg.Go(func() { rd.Run(ctx) })
 			d = rd
 		}
-		wg.Go(func() { o.Run(ctx) })
 		var mu *mutator.Mutator
 		if len(in.Mutations.Kinds) > 0 {
 			mu = mutator.New(in, cfg, kube, rfs, o, d, a, lock, insts[in.Name], m, log)
+			// Before Run, because the observer reads it without a lock.
+			o.SetMutation(mu.Allowed)
 			wg.Go(func() { mu.Run(ctx) })
 		}
+		wg.Go(func() { o.Run(ctx) })
 		// An outage counts for the chaos action, or else the mutation, that
 		// ran when it started.
 		r.SetEvent(func() string {

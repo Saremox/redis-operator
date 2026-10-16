@@ -24,7 +24,9 @@ window. It counts these events in `redis_soak_findings_total`, and
   [Mutations](#mutations));
 - a version change that fails unsafely (see [Server versions](#server-versions));
 - a reset that does not complete within two times its timeout;
-- a Ready replica that never completed a sync.
+- a Ready replica that never completed a sync;
+- a step of the autoscaler that breaks a rule of mode Auto, also inside a
+  window (see [Autoscaler mode Auto](#autoscaler-mode-auto)).
 
 These events are also not expected, and have their own alerts:
 
@@ -380,6 +382,124 @@ Adoption has these limits:
   invariants hold. Adoption does not run. This gap is shorter than the start of
   the tester, but it exists.
 
+### Autoscaler mode Auto
+
+An instance with `autoscale` in the config gets a judge of the steps of the
+memory autoscaler. Its template must set `redis.autoscaling.mode: Auto`,
+`maxMemory` with `noeviction`, and a memory request equal to the limit. The
+instances `auto` and `auto-sent` (with Sentinels) do this. They need
+Kubernetes 1.33 or later.
+
+The rules of the operator are constants, so the tester cannot make a step
+come sooner. The operator samples the master one time in each minute. A use
+of 95 percent of `maxmemory` gives a step at the next sample, if the instance
+is `Healthy`, the cooldown passed, and the budget of 6 steps in 24 hours
+allows it. Thus a load of 97 percent of `maxmemory` gives a step after
+about 1 to 2 minutes. Mode `Off` and a lost state start the budget again,
+and the user paths lower the limit below `memoryMax`. With the shipped
+weights, expect about one step in each hour. The counter
+`redis_soak_autoscale_steps_total` shows the real rate.
+
+The template sets `maxMemory.percent` to 35. Thus the load fits two times in
+the limit, plus the operator reserve of 32Mi, for a fork. The fill is 10
+percent of `maxmemory`, so that a user path can lower the limit to the
+spec limit.
+
+The kinds, and what each kind may do to the redis pods:
+
+| Kind | Change | May |
+|------|--------|-----|
+| `autoscale_load` | Write keys up to 97 percent of `maxmemory`, wait at most 3 minutes for a step, and delete the keys. | nothing |
+| `autoscale_kill_master` | The load, and a graceful delete of the master while the step is `Applying`. | recreate the killed pod, hand over |
+| `autoscale_kill_replica` | The load, and a graceful delete of a replica while the step is `Applying`, as a node drain does. | recreate the killed pod |
+| `autoscale_limit` | Set the memory limit and request of the spec to a value in `autoscale.limit`. | lower: recreate, shrink; higher: recreate |
+| `autoscale_memory_max` | Set `memoryMax` to a value in `autoscale.memoryMax`. | below the largest pod limit: recreate, shrink; else nothing |
+| `autoscale_mode` | Change the mode in the cycle `Auto`, `Recommend`, `Off`. | `Off`: recreate, shrink |
+| `autoscale_state_lost` | Delete the state ConfigMap `rfa-<name>`. | nothing |
+
+A kill kind that sees no step `Applying` within the 3 minutes is `skipped`.
+The other mutation kinds, a chaos action, a stopped operator and a change of
+the generation by hand may do all of it.
+
+An autoscale kind converges when no step is `Applying`, the rollout is
+complete, and no resize is pending. Each pod must also run the limit of its
+own spec, and at least the limit of the StatefulSet. `maxmemory` must follow,
+and the instance must be `Healthy`. Mode `Off` also needs an empty
+`status.autoscaling` and each pod on the spec limit. `autoscale_state_lost`
+also needs a state ConfigMap that the operator wrote again, because the
+operator does not watch the ConfigMap. A kind that may not recreate a pod
+must lose no write.
+
+Each violation of a judge counts one time in `redis_soak_findings_total`,
+also inside a window, as `oom_killed` does:
+
+- `autoscale_step_size`: a step raises the limit to one target: 25 percent
+  more, rounded up to a multiple of 64Mi, and `memoryMax` at most. A smaller
+  or a larger step is a violation. Because the operator rounds up, a small
+  limit gets a larger step: 64Mi goes to 128Mi.
+- `autoscale_step_timeout`: a step leaves `Applying` within 18 minutes after
+  `lastStep`. This is the timeout of 15 minutes, the minute of `lastStep`, and
+  2 minutes for the reconcile that ends the step. Without a `lastStep` that
+  parses, the limit is 17 minutes after the first round in `Applying`. After
+  this time, the step keeps no window open, so the window of a mutation can
+  time out.
+- `autoscale_step_rate`: a step starts at least 5 minutes after the end of
+  the last step. At most 6 steps start in 24 hours. After a revert,
+  `retryAfter` is at least the back-off of 1 hour, which doubles at each
+  further revert up to 24 hours. No step starts before `retryAfter`, unless
+  the generation changed.
+- `autoscale_restart` and `autoscale_handover`: while a step is `Applying`
+  or `Held`, no redis container restarts, no redis pod is recreated, and the
+  master does not change.
+- `autoscale_shrink`: the applied limit of a pod does not decrease.
+- `autoscale_maxmemory`: the `maxmemory` of a pod is not above its limit.
+- `autoscale_status`: each field of `status.autoscaling` has a value that
+  the operator writes. A phase is `Idle`, `Applying`, `Done`, `Reverted`,
+  `Held` or empty. `lastStep` is a time, not after the round, and not before
+  the last step. `Applying` and `Reverted` have a `lastStep`.
+  `effectiveMemory` is empty or a positive quantity. A field counts again
+  only when its value changes.
+
+The other judges then use a safe default. An unknown phase is no step in
+progress, and the size check skips an `effectiveMemory` that is not valid.
+Without a `lastStep` that parses, the rate checks skip the step. A step
+timeout never counts from later than the first round in `Applying`. A
+`Reverted` step without a `retryAfter` that parses is an `autoscale_step_rate`
+violation, and the back-off counts from the revert that the tester saw. An
+empty `status.autoscaling` is mode `Off` or a lost state, and starts the
+budget again. An unknown pod limit or `maxmemory` keeps the last known
+limit and gives no `autoscale_maxmemory` check.
+
+At its start, the tester adopts the step of the status. Only a step in
+`Applying` has its first result still to come, because `Held` is a result.
+A `Done` step gives the cooldown from `lastStep`. A `Reverted` step gives
+the back-off up to `retryAfter`, or 1 hour after `lastStep` without a
+`retryAfter` that parses, which is an `autoscale_step_rate` violation. The
+judge follows the phase also without `lastStep`, because the held step of a
+lost state has none. `lastStep` has a resolution of a minute, so `Applying`
+after `Done`, `Reverted` or `Held` is a further step, also with the same
+`lastStep`.
+
+A user path that may do the change excuses it. The excuse covers the round
+of the user path and the next round, because a change can show one round
+late. For `autoscale_maxmemory`, a user path that may shrink a pod excuses
+it, because the operator lowers `maxmemory` one reconcile later.
+
+The status gives its times in full minutes. Each rate check uses the latest
+time that the minute allows, and a slack of 30 seconds for the clocks and the
+age of a read. Thus only a sure violation is a finding. The status does not
+tell an urgent step from a sustained one, so the cooldown check uses the
+urgent cooldown of 5 minutes for each step.
+
+A step keeps a convergence window open while it is `Applying`, and in the
+round of its end. The operator sets `maxmemory` one reconcile after the last
+resize, so `config` can fail for a short time. `redis_soak_autoscale_steps_total`
+counts each step at its start, `started`, and at its first end: `done`,
+`reverted` or `held`.
+
+The judges, the planner and the convergence of each kind have unit tests
+with fakes: `go test ./internal/autoscale/ ./internal/observer/ ./internal/mutator/`.
+
 ### Chaos
 
 The chaos lane (`chaos.kinds`) does one action at a time on all instances
@@ -453,7 +573,9 @@ script asserts these conditions from the metrics:
 - chaos: every action converged, and no action found a change in progress.
 
 The versions profile leaves out `redis-chain-big`. Its 256Mi of data make
-each step and each reset too slow for the kind job.
+each step and each reset too slow for the kind job. The full profile leaves
+out the instances with `autoscale`, because a step of the autoscaler takes
+minutes. No profile runs them.
 
 The versions profile runs 3600 seconds by default. The instance `downgrade`
 needs 16 steps in that time. This holds only if each stuck change logs that
@@ -493,6 +615,10 @@ together with the window: inside a window, it is the cost of the change.
 
 ## Limits
 
+- The autoscale judges read the status of the RedisFailover, not the
+  metrics of the operator. The tester does not change the image during a
+  step, and it does not cause a revert or a held step on purpose, for
+  example with a ResourceQuota.
 - The tester does not check two documented operator limits: until a redis
   pod restarts after a password change, its exporter and its pre-stop
   `SAVE` use the old password; and an operator that restarts between a
