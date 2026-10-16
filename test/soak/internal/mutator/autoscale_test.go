@@ -444,11 +444,11 @@ func TestAllowed(t *testing.T) {
 
 // A mutation that found nothing to do counts as skipped.
 func TestExecuteNotApplied(t *testing.T) {
-	r := newRotation(t, redisfailoverv1.RedisFailoverStatus{}, true)
+	r, ctx := newRotation(t, redisfailoverv1.RedisFailoverStatus{}, true)
 	p := plan{kind: config.KillMaster, action: func(context.Context) error {
 		return notApplied{errors.New("no step")}
 	}, converged: func(state) error { return nil }}
-	r.m.execute(r.ctx, 1, authState(), p, r.m.log)
+	r.m.execute(ctx, 1, authState(), p, r.m.log)
 	if n := testutil.ToFloat64(r.m.total.WithLabelValues(string(config.KillMaster), resultSkipped)); n != 1 {
 		t.Errorf("skipped %v", n)
 	}

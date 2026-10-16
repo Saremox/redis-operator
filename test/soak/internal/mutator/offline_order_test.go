@@ -115,14 +115,14 @@ func TestRotateOfflineOrder(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r := newRotation(t, c.status)
+			r, ctx := newRotation(t, c.status)
 			r.operatorDeployment(t)
 			r.appliedPasswords(t)
 			r.m.convergeTimeout = 50 * time.Millisecond
 			f := &faults{fail: c.fail, count: map[string]int{}}
 			f.install(r)
 			o := &offline{secret: "x-auth", previous: "old", first: "p1", second: "p2", forget: c.forget}
-			err := r.m.rotateOffline(r.ctx, o, r.m.log)
+			err := r.m.rotateOffline(ctx, o, r.m.log)
 			got := ""
 			if err != nil {
 				got = err.Error()

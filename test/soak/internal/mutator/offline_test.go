@@ -95,11 +95,11 @@ func (r *rotation) appliedPasswords(t *testing.T) {
 // kept, so password_rotate_offline converges on the first rotation. The
 // tester neither waits for passwordNotApplied nor deletes the kept passwords.
 func TestScenarioCConvergesWithoutRestore(t *testing.T) {
-	r := newRotation(t, redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.HealthyState}, true)
+	r, ctx := newRotation(t, redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.HealthyState}, true)
 	r.operatorDeployment(t)
 	r.appliedPasswords(t)
 	p := planAuth(config.PasswordRotateOffline, authState())
-	if next := r.m.execute(r.ctx, 1, authState(), p, r.m.log); next != "" {
+	if next := r.m.execute(ctx, 1, authState(), p, r.m.log); next != "" {
 		t.Fatalf("next kind %q", next)
 	}
 	if len(r.windows) != 1 {
@@ -128,10 +128,10 @@ func TestScenarioCConvergesWithoutRestore(t *testing.T) {
 // An operator that cannot apply the password after all gets the previous
 // password back, as after a stuck password_rotate.
 func TestScenarioCStuckRestored(t *testing.T) {
-	r := newRotation(t, stuck, false, true)
+	r, ctx := newRotation(t, stuck, false, true)
 	r.operatorDeployment(t)
 	p := planAuth(config.PasswordRotateOffline, authState())
-	if next := r.m.execute(r.ctx, 1, authState(), p, r.m.log); next != "" {
+	if next := r.m.execute(ctx, 1, authState(), p, r.m.log); next != "" {
 		t.Fatalf("next kind %q", next)
 	}
 	if len(r.windows) != 2 {
@@ -151,7 +151,7 @@ func TestScenarioCStuckRestored(t *testing.T) {
 func TestScenarioCForgetDeletesAppliedPasswords(t *testing.T) {
 	for name, kept := range map[string]bool{"kept passwords": true, "no kept passwords": false} {
 		t.Run(name, func(t *testing.T) {
-			r := newRotation(t, stuck)
+			r, ctx := newRotation(t, stuck)
 			r.operatorDeployment(t)
 			r.m.convergeTimeout = time.Second
 			if kept {
@@ -169,7 +169,7 @@ func TestScenarioCForgetDeletesAppliedPasswords(t *testing.T) {
 				return false, nil, nil
 			})
 			o := &offline{secret: "x-auth", previous: "old", first: "p1", second: "p2", forget: true}
-			err := r.m.rotateOffline(r.ctx, o, r.m.log)
+			err := r.m.rotateOffline(ctx, o, r.m.log)
 			// The fake has no pods, so the instance never reads Healthy.
 			var exp expectation
 			if !errors.As(err, &exp) {

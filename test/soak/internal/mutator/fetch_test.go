@@ -60,7 +60,7 @@ func TestFetchOrder(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r := newRotation(t, redisfailoverv1.RedisFailoverStatus{})
+			r, _ := newRotation(t, redisfailoverv1.RedisFailoverStatus{})
 			rf, err := r.rfs.DatabasesV1().RedisFailovers("ns").Get(context.Background(), "x", metav1.GetOptions{})
 			if err != nil {
 				t.Fatal(err)
