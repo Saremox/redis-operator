@@ -750,22 +750,12 @@ func startupScriptProbe(script string) *corev1.Probe {
 
 func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *appsv1.Deployment {
 	name := GetSentinelName(rf)
-	configMapName := GetSentinelName(rf)
 	namespace := rf.Namespace
 
-	sentinelCommand := getSentinelCommand(rf)
 	selectorLabels := generateSelectorLabels(sentinelRoleName, rf.Name)
 	labels = util.MergeLabels(labels, selectorLabels)
 
-	volumeMounts := getSentinelVolumeMounts(rf)
-	volumes := getSentinelVolumes(rf, configMapName)
-
-	serviceAccountName := rf.Spec.Sentinel.ServiceAccountName
-	if serviceAccountName == "" {
-		serviceAccountName = GetSentinelServiceAccountName(rf)
-	}
-
-	sd := &appsv1.Deployment{
+	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            name,
 			Namespace:       namespace,
@@ -783,149 +773,163 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 					Labels:      labels,
 					Annotations: rf.Spec.Sentinel.PodAnnotations,
 				},
-				Spec: corev1.PodSpec{
-					Affinity:                     getAffinity(rf.Spec.Sentinel.Affinity, labels),
-					Tolerations:                  rf.Spec.Sentinel.Tolerations,
-					TopologySpreadConstraints:    rf.Spec.Sentinel.TopologySpreadConstraints,
-					NodeSelector:                 rf.Spec.Sentinel.NodeSelector,
-					SecurityContext:              getSecurityContext(rf.Spec.Sentinel.SecurityContext),
-					HostNetwork:                  rf.Spec.Sentinel.HostNetwork,
-					DNSPolicy:                    getDnsPolicy(rf.Spec.Sentinel.DNSPolicy),
-					ImagePullSecrets:             rf.Spec.Sentinel.ImagePullSecrets,
-					PriorityClassName:            rf.Spec.Sentinel.PriorityClassName,
-					ServiceAccountName:           serviceAccountName,
-					AutomountServiceAccountToken: automountServiceAccountToken(rf.Spec.Sentinel.ServiceAccountName),
-					EnableServiceLinks:           new(false),
-					InitContainers: []corev1.Container{
-						{
-							Name:            "sentinel-config-copy",
-							Image:           rf.Spec.Sentinel.Image,
-							ImagePullPolicy: pullPolicy(rf.Spec.Sentinel.ImagePullPolicy),
-							SecurityContext: getContainerSecurityContext(rf.Spec.Sentinel.ConfigCopy.ContainerSecurityContext),
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "sentinel-config",
-									MountPath: "/redis",
-								},
-								{
-									Name:      "sentinel-config-writable",
-									MountPath: "/redis-writable",
-								},
-							},
-							Command: []string{
-								"cp",
-								fmt.Sprintf("/redis/%s", sentinelConfigFileName),
-								fmt.Sprintf("/redis-writable/%s", sentinelConfigFileName),
-							},
-							Resources: corev1.ResourceRequirements{
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("10m"),
-									corev1.ResourceMemory: resource.MustParse("32Mi"),
-								},
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("10m"),
-									corev1.ResourceMemory: resource.MustParse("32Mi"),
-								},
-							},
-						},
-					},
-					Containers: []corev1.Container{
-						{
-							Name:            "sentinel",
-							Image:           rf.Spec.Sentinel.Image,
-							ImagePullPolicy: pullPolicy(rf.Spec.Sentinel.ImagePullPolicy),
-							SecurityContext: getContainerSecurityContext(rf.Spec.Sentinel.ContainerSecurityContext),
-							Env:             rf.Spec.Sentinel.Env,
-							Ports: []corev1.ContainerPort{
-								{
-									Name:          "sentinel",
-									ContainerPort: 26379,
-									Protocol:      corev1.ProtocolTCP,
-								},
-							},
-							VolumeMounts: volumeMounts,
-							Command:      sentinelCommand,
-							Resources:    rf.Spec.Sentinel.Resources,
-						},
-					},
-					Volumes: volumes,
-				},
+				Spec: generateSentinelPodSpec(rf, labels),
 			},
 		},
 	}
+}
 
-	if rf.Spec.Sentinel.CustomLivenessProbe != nil {
-		sd.Spec.Template.Spec.Containers[0].LivenessProbe = rf.Spec.Sentinel.CustomLivenessProbe
-	} else {
-		sd.Spec.Template.Spec.Containers[0].LivenessProbe = &corev1.Probe{
-			InitialDelaySeconds: graceTime,
-			TimeoutSeconds:      5,
-			ProbeHandler: corev1.ProbeHandler{
-				Exec: &corev1.ExecAction{
-					Command: []string{
-						"sh",
-						"-c",
-						"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 ping",
-					},
-				},
-			},
-		}
+func generateSentinelPodSpec(rf *redisfailoverv1.RedisFailover, labels map[string]string) corev1.PodSpec {
+	configMapName := GetSentinelName(rf)
+
+	serviceAccountName := rf.Spec.Sentinel.ServiceAccountName
+	if serviceAccountName == "" {
+		serviceAccountName = GetSentinelServiceAccountName(rf)
 	}
 
-	if rf.Spec.Sentinel.CustomReadinessProbe != nil {
-		sd.Spec.Template.Spec.Containers[0].ReadinessProbe = rf.Spec.Sentinel.CustomReadinessProbe
-	} else {
-		sd.Spec.Template.Spec.Containers[0].ReadinessProbe = &corev1.Probe{
-			InitialDelaySeconds: graceTime,
-			TimeoutSeconds:      5,
-			ProbeHandler: corev1.ProbeHandler{
-				Exec: &corev1.ExecAction{
-					// The first check keeps the Sentinel not ready until it
-					// monitors a real master. SENTINEL CKQUORUM keeps it not
-					// ready while it cannot reach enough Sentinels for a
-					// failover, for example in a network partition. Without
-					// CKQUORUM, an isolated Sentinel stays ready with an old
-					// master address. See
-					// https://github.com/spotahome/redis-operator/issues/663.
-					Command: []string{
-						"sh",
-						"-c",
-						"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1' && $t redis-cli -h $(hostname) -p 26379 sentinel ckquorum mymaster | grep -q '^OK'",
-					},
-				},
-			},
-		}
-	}
-
-	if rf.Spec.Sentinel.CustomStartupProbe != nil {
-		sd.Spec.Template.Spec.Containers[0].StartupProbe = rf.Spec.Sentinel.CustomStartupProbe
-	} else if rf.Spec.Sentinel.StartupConfigMap != "" {
-		sd.Spec.Template.Spec.Containers[0].StartupProbe = &corev1.Probe{
-			InitialDelaySeconds: graceTime,
-			TimeoutSeconds:      5,
-			FailureThreshold:    6,
-			PeriodSeconds:       15,
-			ProbeHandler: corev1.ProbeHandler{
-				Exec: &corev1.ExecAction{
-					Command: []string{"/bin/sh", "/sentinel-startup/startup.sh"},
-				},
-			},
-		}
+	spec := corev1.PodSpec{
+		Affinity:                     getAffinity(rf.Spec.Sentinel.Affinity, labels),
+		Tolerations:                  rf.Spec.Sentinel.Tolerations,
+		TopologySpreadConstraints:    rf.Spec.Sentinel.TopologySpreadConstraints,
+		NodeSelector:                 rf.Spec.Sentinel.NodeSelector,
+		SecurityContext:              getSecurityContext(rf.Spec.Sentinel.SecurityContext),
+		HostNetwork:                  rf.Spec.Sentinel.HostNetwork,
+		DNSPolicy:                    getDnsPolicy(rf.Spec.Sentinel.DNSPolicy),
+		ImagePullSecrets:             rf.Spec.Sentinel.ImagePullSecrets,
+		PriorityClassName:            rf.Spec.Sentinel.PriorityClassName,
+		ServiceAccountName:           serviceAccountName,
+		AutomountServiceAccountToken: automountServiceAccountToken(rf.Spec.Sentinel.ServiceAccountName),
+		EnableServiceLinks:           new(false),
+		InitContainers:               []corev1.Container{generateSentinelConfigCopyContainer(rf)},
+		Containers:                   []corev1.Container{generateSentinelContainer(rf)},
+		Volumes:                      getSentinelVolumes(rf, configMapName),
 	}
 
 	if rf.Spec.Sentinel.Exporter.Enabled {
 		exporter := createSentinelExporterContainer(rf)
-		sd.Spec.Template.Spec.Containers = append(sd.Spec.Template.Spec.Containers, exporter)
+		spec.Containers = append(spec.Containers, exporter)
 	}
 	if rf.Spec.Sentinel.InitContainers != nil {
-		sd.Spec.Template.Spec.InitContainers = append(sd.Spec.Template.Spec.InitContainers, rf.Spec.Sentinel.InitContainers...)
+		spec.InitContainers = append(spec.InitContainers, rf.Spec.Sentinel.InitContainers...)
 	}
 
 	if rf.Spec.Sentinel.ExtraContainers != nil {
-		sd.Spec.Template.Spec.Containers = append(sd.Spec.Template.Spec.Containers, rf.Spec.Sentinel.ExtraContainers...)
+		spec.Containers = append(spec.Containers, rf.Spec.Sentinel.ExtraContainers...)
 	}
 
-	return sd
+	return spec
+}
+
+func generateSentinelConfigCopyContainer(rf *redisfailoverv1.RedisFailover) corev1.Container {
+	return corev1.Container{
+		Name:            "sentinel-config-copy",
+		Image:           rf.Spec.Sentinel.Image,
+		ImagePullPolicy: pullPolicy(rf.Spec.Sentinel.ImagePullPolicy),
+		SecurityContext: getContainerSecurityContext(rf.Spec.Sentinel.ConfigCopy.ContainerSecurityContext),
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "sentinel-config",
+				MountPath: "/redis",
+			},
+			{
+				Name:      "sentinel-config-writable",
+				MountPath: "/redis-writable",
+			},
+		},
+		Command: []string{
+			"cp",
+			fmt.Sprintf("/redis/%s", sentinelConfigFileName),
+			fmt.Sprintf("/redis-writable/%s", sentinelConfigFileName),
+		},
+		Resources: corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("10m"),
+				corev1.ResourceMemory: resource.MustParse("32Mi"),
+			},
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("10m"),
+				corev1.ResourceMemory: resource.MustParse("32Mi"),
+			},
+		},
+	}
+}
+
+func generateSentinelContainer(rf *redisfailoverv1.RedisFailover) corev1.Container {
+	return corev1.Container{
+		Name:            "sentinel",
+		Image:           rf.Spec.Sentinel.Image,
+		ImagePullPolicy: pullPolicy(rf.Spec.Sentinel.ImagePullPolicy),
+		SecurityContext: getContainerSecurityContext(rf.Spec.Sentinel.ContainerSecurityContext),
+		Env:             rf.Spec.Sentinel.Env,
+		Ports: []corev1.ContainerPort{
+			{
+				Name:          "sentinel",
+				ContainerPort: 26379,
+				Protocol:      corev1.ProtocolTCP,
+			},
+		},
+		VolumeMounts:   getSentinelVolumeMounts(rf),
+		Command:        getSentinelCommand(rf),
+		Resources:      rf.Spec.Sentinel.Resources,
+		LivenessProbe:  sentinelLivenessProbe(rf),
+		ReadinessProbe: sentinelReadinessProbe(rf),
+		StartupProbe:   sentinelStartupProbe(rf),
+	}
+}
+
+func sentinelLivenessProbe(rf *redisfailoverv1.RedisFailover) *corev1.Probe {
+	if rf.Spec.Sentinel.CustomLivenessProbe != nil {
+		return rf.Spec.Sentinel.CustomLivenessProbe
+	}
+	return &corev1.Probe{
+		InitialDelaySeconds: graceTime,
+		TimeoutSeconds:      5,
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{
+					"sh",
+					"-c",
+					"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 ping",
+				},
+			},
+		},
+	}
+}
+
+func sentinelReadinessProbe(rf *redisfailoverv1.RedisFailover) *corev1.Probe {
+	if rf.Spec.Sentinel.CustomReadinessProbe != nil {
+		return rf.Spec.Sentinel.CustomReadinessProbe
+	}
+	return &corev1.Probe{
+		InitialDelaySeconds: graceTime,
+		TimeoutSeconds:      5,
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				// The first check keeps the Sentinel not ready until it
+				// monitors a real master. SENTINEL CKQUORUM keeps it not
+				// ready while it cannot reach enough Sentinels for a
+				// failover, for example in a network partition. Without
+				// CKQUORUM, an isolated Sentinel stays ready with an old
+				// master address. See
+				// https://github.com/spotahome/redis-operator/issues/663.
+				Command: []string{
+					"sh",
+					"-c",
+					"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1' && $t redis-cli -h $(hostname) -p 26379 sentinel ckquorum mymaster | grep -q '^OK'",
+				},
+			},
+		},
+	}
+}
+
+func sentinelStartupProbe(rf *redisfailoverv1.RedisFailover) *corev1.Probe {
+	if rf.Spec.Sentinel.CustomStartupProbe != nil {
+		return rf.Spec.Sentinel.CustomStartupProbe
+	}
+	if rf.Spec.Sentinel.StartupConfigMap == "" {
+		return nil
+	}
+	return startupScriptProbe("/sentinel-startup/startup.sh")
 }
 
 // generateSentinelServiceAccount returns the ServiceAccount that the operator
