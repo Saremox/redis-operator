@@ -168,7 +168,7 @@ func TestVersionDefaults(t *testing.T) {
 		"registry.example:5000/team/valkey:8.1.10-alpine@sha256:0123abcd": {"valkey", "8.1.10"},
 	} {
 		v := Version{Name: "v", Image: image}
-		v.setDefaults()
+		setVersionDefaults(&v)
 		if got := [2]string{v.Server, v.Release}; got != want {
 			t.Errorf("%s: server and release %v, want %v", image, got, want)
 		}
@@ -187,7 +187,7 @@ func TestWaitsForReplicas(t *testing.T) {
 		"valkey/valkey:8.1.10": true,
 	} {
 		v := Version{Name: "v", Image: image}
-		v.setDefaults()
+		setVersionDefaults(&v)
 		if got := v.WaitsForReplicas(); got != want {
 			t.Errorf("%s waits for replicas: %t, want %t", image, got, want)
 		}

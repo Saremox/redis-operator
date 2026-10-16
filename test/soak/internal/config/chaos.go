@@ -105,7 +105,7 @@ func (ch Chaos) Sorted() []ChaosKind {
 	return slices.Sorted(maps.Keys(ch.Kinds))
 }
 
-func (ch *Chaos) setDefaults(observer Observer) {
+func setChaosDefaults(ch *Chaos, observer Observer) {
 	if ch.Interval.Duration == 0 {
 		ch.Interval.Duration = 10 * time.Minute
 	}
@@ -157,7 +157,7 @@ func (ch Chaos) validate() error {
 
 // resolveCharts makes local charts relative to the config file's
 // directory.
-func (ch *Chaos) resolveCharts(dir string) {
+func resolveCharts(ch *Chaos, dir string) {
 	for i, v := range ch.Upgrade.Versions {
 		if !strings.Contains(v.Chart, "://") && !filepath.IsAbs(v.Chart) {
 			ch.Upgrade.Versions[i].Chart = filepath.Join(dir, v.Chart)

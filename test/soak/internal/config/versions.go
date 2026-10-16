@@ -145,7 +145,7 @@ func (c *Config) Reaches(ch *Chain, from, to string) bool {
 	return seen[to]
 }
 
-func (v *Version) setDefaults() {
+func setVersionDefaults(v *Version) {
 	repo, tag := splitImage(v.Image)
 	v.Server = path.Base(repo)
 	v.Release, _, _ = strings.Cut(tag, "-")

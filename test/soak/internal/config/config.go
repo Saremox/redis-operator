@@ -161,7 +161,7 @@ func Load(path string) (*Config, error) {
 			c.Instances[i].Template = filepath.Join(filepath.Dir(path), t)
 		}
 	}
-	c.Chaos.resolveCharts(filepath.Dir(path))
+	resolveCharts(&c.Chaos, filepath.Dir(path))
 	return c, nil
 }
 
@@ -199,9 +199,9 @@ func (c *Config) setDefaults() {
 		c.Observer.ConvergenceTimeout.Duration = 10 * time.Minute
 	}
 	setMutationDefaults(&c.Mutation, c.Observer)
-	c.Chaos.setDefaults(c.Observer)
+	setChaosDefaults(&c.Chaos, c.Observer)
 	for i := range c.Versions {
-		c.Versions[i].setDefaults()
+		setVersionDefaults(&c.Versions[i])
 	}
 	for i := range c.Instances {
 		setInstanceDefaults(&c.Instances[i])
