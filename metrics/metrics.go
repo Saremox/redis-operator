@@ -185,108 +185,44 @@ type recorder struct {
 
 // NewRecorder returns a new Recorder that registers its metrics on reg.
 func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
-	// Create metrics.
-	clusterOK := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: namespace,
-		Subsystem: promControllerSubsystem,
-		Name:      "cluster_ok",
-		Help:      "1 when the last reconcile of the RedisFailover had no error, 0 when it failed.",
-	}, []string{"namespace", "name"})
-
-	recommendedMemory := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: namespace,
-		Subsystem: promControllerSubsystem,
-		Name:      "autoscaler_recommended_memory_bytes",
-		Help:      "Memory limit that the autoscaler recommends for the redis container, or 0 for no change.",
-	}, []string{"namespace", "name"})
-
-	memoryUsedRatio := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: namespace,
-		Subsystem: promControllerSubsystem,
-		Name:      "autoscaler_memory_used_ratio",
-		Help:      "used_memory of the master divided by maxmemory, or by the memory limit without maxmemory, at the last sample.",
-	}, []string{"namespace", "name"})
-
-	highWindows := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: namespace,
-		Subsystem: promControllerSubsystem,
-		Name:      "autoscaler_high_windows",
-		Help:      "Number of consecutive 5-minute windows with high memory use.",
-	}, []string{"namespace", "name"})
-
-	effectiveMemory := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: namespace,
-		Subsystem: promControllerSubsystem,
-		Name:      "autoscaler_effective_memory_bytes",
-		Help:      "Memory limit of the redis container that the operator applies: the limit of redis.resources, or a larger limit of the autoscaler.",
-	}, []string{"namespace", "name"})
-
-	stepPhase := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: namespace,
-		Subsystem: promControllerSubsystem,
-		Name:      "autoscaler_step_phase",
-		Help:      "Phase of the last autoscaler step: 0 Idle, 1 Applying, 2 Done, 3 Reverted, 4 Held.",
-	}, []string{"namespace", "name"})
-
-	steps := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: namespace,
-		Subsystem: promControllerSubsystem,
-		Name:      "autoscaler_steps_total",
-		Help:      "Number of autoscaler steps that ended, by result: done, reverted or held.",
-	}, []string{"namespace", "name", "result"})
-
-	ensureResource := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: namespace,
-		Subsystem: promControllerSubsystem,
-		Name:      "ensure_resource_total",
-		Help:      "Number of ensure attempts for a resource of a RedisFailover, by status. An attempt also counts when the resource needs no change.",
-	}, []string{"namespace", "name", "kind", "resource_name", "status"})
-
-	redisCheck := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: namespace,
-		Subsystem: promControllerSubsystem,
-		Name:      "redis_checks_total",
-		Help:      "Number of checks of the Redis pods, by indicator and status (HEALTHY or UNHEALTHY). The pod_name is the pod name, or NA for a check of the RedisFailover.",
-	}, []string{"namespace", "resource", "indicator", "pod_name", "status"})
-
-	sentinelCheck := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: namespace,
-		Subsystem: promControllerSubsystem,
-		Name:      "sentinel_checks_total",
-		Help:      "Number of checks of the Sentinel pods, by indicator and status (HEALTHY or UNHEALTHY). The pod_name is the pod name, or NA for a check of the RedisFailover.",
-	}, []string{"namespace", "resource", "indicator", "pod_name", "status"})
-
-	redisOperations := prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: namespace,
-			Subsystem: promControllerSubsystem,
-			Name:      "redis_operations_total",
-			Help:      "Number of commands that the operator sent to Redis and Sentinel, by pod and status.",
-		}, []string{"kind" /* redis or sentinel */, "namespace", "pod_name", "operation", "status", "err"})
-
-	k8sServiceOperations := prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: namespace,
-			Subsystem: promControllerSubsystem,
-			Name:      "k8s_operations_total",
-			Help:      "Number of Kubernetes API calls of the operator, by status.",
-		}, []string{"namespace", "kind", "name", "operation", "status", "err"})
-
-	// Create the instance.
 	r := recorder{
-		clusterOK:            clusterOK,
-		recommendedMemory:    recommendedMemory,
-		memoryUsedRatio:      memoryUsedRatio,
-		highWindows:          highWindows,
-		effectiveMemory:      effectiveMemory,
-		stepPhase:            stepPhase,
-		steps:                steps,
-		ensureResource:       ensureResource,
-		redisCheck:           redisCheck,
-		sentinelCheck:        sentinelCheck,
-		k8sServiceOperations: k8sServiceOperations,
-		redisOperations:      redisOperations,
-		ControllerRecorder:   newControllerRecorder(reg),
+		clusterOK: newGaugeVec(namespace, "cluster_ok",
+			"1 when the last reconcile of the RedisFailover had no error, 0 when it failed.",
+			"namespace", "name"),
+		recommendedMemory: newGaugeVec(namespace, "autoscaler_recommended_memory_bytes",
+			"Memory limit that the autoscaler recommends for the redis container, or 0 for no change.",
+			"namespace", "name"),
+		memoryUsedRatio: newGaugeVec(namespace, "autoscaler_memory_used_ratio",
+			"used_memory of the master divided by maxmemory, or by the memory limit without maxmemory, at the last sample.",
+			"namespace", "name"),
+		highWindows: newGaugeVec(namespace, "autoscaler_high_windows",
+			"Number of consecutive 5-minute windows with high memory use.",
+			"namespace", "name"),
+		effectiveMemory: newGaugeVec(namespace, "autoscaler_effective_memory_bytes",
+			"Memory limit of the redis container that the operator applies: the limit of redis.resources, or a larger limit of the autoscaler.",
+			"namespace", "name"),
+		stepPhase: newGaugeVec(namespace, "autoscaler_step_phase",
+			"Phase of the last autoscaler step: 0 Idle, 1 Applying, 2 Done, 3 Reverted, 4 Held.",
+			"namespace", "name"),
+		steps: newCounterVec(namespace, "autoscaler_steps_total",
+			"Number of autoscaler steps that ended, by result: done, reverted or held.",
+			"namespace", "name", "result"),
+		ensureResource: newCounterVec(namespace, "ensure_resource_total",
+			"Number of ensure attempts for a resource of a RedisFailover, by status. An attempt also counts when the resource needs no change.",
+			"namespace", "name", "kind", "resource_name", "status"),
+		redisCheck: newCounterVec(namespace, "redis_checks_total",
+			"Number of checks of the Redis pods, by indicator and status (HEALTHY or UNHEALTHY). The pod_name is the pod name, or NA for a check of the RedisFailover.",
+			"namespace", "resource", "indicator", "pod_name", "status"),
+		sentinelCheck: newCounterVec(namespace, "sentinel_checks_total",
+			"Number of checks of the Sentinel pods, by indicator and status (HEALTHY or UNHEALTHY). The pod_name is the pod name, or NA for a check of the RedisFailover.",
+			"namespace", "resource", "indicator", "pod_name", "status"),
+		k8sServiceOperations: newCounterVec(namespace, "k8s_operations_total",
+			"Number of Kubernetes API calls of the operator, by status.",
+			"namespace", "kind", "name", "operation", "status", "err"),
+		redisOperations: newCounterVec(namespace, "redis_operations_total",
+			"Number of commands that the operator sent to Redis and Sentinel, by pod and status.",
+			"kind" /* redis or sentinel */, "namespace", "pod_name", "operation", "status", "err"),
+		ControllerRecorder: newControllerRecorder(reg),
 	}
 
 	// Register metrics.
@@ -308,6 +244,26 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 	recorders = append(recorders, r)
 	mutex.Unlock()
 	return r
+}
+
+// newGaugeVec returns a gauge of the controller subsystem.
+func newGaugeVec(namespace, name, help string, labels ...string) *prometheus.GaugeVec {
+	return prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: promControllerSubsystem,
+		Name:      name,
+		Help:      help,
+	}, labels)
+}
+
+// newCounterVec returns a counter of the controller subsystem.
+func newCounterVec(namespace, name, help string, labels ...string) *prometheus.CounterVec {
+	return prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Subsystem: promControllerSubsystem,
+		Name:      name,
+		Help:      help,
+	}, labels)
 }
 
 // SetClusterOK sets cluster_ok to 1.
