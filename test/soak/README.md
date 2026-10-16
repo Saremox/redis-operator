@@ -392,13 +392,15 @@ Kubernetes 1.33 or later.
 
 The rules of the operator are constants, so the tester cannot make a step
 come sooner. The operator samples the master one time in each minute. A use
-of 95 percent of `maxmemory` gives a step at the next sample, if the instance
-is `Healthy`, the cooldown passed, and the budget of 6 steps in 24 hours
-allows it. Thus a load of 97 percent of `maxmemory` gives a step after
-about 1 to 2 minutes. Mode `Off` and a lost state start the budget again,
-and the user paths lower the limit below `memoryMax`. With the shipped
-weights, expect about one step in each hour. The counter
-`redis_soak_autoscale_steps_total` shows the real rate.
+of 95 percent of `maxmemory` gives a step at the next sample. The instance
+must be `Healthy`, the cooldown must be over, and the budget of 6 steps in
+24 hours must allow it. Thus a load of 97 percent of `maxmemory` gives a step
+after about 1 to 2 minutes.
+
+Mode `Off` and a lost state start the budget again, and the user paths lower
+the limit below `memoryMax`. With the shipped weights, expect about one step
+in each hour. The counter `redis_soak_autoscale_steps_total` shows the real
+rate.
 
 The template sets `maxMemory.percent` to 35. Thus the load fits two times in
 the limit, plus the operator reserve of 32Mi, for a fork. The fill is 10
@@ -437,9 +439,9 @@ also inside a window, as `oom_killed` does:
   more, rounded up to a multiple of 64Mi, and `memoryMax` at most. A smaller
   or a larger step is a violation. Because the operator rounds up, a small
   limit gets a larger step: 64Mi goes to 128Mi. The status shows the limit
-  of the step one reconcile after the start, so the check waits until
-  `effectiveMemory` moves in `Applying`, or the step is `Done` or `Held`. A
-  revert, and a user change of the spec limit or of `memoryMax` in the step,
+  of the step one reconcile after the start. Thus the check waits until
+  `effectiveMemory` moves in `Applying`, or until the step is `Done` or
+  `Held`. A revert, and a user change of the spec limit or of `memoryMax` in the step,
   give no check.
 - `autoscale_step_timeout`: a step leaves `Applying` within 18 minutes after
   `lastStep`. This is the timeout of 15 minutes, the minute of `lastStep`, and
@@ -490,10 +492,10 @@ late. For `autoscale_maxmemory`, a user path that may shrink a pod excuses
 it, because the operator lowers `maxmemory` one reconcile later.
 
 The status gives its times in full minutes. Each rate check uses the latest
-time that the minute allows, and a slack of 30 seconds for the clocks and the
-age of a read. Thus only a sure violation is a finding. The status does not
-tell an urgent step from a sustained one, so the cooldown check uses the
-urgent cooldown of 5 minutes for each step.
+time that the minute allows. It also adds a slack of 30 seconds for the
+clocks and the age of a read. Thus only a sure violation is a finding. The
+status does not tell an urgent step from a sustained one. Thus the cooldown
+check uses the urgent cooldown of 5 minutes for each step.
 
 A step keeps a convergence window open while it is `Applying`, and in the
 round of its end. The operator sets `maxmemory` one reconcile after the last
@@ -621,8 +623,8 @@ together with the window: inside a window, it is the cost of the change.
 
 - The autoscale judges read the status of the RedisFailover, not the
   metrics of the operator. The tester does not change the image during a
-  step, and it does not cause a revert or a held step on purpose, for
-  example with a ResourceQuota.
+  step. It does not cause a revert or a held step on purpose, for example
+  with a ResourceQuota.
 - The tester does not check two documented operator limits: until a redis
   pod restarts after a password change, its exporter and its pre-stop
   `SAVE` use the old password; and an operator that restarts between a
