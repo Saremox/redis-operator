@@ -316,7 +316,7 @@ When you remove `maxMemory`, the running pods keep their current values until th
 
 The operator sets `maxmemory` below the used memory only with an `allkeys-*` policy. A `volatile-*` policy can evict all keys with a TTL and still not fit. With other policies, the operator keeps `maxmemory`, and the status message gives the reason. Until the data fits, the operator does not replace pods with the smaller limit. Pods that Kubernetes recreates for other reasons, for example a node drain, get the smaller limit.
 
-The operator logs each change of `maxmemory` at Info, with the old and the new value, the used memory and the policy. With `noeviction`, Redis refuses writes when the used memory reaches `maxmemory`.
+The operator logs each change of `maxmemory` on the master at Info, with the old and the new value, the used memory and the policy. The operator does not read the replicas. It logs a replica only when the replica gets a changed value of the master. Thus a replica with a different value can stay without a log line. With `noeviction`, Redis refuses writes when the used memory reaches `maxmemory`.
 
 For small instances, the default `client-output-buffer-limit` for `pubsub` (32mb) and `replica` (256mb) can be larger than the free part of the limit. Lower them with `customConfig`. A replica buffers a full `MULTI`/`EXEC` or `EVAL` before it applies it, so one large batch can cause an OOM kill of a replica.
 

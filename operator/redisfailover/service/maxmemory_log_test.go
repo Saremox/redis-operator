@@ -51,7 +51,7 @@ func TestEnsureRedisMaxMemoryLogsEachChange(t *testing.T) {
 
 		assert.Equal(t, []string{
 			"Set maxmemory 900.0Mi -> 768.0Mi on 10.0.0.1 (used 700.0Mi, policy noeviction)",
-			"Set maxmemory 900.0Mi -> 768.0Mi on 10.0.0.2 (used 650.0Mi, policy noeviction)",
+			"Set maxmemory 768.0Mi on 10.0.0.2 (replica, follows the master: 900.0Mi -> 768.0Mi)",
 		}, ensureMaxMemoryLogs(t, "noeviction", mmMaster, mr))
 	})
 
@@ -64,7 +64,7 @@ func TestEnsureRedisMaxMemoryLogsEachChange(t *testing.T) {
 
 		assert.Equal(t, []string{
 			"Set maxmemory 512.0Mi -> 768.0Mi on 10.0.0.1 (used 500.0Mi, policy noeviction)",
-			"Set maxmemory 512.0Mi -> 768.0Mi on 10.0.0.2 (used 500.0Mi, policy noeviction)",
+			"Set maxmemory 768.0Mi on 10.0.0.2 (replica, follows the master: 512.0Mi -> 768.0Mi)",
 		}, ensureMaxMemoryLogs(t, "noeviction", mmMaster, mr))
 	})
 
@@ -116,11 +116,12 @@ func TestEnsureRedisMaxMemoryLogsEachChange(t *testing.T) {
 
 		assert.Equal(t, []string{
 			"Set maxmemory unlimited -> 992.0Mi on 10.0.0.1 (used 800.0Mi, policy noeviction)",
-			"Set maxmemory unlimited -> 992.0Mi on 10.0.0.2 (used 800.0Mi, policy noeviction)",
+			"Set maxmemory 992.0Mi on 10.0.0.2 (replica, follows the master: unlimited -> 992.0Mi)",
 		}, ensureMaxMemoryLogs(t, "noeviction", mmMaster, mr))
 	})
 
-	// The operator sets the value at each reconcile.
+	// The operator sets the value at each reconcile. It does not read the
+	// replicas, so a replica with another value also gets no line.
 	t.Run("unchanged", func(t *testing.T) {
 		mr := redisMock()
 		expectPolicy(mr, "noeviction")

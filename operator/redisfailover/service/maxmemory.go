@@ -59,6 +59,7 @@ func (r *RedisFailoverHealer) EnsureRedisMaxMemory(rf *redisfailoverv1.RedisFail
 		r:             r,
 		rf:            rf,
 		logger:        r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace),
+		master:        master,
 		redises:       redises,
 		port:          getRedisPort(rf.Spec.Redis.Port),
 		password:      password,
@@ -102,6 +103,7 @@ type maxMemoryRun struct {
 	r                         *RedisFailoverHealer
 	rf                        *redisfailoverv1.RedisFailover
 	logger                    log.Logger
+	master                    string
 	redises                   []string
 	port, password, policy    string
 	policyManaged, downsizing bool
@@ -114,11 +116,17 @@ func (m *maxMemoryRun) setPolicy() error {
 	return m.r.setRedisConfigOn(m.rf, m.redises, m.port, m.password, "maxmemory-policy "+m.policy)
 }
 
-// setMaxMemory sets maxmemory to bytes on ips and logs each change from old.
-// The replicas follow the master, so old is the value of the master.
+// setMaxMemory sets maxmemory to bytes on ips. old, used and policy are the
+// values that the operator read from the master. The operator does not read
+// the replicas, so it logs a replica only when the value of the master
+// changes, and then without the old value of the replica.
 func (m *maxMemoryRun) setMaxMemory(ips []string, old, bytes, used int64, policy string) error {
 	return m.r.setRedisConfigEach(m.rf, ips, m.port, m.password, fmt.Sprintf("maxmemory %d", bytes), func(ip string) {
-		logMaxMemoryChange(m.logger, ip, old, bytes, used, policy)
+		if ip == m.master {
+			logMaxMemoryChange(m.logger, ip, old, bytes, used, policy)
+			return
+		}
+		logReplicaMaxMemory(m.logger, ip, old, bytes)
 	})
 }
 
@@ -231,6 +239,15 @@ func logMaxMemoryChange(logger log.Logger, ip string, old, value, used int64, po
 		return
 	}
 	logger.Infof("Set maxmemory %s -> %s on %s (used %s, policy %s)", formatBytes(old), formatBytes(value), ip, formatMi(used), policy)
+}
+
+// logReplicaMaxMemory logs the value that a replica gets when the value of
+// the master changes from old.
+func logReplicaMaxMemory(logger log.Logger, ip string, old, value int64) {
+	if old == value {
+		return
+	}
+	logger.Infof("Set maxmemory %s on %s (replica, follows the master: %s -> %s)", formatBytes(value), ip, formatBytes(old), formatBytes(value))
 }
 
 // evictsEnough reports whether policy surely evicts enough. Only allkeys-*
