@@ -19,75 +19,144 @@ func init() {
 	go removeStaleMetrics()
 }
 
-// variables for setting various indicator labels.
+// The label values of the metrics: the status, the check indicator, the
+// error and the operation.
 const (
-	SUCCESS                                = "SUCCESS"
-	FAIL                                   = "FAIL"
-	STATUS_HEALTHY                         = "HEALTHY"
-	STATUS_UNHEALTHY                       = "UNHEALTHY"
-	NOT_APPLICABLE                         = "NA"
-	UNHEALTHY                              = 1.0
-	HEALTHY                                = 0.0
-	REDIS_REPLICA_MISMATCH                 = "REDIS_STATEFULSET_REPLICAS_MISMATCH"
-	SENTINEL_REPLICA_MISMATCH              = "SENTINEL_DEPLOYMENT_REPLICAS_MISMATCH"
-	NO_MASTER                              = "NO_MASTER_AVAILABLE"
-	NUMBER_OF_MASTERS                      = "MASTER_COUNT_IS_NOT_ONE"
-	SENTINEL_WRONG_MASTER                  = "SENTINEL_IS_CONFIGURED_WITH_WRONG_MASTER_IP"
-	SLAVE_WRONG_MASTER                     = "SLAVE_IS_CONFIGURED_WITH_WRONG_MASTER_IP"
-	SENTINEL_NOT_READY                     = "SENTINEL_NOT_READY"
-	REGEX_NOT_FOUND                        = "SENTINEL_REGEX_NOT_FOUND"
-	SENTINEL_TOO_MANY                      = "SENTINEL_TOO_MANY"
-	MISC                                   = "MISC_ERROR"
-	SENTINEL_NUMBER_IN_MEMORY_MISMATCH     = "SENTINEL_NUMBER_IN_MEMORY_MISMATCH"
+	// SUCCESS is the status of an operation without an error.
+	SUCCESS = "SUCCESS"
+	// FAIL is the status of an operation with an error.
+	FAIL = "FAIL"
+	// STATUS_HEALTHY is the status of a check that passed.
+	STATUS_HEALTHY = "HEALTHY"
+	// STATUS_UNHEALTHY is the status of a check that failed.
+	STATUS_UNHEALTHY = "UNHEALTHY"
+	// NOT_APPLICABLE is the value of a label that does not apply.
+	NOT_APPLICABLE = "NA"
+	// UNHEALTHY is the gauge value of an unhealthy state.
+	UNHEALTHY = 1.0
+	// HEALTHY is the gauge value of a healthy state.
+	HEALTHY = 0.0
+	// REDIS_REPLICA_MISMATCH checks the replicas of the Redis StatefulSet.
+	REDIS_REPLICA_MISMATCH = "REDIS_STATEFULSET_REPLICAS_MISMATCH"
+	// SENTINEL_REPLICA_MISMATCH checks the replicas of the Sentinel
+	// Deployment.
+	SENTINEL_REPLICA_MISMATCH = "SENTINEL_DEPLOYMENT_REPLICAS_MISMATCH"
+	// NO_MASTER checks that a master is available.
+	NO_MASTER = "NO_MASTER_AVAILABLE"
+	// NUMBER_OF_MASTERS checks that there is exactly one master.
+	NUMBER_OF_MASTERS = "MASTER_COUNT_IS_NOT_ONE"
+	// SENTINEL_WRONG_MASTER checks the master IP of a Sentinel.
+	SENTINEL_WRONG_MASTER = "SENTINEL_IS_CONFIGURED_WITH_WRONG_MASTER_IP"
+	// SLAVE_WRONG_MASTER checks the master IP of a replica.
+	SLAVE_WRONG_MASTER = "SLAVE_IS_CONFIGURED_WITH_WRONG_MASTER_IP"
+	// SENTINEL_NOT_READY is the error of a Sentinel that is not ready.
+	SENTINEL_NOT_READY = "SENTINEL_NOT_READY"
+	// REGEX_NOT_FOUND is the error of a Sentinel reply without the expected
+	// field.
+	REGEX_NOT_FOUND = "SENTINEL_REGEX_NOT_FOUND"
+	// SENTINEL_TOO_MANY is the error of a Sentinel reply with too many
+	// matches.
+	SENTINEL_TOO_MANY = "SENTINEL_TOO_MANY"
+	// MISC is the error of a Sentinel reply that the operator cannot parse.
+	MISC = "MISC_ERROR"
+	// SENTINEL_NUMBER_IN_MEMORY_MISMATCH checks the number of Sentinels
+	// that a Sentinel knows.
+	SENTINEL_NUMBER_IN_MEMORY_MISMATCH = "SENTINEL_NUMBER_IN_MEMORY_MISMATCH"
+	// REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH checks the number of replicas
+	// that a Sentinel knows.
 	REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH = "REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH"
 	// MASTER_HANDOVER_ABORTED counts a FAILOVER of the rollout that Redis or
 	// the operator aborted.
 	MASTER_HANDOVER_ABORTED = "MASTER_HANDOVER_ABORTED"
-	// redis connection related errors.
+	// WRONG_PASSWORD_USED is the error of a refused password (WRONGPASS).
 	WRONG_PASSWORD_USED = "WRONG_PASSWORD_USED"
-	NOAUTH              = "AUTH_CREDENTIALS_NOT_PROVIDED"
-	NOPERM              = "REDIS_USER_DOES_NOT_HAVE_PERMISSIONS"
-	IO_TIMEOUT          = "CONNECTION_TIMEDOUT"
-	CONNECTION_REFUSED  = "CONNECTION_REFUSED"
+	// NOAUTH is the error of a command without a password (NOAUTH).
+	NOAUTH = "AUTH_CREDENTIALS_NOT_PROVIDED"
+	// NOPERM is the error of a command without a permission (NOPERM).
+	NOPERM = "REDIS_USER_DOES_NOT_HAVE_PERMISSIONS"
+	// IO_TIMEOUT is the error of a connection that timed out.
+	IO_TIMEOUT = "CONNECTION_TIMEDOUT"
+	// CONNECTION_REFUSED is the error of a refused connection.
+	CONNECTION_REFUSED = "CONNECTION_REFUSED"
 
-	// The results of CountAutoscalerStep.
-	AutoscalerStepDone     = "done"
+	// AutoscalerStepDone is the result of CountAutoscalerStep for a step
+	// that ended.
+	AutoscalerStepDone = "done"
+	// AutoscalerStepReverted is the result of CountAutoscalerStep for a
+	// reverted step.
 	AutoscalerStepReverted = "reverted"
-	AutoscalerStepHeld     = "held"
+	// AutoscalerStepHeld is the result of CountAutoscalerStep for a held
+	// step.
+	AutoscalerStepHeld = "held"
 
+	// K8S_FORBIDDEN_ERR is the error of a forbidden Kubernetes request.
 	K8S_FORBIDDEN_ERR = "USER_FORBIDDEN_TO_PERFORM_ACTION"
-	K8S_UNAUTH        = "CLIENT_NOT_AUTHORISED"
-	K8S_MISC          = "MISC_ERROR_CHECK_LOGS"
-	K8S_NOT_FOUND     = "RESOURCE_NOT_FOUND"
+	// K8S_UNAUTH is the error of an unauthorized Kubernetes request.
+	K8S_UNAUTH = "CLIENT_NOT_AUTHORISED"
+	// K8S_MISC is the error of a Kubernetes request with another error.
+	K8S_MISC = "MISC_ERROR_CHECK_LOGS"
+	// K8S_NOT_FOUND is the error of a Kubernetes object that is not found.
+	K8S_NOT_FOUND = "RESOURCE_NOT_FOUND"
 
-	KIND_REDIS                  = "REDIS"
-	KIND_SENTINEL               = "SENTINEL"
-	APPLY_REDIS_CONFIG          = "APPLY_REDIS_CONFIG"
-	APPLY_EXTERNAL_MASTER       = "APPLY_EXT_MASTER_ALL"
-	APPLY_SENTINEL_CONFIG       = "APPLY_SENTINEL_CONFIG"
-	MONITOR_REDIS_WITH_PORT     = "SET_SENTINEL_TO_MONITOR_REDIS_WITH_GIVEN_PORT"
-	RESET_SENTINEL              = "RESET_ALL_SENTINEL_CONFIG"
-	GET_NUM_SENTINELS_IN_MEM    = "GET_NUMBER_OF_SENTINELS_IN_MEMORY"    // `info sentinel` command on a sentinel machine > grep sentinel
-	GET_NUM_REDIS_SLAVES_IN_MEM = "GET_NUMBER_OF_REDIS_SLAVES_IN_MEMORY" // `info sentinel` command on a sentinel machine > grep slaves
-	GET_SLAVE_OF                = "GET_MASTER_OF_GIVEN_SLAVE_INSTANCE"
-	IS_MASTER                   = "CHECK_IF_INSTANCE_IS_MASTER"
-	MAKE_MASTER                 = "MAKE_INSTANCE_AS_MASTER"
-	MAKE_SLAVE_OF               = "MAKE_SLAVE_OF_GIVEN_MASTER_INSTANCE"
-	GET_SENTINEL_MONITOR        = "SENTINEL_GET_MASTER_INSTANCE"
-	GET_SENTINEL_REPLICAS       = "SENTINEL_GET_REPLICAS"
-	GET_SENTINEL_MASTER_DOWN    = "SENTINEL_GET_MASTER_DOWN"
-	GET_SENTINEL_FAILOVER       = "SENTINEL_GET_FAILOVER_IN_PROGRESS"
-	CHECK_SENTINEL_QUORUM       = "SENTINEL_CKQUORUM"
-	SLAVE_IS_READY              = "CHECK_IF_SLAVE_IS_READY"
-	GET_REPLICATION_INFO        = "GET_REPLICATION_INFO"
-	GET_MEMORY_INFO             = "GET_MEMORY_INFO"
-	DISCONNECT_CLIENTS          = "DISCONNECT_CLIENTS_ON_DEMOTED_INSTANCE"
-	SET_PASSWORD                = "SET_PASSWORD"
-	FAILOVER_TO                 = "FAILOVER_TO_REPLICA"
-	FAILOVER_ABORT              = "FAILOVER_ABORT"
-	GET_RUN_ID                  = "GET_RUN_ID"
-	GET_FAILOVER_STATE          = "GET_FAILOVER_STATE"
-	GET_AUTOSCALER_INFO         = "GET_AUTOSCALER_INFO"
+	// KIND_REDIS is the kind of a Redis pod.
+	KIND_REDIS = "REDIS"
+	// KIND_SENTINEL is the kind of a Sentinel pod.
+	KIND_SENTINEL = "SENTINEL"
+	// APPLY_REDIS_CONFIG applies the Redis configuration.
+	APPLY_REDIS_CONFIG = "APPLY_REDIS_CONFIG"
+	// APPLY_EXTERNAL_MASTER makes all the Redis pods replicas of the
+	// bootstrap master.
+	APPLY_EXTERNAL_MASTER = "APPLY_EXT_MASTER_ALL"
+	// APPLY_SENTINEL_CONFIG applies the Sentinel configuration.
+	APPLY_SENTINEL_CONFIG = "APPLY_SENTINEL_CONFIG"
+	// MONITOR_REDIS_WITH_PORT sets the master that a Sentinel monitors.
+	MONITOR_REDIS_WITH_PORT = "SET_SENTINEL_TO_MONITOR_REDIS_WITH_GIVEN_PORT"
+	// RESET_SENTINEL resets the state of a Sentinel.
+	RESET_SENTINEL = "RESET_ALL_SENTINEL_CONFIG"
+	// GET_NUM_SENTINELS_IN_MEM reads the number of Sentinels from INFO
+	// sentinel of a Sentinel.
+	GET_NUM_SENTINELS_IN_MEM = "GET_NUMBER_OF_SENTINELS_IN_MEMORY"
+	// GET_NUM_REDIS_SLAVES_IN_MEM reads the number of replicas from INFO
+	// sentinel of a Sentinel.
+	GET_NUM_REDIS_SLAVES_IN_MEM = "GET_NUMBER_OF_REDIS_SLAVES_IN_MEMORY"
+	// GET_SLAVE_OF reads the master of a replica.
+	GET_SLAVE_OF = "GET_MASTER_OF_GIVEN_SLAVE_INSTANCE"
+	// IS_MASTER checks if a Redis pod is the master.
+	IS_MASTER = "CHECK_IF_INSTANCE_IS_MASTER"
+	// MAKE_MASTER makes a Redis pod the master.
+	MAKE_MASTER = "MAKE_INSTANCE_AS_MASTER"
+	// MAKE_SLAVE_OF makes a Redis pod a replica of a master.
+	MAKE_SLAVE_OF = "MAKE_SLAVE_OF_GIVEN_MASTER_INSTANCE"
+	// GET_SENTINEL_MONITOR reads the master that a Sentinel monitors.
+	GET_SENTINEL_MONITOR = "SENTINEL_GET_MASTER_INSTANCE"
+	// GET_SENTINEL_REPLICAS reads the replicas that a Sentinel knows.
+	GET_SENTINEL_REPLICAS = "SENTINEL_GET_REPLICAS"
+	// GET_SENTINEL_MASTER_DOWN reads if a Sentinel sees the master as down.
+	GET_SENTINEL_MASTER_DOWN = "SENTINEL_GET_MASTER_DOWN"
+	// GET_SENTINEL_FAILOVER reads if a Sentinel runs a failover.
+	GET_SENTINEL_FAILOVER = "SENTINEL_GET_FAILOVER_IN_PROGRESS"
+	// CHECK_SENTINEL_QUORUM runs SENTINEL CKQUORUM.
+	CHECK_SENTINEL_QUORUM = "SENTINEL_CKQUORUM"
+	// SLAVE_IS_READY checks if a replica is in sync with its master.
+	SLAVE_IS_READY = "CHECK_IF_SLAVE_IS_READY"
+	// GET_REPLICATION_INFO reads INFO replication.
+	GET_REPLICATION_INFO = "GET_REPLICATION_INFO"
+	// GET_MEMORY_INFO reads INFO memory.
+	GET_MEMORY_INFO = "GET_MEMORY_INFO"
+	// DISCONNECT_CLIENTS disconnects the clients of a demoted master.
+	DISCONNECT_CLIENTS = "DISCONNECT_CLIENTS_ON_DEMOTED_INSTANCE"
+	// SET_PASSWORD sets the password of a Redis or Sentinel pod.
+	SET_PASSWORD = "SET_PASSWORD"
+	// FAILOVER_TO runs FAILOVER TO a replica.
+	FAILOVER_TO = "FAILOVER_TO_REPLICA"
+	// FAILOVER_ABORT runs FAILOVER ABORT.
+	FAILOVER_ABORT = "FAILOVER_ABORT"
+	// GET_RUN_ID reads the run ID of a Redis pod.
+	GET_RUN_ID = "GET_RUN_ID"
+	// GET_FAILOVER_STATE reads the failover state of a Redis pod.
+	GET_FAILOVER_STATE = "GET_FAILOVER_STATE"
+	// GET_AUTOSCALER_INFO reads the INFO fields of the autoscaler.
+	GET_AUTOSCALER_INFO = "GET_AUTOSCALER_INFO"
 )
 
 var ( // used for garbage collection of metrics

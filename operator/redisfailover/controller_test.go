@@ -870,20 +870,20 @@ type recordingLogger struct {
 	fields string
 }
 
-func (l recordingLogger) WithField(key string, value interface{}) log.Logger {
+func (l recordingLogger) WithField(key string, value any) log.Logger {
 	l.fields += fmt.Sprintf("%s=%v ", key, value)
 	return l
 }
 
-func (l recordingLogger) Errorf(format string, args ...interface{}) {
+func (l recordingLogger) Errorf(format string, args ...any) {
 	l.logs.add(l.fields + fmt.Sprintf(format, args...))
 }
 
-func (l recordingLogger) Infof(format string, args ...interface{}) {
+func (l recordingLogger) Infof(format string, args ...any) {
 	l.logs.add("info: " + l.fields + fmt.Sprintf(format, args...))
 }
 
-func (l recordingLogger) Warningf(format string, args ...interface{}) {
+func (l recordingLogger) Warningf(format string, args ...any) {
 	l.logs.add("warning: " + l.fields + fmt.Sprintf(format, args...))
 }
 

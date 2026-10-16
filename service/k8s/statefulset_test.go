@@ -19,7 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	kubernetes "k8s.io/client-go/kubernetes/fake"
 	kubetesting "k8s.io/client-go/testing"
-	"k8s.io/utils/ptr"
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
@@ -113,7 +112,7 @@ func TestStatefulSetServiceGetStatefulSetPods(t *testing.T) {
 	staleOwner.OwnerReferences[0].UID = "old-uid"
 	// An owner reference without the controller flag.
 	notController := ownedPod(testStatefulSet, stsName+"-7", selectorLabels)
-	notController.OwnerReferences[0].Controller = ptr.To(false)
+	notController.OwnerReferences[0].Controller = new(false)
 
 	mcli := kubernetes.NewClientset(
 		testStatefulSet,
@@ -217,11 +216,11 @@ func TestStatefulSetServiceGetCreateOrUpdate(t *testing.T) {
 			name: "An existent statefulSet should update the statefulSet.",
 			statefulSet: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "teststatefulSet1"},
-				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(3))},
+				Spec:       appsv1.StatefulSetSpec{Replicas: new(int32(3))},
 			},
 			getStatefulSetResult: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "teststatefulSet1", ResourceVersion: "10"},
-				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(1))},
+				Spec:       appsv1.StatefulSetSpec{Replicas: new(int32(1))},
 			},
 			errorOnGet:      nil,
 			errorOnCreation: nil,
@@ -232,7 +231,7 @@ func TestStatefulSetServiceGetCreateOrUpdate(t *testing.T) {
 					// merging two nils, so the applied object's Annotations
 					// is {} rather than nil.
 					ObjectMeta: metav1.ObjectMeta{Name: "teststatefulSet1", ResourceVersion: "10", Annotations: map[string]string{}},
-					Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(3))},
+					Spec:       appsv1.StatefulSetSpec{Replicas: new(int32(3))},
 				}),
 			},
 			expErr: false,
@@ -307,7 +306,7 @@ var rfOwnerReference = metav1.OwnerReference{
 	Kind:       "RedisFailover",
 	Name:       "test",
 	UID:        "rf-uid",
-	Controller: ptr.To(true),
+	Controller: new(true),
 }
 
 // pvcStatefulSet returns a StatefulSet with a volume claim template, shaped
@@ -493,7 +492,7 @@ func TestStatefulSetServiceCreateOrUpdatePVCs(t *testing.T) {
 			storedStorage:   "1Gi",
 			desiredStorage:  "2Gi",
 			desiredOwners:   []metav1.OwnerReference{rfOwnerReference},
-			desiredReplicas: ptr.To(int32(3)),
+			desiredReplicas: new(int32(3)),
 			pvcs: []*v1.PersistentVolumeClaim{
 				statefulSetPVC("data-rfr-test-0", "1Gi", rfOwnerReference),
 			},
@@ -674,7 +673,7 @@ func realisticStatefulSet(replicas int32) *appsv1.StatefulSet {
 		},
 		Spec: appsv1.StatefulSetSpec{
 			ServiceName: "rfr-test",
-			Replicas:    ptr.To(replicas),
+			Replicas:    new(replicas),
 			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
 				Type: appsv1.OnDeleteStatefulSetStrategyType,
 			},
@@ -683,7 +682,7 @@ func realisticStatefulSet(replicas int32) *appsv1.StatefulSet {
 			Template: v1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app.kubernetes.io/name": "test"}},
 				Spec: v1.PodSpec{
-					TerminationGracePeriodSeconds: ptr.To(int64(30)),
+					TerminationGracePeriodSeconds: new(int64(30)),
 					Containers: []v1.Container{
 						{Name: "redis", Image: "redis:7", ImagePullPolicy: v1.PullAlways},
 					},
@@ -697,7 +696,7 @@ func realisticStatefulSet(replicas int32) *appsv1.StatefulSet {
 // StatefulSet.
 func serverDefaultedSTS(s *appsv1.StatefulSet) *appsv1.StatefulSet {
 	s = s.DeepCopy()
-	s.Spec.RevisionHistoryLimit = ptr.To(int32(10))
+	s.Spec.RevisionHistoryLimit = new(int32(10))
 	s.Spec.Template.Spec.RestartPolicy = v1.RestartPolicyAlways
 	s.Spec.Template.Spec.SchedulerName = "default-scheduler"
 	s.Spec.Template.Spec.DeprecatedServiceAccount = s.Spec.Template.Spec.ServiceAccountName

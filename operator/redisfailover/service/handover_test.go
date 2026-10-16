@@ -96,7 +96,7 @@ func TestHandOverMaster(t *testing.T) {
 			name:       "the failover moves the role",
 			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), masterInfo("waiting-for-sync"), replicaInfo("failover-in-progress", handoverTarget), replicaInfo("no-failover", handoverTarget)},
 			failover:   true,
-			targetRole: ptrTo(true),
+			targetRole: new(true),
 			// One read before FAILOVER, two in the wait, and one at the end.
 			runReads: 4,
 			want:     HandoverDone,
@@ -111,7 +111,7 @@ func TestHandOverMaster(t *testing.T) {
 			name:       "a role change that does not end in the wait is aborted",
 			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget)},
 			failover:   true,
-			abort:      ptrTo[error](nil),
+			abort:      new(error),
 			afterAbort: masterInfo("no-failover"),
 			want:       HandoverAborted,
 		},
@@ -121,7 +121,7 @@ func TestHandOverMaster(t *testing.T) {
 			failover:   true,
 			runIDs:     []string{"run-1", ""},
 			maxReads:   2,
-			abort:      ptrTo[error](nil),
+			abort:      new(error),
 			afterAbort: masterInfo("no-failover"),
 			want:       HandoverAborted,
 		},
@@ -131,7 +131,7 @@ func TestHandOverMaster(t *testing.T) {
 			failover:   true,
 			runIDs:     []string{"run-1", "run-1", "run-2"},
 			maxReads:   3,
-			abort:      ptrTo[error](nil),
+			abort:      new(error),
 			afterAbort: masterInfo("no-failover"),
 			want:       HandoverAborted,
 		},
@@ -145,9 +145,9 @@ func TestHandOverMaster(t *testing.T) {
 			name:       "the role change ends just before the abort",
 			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget)},
 			failover:   true,
-			abort:      ptrTo(errors.New("ERR No failover in progress.")),
+			abort:      new(errors.New("ERR No failover in progress.")),
 			afterAbort: replicaInfo("no-failover", handoverTarget),
-			targetRole: ptrTo(true),
+			targetRole: new(true),
 			want:       HandoverDone,
 		},
 		{
@@ -163,28 +163,28 @@ func TestHandOverMaster(t *testing.T) {
 			name:     "FAILOVER ABORT fails",
 			infos:    []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget)},
 			failover: true,
-			abort:    ptrTo(errBoom),
+			abort:    new(errBoom),
 			wantErr:  "boom",
 		},
 		{
 			name:     "INFO fails after the abort",
 			infos:    []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget)},
 			failover: true,
-			abort:    ptrTo[error](nil),
+			abort:    new(error),
 			wantErr:  "boom",
 		},
 		{
 			name:       "the failover still runs after the abort",
 			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget)},
 			failover:   true,
-			abort:      ptrTo[error](nil),
+			abort:      new(error),
 			afterAbort: replicaInfo("failover-in-progress", handoverTarget),
 			wantErr:    "still runs after the wait",
 		},
 		{
 			name:       "a restart continues a running failover",
 			infos:      []*redis.ReplicationInfo{masterInfo("waiting-for-sync"), replicaInfo("no-failover", handoverTarget)},
-			targetRole: ptrTo(true),
+			targetRole: new(true),
 			// The wait reads no run ID, so the read at the end has nothing
 			// to compare with.
 			runReads: 1,
@@ -194,13 +194,13 @@ func TestHandOverMaster(t *testing.T) {
 			name:       "a restart takes the run ID of the target in the wait",
 			infos:      []*redis.ReplicationInfo{masterInfo("waiting-for-sync"), masterInfo("waiting-for-sync"), replicaInfo("no-failover", handoverTarget)},
 			runIDs:     []string{"run-1", "run-1"},
-			targetRole: ptrTo(true),
+			targetRole: new(true),
 			want:       HandoverDone,
 		},
 		{
 			name:       "a restart during the role change continues it",
 			infos:      []*redis.ReplicationInfo{replicaInfo("failover-in-progress", handoverTarget), replicaInfo("no-failover", handoverTarget)},
-			targetRole: ptrTo(true),
+			targetRole: new(true),
 			want:       HandoverDone,
 		},
 		{
@@ -268,7 +268,7 @@ func TestHandOverMaster(t *testing.T) {
 			failover:   true,
 			stateErr:   true,
 			stateReads: 2,
-			abort:      ptrTo[error](nil),
+			abort:      new(error),
 			afterAbort: masterInfo("no-failover"),
 			want:       HandoverAborted,
 		},
@@ -277,7 +277,7 @@ func TestHandOverMaster(t *testing.T) {
 			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("no-failover", handoverTarget)},
 			failover:   true,
 			runIDs:     []string{"run-1", "run-2"},
-			targetRole: ptrTo(true),
+			targetRole: new(true),
 			runReads:   2,
 			want:       HandoverDone,
 		},
@@ -286,7 +286,7 @@ func TestHandOverMaster(t *testing.T) {
 			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("failover-in-progress", handoverTarget), replicaInfo("no-failover", handoverTarget)},
 			failover:   true,
 			runIDs:     []string{"run-1", "run-1", "run-2"},
-			targetRole: ptrTo(true),
+			targetRole: new(true),
 			runReads:   3,
 			want:       HandoverDone,
 		},
@@ -295,7 +295,7 @@ func TestHandOverMaster(t *testing.T) {
 			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("no-failover", handoverTarget)},
 			failover:   true,
 			runIDs:     []string{"run-1", ""},
-			targetRole: ptrTo(true),
+			targetRole: new(true),
 			runReads:   2,
 			want:       HandoverDone,
 		},
@@ -319,7 +319,7 @@ func TestHandOverMaster(t *testing.T) {
 			name:       "the target is not a master",
 			infos:      []*redis.ReplicationInfo{masterInfo("no-failover"), replicaInfo("no-failover", handoverTarget)},
 			failover:   true,
-			targetRole: ptrTo(false),
+			targetRole: new(false),
 			wantErr:    "is not a master",
 		},
 		{
@@ -435,11 +435,11 @@ func TestAbortOrphanedFailover(t *testing.T) {
 		want     bool
 		wantErr  string
 	}{
-		{name: "a role change runs", state: "failover-in-progress", abort: ptrTo[error](nil), want: true},
-		{name: "a catch-up runs", state: "waiting-for-sync", abort: ptrTo[error](nil), want: true},
-		{name: "the failover ends just before the abort", state: "waiting-for-sync", abort: ptrTo(errors.New("ERR No failover in progress.")), want: true},
+		{name: "a role change runs", state: "failover-in-progress", abort: new(error), want: true},
+		{name: "a catch-up runs", state: "waiting-for-sync", abort: new(error), want: true},
+		{name: "the failover ends just before the abort", state: "waiting-for-sync", abort: new(errors.New("ERR No failover in progress.")), want: true},
 		{name: "the failover ends just before the abort, wrapped reply", state: "waiting-for-sync", abort: new(wrappedReply("FAILOVER ABORT", "ERR No failover in progress.")), want: true},
-		{name: "the abort fails", state: "waiting-for-sync", abort: ptrTo(errBoom), wantErr: "boom"},
+		{name: "the abort fails", state: "waiting-for-sync", abort: new(errBoom), wantErr: "boom"},
 		{name: "no failover runs", state: "no-failover"},
 		{name: "Redis before 6.2"},
 		// The checks of the master handle a master that does not answer.
@@ -483,5 +483,3 @@ func TestAbortOrphanedFailoverWithoutAPassword(t *testing.T) {
 	assert.False(t, aborted)
 	mr.AssertNotCalled(t, "GetFailoverState", mock.Anything, mock.Anything, mock.Anything)
 }
-
-func ptrTo[T any](v T) *T { return &v }

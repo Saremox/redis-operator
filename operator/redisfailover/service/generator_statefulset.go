@@ -69,7 +69,7 @@ func generateRedisPodSpec(rf *redisfailoverv1.RedisFailover, affinityLabels map[
 		NodeSelector:                  rf.Spec.Redis.NodeSelector,
 		SecurityContext:               getSecurityContext(rf.Spec.Redis.SecurityContext),
 		HostNetwork:                   rf.Spec.Redis.HostNetwork,
-		DNSPolicy:                     getDnsPolicy(rf.Spec.Redis.DNSPolicy),
+		DNSPolicy:                     getDNSPolicy(rf.Spec.Redis.DNSPolicy),
 		ImagePullSecrets:              rf.Spec.Redis.ImagePullSecrets,
 		PriorityClassName:             rf.Spec.Redis.PriorityClassName,
 		ServiceAccountName:            rf.Spec.Redis.ServiceAccountName,

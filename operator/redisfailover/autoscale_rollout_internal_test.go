@@ -12,7 +12,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -45,7 +44,7 @@ func newStaleRolloutTest(t *testing.T, stale string, sentinel bool) *rolloutTest
 		rt.pods[1].Labels[appsv1.ControllerRevisionHashLabelKey] = "old"
 	}
 	if sentinel {
-		rt.rf.Spec.Sentinel.Enabled = ptr.To(true)
+		rt.rf.Spec.Sentinel.Enabled = new(true)
 	}
 	return rt
 }
@@ -158,7 +157,7 @@ func TestAutoscalerLimits(t *testing.T) {
 	// A blocked, lost or frozen state can hide a step, also at the spec
 	// limit, and a pod of a step up to memoryMax. A lower spec limit of the
 	// user gives the larger pods the user path.
-	rf.Spec.Redis.Autoscaling.MemoryMax = ptr.To(resource.MustParse("4Gi"))
+	rf.Spec.Redis.Autoscaling.MemoryMax = new(resource.MustParse("4Gi"))
 	maxLimit := rf.Spec.Redis.Autoscaling.MemoryMax.Value()
 	for name, read := range map[string]autoscaleRead{
 		"blocked": {blocked: autoscale.ReasonNewerState},

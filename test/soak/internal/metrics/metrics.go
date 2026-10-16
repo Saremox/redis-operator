@@ -25,6 +25,11 @@ type Metrics struct {
 	OutageDuration *prometheus.HistogramVec
 	BuildInfo      *prometheus.GaugeVec
 
+	// ExpectedNotWritable and ExpectedNotWritableSeconds follow the failed
+	// writes that are a documented state, not a fault.
+	ExpectedNotWritable        *prometheus.GaugeVec
+	ExpectedNotWritableSeconds *prometheus.CounterVec
+
 	InvariantOK        *prometheus.GaugeVec
 	InvariantViolation *prometheus.HistogramVec
 	Findings           *prometheus.CounterVec
@@ -72,6 +77,7 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 	m.addChaos(convergenceTimeout)
 	reg.MustRegister(
 		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration, m.BuildInfo,
+		m.ExpectedNotWritable, m.ExpectedNotWritableSeconds,
 		m.InvariantOK, m.InvariantViolation, m.Findings, m.Masters, m.Failovers, m.ReplicationLag, m.RFHealthy, m.WindowOpen, m.AutoscaleSteps,
 		m.MutationTotal, m.MutationConverge, m.PodsRecreated, m.MutationInProgress, m.NoMasterRecovery, m.MutationStalled,
 		m.WaitAckedReplicas, m.OOMRejections, m.LostWrites, m.UnexpectedLost, m.LedgerVerified,
@@ -101,6 +107,16 @@ func (m *Metrics) addProbe(labels func(...string) []string) {
 		Name:      "writable",
 		Help:      "1 if the last write probe succeeded.",
 	}, labels("path", "client"))
+	m.ExpectedNotWritable = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "expected_not_writable",
+		Help:      "1 if the last write probe failed in a documented state, by reason: noeviction_full.",
+	}, labels("path", "client", "reason"))
+	m.ExpectedNotWritableSeconds = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "expected_not_writable_seconds_total",
+		Help:      "Seconds of write probes that failed in a documented state, one probe interval for each, by reason: noeviction_full.",
+	}, labels("path", "client", "reason"))
 	m.Readable = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
 		Name:      "readable",
@@ -297,6 +313,7 @@ func (m *Metrics) DeletePath(rf, namespace, path string) {
 	labels := prometheus.Labels{"rf": rf, "namespace": namespace, "path": path}
 	for _, v := range []interface{ DeletePartialMatch(prometheus.Labels) int }{
 		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration,
+		m.ExpectedNotWritable, m.ExpectedNotWritableSeconds,
 	} {
 		v.DeletePartialMatch(labels)
 	}

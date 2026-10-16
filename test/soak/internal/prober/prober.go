@@ -41,6 +41,10 @@ const (
 // mutation of its instance nor a chaos action ran.
 const EventNone = "none"
 
+// ReasonNoevictionFull is a write that the master refuses by design: its
+// policy is noeviction and its data is at maxmemory.
+const ReasonNoevictionFull = "noeviction_full"
+
 // Clients are the client styles every path is probed with.
 var Clients = []Client{Pooled, Retrying, Fresh, Follower}
 
@@ -60,12 +64,17 @@ type Prober struct {
 	// event returns what runs now: a chaos kind, the instance's mutation
 	// kind, or EventNone.
 	event func() string
-	log   *slog.Logger
+	// full reports whether the master of the instance refuses writes by
+	// design, see observer.NoevictionFull.
+	full func() bool
+	log  *slog.Logger
 
 	total          *prometheus.CounterVec
 	duration       prometheus.ObserverVec
 	lastSuccess    *prometheus.GaugeVec
 	writable       prometheus.Gauge
+	expected       prometheus.Gauge
+	expectedTime   prometheus.Counter
 	readable       prometheus.Gauge
 	outageDuration prometheus.ObserverVec
 	waitAcked      prometheus.Gauge
@@ -89,6 +98,7 @@ func New(in config.Instance, path Path, client Client, probe config.Probe, a *au
 		waitEvery: 10,
 		key:       fmt.Sprintf("soak:%s:%s:%s:seq", in.Name, path.Name, client),
 		event:     func() string { return EventNone },
+		full:      func() bool { return false },
 		log: log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode,
 			"path", path.Name, "client", client),
 		total:          m.ProbeTotal.MustCurryWith(labels),
@@ -100,6 +110,8 @@ func New(in config.Instance, path Path, client Client, probe config.Probe, a *au
 	}
 	if path.ReadKey == "" {
 		p.writable = m.Writable.With(labels)
+		p.expected = m.ExpectedNotWritable.MustCurryWith(labels).WithLabelValues(ReasonNoevictionFull)
+		p.expectedTime = m.ExpectedNotWritableSeconds.MustCurryWith(labels).WithLabelValues(ReasonNoevictionFull)
 	}
 	return p
 }
@@ -165,8 +177,20 @@ func (p *Prober) probe(ctx context.Context, c *redis.Client) {
 	}
 	getErr := p.get(ctx, c, p.key)
 	p.writable.Set(gauge(setErr == nil))
+	expected := p.expectedFailure(setErr)
+	p.expected.Set(gauge(expected))
+	if expected {
+		p.expectedTime.Add(p.interval.Seconds())
+	}
 	p.readable.Set(gauge(getErr == nil))
 	p.result(start, cmp.Or(setErr, getErr))
+}
+
+// expectedFailure reports whether a failed write is a documented state: an
+// OOM refusal while the master is full under noeviction. Any other error is
+// a fault.
+func (p *Prober) expectedFailure(err error) bool {
+	return err != nil && Classify(err) == ResultOOM && p.full()
 }
 
 // read only GETs the path's read key, which may not exist yet.

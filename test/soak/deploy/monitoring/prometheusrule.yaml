@@ -13,9 +13,12 @@ spec:
     - name: redis-soak
       rules:
         - alert: RedisSoakNotWritable
+          # A master that is full under noeviction refuses writes by design.
+          # The tester ends this exception after observer.noevictionFullLimit.
           expr: |
             (redis_soak_writable == 0)
             unless on (rf, namespace) (redis_soak_window_open == 1)
+            unless on (rf, namespace, path, client) (redis_soak_expected_not_writable == 1)
           for: 1m
           labels:
             severity: critical

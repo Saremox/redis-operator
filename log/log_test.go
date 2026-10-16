@@ -30,7 +30,7 @@ func captureBase(t *testing.T) *bytes.Buffer {
 
 func srcField(t *testing.T, buf *bytes.Buffer) string {
 	t.Helper()
-	var fields map[string]interface{}
+	var fields map[string]any
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &fields))
 	src, _ := fields["src"].(string)
 	return src

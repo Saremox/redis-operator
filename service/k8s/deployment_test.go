@@ -3,6 +3,7 @@ package k8s_test
 import (
 	"context"
 	"errors"
+	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,7 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	kubernetes "k8s.io/client-go/kubernetes/fake"
 	kubetesting "k8s.io/client-go/testing"
-	"k8s.io/utils/ptr"
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
@@ -99,11 +99,11 @@ func TestDeploymentServiceGetCreateOrUpdate(t *testing.T) {
 			name: "An existent deployment should update the deployment.",
 			deployment: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "testdeployment1"},
-				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
+				Spec:       appsv1.DeploymentSpec{Replicas: new(int32(3))},
 			},
 			getDeploymentResult: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "testdeployment1", ResourceVersion: "10"},
-				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))},
+				Spec:       appsv1.DeploymentSpec{Replicas: new(int32(1))},
 			},
 			errorOnGet:      nil,
 			errorOnCreation: nil,
@@ -111,7 +111,7 @@ func TestDeploymentServiceGetCreateOrUpdate(t *testing.T) {
 				newDeploymentGetAction(testns, "testdeployment1"),
 				newDeploymentUpdateAction(testns, &appsv1.Deployment{
 					ObjectMeta: metav1.ObjectMeta{Name: "testdeployment1", ResourceVersion: "10"},
-					Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
+					Spec:       appsv1.DeploymentSpec{Replicas: new(int32(3))},
 				}),
 			},
 			expErr: false,
@@ -158,7 +158,7 @@ func realisticDeployment(replicas int32) *appsv1.Deployment {
 			Labels:    map[string]string{"app.kubernetes.io/name": "test", "app.kubernetes.io/component": "sentinel"},
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: ptr.To(replicas),
+			Replicas: new(replicas),
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": "test"}},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app.kubernetes.io/name": "test"}},
@@ -182,8 +182,8 @@ func serverDefaulted(d *appsv1.Deployment) *appsv1.Deployment {
 		Type:          appsv1.RollingUpdateDeploymentStrategyType,
 		RollingUpdate: &appsv1.RollingUpdateDeployment{},
 	}
-	d.Spec.RevisionHistoryLimit = ptr.To(int32(10))
-	d.Spec.ProgressDeadlineSeconds = ptr.To(int32(600))
+	d.Spec.RevisionHistoryLimit = new(int32(10))
+	d.Spec.ProgressDeadlineSeconds = new(int32(600))
 	d.Spec.Template.Spec.RestartPolicy = corev1.RestartPolicyAlways
 	d.Spec.Template.Spec.SchedulerName = "default-scheduler"
 	d.Spec.Template.Spec.DeprecatedServiceAccount = d.Spec.Template.Spec.ServiceAccountName
@@ -268,13 +268,13 @@ func TestDeploymentServiceObjectUpToDate(t *testing.T) {
 		},
 		{
 			name:          "a partly configured strategy the server filled in is a no-op",
-			stored:        withStrategy(realisticDeployment(3), rollingUpdate(ptr.To(intstr.FromInt32(1)), ptr.To(intstr.FromString("25%")))),
-			desired:       withStrategy(realisticDeployment(3), rollingUpdate(ptr.To(intstr.FromInt32(1)), nil)),
+			stored:        withStrategy(realisticDeployment(3), rollingUpdate(new(intstr.FromInt32(1)), new(intstr.FromString("25%")))),
+			desired:       withStrategy(realisticDeployment(3), rollingUpdate(new(intstr.FromInt32(1)), nil)),
 			expectUpdates: 0,
 		},
 		{
 			name:          "a changed strategy triggers an update",
-			stored:        withStrategy(realisticDeployment(3), rollingUpdate(ptr.To(intstr.FromInt32(1)), ptr.To(intstr.FromString("25%")))),
+			stored:        withStrategy(realisticDeployment(3), rollingUpdate(new(intstr.FromInt32(1)), new(intstr.FromString("25%")))),
 			desired:       withStrategy(realisticDeployment(3), recreate()),
 			expectUpdates: 1,
 		},
@@ -453,9 +453,7 @@ func TestDeploymentServiceList(t *testing.T) {
 // controller reference to the named ReplicaSet.
 func replicaSetPod(name, namespace, hash, replicaSet string, labels map[string]string) *corev1.Pod {
 	podLabels := map[string]string{}
-	for key, value := range labels {
-		podLabels[key] = value
-	}
+	maps.Copy(podLabels, labels)
 	if hash != "" {
 		podLabels[appsv1.DefaultDeploymentUniqueLabelKey] = hash
 	}
@@ -465,7 +463,7 @@ func replicaSetPod(name, namespace, hash, replicaSet string, labels map[string]s
 			Namespace: namespace,
 			Labels:    podLabels,
 			OwnerReferences: []metav1.OwnerReference{
-				{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: replicaSet, UID: "rs-uid", Controller: ptr.To(true)},
+				{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: replicaSet, UID: "rs-uid", Controller: new(true)},
 			},
 		},
 	}
@@ -499,7 +497,7 @@ func TestDeploymentServiceGetDeploymentPods(t *testing.T) {
 		wrongAPIVersion := replicaSetPod("wrongapiversion", testns, "abc123", "testdeployment1-abc123", selectorLabels)
 		wrongAPIVersion.OwnerReferences[0].APIVersion = "example.com/v1"
 		notController := replicaSetPod("notcontroller", testns, "abc123", "testdeployment1-abc123", selectorLabels)
-		notController.OwnerReferences[0].Controller = ptr.To(false)
+		notController.OwnerReferences[0].Controller = new(false)
 		mcli := kubernetes.NewClientset(deployment, matchingPod, newerPod, otherSelector, otherNamespace, labelsOnly, otherReplicaSet, hashMismatch, noHash, noHashLabelRS, wrongKind, wrongAPIVersion, notController)
 		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
 

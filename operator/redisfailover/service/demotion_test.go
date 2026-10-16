@@ -270,7 +270,7 @@ func TestSetExternalMasterOnAllNeverDisconnectsClients(t *testing.T) {
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{},
 		rfservice.WithClientDisconnector(fakeDisconnector{calls: &disconnects}))
-	for reconcile := 0; reconcile < 3; reconcile++ {
+	for range 3 {
 		require.NoError(t, healer.SetExternalMasterOnAll("5.5.5.5", "6379", rf))
 	}
 
@@ -415,7 +415,7 @@ func TestClientDisconnectorRunsAgainAfterAFailureWhenDemotedAgain(t *testing.T) 
 		Update(context.Background(), masterEndpointSlice(rf), metav1.UpdateOptions{})
 	require.NoError(t, err)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		select {
 		case <-called:
 		case <-time.After(5 * time.Second):

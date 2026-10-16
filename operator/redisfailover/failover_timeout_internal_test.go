@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"testing"
 	"time"
 
@@ -73,9 +74,7 @@ func newFailoverTimeoutTest(timeout *metav1.Duration) *failoverTimeoutTest {
 		}
 		for i := range ft.pods {
 			if ft.pods[i].Name == name {
-				for k, v := range annotations {
-					ft.pods[i].Annotations[k] = v
-				}
+				maps.Copy(ft.pods[i].Annotations, annotations)
 			}
 		}
 		return nil

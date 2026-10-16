@@ -13,7 +13,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -63,7 +62,7 @@ func TestCheckRedisNumberFalse(t *testing.T) {
 
 	ss := &appsv1.StatefulSet{
 		Spec: appsv1.StatefulSetSpec{
-			Replicas: ptr.To(int32(4)),
+			Replicas: new(int32(4)),
 		},
 	}
 	ms := &mK8SService.Services{}
@@ -83,7 +82,7 @@ func TestCheckRedisNumberTrue(t *testing.T) {
 
 	ss := &appsv1.StatefulSet{
 		Spec: appsv1.StatefulSetSpec{
-			Replicas: ptr.To(int32(3)),
+			Replicas: new(int32(3)),
 		},
 	}
 	ms := &mK8SService.Services{}
@@ -118,7 +117,7 @@ func TestCheckSentinelNumberFalse(t *testing.T) {
 
 	ss := &appsv1.Deployment{
 		Spec: appsv1.DeploymentSpec{
-			Replicas: ptr.To(int32(4)),
+			Replicas: new(int32(4)),
 		},
 	}
 	ms := &mK8SService.Services{}
@@ -138,7 +137,7 @@ func TestCheckSentinelNumberTrue(t *testing.T) {
 
 	ss := &appsv1.Deployment{
 		Spec: appsv1.DeploymentSpec{
-			Replicas: ptr.To(int32(3)),
+			Replicas: new(int32(3)),
 		},
 	}
 	ms := &mK8SService.Services{}
