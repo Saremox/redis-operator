@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -51,6 +52,55 @@ func CheckSameController(kind string, stored, desired metav1.Object) error {
 		return &ControlledByOtherError{Kind: kind, Name: stored.GetName()}
 	}
 	return checkNotControlledByOther(kind, stored, desired)
+}
+
+// objectCalls are the calls of createOrUpdate for one kind. skipped logs an
+// object that is up to date.
+type objectCalls[T metav1.Object] struct {
+	kind     string
+	get      func(namespace, name string) (T, error)
+	create   func(namespace string, object T) error
+	update   func(namespace string, object T) error
+	upToDate func(stored, desired T) bool
+	skipped  func()
+}
+
+// createOrUpdate creates desired, or updates the stored object when it is not
+// up to date. It returns a ControlledByOtherError when another controller
+// controls the stored object.
+func createOrUpdate[T metav1.Object](namespace string, desired T, calls objectCalls[T]) error {
+	stored, err := calls.get(namespace, desired.GetName())
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return calls.create(namespace, desired)
+		}
+		return err
+	}
+
+	if err := checkNotControlledByOther(calls.kind, stored, desired); err != nil {
+		return err
+	}
+
+	// With the stored resource version, the update fails when the object
+	// changed after the read.
+	desired.SetResourceVersion(stored.GetResourceVersion())
+
+	if calls.upToDate(stored, desired) {
+		calls.skipped()
+		return nil
+	}
+
+	return calls.update(namespace, desired)
+}
+
+// writeResult returns the error of a create or an update with failed and the
+// object. Without an error, it logs done.
+func writeResult(err error, logger log.Logger, namespace, field, name, failed, done string) error {
+	if err != nil {
+		return fmt.Errorf("%s %s/%s: %w", failed, namespace, name, err)
+	}
+	logger.WithField("namespace", namespace).WithField(field, name).Debugf("%s", done)
+	return nil
 }
 
 func controllerGroup(ref *metav1.OwnerReference) string {

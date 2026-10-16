@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -55,50 +54,26 @@ func (p *ConfigMapService) GetConfigMap(namespace, name string) (*corev1.ConfigM
 func (p *ConfigMapService) CreateConfigMap(namespace string, configMap *corev1.ConfigMap) error {
 	_, err := p.kubeClient.CoreV1().ConfigMaps(namespace).Create(context.TODO(), configMap, metav1.CreateOptions{})
 	recordMetrics(namespace, "ConfigMap", configMap.GetName(), "CREATE", err, p.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("create configmap %s/%s: %w", namespace, configMap.Name, err)
-	}
-	p.logger.WithField("namespace", namespace).WithField("configMap", configMap.Name).Debugf("configMap created")
-	return nil
+	return writeResult(err, p.logger, namespace, "configMap", configMap.Name, "create configmap", "configMap created")
 }
 
 // UpdateConfigMap replaces the stored ConfigMap with the given ConfigMap.
 func (p *ConfigMapService) UpdateConfigMap(namespace string, configMap *corev1.ConfigMap) error {
 	_, err := p.kubeClient.CoreV1().ConfigMaps(namespace).Update(context.TODO(), configMap, metav1.UpdateOptions{})
 	recordMetrics(namespace, "ConfigMap", configMap.GetName(), "UPDATE", err, p.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("update configmap %s/%s: %w", namespace, configMap.Name, err)
-	}
-	p.logger.WithField("namespace", namespace).WithField("configMap", configMap.Name).Debugf("configMap updated")
-	return nil
+	return writeResult(err, p.logger, namespace, "configMap", configMap.Name, "update configmap", "configMap updated")
 }
 
 // CreateOrUpdateConfigMap creates the ConfigMap, or updates the stored
 // ConfigMap when it is not up to date. It returns a ControlledByOtherError
 // when another controller controls the stored ConfigMap.
 func (p *ConfigMapService) CreateOrUpdateConfigMap(namespace string, configMap *corev1.ConfigMap) error {
-	storedConfigMap, err := p.GetConfigMap(namespace, configMap.Name)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return p.CreateConfigMap(namespace, configMap)
-		}
-		return err
-	}
-
-	if err := checkNotControlledByOther("ConfigMap", storedConfigMap, configMap); err != nil {
-		return err
-	}
-
-	// With the stored resource version, the update fails when the object
-	// changed after the read.
-	configMap.ResourceVersion = storedConfigMap.ResourceVersion
-
-	if configMapUpToDate(storedConfigMap, configMap) {
-		p.logger.WithField("namespace", namespace).WithField("configMap", configMap.Name).Debugf("configmap already up to date, skipping update")
-		return nil
-	}
-
-	return p.UpdateConfigMap(namespace, configMap)
+	return createOrUpdate(namespace, configMap, objectCalls[*corev1.ConfigMap]{
+		kind: "ConfigMap", get: p.GetConfigMap, create: p.CreateConfigMap, update: p.UpdateConfigMap, upToDate: configMapUpToDate,
+		skipped: func() {
+			p.logger.WithField("namespace", namespace).WithField("configMap", configMap.Name).Debugf("configmap already up to date, skipping update")
+		},
+	})
 }
 
 // DeleteConfigMap deletes the named ConfigMap.

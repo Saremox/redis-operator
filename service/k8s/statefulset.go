@@ -13,6 +13,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -103,22 +104,14 @@ func hasOrdinalName(name, prefix string) bool {
 func (s *StatefulSetService) CreateStatefulSet(namespace string, statefulSet *appsv1.StatefulSet) error {
 	_, err := s.kubeClient.AppsV1().StatefulSets(namespace).Create(context.TODO(), statefulSet, metav1.CreateOptions{})
 	recordMetrics(namespace, "StatefulSet", statefulSet.GetName(), "CREATE", err, s.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("create statefulset %s/%s: %w", namespace, statefulSet.Name, err)
-	}
-	s.logger.WithField("namespace", namespace).WithField("statefulSet", statefulSet.ObjectMeta.Name).Debugf("statefulSet created")
-	return nil
+	return writeResult(err, s.logger, namespace, "statefulSet", statefulSet.Name, "create statefulset", "statefulSet created")
 }
 
 // UpdateStatefulSet will update the given statefulset.
 func (s *StatefulSetService) UpdateStatefulSet(namespace string, statefulSet *appsv1.StatefulSet) error {
 	_, err := s.kubeClient.AppsV1().StatefulSets(namespace).Update(context.TODO(), statefulSet, metav1.UpdateOptions{})
 	recordMetrics(namespace, "StatefulSet", statefulSet.GetName(), "UPDATE", err, s.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("update statefulset %s/%s: %w", namespace, statefulSet.Name, err)
-	}
-	s.logger.WithField("namespace", namespace).WithField("statefulSet", statefulSet.ObjectMeta.Name).Debugf("statefulSet updated")
-	return nil
+	return writeResult(err, s.logger, namespace, "statefulSet", statefulSet.Name, "update statefulset", "statefulSet updated")
 }
 
 // CreateOrUpdateStatefulSet will update the statefulset or create it if does not exist.
@@ -182,39 +175,48 @@ func (s *StatefulSetService) updateStatefulSetPVCs(namespace string, storedState
 		if !isStatefulSetPVC(pvc.Name, storedStatefulSet) {
 			continue
 		}
-		// The owner change is its own update and its error stops the
-		// reconcile: a rejected resize must not keep an owner reference that
-		// lets the garbage collector delete the PVC.
-		if len(withoutOwners(pvc.OwnerReferences, removedOwners)) != len(pvc.OwnerReferences) {
-			// Other controllers also write the PVC, so a conflict is retried on
-			// the current PVC instead of a failed reconcile.
-			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-				current, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Get(context.TODO(), pvc.Name, metav1.GetOptions{})
-				if err != nil {
-					return fmt.Errorf("get: %w", err)
-				}
-				current.OwnerReferences = withoutOwners(current.OwnerReferences, removedOwners)
-				updated, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Update(context.TODO(), current, metav1.UpdateOptions{})
-				if err != nil {
-					return fmt.Errorf("update: %w", err)
-				}
-				pvc = updated
-				return nil
-			})
+		if err := s.updateStatefulSetPVC(namespace, pvc, removedOwners, template, desiredStorage); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// updateStatefulSetPVC removes removedOwners from the owners of pvc and
+// increases its storage request to desiredStorage.
+func (s *StatefulSetService) updateStatefulSetPVC(namespace string, pvc *corev1.PersistentVolumeClaim, removedOwners map[types.UID]bool, template corev1.PersistentVolumeClaim, desiredStorage *resource.Quantity) error {
+	// The owner change is its own update and its error stops the
+	// reconcile: a rejected resize must not keep an owner reference that
+	// lets the garbage collector delete the PVC.
+	if len(withoutOwners(pvc.OwnerReferences, removedOwners)) != len(pvc.OwnerReferences) {
+		// Other controllers also write the PVC, so a conflict is retried on
+		// the current PVC instead of a failed reconcile.
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			current, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Get(context.TODO(), pvc.Name, metav1.GetOptions{})
 			if err != nil {
-				return fmt.Errorf("remove the owners of pvc %s/%s: %w", namespace, pvc.Name, err)
+				return fmt.Errorf("get: %w", err)
 			}
-		}
-		// A storage class can refuse the expansion, so a failed resize is
-		// only logged and does not block the reconcile.
-		if pvc.Spec.Resources.Requests.Storage().Cmp(*desiredStorage) < 0 {
-			pvc.Spec.Resources.Requests = template.Spec.Resources.Requests
-			if _, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Update(context.TODO(), pvc, metav1.UpdateOptions{}); err != nil {
-				s.logger.WithField("namespace", namespace).WithField("pvc", pvc.Name).Warningf("resize pvc failed: %s", err.Error())
-				continue
+			current.OwnerReferences = withoutOwners(current.OwnerReferences, removedOwners)
+			updated, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Update(context.TODO(), current, metav1.UpdateOptions{})
+			if err != nil {
+				return fmt.Errorf("update: %w", err)
 			}
-			s.logger.WithField("namespace", namespace).WithField("pvc", pvc.Name).Infof("pvc resized")
+			pvc = updated
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("remove the owners of pvc %s/%s: %w", namespace, pvc.Name, err)
 		}
+	}
+	// A storage class can refuse the expansion, so a failed resize is
+	// only logged and does not block the reconcile.
+	if pvc.Spec.Resources.Requests.Storage().Cmp(*desiredStorage) < 0 {
+		pvc.Spec.Resources.Requests = template.Spec.Resources.Requests
+		if _, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Update(context.TODO(), pvc, metav1.UpdateOptions{}); err != nil {
+			s.logger.WithField("namespace", namespace).WithField("pvc", pvc.Name).Warningf("resize pvc failed: %s", err.Error())
+			return nil
+		}
+		s.logger.WithField("namespace", namespace).WithField("pvc", pvc.Name).Infof("pvc resized")
 	}
 	return nil
 }

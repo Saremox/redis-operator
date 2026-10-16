@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -54,11 +53,7 @@ func (s *ServiceAccountService) GetServiceAccount(namespace, name string) (*core
 func (s *ServiceAccountService) CreateServiceAccount(namespace string, serviceAccount *corev1.ServiceAccount) error {
 	_, err := s.kubeClient.CoreV1().ServiceAccounts(namespace).Create(context.TODO(), serviceAccount, metav1.CreateOptions{})
 	recordMetrics(namespace, "ServiceAccount", serviceAccount.GetName(), "CREATE", err, s.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("create serviceaccount %s/%s: %w", namespace, serviceAccount.Name, err)
-	}
-	s.logger.WithField("namespace", namespace).WithField("serviceAccount", serviceAccount.Name).Debugf("serviceAccount created")
-	return nil
+	return writeResult(err, s.logger, namespace, "serviceAccount", serviceAccount.Name, "create serviceaccount", "serviceAccount created")
 }
 
 // UpdateServiceAccount replaces the stored ServiceAccount with the given
@@ -66,11 +61,7 @@ func (s *ServiceAccountService) CreateServiceAccount(namespace string, serviceAc
 func (s *ServiceAccountService) UpdateServiceAccount(namespace string, serviceAccount *corev1.ServiceAccount) error {
 	_, err := s.kubeClient.CoreV1().ServiceAccounts(namespace).Update(context.TODO(), serviceAccount, metav1.UpdateOptions{})
 	recordMetrics(namespace, "ServiceAccount", serviceAccount.GetName(), "UPDATE", err, s.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("update serviceaccount %s/%s: %w", namespace, serviceAccount.Name, err)
-	}
-	s.logger.WithField("namespace", namespace).WithField("serviceAccount", serviceAccount.Name).Debugf("serviceAccount updated")
-	return nil
+	return writeResult(err, s.logger, namespace, "serviceAccount", serviceAccount.Name, "update serviceaccount", "serviceAccount updated")
 }
 
 // CreateOrUpdateServiceAccount creates the ServiceAccount, or updates the
@@ -78,28 +69,12 @@ func (s *ServiceAccountService) UpdateServiceAccount(namespace string, serviceAc
 // ControlledByOtherError when another controller controls the stored
 // ServiceAccount.
 func (s *ServiceAccountService) CreateOrUpdateServiceAccount(namespace string, serviceAccount *corev1.ServiceAccount) error {
-	storedServiceAccount, err := s.GetServiceAccount(namespace, serviceAccount.Name)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return s.CreateServiceAccount(namespace, serviceAccount)
-		}
-		return err
-	}
-
-	if err := checkNotControlledByOther("ServiceAccount", storedServiceAccount, serviceAccount); err != nil {
-		return err
-	}
-
-	// With the stored resource version, the update fails when the object
-	// changed after the read.
-	serviceAccount.ResourceVersion = storedServiceAccount.ResourceVersion
-
-	if serviceAccountUpToDate(storedServiceAccount, serviceAccount) {
-		s.logger.WithField("namespace", namespace).WithField("serviceAccount", serviceAccount.Name).Debugf("service account already up to date, skipping update")
-		return nil
-	}
-
-	return s.UpdateServiceAccount(namespace, serviceAccount)
+	return createOrUpdate(namespace, serviceAccount, objectCalls[*corev1.ServiceAccount]{
+		kind: "ServiceAccount", get: s.GetServiceAccount, create: s.CreateServiceAccount, update: s.UpdateServiceAccount, upToDate: serviceAccountUpToDate,
+		skipped: func() {
+			s.logger.WithField("namespace", namespace).WithField("serviceAccount", serviceAccount.Name).Debugf("service account already up to date, skipping update")
+		},
+	})
 }
 
 // DeleteServiceAccount deletes the named ServiceAccount.
