@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/service/k8s"
 	"github.com/saremox/redis-operator/service/redis"
 )
@@ -57,6 +58,8 @@ func (r *RedisFailoverHealer) EnsureRedisMaxMemory(rf *redisfailoverv1.RedisFail
 	m := &maxMemoryRun{
 		r:             r,
 		rf:            rf,
+		logger:        r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace),
+		master:        master,
 		redises:       redises,
 		port:          getRedisPort(rf.Spec.Redis.Port),
 		password:      password,
@@ -99,20 +102,39 @@ func (r *RedisFailoverHealer) EnsureRedisMaxMemory(rf *redisfailoverv1.RedisFail
 type maxMemoryRun struct {
 	r                         *RedisFailoverHealer
 	rf                        *redisfailoverv1.RedisFailover
+	logger                    log.Logger
+	master                    string
 	redises                   []string
 	port, password, policy    string
 	policyManaged, downsizing bool
+	// masterPolicy is the maxmemory-policy in force on the master: the one
+	// read from it, or the managed one once the master accepted it.
+	masterPolicy string
 }
 
 func (m *maxMemoryRun) setPolicy() error {
 	if !m.policyManaged {
 		return nil
 	}
-	return m.r.setRedisConfigOn(m.rf, m.redises, m.port, m.password, "maxmemory-policy "+m.policy)
+	return m.r.setRedisConfigEach(m.rf, m.redises, m.port, m.password, "maxmemory-policy "+m.policy, func(ip string) {
+		if ip == m.master {
+			m.masterPolicy = m.policy
+		}
+	})
 }
 
-func (m *maxMemoryRun) setMaxMemory(ips []string, bytes int64) error {
-	return m.r.setRedisConfigOn(m.rf, ips, m.port, m.password, fmt.Sprintf("maxmemory %d", bytes))
+// setMaxMemory sets maxmemory to bytes on ips. old and used are the values
+// that the operator read from the master. The operator does not read the
+// replicas, so it logs a replica only when bytes differs from the value read
+// from the master, and then without a value of the replica.
+func (m *maxMemoryRun) setMaxMemory(ips []string, old, bytes, used int64) error {
+	return m.r.setRedisConfigEach(m.rf, ips, m.port, m.password, fmt.Sprintf("maxmemory %d", bytes), func(ip string) {
+		if ip == m.master {
+			logMaxMemoryChange(m.logger, ip, old, bytes, used, m.masterPolicy)
+			return
+		}
+		logReplicaMaxMemory(m.logger, ip, old, bytes)
+	})
 }
 
 func (m *maxMemoryRun) kept(msg string) MaxMemoryResult {
@@ -141,6 +163,7 @@ func (m *maxMemoryRun) onMaster(master string, rp redisPods) (MaxMemoryResult, e
 		// E.g. a restarted master, which would seem to fit a lower value.
 		return MaxMemoryResult{HoldRollout: m.downsizing}, m.setPolicy()
 	}
+	m.masterPolicy = current.MaxMemoryPolicy
 	policy := current.MaxMemoryPolicy
 	if m.policyManaged {
 		policy = m.policy
@@ -149,7 +172,7 @@ func (m *maxMemoryRun) onMaster(master string, rp redisPods) (MaxMemoryResult, e
 	if !lowers(current.MaxMemory, target) {
 		// Before the policy, so a new evicting policy does not evict what
 		// fits under the raised value.
-		if err := m.setMaxMemory(m.redises, target); err != nil {
+		if err := m.setMaxMemory(m.redises, current.MaxMemory, target, current.UsedMemory); err != nil {
 			return MaxMemoryResult{}, err
 		}
 		if evicts && m.downsizing && current.UsedMemory > target {
@@ -163,39 +186,50 @@ func (m *maxMemoryRun) onMaster(master string, rp redisPods) (MaxMemoryResult, e
 
 	others := withoutIP(m.redises, master)
 	if current.UsedMemory > target && !evicts {
+		old := current.MaxMemory
 		if current.MaxMemory == 0 {
 			// E.g. a restarted master: bounded by the smallest running
 			// container's reserve, or the memory in use.
 			current.MaxMemory = max(current.UsedMemory, rp.smallestRunning-redisfailoverv1.MaxMemoryReserve)
-			if err := m.r.setRedisConfigOn(m.rf, []string{master}, m.port, m.password, fmt.Sprintf("maxmemory %d", current.MaxMemory)); err != nil {
+			if err := m.setMaxMemory([]string{master}, old, current.MaxMemory, current.UsedMemory); err != nil {
 				return MaxMemoryResult{}, err
 			}
 		}
 		// Replicas follow the kept value, so a promoted one behaves the same.
-		return m.kept(notFitMessage(current.MaxMemory, target, policy)), m.setMaxMemory(others, current.MaxMemory)
+		return m.kept(notFitMessage(current.MaxMemory, target, policy)), m.setMaxMemory(others, old, current.MaxMemory, current.UsedMemory)
 	}
-	return m.lowerOnMaster(master, others, current.MaxMemory, target, policy)
+	return m.lowerOnMaster(master, others, current, target, policy)
 }
 
 // lowerOnMaster lowers maxmemory on the master to target, and on the others
 // once it fits. It restores the value previous when it does not fit.
-func (m *maxMemoryRun) lowerOnMaster(master string, others []string, previous, target int64, policy string) (MaxMemoryResult, error) {
+func (m *maxMemoryRun) lowerOnMaster(master string, others []string, current *redis.MemoryInfo, target int64, policy string) (MaxMemoryResult, error) {
+	previous, used := current.MaxMemory, current.UsedMemory
 	evicts := evictsEnough(policy)
 	// Usage can grow or a failover happen meanwhile.
 	wait := time.Duration(0)
 	if evicts {
 		wait = evictionWait
 	}
-	after, err := m.r.lowerAndWait(master, m.port, m.password, target, wait)
+	usedBefore := used
+	logLowered := func() { logMaxMemoryChange(m.logger, master, previous, target, usedBefore, m.masterPolicy) }
+	after, lowered, err := m.r.lowerAndWait(master, m.port, m.password, target, wait, logLowered)
+	if after != nil {
+		used = after.UsedMemory
+	}
 	if err == nil && after.Role == "master" && (evicts || after.UsedMemory <= target) {
-		if err := m.setMaxMemory(others, target); err != nil || after.UsedMemory <= target {
+		if err := m.setMaxMemory(others, previous, target, used); err != nil || after.UsedMemory <= target {
 			return MaxMemoryResult{}, err
 		}
 		// Redis keeps evicting in the background, which can take longer for
 		// a large dataset.
 		return m.kept(evictingMessage(target)), nil
 	}
-	if rerr := m.r.redisClient.SetCustomRedisConfig(master, m.port, []string{fmt.Sprintf("maxmemory %d", previous)}, m.password); rerr != nil || err != nil {
+	rerr := m.r.redisClient.SetCustomRedisConfig(master, m.port, []string{fmt.Sprintf("maxmemory %d", previous)}, m.password)
+	if rerr == nil && lowered {
+		logMaxMemoryChange(m.logger, master, target, previous, used, m.masterPolicy)
+	}
+	if rerr != nil || err != nil {
 		return MaxMemoryResult{}, errors.Join(err, rerr)
 	}
 	if after.Role != "master" {
@@ -203,7 +237,27 @@ func (m *maxMemoryRun) lowerOnMaster(master string, others []string, previous, t
 		// container would lower it without checking its usage.
 		return m.kept(fmt.Sprintf("maxmemory kept at %s: %s stopped being the master while lowering it", formatBytes(previous), master)), nil
 	}
-	return m.kept(notFitMessage(previous, target, policy)), m.setMaxMemory(others, previous)
+	return m.kept(notFitMessage(previous, target, policy)), m.setMaxMemory(others, previous, previous, used)
+}
+
+// logMaxMemoryChange logs a change of the managed maxmemory on ip at Info, so
+// that an OOM refusal of a write can be traced to the value. An unchanged
+// value logs nothing, because the operator sets it at each reconcile.
+func logMaxMemoryChange(logger log.Logger, ip string, old, value, used int64, policy string) {
+	if old == value {
+		return
+	}
+	logger.Infof("Set maxmemory %s -> %s on %s (used %s, policy %s)", formatBytes(old), formatBytes(value), ip, formatMi(used), policy)
+}
+
+// logReplicaMaxMemory logs the value that a replica accepted when it
+// differs from old, the value read from the master. A replica can be set
+// before the master, so the line does not claim a change of the master.
+func logReplicaMaxMemory(logger log.Logger, ip string, old, value int64) {
+	if old == value {
+		return
+	}
+	logger.Infof("Set maxmemory %s on %s (replica, the master had %s)", formatBytes(value), ip, formatBytes(old))
 }
 
 // evictsEnough reports whether policy surely evicts enough. Only allkeys-*
@@ -261,7 +315,10 @@ func (r *RedisFailoverHealer) ensureMaxMemoryWithoutMaster(rf *redisfailoverv1.R
 				formatBytes(mi.MaxMemory), formatBytes(target), ip)
 			continue
 		}
-		if err := r.setRedisConfigOn(rf, []string{ip}, port, password, fmt.Sprintf("maxmemory %d", target)); err != nil {
+		logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
+		if err := r.setRedisConfigEach(rf, []string{ip}, port, password, fmt.Sprintf("maxmemory %d", target), func(ip string) {
+			logMaxMemoryChange(logger, ip, mi.MaxMemory, target, mi.UsedMemory, mi.MaxMemoryPolicy)
+		}); err != nil {
 			return "", err
 		}
 	}
@@ -349,6 +406,12 @@ func (rp *redisPods) add(ip string, limit, running int64) {
 
 // setRedisConfigOn applies one config to the given redises, skipping unreachable ones.
 func (r *RedisFailoverHealer) setRedisConfigOn(rf *redisfailoverv1.RedisFailover, ips []string, port, password, config string) error {
+	return r.setRedisConfigEach(rf, ips, port, password, config, nil)
+}
+
+// setRedisConfigEach is setRedisConfigOn, and it calls applied, when not
+// nil, for each redis that accepted the config.
+func (r *RedisFailoverHealer) setRedisConfigEach(rf *redisfailoverv1.RedisFailover, ips []string, port, password, config string, applied func(ip string)) error {
 	for _, ip := range ips {
 		if err := r.redisClient.SetCustomRedisConfig(ip, port, []string{config}, password); err != nil {
 			if redis.IsUnreachableError(err) {
@@ -357,24 +420,30 @@ func (r *RedisFailoverHealer) setRedisConfigOn(rf *redisfailoverv1.RedisFailover
 			}
 			return err
 		}
+		if applied != nil {
+			applied(ip)
+		}
 	}
 	return nil
 }
 
 // lowerAndWait sets maxmemory on the master and returns its memory info once
-// the memory in use fits, or after wait has passed.
-func (r *RedisFailoverHealer) lowerAndWait(master, port, password string, target int64, wait time.Duration) (*redis.MemoryInfo, error) {
+// the memory in use fits, or after wait has passed. The bool reports whether
+// the master accepted the value. Then lowerAndWait calls set, which logs the
+// change before the reads.
+func (r *RedisFailoverHealer) lowerAndWait(master, port, password string, target int64, wait time.Duration, set func()) (*redis.MemoryInfo, bool, error) {
 	if err := r.redisClient.SetCustomRedisConfig(master, port, []string{fmt.Sprintf("maxmemory %d", target)}, password); err != nil {
-		return nil, err
+		return nil, false, err
 	}
+	set()
 	deadline := time.Now().Add(wait)
 	for {
 		mi, err := r.redisClient.GetMemoryInfo(master, port, password)
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		if mi.UsedMemory <= target || !time.Now().Before(deadline) {
-			return mi, nil
+			return mi, true, nil
 		}
 		time.Sleep(evictionPollInterval)
 	}
@@ -389,5 +458,9 @@ func formatBytes(b int64) string {
 	if b == 0 {
 		return "unlimited"
 	}
+	return formatMi(b)
+}
+
+func formatMi(b int64) string {
 	return fmt.Sprintf("%.1fMi", float64(b)/(1<<20))
 }

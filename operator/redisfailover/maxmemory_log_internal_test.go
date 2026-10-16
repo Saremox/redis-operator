@@ -16,10 +16,11 @@ import (
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
-// warnLogger records the Warning and Debug lines.
+// warnLogger records the Info, Warning and Debug lines.
 type warnLogger struct {
 	log.DummyLogger
 	mu       sync.Mutex
+	infos    []string
 	warnings []string
 	debugs   []string
 }
@@ -33,6 +34,12 @@ func (l *warnLogger) Warningf(format string, args ...any) {
 	l.warnings = append(l.warnings, fmt.Sprintf(format, args...))
 }
 
+func (l *warnLogger) Infof(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.infos = append(l.infos, fmt.Sprintf(format, args...))
+}
+
 func (l *warnLogger) Debugf(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -40,7 +47,7 @@ func (l *warnLogger) Debugf(format string, args ...any) {
 }
 
 func (l *warnLogger) reset() {
-	l.warnings, l.debugs = nil, nil
+	l.infos, l.warnings, l.debugs = nil, nil, nil
 }
 
 func TestEnsureRedisMaxMemoryLogsAnUnchangedHoldOnce(t *testing.T) {
@@ -160,11 +167,15 @@ func TestEnsureRedisMaxMemoryForgetsTheLoggedOutcomeWhenMaxMemoryIsRemoved(t *te
 	// later re-enable is a Warning again.
 	maxMemory := rf.Spec.Redis.MaxMemory
 	rf.Spec.Redis.MaxMemory = nil
+	logger.reset()
 	held, err := handler.ensureRedisMaxMemory(rf, "10.0.0.1")
 	require.NoError(t, err)
 	assert.False(t, held)
 	_, tracked = handler.maxMemoryLogged.Load(failoverKey(rf))
 	assert.False(t, tracked)
+	// The message and the hold end with the setting.
+	assert.Equal(t, []string{"The maxmemory message ended: " + result.Message, "The maxmemory hold of the pod rollout ended"}, logger.infos)
+	assert.Empty(t, logger.warnings)
 
 	rf.Spec.Redis.MaxMemory = maxMemory
 	logger.reset()
@@ -172,4 +183,55 @@ func TestEnsureRedisMaxMemoryForgetsTheLoggedOutcomeWhenMaxMemoryIsRemoved(t *te
 	require.NoError(t, err)
 	assert.Equal(t, []string{result.Message, "Holding the pod rollout until maxmemory fits the lowered memory limit"}, logger.warnings)
 	assert.Empty(t, logger.debugs)
+}
+
+// Each part of an outcome that ends is one Info line. A changed outcome is a
+// Warning, and an unchanged one a Debug line.
+func TestEnsureRedisMaxMemoryLogsTheEndOfAnOutcome(t *testing.T) {
+	const (
+		m         = "maxmemory kept at 1: lowering it to 2 would not fit"
+		m2        = "maxmemory kept at 1: lowering it to 3 would not fit"
+		hold      = "Holding the pod rollout until maxmemory fits the lowered memory limit"
+		ended     = "The maxmemory message ended: " + m
+		holdEnded = "The maxmemory hold of the pod rollout ended"
+	)
+	mh := rfservice.MaxMemoryResult{Message: m, HoldRollout: true}
+	none := rfservice.MaxMemoryResult{}
+	tests := []struct {
+		name                    string
+		steps                   []rfservice.MaxMemoryResult // the last step is checked
+		infos, warnings, debugs []string
+	}{
+		{"message and hold end", []rfservice.MaxMemoryResult{mh, none}, []string{ended, holdEnded}, nil, nil},
+		{"the message ends", []rfservice.MaxMemoryResult{mh, {HoldRollout: true}}, []string{ended}, []string{hold}, nil},
+		{"the hold ends", []rfservice.MaxMemoryResult{mh, {Message: m}}, []string{holdEnded}, []string{m}, nil},
+		{"the message changes", []rfservice.MaxMemoryResult{{Message: m}, {Message: m2}}, nil, []string{m2}, nil},
+		{"a hold alone ends", []rfservice.MaxMemoryResult{{HoldRollout: true}, none}, []string{holdEnded}, nil, nil},
+		{"message and hold start", []rfservice.MaxMemoryResult{none, mh}, nil, []string{m, hold}, nil},
+		{"unchanged", []rfservice.MaxMemoryResult{mh, mh}, nil, nil, []string{m, hold}},
+		{"nothing ends a second time", []rfservice.MaxMemoryResult{mh, none, none}, nil, nil, nil},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := newCustomConfigTestRF()
+			rf.Spec.Redis.MaxMemory = &redisfailoverv1.MaxMemorySettings{Percent: 75, Policy: "noeviction"}
+			ips := []string{"10.0.0.1"}
+			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc.On("GetRedisesIPs", rf).Return(ips, nil)
+			mrfc.On("GetMasterIP", rf).Return("10.0.0.1", nil)
+			mrfh := &mRFService.RedisFailoverHeal{}
+			logger := &warnLogger{}
+			handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, &mK8SService.Services{}, metrics.Dummy, logger)
+			for _, result := range test.steps {
+				logger.reset()
+				mrfh.ExpectedCalls = nil
+				mrfh.On("EnsureRedisMaxMemory", rf, "10.0.0.1", ips).Once().Return(result, nil)
+				_, err := handler.ensureRedisMaxMemory(rf, "10.0.0.1")
+				require.NoError(t, err)
+			}
+			assert.Equal(t, test.infos, logger.infos)
+			assert.Equal(t, test.warnings, logger.warnings)
+			assert.Equal(t, test.debugs, logger.debugs)
+		})
+	}
 }

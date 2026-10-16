@@ -262,7 +262,8 @@ func (r *RedisFailoverHandler) applyRedisCustomConfig(rf *redisfailoverv1.RedisF
 // bootstrapping. It reports whether the pod rollout must be held.
 func (r *RedisFailoverHandler) ensureRedisMaxMemory(rf *redisfailoverv1.RedisFailover, master string) (bool, error) {
 	if rf.Spec.Redis.MaxMemory == nil {
-		r.maxMemoryLogged.Delete(failoverKey(rf))
+		// The message and the hold end with the setting.
+		r.logMaxMemoryOutcome(r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace), failoverKey(rf), rfservice.MaxMemoryResult{})
 		return false, nil
 	}
 	redises, err := r.rfChecker.GetRedisesIPs(rf)
@@ -297,14 +298,20 @@ type maxMemoryOutcome struct {
 
 // logMaxMemoryOutcome logs an outcome at Warning when it differs from the last
 // one that was logged for the RedisFailover, and at Debug otherwise. The status
-// message shows an unchanged outcome to the user.
+// message shows an unchanged outcome to the user. The end of a message or of
+// a hold logs at Info, so that the log shows how long it lasted.
 func (r *RedisFailoverHandler) logMaxMemoryOutcome(logger log.Logger, key string, result rfservice.MaxMemoryResult) {
-	if result.Message == "" && !result.HoldRollout {
-		r.maxMemoryLogged.Delete(key)
+	outcome := maxMemoryOutcome{message: result.Message, hold: result.HoldRollout}
+	if outcome == (maxMemoryOutcome{}) {
+		if last, loaded := r.maxMemoryLogged.LoadAndDelete(key); loaded {
+			logMaxMemoryOutcomeEnd(logger, last, outcome)
+		}
 		return
 	}
-	outcome := maxMemoryOutcome{message: result.Message, hold: result.HoldRollout}
 	last, loaded := r.maxMemoryLogged.Swap(key, outcome)
+	if loaded {
+		logMaxMemoryOutcomeEnd(logger, last, outcome)
+	}
 	logf := logger.Warningf
 	if loaded && last == outcome {
 		logf = logger.Debugf
@@ -314,6 +321,21 @@ func (r *RedisFailoverHandler) logMaxMemoryOutcome(logger log.Logger, key string
 	}
 	if result.HoldRollout {
 		logf("Holding the pod rollout until maxmemory fits the lowered memory limit")
+	}
+}
+
+// logMaxMemoryOutcomeEnd logs each part of the last outcome that current
+// does not have. A changed message is a Warning of the new outcome.
+func logMaxMemoryOutcomeEnd(logger log.Logger, last any, current maxMemoryOutcome) {
+	previous, ok := last.(maxMemoryOutcome)
+	if !ok {
+		return
+	}
+	if previous.message != "" && current.message == "" {
+		logger.Infof("The maxmemory message ended: %s", previous.message)
+	}
+	if previous.hold && !current.hold {
+		logger.Infof("The maxmemory hold of the pod rollout ended")
 	}
 }
 
