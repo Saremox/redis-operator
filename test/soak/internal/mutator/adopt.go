@@ -29,25 +29,8 @@ func (m *Mutator) stuckChange(s state, master string) (*transition, *corev1.Pod)
 	if ch == nil || !known || len(s.redis) != replicas {
 		return nil, nil
 	}
-	var stuck *corev1.Pod
-	var from config.Version
-	for i := range s.redis {
-		p := &s.redis[i]
-		image := containerImage(p, redisName)
-		if image == to.Image {
-			if stuck != nil || observer.Ready(p) {
-				return nil, nil
-			}
-			stuck = p
-			continue
-		}
-		v, known := m.versions.VersionOf(image)
-		if !known || !observer.Ready(p) || from.Name != "" && v != from {
-			return nil, nil
-		}
-		from = v
-	}
-	if stuck == nil || from.Name == "" || master == stuck.Name || !slices.ContainsFunc(s.redis, func(p corev1.Pod) bool { return p.Name == master }) {
+	stuck, from, ok := m.stuckPod(s, to)
+	if !ok || stuck == nil || from.Name == "" || master == stuck.Name || !slices.ContainsFunc(s.redis, func(p corev1.Pod) bool { return p.Name == master }) {
 		return nil, nil
 	}
 	if sv := s.servers[stuck.Name]; sv.err == nil && sv.fields["master_link_status"] == "up" {
@@ -59,6 +42,29 @@ func (m *Mutator) stuckChange(s state, master string) (*transition, *corev1.Pod)
 		}
 	}
 	return nil, nil
+}
+
+// stuckPod returns the one redis pod on the version to that is not Ready, and
+// the version of the other pods. ok is false if the pods do not show a stuck
+// change.
+func (m *Mutator) stuckPod(s state, to config.Version) (stuck *corev1.Pod, from config.Version, ok bool) {
+	for i := range s.redis {
+		p := &s.redis[i]
+		image := containerImage(p, redisName)
+		if image == to.Image {
+			if stuck != nil || observer.Ready(p) {
+				return nil, config.Version{}, false
+			}
+			stuck = p
+			continue
+		}
+		v, known := m.versions.VersionOf(image)
+		if !known || !observer.Ready(p) || from.Name != "" && v != from {
+			return nil, config.Version{}, false
+		}
+		from = v
+	}
+	return stuck, from, true
 }
 
 // stuck reads the instance and returns the change that it shows, the pod
