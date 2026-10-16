@@ -98,7 +98,7 @@ func TestPlanAutoscaleSkips(t *testing.T) {
 	if p := m.plan(stepRand(1, m.in, 1), config.AutoscaleKillMaster, s); p.skip == "" {
 		t.Errorf("a stale master label: %+v", p)
 	}
-	if p := m.planAutoscale(stepRand(1, m.in, 1), config.KillMaster, s); p.skip == "" {
+	if p := m.planAutoscale(stepRand(1, m.in, 1), config.KillMaster, s); p.skip != "unknown kind" {
 		t.Errorf("another kind: %+v", p)
 	}
 }

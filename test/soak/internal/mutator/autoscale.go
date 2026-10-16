@@ -91,8 +91,9 @@ func (m *Mutator) planAutoscale(r *rand.Rand, kind config.Kind, s state) plan {
 		}
 		pod := replicas[r.IntN(len(replicas))]
 		return m.planLoad(kind, s, pod.Name, pod.UID, converged)
+	default:
+		return skipped(kind, "unknown kind")
 	}
-	return skipped(kind, "unknown kind")
 }
 
 // planMode changes the mode to the next in the cycle.
