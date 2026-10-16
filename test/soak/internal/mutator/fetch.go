@@ -48,16 +48,38 @@ func (m *Mutator) fetch(ctx context.Context, opts fetchOpts) (state, error) {
 		return state{}, err
 	}
 	slices.SortFunc(pods.Items, func(a, b corev1.Pod) int { return strings.Compare(a.Name, b.Name) })
-	for _, p := range pods.Items {
-		switch p.Labels["app.kubernetes.io/component"] {
-		case "redis":
-			s.redis = append(s.redis, p)
-		case "sentinel":
-			s.sentinels = append(s.sentinels, p)
+	s.redis, s.sentinels = byComponent(pods.Items)
+	m.readPods(ctx, &s, opts)
+	s.sts, err = m.kube.AppsV1().StatefulSets(m.in.Namespace).Get(ctx, "rfr-"+m.in.Name, metav1.GetOptions{})
+	if err != nil {
+		return state{}, err
+	}
+	if rf.SentinelEnabled() || opts.sentinelObjects {
+		if err := m.fetchSentinel(ctx, &s, opts.sentinelObjects); err != nil {
+			return state{}, err
 		}
 	}
-	port := int(rf.Spec.Redis.Port)
-	if rf.Spec.Redis.MaxMemory != nil {
+	return s, nil
+}
+
+// byComponent returns the redis pods and the Sentinel pods, in the order of
+// pods.
+func byComponent(pods []corev1.Pod) (redisPods, sentinels []corev1.Pod) {
+	for _, p := range pods {
+		switch p.Labels["app.kubernetes.io/component"] {
+		case "redis":
+			redisPods = append(redisPods, p)
+		case "sentinel":
+			sentinels = append(sentinels, p)
+		}
+	}
+	return redisPods, sentinels
+}
+
+// readPods reads from the pods what the RedisFailover and opts ask for.
+func (m *Mutator) readPods(ctx context.Context, s *state, opts fetchOpts) {
+	port := int(s.rf.Spec.Redis.Port)
+	if s.rf.Spec.Redis.MaxMemory != nil {
 		s.config = m.redisConfig(ctx, s.redis, port)
 	}
 	if opts.password != nil {
@@ -69,29 +91,29 @@ func (m *Mutator) fetch(ctx context.Context, opts fetchOpts) (state, error) {
 	if opts.servers {
 		s.servers = m.servers(ctx, s.redis, s.sentinels, port)
 	}
-	s.sts, err = m.kube.AppsV1().StatefulSets(m.in.Namespace).Get(ctx, "rfr-"+m.in.Name, metav1.GetOptions{})
+}
+
+// fetchSentinel reads the Sentinel Deployment, and with objects whether the
+// Sentinel Service and ConfigMap exist.
+func (m *Mutator) fetchSentinel(ctx context.Context, s *state, objects bool) error {
+	name := "rfs-" + m.in.Name
+	var err error
+	s.sentinel, err = m.kube.AppsV1().Deployments(m.in.Namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		s.sentinel, err = nil, nil
+	}
 	if err != nil {
-		return state{}, err
+		return err
 	}
-	if rf.SentinelEnabled() || opts.sentinelObjects {
-		name := "rfs-" + m.in.Name
-		s.sentinel, err = m.kube.AppsV1().Deployments(m.in.Namespace).Get(ctx, name, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			s.sentinel, err = nil, nil
+	if objects {
+		if s.sentinelService, err = exists(m.kube.CoreV1().Services(m.in.Namespace).Get(ctx, name, metav1.GetOptions{})); err != nil {
+			return err
 		}
-		if err != nil {
-			return state{}, err
-		}
-		if opts.sentinelObjects {
-			if s.sentinelService, err = exists(m.kube.CoreV1().Services(m.in.Namespace).Get(ctx, name, metav1.GetOptions{})); err != nil {
-				return state{}, err
-			}
-			if s.sentinelConfigMap, err = exists(m.kube.CoreV1().ConfigMaps(m.in.Namespace).Get(ctx, name, metav1.GetOptions{})); err != nil {
-				return state{}, err
-			}
+		if s.sentinelConfigMap, err = exists(m.kube.CoreV1().ConfigMaps(m.in.Namespace).Get(ctx, name, metav1.GetOptions{})); err != nil {
+			return err
 		}
 	}
-	return s, nil
+	return nil
 }
 
 func exists[T any](_ T, err error) (bool, error) {
