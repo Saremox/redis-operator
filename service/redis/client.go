@@ -846,6 +846,12 @@ func (c *client) GetReplicationInfo(ip, port, password string) (*ReplicationInfo
 		return nil, fmt.Errorf("INFO replication: %w", err)
 	}
 
+	replInfo := parseReplicationInfo(info)
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_REPLICATION_INFO, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return replInfo, nil
+}
+
+func parseReplicationInfo(info string) *ReplicationInfo {
 	replInfo := &ReplicationInfo{}
 
 	// Parse the INFO replication output
@@ -862,37 +868,38 @@ func (c *client) GetReplicationInfo(ip, port, password string) (*ReplicationInfo
 		}
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
-
-		switch key {
-		case "role":
-			replInfo.Role = value
-		case "master_host":
-			replInfo.MasterHost = value
-		case "master_port":
-			replInfo.MasterPort = value
-		case "master_link_status":
-			replInfo.MasterLinkStatus = value
-		case "slave_repl_offset":
-			if offset, err := strconv.ParseInt(value, 10, 64); err == nil {
-				replInfo.SlaveReplOffset = offset
-			}
-		case "master_repl_offset":
-			if offset, err := strconv.ParseInt(value, 10, 64); err == nil {
-				replInfo.MasterReplOffset = offset
-			}
-		case "connected_slaves":
-			if count, err := strconv.Atoi(value); err == nil {
-				replInfo.ConnectedSlaves = count
-			}
-		case "master_sync_in_progress":
-			replInfo.SyncInProgress = value == "1"
-		case "master_failover_state":
-			replInfo.FailoverState = value
-		}
+		setReplicationField(replInfo, key, value)
 	}
+	return replInfo
+}
 
-	c.metricsRecorder.RecordRedisOperation(metrics.KIND_REDIS, ip, metrics.GET_REPLICATION_INFO, metrics.SUCCESS, metrics.NOT_APPLICABLE)
-	return replInfo, nil
+func setReplicationField(replInfo *ReplicationInfo, key, value string) {
+	switch key {
+	case "role":
+		replInfo.Role = value
+	case "master_host":
+		replInfo.MasterHost = value
+	case "master_port":
+		replInfo.MasterPort = value
+	case "master_link_status":
+		replInfo.MasterLinkStatus = value
+	case "slave_repl_offset":
+		if offset, err := strconv.ParseInt(value, 10, 64); err == nil {
+			replInfo.SlaveReplOffset = offset
+		}
+	case "master_repl_offset":
+		if offset, err := strconv.ParseInt(value, 10, 64); err == nil {
+			replInfo.MasterReplOffset = offset
+		}
+	case "connected_slaves":
+		if count, err := strconv.Atoi(value); err == nil {
+			replInfo.ConnectedSlaves = count
+		}
+	case "master_sync_in_progress":
+		replInfo.SyncInProgress = value == "1"
+	case "master_failover_state":
+		replInfo.FailoverState = value
+	}
 }
 
 // SetPassword changes the password a running Redis requires and the one it
