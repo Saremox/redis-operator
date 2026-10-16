@@ -209,8 +209,8 @@ func (r *RedisFailoverHandler) logWrongMaster(rf *redisfailoverv1.RedisFailover,
 	logger.Warningf("Slave not associated to master: %s", err.Error())
 }
 
-// waitForMasterPod sets the status after a failed lookup of the master pod,
-// and reports whether the master pod still has time to answer.
+// waitForMasterPod reports whether the caller must return: the lookup of the
+// master pod failed, or the master pod still has time to answer.
 func (r *RedisFailoverHandler) waitForMasterPod(rf *redisfailoverv1.RedisFailover, pod *corev1.Pod, lookupErr error) (bool, error) {
 	if lookupErr != nil {
 		rf.Status = redisfailoverv1.RedisFailoverStatus{

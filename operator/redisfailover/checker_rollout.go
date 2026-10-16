@@ -69,7 +69,7 @@ func (r *RedisFailoverHandler) UpdateRedisesPods(rf *redisfailoverv1.RedisFailov
 }
 
 // rolloutScan is what the check of the replicas finds before the rollout.
-// done is true when the rollout must end the reconcile.
+// done is true when UpdateRedisesPods must return.
 type rolloutScan struct {
 	updateRevision string
 	podNames       map[string]string
@@ -148,7 +148,7 @@ func (r *RedisFailoverHandler) scanReplica(rf *redisfailoverv1.RedisFailover, ri
 }
 
 // replaceStaleReplica replaces the first pod in pods that is not on the
-// update revision. done is true when it found such a pod.
+// update revision. It reports whether UpdateRedisesPods must return.
 func (r *RedisFailoverHandler) replaceStaleReplica(rf *redisfailoverv1.RedisFailover, pods []string, ssUR string, unsyncedStale bool) (*rolloutWait, bool, error) {
 	for _, pod := range pods {
 		revision, err := r.rfChecker.GetRedisRevisionHash(pod, rf)
