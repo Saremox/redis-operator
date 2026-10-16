@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -424,14 +425,25 @@ func TestRecoveryPath(t *testing.T) {
 }
 
 // The tester matches the status text of the operator, so a change of the text
-// must fail a test.
+// must fail a test. The checker code is in several checker*.go files.
 func TestOperatorElectedText(t *testing.T) {
-	src, err := os.ReadFile("../../../../operator/redisfailover/checker.go")
+	files, err := filepath.Glob("../../../../operator/redisfailover/checker*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
+	var src []byte
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src = append(src, b...)
+	}
 	if !strings.Contains(string(src), `"`+operatorElected+`%s"`) {
-		t.Errorf("checker.go has no status message %q followed by the pod name", operatorElected)
+		t.Errorf("the checker*.go files have no status message %q followed by the pod name", operatorElected)
 	}
 }
 

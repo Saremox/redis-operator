@@ -192,7 +192,7 @@ jobs:
               - 'test/soak/**'
               - 'api/**'
               - 'client/**'
-              - 'operator/redisfailover/checker.go'
+              - 'operator/redisfailover/checker*.go'
               - 'go.mod'
               - 'go.sum'
               - '.github/workflows/ci.yaml'
