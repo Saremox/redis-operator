@@ -33,23 +33,12 @@ func (r *RedisFailover) Validate() error {
 		return fmt.Errorf("name length can't be higher than %d", maxNameLength)
 	}
 
-	for _, rename := range r.Spec.Redis.CustomCommandRenames {
-		if !validCommandRenamePattern.MatchString(rename.From) {
-			return fmt.Errorf("customCommandRenames: invalid \"from\" command name %q, must match %s", rename.From, validCommandRenamePattern.String())
-		}
-		if err := r.validateCommandRename(rename.From); err != nil {
-			return err
-		}
-		// "to" may be empty to disable the command entirely.
-		if rename.To != "" && !validCommandRenamePattern.MatchString(rename.To) {
-			return fmt.Errorf("customCommandRenames: invalid \"to\" command name %q, must match %s", rename.To, validCommandRenamePattern.String())
-		}
+	if err := r.validateCommandRenames(); err != nil {
+		return err
 	}
 
-	for name, port := range map[string]int32{"redis": r.Spec.Redis.Exporter.Port, "sentinel": r.Spec.Sentinel.Exporter.Port} {
-		if port < 0 || port > 65535 {
-			return fmt.Errorf("%s.exporter.port %d must be between 1 and 65535, or 0 for the default", name, port)
-		}
+	if err := r.validateExporterPorts(); err != nil {
+		return err
 	}
 
 	if err := r.validateMaxMemory(); err != nil {
@@ -73,6 +62,41 @@ func (r *RedisFailover) Validate() error {
 		r.Spec.Redis.CustomConfig = deduplicateStr(append(defaultRedisCustomConfig, r.Spec.Redis.CustomConfig...))
 	}
 
+	r.setDefaults()
+
+	return nil
+}
+
+// validateCommandRenames rejects a rename that can add directives to
+// redis.conf or that renames a command that the RedisFailover needs.
+func (r *RedisFailover) validateCommandRenames() error {
+	for _, rename := range r.Spec.Redis.CustomCommandRenames {
+		if !validCommandRenamePattern.MatchString(rename.From) {
+			return fmt.Errorf("customCommandRenames: invalid \"from\" command name %q, must match %s", rename.From, validCommandRenamePattern.String())
+		}
+		if err := r.validateCommandRename(rename.From); err != nil {
+			return err
+		}
+		// "to" may be empty to disable the command entirely.
+		if rename.To != "" && !validCommandRenamePattern.MatchString(rename.To) {
+			return fmt.Errorf("customCommandRenames: invalid \"to\" command name %q, must match %s", rename.To, validCommandRenamePattern.String())
+		}
+	}
+	return nil
+}
+
+func (r *RedisFailover) validateExporterPorts() error {
+	for name, port := range map[string]int32{"redis": r.Spec.Redis.Exporter.Port, "sentinel": r.Spec.Sentinel.Exporter.Port} {
+		if port < 0 || port > 65535 {
+			return fmt.Errorf("%s.exporter.port %d must be between 1 and 65535, or 0 for the default", name, port)
+		}
+	}
+	return nil
+}
+
+// setDefaults sets the defaults of the images, the replicas, the port and the
+// Sentinel configuration.
+func (r *RedisFailover) setDefaults() {
 	if r.Spec.Redis.Image == "" {
 		r.Spec.Redis.Image = defaultImage
 	}
@@ -102,8 +126,6 @@ func (r *RedisFailover) Validate() error {
 	}
 
 	r.Spec.Sentinel.CustomConfig = addSentinelDefaults(r.Spec.Sentinel.CustomConfig)
-
-	return nil
 }
 
 // validateCommandRename rejects a rename of a command that the RedisFailover
