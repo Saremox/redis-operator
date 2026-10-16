@@ -1,0 +1,248 @@
+Auto autoscale_load step 1
+  kind=autoscale_load skip="" params="load to 97 percent of maxmemory for at most 3m0s" patch= pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=false recovery=false converged=true
+  converged(s)=<nil>
+Auto autoscale_load step 2
+  kind=autoscale_load skip="" params="load to 97 percent of maxmemory for at most 3m0s" patch= pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=false recovery=false converged=true
+  converged(s)=<nil>
+Auto autoscale_load step 3
+  kind=autoscale_load skip="" params="load to 97 percent of maxmemory for at most 3m0s" patch= pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=false recovery=false converged=true
+  converged(s)=<nil>
+Auto autoscale_limit step 1
+  kind=autoscale_limit skip="" params="memory 192Mi -> 376Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"376Mi"},"requests":{"memory":"376Mi"}}}}} pod= uid= force=false reset=false
+  allow={Recreate:true Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Auto autoscale_limit step 2
+  kind=autoscale_limit skip="the limit 476Mi is above memoryMax 384Mi" params="" patch= pod= uid= force=false reset=false
+Auto autoscale_limit step 3
+  kind=autoscale_limit skip="" params="memory 192Mi -> 295Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"295Mi"},"requests":{"memory":"295Mi"}}}}} pod= uid= force=false reset=false
+  allow={Recreate:true Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Auto autoscale_memory_max step 1
+  kind=autoscale_memory_max skip="" params="redis.autoscaling.memoryMax 384Mi -> 375Mi" patch={"spec":{"redis":{"autoscaling":{"memoryMax":"375Mi"}}}} pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Auto autoscale_memory_max step 2
+  kind=autoscale_memory_max skip="" params="redis.autoscaling.memoryMax 384Mi -> 476Mi" patch={"spec":{"redis":{"autoscaling":{"memoryMax":"476Mi"}}}} pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Auto autoscale_memory_max step 3
+  kind=autoscale_memory_max skip="" params="redis.autoscaling.memoryMax 384Mi -> 294Mi" patch={"spec":{"redis":{"autoscaling":{"memoryMax":"294Mi"}}}} pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Auto autoscale_mode step 1
+  kind=autoscale_mode skip="" params="redis.autoscaling.mode Auto -> Recommend" patch={"spec":{"redis":{"autoscaling":{"mode":"Recommend"}}}} pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Auto autoscale_mode step 2
+  kind=autoscale_mode skip="" params="redis.autoscaling.mode Auto -> Recommend" patch={"spec":{"redis":{"autoscaling":{"mode":"Recommend"}}}} pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Auto autoscale_mode step 3
+  kind=autoscale_mode skip="" params="redis.autoscaling.mode Auto -> Recommend" patch={"spec":{"redis":{"autoscaling":{"mode":"Recommend"}}}} pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Auto autoscale_state_lost step 1
+  kind=autoscale_state_lost skip="" params="delete the ConfigMap rfa-x" patch= pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=true recovery=false converged=true
+  converged(s)=<nil>
+Auto autoscale_state_lost step 2
+  kind=autoscale_state_lost skip="" params="delete the ConfigMap rfa-x" patch= pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=true recovery=false converged=true
+  converged(s)=<nil>
+Auto autoscale_state_lost step 3
+  kind=autoscale_state_lost skip="" params="delete the ConfigMap rfa-x" patch= pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=true recovery=false converged=true
+  converged(s)=<nil>
+Auto autoscale_kill_master step 1
+  kind=autoscale_kill_master skip="" params="load to 97 percent of maxmemory for at most 3m0s, delete pod rfr-x-0 (graceful) while the step is Applying" patch= pod= uid= force=false reset=false
+  allow={Recreate:true Shrink:false Handover:true Pod:rfr-x-0}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+Auto autoscale_kill_master step 2
+  kind=autoscale_kill_master skip="" params="load to 97 percent of maxmemory for at most 3m0s, delete pod rfr-x-0 (graceful) while the step is Applying" patch= pod= uid= force=false reset=false
+  allow={Recreate:true Shrink:false Handover:true Pod:rfr-x-0}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+Auto autoscale_kill_master step 3
+  kind=autoscale_kill_master skip="" params="load to 97 percent of maxmemory for at most 3m0s, delete pod rfr-x-0 (graceful) while the step is Applying" patch= pod= uid= force=false reset=false
+  allow={Recreate:true Shrink:false Handover:true Pod:rfr-x-0}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+Auto autoscale_kill_replica step 1
+  kind=autoscale_kill_replica skip="" params="load to 97 percent of maxmemory for at most 3m0s, delete pod rfr-x-1 (graceful) while the step is Applying" patch= pod= uid= force=false reset=false
+  allow={Recreate:true Shrink:false Handover:false Pod:rfr-x-1}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=false recovery=false converged=true
+  converged(s)=rfr-x-1 not deleted yet
+Auto autoscale_kill_replica step 2
+  kind=autoscale_kill_replica skip="" params="load to 97 percent of maxmemory for at most 3m0s, delete pod rfr-x-2 (graceful) while the step is Applying" patch= pod= uid= force=false reset=false
+  allow={Recreate:true Shrink:false Handover:false Pod:rfr-x-2}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+Auto autoscale_kill_replica step 3
+  kind=autoscale_kill_replica skip="" params="load to 97 percent of maxmemory for at most 3m0s, delete pod rfr-x-2 (graceful) while the step is Applying" patch= pod= uid= force=false reset=false
+  allow={Recreate:true Shrink:false Handover:false Pod:rfr-x-2}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+Auto kill_master step 1
+  kind=kill_master skip="unknown kind" params="" patch= pod= uid= force=false reset=false
+Auto kill_master step 2
+  kind=kill_master skip="unknown kind" params="" patch= pod= uid= force=false reset=false
+Auto kill_master step 3
+  kind=kill_master skip="unknown kind" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_load step 1
+  kind=autoscale_load skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_load step 2
+  kind=autoscale_load skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_load step 3
+  kind=autoscale_load skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_limit step 1
+  kind=autoscale_limit skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_limit step 2
+  kind=autoscale_limit skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_limit step 3
+  kind=autoscale_limit skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_memory_max step 1
+  kind=autoscale_memory_max skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_memory_max step 2
+  kind=autoscale_memory_max skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_memory_max step 3
+  kind=autoscale_memory_max skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_mode step 1
+  kind=autoscale_mode skip="" params="redis.autoscaling.mode Recommend -> Off" patch={"spec":{"redis":{"autoscaling":{"mode":"Off"}}}} pod= uid= force=false reset=false
+  allow={Recreate:true Shrink:true Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Recommend autoscale_mode step 2
+  kind=autoscale_mode skip="" params="redis.autoscaling.mode Recommend -> Off" patch={"spec":{"redis":{"autoscaling":{"mode":"Off"}}}} pod= uid= force=false reset=false
+  allow={Recreate:true Shrink:true Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Recommend autoscale_mode step 3
+  kind=autoscale_mode skip="" params="redis.autoscaling.mode Recommend -> Off" patch={"spec":{"redis":{"autoscaling":{"mode":"Off"}}}} pod= uid= force=false reset=false
+  allow={Recreate:true Shrink:true Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Recommend autoscale_state_lost step 1
+  kind=autoscale_state_lost skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_state_lost step 2
+  kind=autoscale_state_lost skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_state_lost step 3
+  kind=autoscale_state_lost skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_kill_master step 1
+  kind=autoscale_kill_master skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_kill_master step 2
+  kind=autoscale_kill_master skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_kill_master step 3
+  kind=autoscale_kill_master skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_kill_replica step 1
+  kind=autoscale_kill_replica skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_kill_replica step 2
+  kind=autoscale_kill_replica skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend autoscale_kill_replica step 3
+  kind=autoscale_kill_replica skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend kill_master step 1
+  kind=kill_master skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend kill_master step 2
+  kind=kill_master skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Recommend kill_master step 3
+  kind=kill_master skip="mode Recommend" params="" patch= pod= uid= force=false reset=false
+Off autoscale_load step 1
+  kind=autoscale_load skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_load step 2
+  kind=autoscale_load skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_load step 3
+  kind=autoscale_load skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_limit step 1
+  kind=autoscale_limit skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_limit step 2
+  kind=autoscale_limit skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_limit step 3
+  kind=autoscale_limit skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_memory_max step 1
+  kind=autoscale_memory_max skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_memory_max step 2
+  kind=autoscale_memory_max skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_memory_max step 3
+  kind=autoscale_memory_max skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_mode step 1
+  kind=autoscale_mode skip="" params="redis.autoscaling.mode Off -> Auto" patch={"spec":{"redis":{"autoscaling":{"mode":"Auto"}}}} pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Off autoscale_mode step 2
+  kind=autoscale_mode skip="" params="redis.autoscaling.mode Off -> Auto" patch={"spec":{"redis":{"autoscaling":{"mode":"Auto"}}}} pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Off autoscale_mode step 3
+  kind=autoscale_mode skip="" params="redis.autoscaling.mode Off -> Auto" patch={"spec":{"redis":{"autoscaling":{"mode":"Auto"}}}} pod= uid= force=false reset=false
+  allow={Recreate:false Shrink:false Handover:false Pod:}
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover does not have the change yet
+Off autoscale_state_lost step 1
+  kind=autoscale_state_lost skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_state_lost step 2
+  kind=autoscale_state_lost skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_state_lost step 3
+  kind=autoscale_state_lost skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_kill_master step 1
+  kind=autoscale_kill_master skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_kill_master step 2
+  kind=autoscale_kill_master skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_kill_master step 3
+  kind=autoscale_kill_master skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_kill_replica step 1
+  kind=autoscale_kill_replica skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_kill_replica step 2
+  kind=autoscale_kill_replica skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off autoscale_kill_replica step 3
+  kind=autoscale_kill_replica skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off kill_master step 1
+  kind=kill_master skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off kill_master step 2
+  kind=kill_master skip="mode Off" params="" patch= pod= uid= force=false reset=false
+Off kill_master step 3
+  kind=kill_master skip="mode Off" params="" patch= pod= uid= force=false reset=false
