@@ -35,7 +35,11 @@ var errNoIP = errors.New("no pod IP")
 // Client connects to one pod without retries, so that each failure shows.
 // creds gives the password of each new connection.
 func Client(addr string, creds func() (string, string), timeout time.Duration) *redis.Client {
-	return redis.NewClient(&redis.Options{
+	return redis.NewClient(options(addr, creds, timeout))
+}
+
+func options(addr string, creds func() (string, string), timeout time.Duration) *redis.Options {
+	return &redis.Options{
 		Addr:                  addr,
 		CredentialsProvider:   creds,
 		DialTimeout:           timeout,
@@ -43,13 +47,19 @@ func Client(addr string, creds func() (string, string), timeout time.Duration) *
 		WriteTimeout:          timeout,
 		ContextTimeoutEnabled: true,
 		MaxRetries:            -1,
-	})
+	}
 }
 
-// client connects to a pod, authenticating with a's current password, or
-// with none for a nil a.
-func (o *Observer) client(ip string, port int, a *auth.Source) *redis.Client {
-	return Client(net.JoinHostPort(ip, strconv.Itoa(port)), a.Provider(), o.timeout)
+// client connects to the pod of r with the current password of a, or with no
+// password for a nil a. r records the dials.
+func (o *Observer) client(r *read, port int, a *auth.Source) *redis.Client {
+	opt := options(net.JoinHostPort(r.ip, strconv.Itoa(port)), a.Provider(), o.timeout)
+	dial := o.dial
+	if dial == nil {
+		dial = redis.NewDialer(opt)
+	}
+	opt.Dialer = r.dialer(dial)
+	return redis.NewClient(opt)
 }
 
 // redisInfo sends INFO to the pod, and CONFIG GET keys.
@@ -58,7 +68,15 @@ func (o *Observer) redisInfo(ctx context.Context, p *redisPod, port int, keys []
 		p.err, p.configErr = errNoIP, errNoIP
 		return
 	}
-	c := o.client(p.IP, port, o.auth)
+	r := o.startRead("redis", p.Name, p.IP)
+	defer func() {
+		err := p.err
+		if err == nil {
+			err = p.configErr
+		}
+		o.endRead(r, err)
+	}()
+	c := o.client(r, port, o.auth)
 	defer func() { _ = c.Close() }()
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
@@ -92,7 +110,9 @@ func (o *Observer) sentinelInfo(ctx context.Context, p *sentinelPod) {
 		p.err = errNoIP
 		return
 	}
-	c := o.client(p.IP, sentinelPort, nil)
+	r := o.startRead("sentinel", p.Name, p.IP)
+	defer func() { o.endRead(r, p.err) }()
+	c := o.client(r, sentinelPort, nil)
 	defer func() { _ = c.Close() }()
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
@@ -115,13 +135,17 @@ func SentinelMaster(ctx context.Context, c *redis.Client) (map[string]string, er
 	return cmd.Result()
 }
 
-// masterPosition returns the master's replication ID and offset.
-func (o *Observer) masterPosition(ctx context.Context) (string, int64, error) {
-	v := o.view.Load()
+// masterPosition returns the replication ID and offset of the source's
+// master.
+func (o *Observer) masterPosition(ctx context.Context) (_ string, _ int64, err error) {
+	src := o.source
+	v := src.view.Load()
 	if v == nil || v.masterIP == "" {
 		return "", 0, errNoMaster
 	}
-	c := o.client(v.masterIP, o.in.Port, o.auth)
+	r := o.startRead("source", v.master, v.masterIP)
+	defer func() { o.endRead(r, err) }()
+	c := o.client(r, src.in.Port, src.auth)
 	defer func() { _ = c.Close() }()
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()

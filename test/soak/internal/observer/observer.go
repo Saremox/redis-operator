@@ -96,6 +96,10 @@ type Observer struct {
 	fullFound bool
 	fullLimit time.Duration
 	maxmemory map[string]int64
+	// now times the rounds and the reads. dial replaces the dialer of the
+	// pod clients when it is set.
+	now  func() time.Time
+	dial func(context.Context, string, string) (net.Conn, error)
 
 	ok         *prometheus.GaugeVec
 	violation  prometheus.ObserverVec
@@ -106,6 +110,8 @@ type Observer struct {
 	rfHealthy  prometheus.Gauge
 	windowOpen prometheus.Gauge
 	steps      *prometheus.CounterVec
+	roundTime  prometheus.Observer
+	lateness   prometheus.Observer
 }
 
 // New returns the Observer of an instance.
@@ -129,6 +135,7 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		reportOnly: map[string]bool{invReplicaReadyWithoutData: !cfg.Observer.ReplicaReadyWithoutDataFinding()},
 		noted:      map[string]time.Time{},
 		started:    time.Now().Truncate(time.Second),
+		now:        time.Now,
 		ok:         m.InvariantOK.MustCurryWith(labels),
 		violation:  m.InvariantViolation.MustCurryWith(labels),
 		findings:   m.Findings.MustCurryWith(labels),
@@ -138,6 +145,8 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		rfHealthy:  m.RFHealthy.With(labels),
 		windowOpen: m.WindowOpen.With(labels),
 		steps:      m.AutoscaleSteps.MustCurryWith(labels),
+		roundTime:  m.ObserverRound.With(labels),
+		lateness:   m.ObserverLateness.With(labels),
 	}
 	// Alerts use the increase of findings_total, which does not show a series
 	// that starts at 1. A change by hand can give each instance maxMemory, so
@@ -310,28 +319,52 @@ func (o *Observer) Failovers() <-chan string {
 func (o *Observer) Run(ctx context.Context) {
 	t := time.NewTicker(o.interval)
 	defer t.Stop()
+	due := o.now()
 	for {
-		s, generation, err := o.collect(ctx)
-		if err != nil && ctx.Err() == nil {
-			o.log.Warn("observing", "error", err.Error())
-		} else if err == nil {
-			// A hold is taken only after the snapshot is collected, so the
-			// window is open before any snapshot of the mutation is judged.
-			o.takeHold()
-			o.apply(time.Now(), s, generation, o.converged(ctx))
-		}
+		end := o.round(ctx, due)
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case due = <-t.C:
+		}
+		// After a round longer than the interval, the ticker gives the
+		// first tick that the round missed. The round itself caused that
+		// delay.
+		if end.After(due) {
+			due = end
 		}
 	}
 }
 
+// round collects and checks one snapshot, and returns when it ended. due is
+// when the round was due.
+func (o *Observer) round(ctx context.Context, due time.Time) time.Time {
+	start := o.now()
+	s, generation, err := o.collect(ctx)
+	collected := o.now()
+	if err != nil && ctx.Err() == nil {
+		o.log.Warn("observing", "error", err.Error())
+	} else if err == nil {
+		// A hold is taken only after the snapshot is collected, so the
+		// window is open before any snapshot of the mutation is judged.
+		o.takeHold()
+		o.apply(time.Now(), s, generation, o.converged(ctx))
+	}
+	end := o.now()
+	o.timeRound(due, start, collected, end, s)
+	return end
+}
+
 func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
+	start := o.now()
+	// A failed read of the API keeps its time, because a slow API is a cause
+	// of a slow round.
+	failed := func(err error) (snapshot, int64, error) {
+		return snapshot{kubeTime: o.now().Sub(start)}, 0, err
+	}
 	rf, err := o.rfs.DatabasesV1().RedisFailovers(o.in.Namespace).Get(ctx, o.in.Name, metav1.GetOptions{})
 	if err != nil {
-		return snapshot{}, 0, err
+		return failed(err)
 	}
 	o.auth.Update(rf)
 	// Validate applies the operator defaults.
@@ -355,7 +388,7 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 		LabelSelector: "app.kubernetes.io/part-of=redis-failover,app.kubernetes.io/name=" + o.in.Name,
 	})
 	if err != nil {
-		return snapshot{}, 0, err
+		return failed(err)
 	}
 	slices.SortFunc(pods.Items, func(a, b corev1.Pod) int { return strings.Compare(a.Name, b.Name) })
 	s.redis, s.sentinels = snapshotPods(pods.Items)
@@ -364,10 +397,13 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 		LabelSelector: discoveryv1.LabelServiceName + "=rfrm-" + o.in.Name,
 	})
 	if err != nil {
-		return snapshot{}, 0, err
+		return failed(err)
 	}
 	s.endpoints = readyAddresses(eps.Items)
+	read := o.now()
+	s.kubeTime = read.Sub(start)
 	o.readPods(ctx, &s)
+	s.readTime = o.now().Sub(read)
 	return s, rf.Generation, nil
 }
 
@@ -422,7 +458,7 @@ func (o *Observer) readPods(ctx context.Context, s *snapshot) {
 		wg.Go(func() { o.sentinelInfo(ctx, p) })
 	}
 	if s.bootstrap != nil && o.source != nil {
-		wg.Go(func() { s.sourceReplID, s.sourceOffset, s.sourceErr = o.source.masterPosition(ctx) })
+		wg.Go(func() { s.sourceReplID, s.sourceOffset, s.sourceErr = o.masterPosition(ctx) })
 	}
 	wg.Wait()
 }
