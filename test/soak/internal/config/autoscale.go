@@ -44,6 +44,11 @@ func (in Instance) validateAutoscale() error {
 			return fmt.Errorf("%s needs data", k)
 		}
 	}
+	return validateAutoscaleRanges(a, m)
+}
+
+// validateAutoscaleRanges checks the ranges of the autoscale kinds in m.
+func validateAutoscaleRanges(a *Autoscale, m map[Kind]int) error {
 	_, limit := m[AutoscaleLimit]
 	_, memoryMax := m[AutoscaleMemoryMax]
 	if limit {

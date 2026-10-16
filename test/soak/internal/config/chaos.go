@@ -137,11 +137,15 @@ func (ch Chaos) validate() error {
 	if _, ok := ch.Kinds[OperatorUpgrade]; !ok {
 		return nil
 	}
-	if len(ch.Upgrade.Versions) < 2 {
+	return ch.Upgrade.validate()
+}
+
+func (u Upgrade) validate() error {
+	if len(u.Versions) < 2 {
 		return errors.New("upgrade: at least two versions")
 	}
 	names, images := map[string]bool{}, map[string]bool{}
-	for _, v := range ch.Upgrade.Versions {
+	for _, v := range u.Versions {
 		switch {
 		case v.Name == "" || v.Chart == "" || v.Image == "":
 			return errors.New("upgrade: every version needs a name, chart and image")
