@@ -661,16 +661,17 @@ instance. No alert uses them.
 
 - `observer round slow`: a round took more than 1 second, or started more
   than 1 second after its tick. The fields give the time of the API reads,
-  the pod reads and the checks. Each other round logs `observer round` at
-  debug level.
+  the pod reads and the checks. The other rounds log `observer round` at
+  debug level, which the tester does not enable.
 - `observer read slow`: a read of a pod failed or took more than 1 second.
   The field `phase` is `dial` when no connection was made, `reply` when the
   connection was made but no reply came, and `context` at a stop of the
   tester. go-redis returns `context deadline exceeded` when the dial did
   not end before the read timeout, and `i/o timeout` when the reply did
   not come.
-- `soak process stalled`: the whole tester process did not run for more
-  than 1 second. `redis_soak_process_stalls_total` counts these stalls.
+- `soak process stalled`: a goroutine that ticks every 100 milliseconds
+  did not run for more than 1 second. `redis_soak_process_stalls_total`
+  counts these stalls.
 - `redis_soak_observer_round_seconds` and
   `redis_soak_observer_round_lateness_seconds` record each round.
   `go_sched_latencies_seconds` and `go_gc_pauses_seconds` show the delays

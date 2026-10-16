@@ -46,4 +46,4 @@ ObserverRound: Desc{fqName: "redis_soak_observer_round_seconds", help: "Duration
   buckets: 0.01 0.025 0.05 0.1 0.25 0.5 1 2 3 5 10 30
 ObserverLateness: Desc{fqName: "redis_soak_observer_round_lateness_seconds", help: "Time from the tick of an observer round to its start.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode}}
   buckets: 0.001 0.005 0.01 0.05 0.1 0.5 1 2 5 10
-ProcessStalls: Desc{fqName: "redis_soak_process_stalls_total", help: "Ticks of the stall detector that came more than 1 second late: the tester process did not run.", unit: "", constLabels: {}, variableLabels: {}}
+ProcessStalls: Desc{fqName: "redis_soak_process_stalls_total", help: "Ticks of the stall detector that came more than 1 second late.", unit: "", constLabels: {}, variableLabels: {}}

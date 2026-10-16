@@ -21,6 +21,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	rffake "github.com/saremox/redis-operator/client/k8s/clientset/versioned/fake"
 )
 
 // timingObserver returns an observer with a short read timeout, whose log
@@ -238,6 +239,9 @@ func TestPhase(t *testing.T) {
 	if got := r.phase(context.DeadlineExceeded); got != phaseDial {
 		t.Errorf("no dial: %s", got)
 	}
+	if d, n := r.dialTime(); d != 0 || n != 0 {
+		t.Errorf("no dial: dial time %v %d", d, n)
+	}
 	conn, peer := net.Pipe()
 	defer func() { _ = conn.Close(); _ = peer.Close() }()
 	dial := r.dialer(func(context.Context, string, string) (net.Conn, error) { return conn, nil })
@@ -347,6 +351,20 @@ func TestRoundLateness(t *testing.T) {
 	}
 }
 
+// collect measures the reads of the API and of the pods on the clock of the
+// observer.
+func TestCollectTimes(t *testing.T) {
+	o, _ := timingObserver(t)
+	o.now = stepClock(time.Second)
+	s, _, err := o.collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.kubeTime != time.Second || s.readTime != time.Second {
+		t.Errorf("kube %v, read %v", s.kubeTime, s.readTime)
+	}
+}
+
 // Run starts the first round at once, with no lateness.
 func TestRunFirstRound(t *testing.T) {
 	o, lines := timingObserver(t)
@@ -387,6 +405,24 @@ func TestTimingCost(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Errorf("log %s", buf.String())
+	}
+}
+
+// Run starts each next round at a tick of the interval. A round whose
+// reads of the API fail logs the error, and is timed.
+func TestRunTicks(t *testing.T) {
+	o, lines := timingObserver(t)
+	o.rfs = rffake.NewSimpleClientset()
+	o.interval = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(45*time.Millisecond, cancel)
+	o.Run(ctx)
+	all := lines()
+	if got := roundLines(all); len(got) < 2 {
+		t.Errorf("rounds %v", got)
+	}
+	if all[0]["msg"] != "observing" || all[0]["level"] != "WARN" {
+		t.Errorf("log %v", all[0])
 	}
 }
 

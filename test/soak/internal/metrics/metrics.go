@@ -325,7 +325,7 @@ func (m *Metrics) addTester(labels func(...string) []string) {
 	m.ProcessStalls = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "process_stalls_total",
-		Help:      "Ticks of the stall detector that came more than 1 second late: the tester process did not run.",
+		Help:      "Ticks of the stall detector that came more than 1 second late.",
 	})
 }
 
