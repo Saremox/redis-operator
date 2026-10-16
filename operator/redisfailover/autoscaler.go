@@ -325,35 +325,40 @@ func (r *RedisFailoverHandler) recordAutoscaleRollout(rf *redisfailoverv1.RedisF
 	rollout.updateRevision = ss.Status.UpdateRevision
 	rollout.restartOnResize = restartsOnMemoryResize(ss.Spec.Template.Spec.Containers)
 	for i := range pods.Items {
-		pod := &pods.Items[i]
-		updated := pod.Labels[appsv1.ControllerRevisionHashLabelKey] == ss.Status.UpdateRevision
-		requested := rfservice.ResizeRequested(pod)
-		if requested && updated && observed && rfservice.AppliedRedisMemoryLimit(pod) >= limit {
-			// The rollout moved the pod after the resize, and the removal of
-			// the request failed. Nothing else removes it, and it would hold
-			// each later step.
-			err := r.rfHealer.ClearResizeRequested(rf, pod.Name)
-			r.logClearError(rf, pod.Name, err)
-			requested = err != nil
-		}
-		if !updated || requested || !util.PodIsReady(pod) {
-			rollout.settled = false
-		}
-		if requested {
-			rollout.requested = append(rollout.requested, pod.Name)
-		}
-		if !updated || rfservice.AppliedRedisMemoryLimit(pod) < limit {
-			rollout.applied = false
-		}
-		rollout.anyApplied = rollout.anyApplied || stepPod(pod, limit)
-		for _, a := range vpaAnnotations {
-			_, found := pod.Annotations[a]
-			rollout.vpa = rollout.vpa || found
-		}
-		rollout.restartOnResize = rollout.restartOnResize || restartsOnMemoryResize(pod.Spec.Containers)
+		r.recordRolloutPod(rf, &rollout, &pods.Items[i], ss.Status.UpdateRevision, observed, limit)
 	}
 	r.autoscaleRollout.Store(key, rollout)
 	return nil
+}
+
+// recordRolloutPod adds pod to rollout. observed tells that the StatefulSet
+// controller observed the latest template with updateRevision.
+func (r *RedisFailoverHandler) recordRolloutPod(rf *redisfailoverv1.RedisFailover, rollout *autoscaleRollout, pod *corev1.Pod, updateRevision string, observed bool, limit int64) {
+	updated := pod.Labels[appsv1.ControllerRevisionHashLabelKey] == updateRevision
+	requested := rfservice.ResizeRequested(pod)
+	if requested && updated && observed && rfservice.AppliedRedisMemoryLimit(pod) >= limit {
+		// The rollout moved the pod after the resize, and the removal of
+		// the request failed. Nothing else removes it, and it would hold
+		// each later step.
+		err := r.rfHealer.ClearResizeRequested(rf, pod.Name)
+		r.logClearError(rf, pod.Name, err)
+		requested = err != nil
+	}
+	if !updated || requested || !util.PodIsReady(pod) {
+		rollout.settled = false
+	}
+	if requested {
+		rollout.requested = append(rollout.requested, pod.Name)
+	}
+	if !updated || rfservice.AppliedRedisMemoryLimit(pod) < limit {
+		rollout.applied = false
+	}
+	rollout.anyApplied = rollout.anyApplied || stepPod(pod, limit)
+	for _, a := range vpaAnnotations {
+		_, found := pod.Annotations[a]
+		rollout.vpa = rollout.vpa || found
+	}
+	rollout.restartOnResize = rollout.restartOnResize || restartsOnMemoryResize(pod.Spec.Containers)
 }
 
 // stepPod reports whether pod applied the memory limit to, or starts with
