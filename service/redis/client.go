@@ -146,82 +146,67 @@ func redisOptions(addr, password string) *rediscli.Options {
 
 // GetNumberSentinelsInMemory return the number of sentinels that the requested sentinel has.
 func (c *client) GetNumberSentinelsInMemory(ip string) (int32, error) {
-	if ip == "" {
-		return 0, errNoIP
-	}
-	options := redisOptions(net.JoinHostPort(ip, sentinelPort), "")
-	rClient := rediscli.NewClient(options)
-	defer func(rClient *rediscli.Client) {
-		err := rClient.Close()
-		if err != nil {
-			log.Error(err.Error())
-		}
-	}(rClient)
-	info, err := rClient.Info(context.TODO(), "sentinel").Result()
-	if err != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, getRedisError(err))
-		return 0, fmt.Errorf("INFO sentinel: %w", err)
-	}
-	if err2 := isSentinelReady(info); err2 != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, metrics.SENTINEL_NOT_READY)
-		return 0, err2
-	}
-	match := sentinelNumberRE.FindStringSubmatch(info)
-	if len(match) == 0 {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, metrics.REGEX_NOT_FOUND)
-		return 0, errors.New("sentinel regex not found")
-	}
-	nSentinels, err := strconv.ParseUint(match[1], 10, 64)
-	if err != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, metrics.MISC)
-		return 0, fmt.Errorf("read the sentinel count: %w", err)
-	}
-	if nSentinels > 65536 {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.FAIL, metrics.SENTINEL_TOO_MANY)
-		return 0, fmt.Errorf("sentinel reports %d sentinels, more than 65536", nSentinels)
-	}
-	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_SENTINELS_IN_MEM, metrics.SUCCESS, metrics.NOT_APPLICABLE)
-	return int32(nSentinels), nil
+	return c.getSentinelCount(ip, sentinelsCount)
 }
 
 // GetNumberSentinelSlavesInMemory returns the number of slaves that the requested sentinel knows for its master.
 func (c *client) GetNumberSentinelSlavesInMemory(ip string) (int32, error) {
+	return c.getSentinelCount(ip, slavesCount)
+}
+
+// sentinelCount is a count field of INFO sentinel, with the metric operation
+// and the error texts of its read.
+type sentinelCount struct {
+	operation string
+	re        *regexp.Regexp
+	notFound  string
+	name      string
+	plural    string
+}
+
+var (
+	sentinelsCount = sentinelCount{
+		operation: metrics.GET_NUM_SENTINELS_IN_MEM, re: sentinelNumberRE,
+		notFound: "sentinel regex not found", name: "sentinel", plural: "sentinels",
+	}
+	slavesCount = sentinelCount{
+		operation: metrics.GET_NUM_REDIS_SLAVES_IN_MEM, re: slaveNumberRE,
+		notFound: "slaves regex not found", name: "replica", plural: "replicas",
+	}
+)
+
+func (c *client) getSentinelCount(ip string, count sentinelCount) (int32, error) {
 	if ip == "" {
 		return 0, errNoIP
 	}
 	options := redisOptions(net.JoinHostPort(ip, sentinelPort), "")
 	rClient := rediscli.NewClient(options)
-	defer func(rClient *rediscli.Client) {
-		err := rClient.Close()
-		if err != nil {
-			log.Error(err.Error())
-		}
-	}(rClient)
+	defer closeClient(rClient)
 	info, err := rClient.Info(context.TODO(), "sentinel").Result()
 	if err != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, getRedisError(err))
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, count.operation, metrics.FAIL, getRedisError(err))
 		return 0, fmt.Errorf("INFO sentinel: %w", err)
 	}
 	if err2 := isSentinelReady(info); err2 != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, metrics.SENTINEL_NOT_READY)
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, count.operation, metrics.FAIL, metrics.SENTINEL_NOT_READY)
 		return 0, err2
 	}
-	match := slaveNumberRE.FindStringSubmatch(info)
+	match := count.re.FindStringSubmatch(info)
 	if len(match) == 0 {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, metrics.REGEX_NOT_FOUND)
-		return 0, errors.New("slaves regex not found")
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, count.operation, metrics.FAIL, metrics.REGEX_NOT_FOUND)
+		return 0, errors.New(count.notFound)
 	}
-	nSlaves, err := strconv.ParseUint(match[1], 10, 64)
+	n, err := strconv.ParseUint(match[1], 10, 64)
 	if err != nil {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, metrics.MISC)
-		return 0, fmt.Errorf("read the replica count: %w", err)
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, count.operation, metrics.FAIL, metrics.MISC)
+		return 0, fmt.Errorf("read the %s count: %w", count.name, err)
 	}
-	if nSlaves > 65536 {
-		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.FAIL, metrics.SENTINEL_TOO_MANY)
-		return 0, fmt.Errorf("sentinel reports %d replicas, more than 65536", nSlaves)
+	if n > 65536 {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, count.operation, metrics.FAIL, metrics.SENTINEL_TOO_MANY)
+		return 0, fmt.Errorf("sentinel reports %d %s, more than 65536", n, count.plural)
 	}
-	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_NUM_REDIS_SLAVES_IN_MEM, metrics.SUCCESS, metrics.NOT_APPLICABLE)
-	return int32(nSlaves), nil
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, count.operation, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return int32(n), nil
 }
 
 func isSentinelReady(info string) error {
