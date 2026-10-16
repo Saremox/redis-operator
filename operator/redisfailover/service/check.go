@@ -380,41 +380,51 @@ func (r *RedisFailoverChecker) CheckSentinelsCannotFailover(rf *redisfailoverv1.
 		return false, nil
 	}
 	for _, sip := range sentinels {
-		master, _, err := r.redisClient.GetSentinelMonitor(sip)
-		if err != nil {
-			logger.Warningf("Sentinel %s did not give its master, so it can know a replica: %v", sip, err)
+		if r.sentinelCanFailover(logger, sip, pods) {
 			return false, nil
 		}
-		if pod, ok := pods[master]; ok {
-			logger.WithField("pod", pod).Infof("Sentinel %s monitors the pod %s (%s), so Sentinel can fail over", sip, pod, master)
-			return false, nil
-		}
-		// 127.0.0.1 is the address in the configuration of a new Sentinel.
-		if master != "127.0.0.1" {
-			down, err := r.redisClient.SentinelMasterDown(sip)
-			if err != nil {
-				logger.Warningf("Sentinel %s did not give the state of its master: %v", sip, err)
-				return false, nil
-			}
-			if !down {
-				logger.Infof("Sentinel %s does not flag its master %s as down, so the master can still answer", sip, master)
-				return false, nil
-			}
-		}
-		replicas, err := r.redisClient.GetSentinelReplicas(sip)
-		if err != nil {
-			logger.Warningf("Sentinel %s did not give its replicas, so it can know one: %v", sip, err)
-			return false, nil
-		}
-		for _, replica := range replicas {
-			if pod, ok := pods[replica]; ok {
-				logger.WithField("pod", pod).Infof("Sentinel %s knows the replica pod %s (%s), so Sentinel can fail over", sip, pod, replica)
-				return false, nil
-			}
-		}
-		logger.Warningf("Sentinel %s monitors %s, which is not a pod, and knows no replica pod of %d replicas", sip, master, len(replicas))
 	}
 	return true, nil
+}
+
+// sentinelCanFailover reports whether the Sentinel at sip can fail over to a
+// pod in pods, a map of pod IP to pod name. A Sentinel that does not answer
+// can.
+func (r *RedisFailoverChecker) sentinelCanFailover(logger log.Logger, sip string, pods map[string]string) bool {
+	master, _, err := r.redisClient.GetSentinelMonitor(sip)
+	if err != nil {
+		logger.Warningf("Sentinel %s did not give its master, so it can know a replica: %v", sip, err)
+		return true
+	}
+	if pod, ok := pods[master]; ok {
+		logger.WithField("pod", pod).Infof("Sentinel %s monitors the pod %s (%s), so Sentinel can fail over", sip, pod, master)
+		return true
+	}
+	// 127.0.0.1 is the address in the configuration of a new Sentinel.
+	if master != "127.0.0.1" {
+		down, err := r.redisClient.SentinelMasterDown(sip)
+		if err != nil {
+			logger.Warningf("Sentinel %s did not give the state of its master: %v", sip, err)
+			return true
+		}
+		if !down {
+			logger.Infof("Sentinel %s does not flag its master %s as down, so the master can still answer", sip, master)
+			return true
+		}
+	}
+	replicas, err := r.redisClient.GetSentinelReplicas(sip)
+	if err != nil {
+		logger.Warningf("Sentinel %s did not give its replicas, so it can know one: %v", sip, err)
+		return true
+	}
+	for _, replica := range replicas {
+		if pod, ok := pods[replica]; ok {
+			logger.WithField("pod", pod).Infof("Sentinel %s knows the replica pod %s (%s), so Sentinel can fail over", sip, pod, replica)
+			return true
+		}
+	}
+	logger.Warningf("Sentinel %s monitors %s, which is not a pod, and knows no replica pod of %d replicas", sip, master, len(replicas))
+	return false
 }
 
 // CheckSentinelQuorum returns an error when too few Sentinels run or pass
