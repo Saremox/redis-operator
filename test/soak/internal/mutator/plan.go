@@ -178,9 +178,14 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 		config.ImageUpgrade, config.SentinelImageUpgrade, config.Reset, config.SentinelImageFlip,
 		config.SentinelResetKillMaster, config.AutoscaleLoad, config.AutoscaleLimit, config.AutoscaleMemoryMax,
 		config.AutoscaleMode, config.AutoscaleStateLost, config.AutoscaleKillMaster, config.AutoscaleKillReplica:
-		// The maxMemory switch below plans the maxMemory kinds. Mutator.plan
-		// plans the other kinds.
+		// planMaxMemory plans the maxMemory kinds. Mutator.plan plans the
+		// other kinds.
 	}
+	return planMaxMemory(r, kind, m, s, d)
+}
+
+// planMaxMemory plans the kinds that need maxMemory.
+func planMaxMemory(r *rand.Rand, kind config.Kind, m config.Mutations, s state, d Data) plan {
 	mm := s.rf.Spec.Redis.MaxMemory
 	if mm == nil {
 		return skipped(kind, "the RedisFailover has no maxMemory")
@@ -242,7 +247,7 @@ func newPlan(r *rand.Rand, kind config.Kind, m config.Mutations, s state, master
 		config.Reset, config.SentinelImageFlip, config.SentinelResetKillMaster, config.AutoscaleLoad,
 		config.AutoscaleLimit, config.AutoscaleMemoryMax, config.AutoscaleMode, config.AutoscaleStateLost,
 		config.AutoscaleKillMaster, config.AutoscaleKillReplica:
-		// The first switch or Mutator.plan plans these kinds.
+		// newPlan or Mutator.plan plans these kinds.
 	}
 	return skipped(kind, "unknown kind")
 }
@@ -409,14 +414,8 @@ func mergePatch(spec map[string]any) []byte {
 func planResources(r *rand.Rand, b config.Resources, s state) plan {
 	const kind = config.RedisResources
 	cur := s.rf.Spec.Redis.Resources
-	type entry struct {
-		list  string
-		name  corev1.ResourceName
-		rg    config.Range
-		quant corev1.ResourceList
-	}
-	entries := map[corev1.ResourceName][]entry{}
-	for _, e := range []entry{
+	entries := map[corev1.ResourceName][]resourceEntry{}
+	for _, e := range []resourceEntry{
 		{"requests", corev1.ResourceCPU, b.Requests.CPU, cur.Requests},
 		{"limits", corev1.ResourceCPU, b.Limits.CPU, cur.Limits},
 		{"requests", corev1.ResourceMemory, b.Requests.Memory, cur.Requests},
@@ -442,23 +441,7 @@ func planResources(r *rand.Rand, b config.Resources, s state) plan {
 	var params []string
 	for _, n := range names {
 		for _, e := range entries[n] {
-			q := e.quant[e.name]
-			var nq *resource.Quantity
-			if n == corev1.ResourceCPU {
-				nq = resource.NewMilliQuantity(pickOther(r, e.rg, q.MilliValue()), resource.DecimalSI)
-			} else {
-				nq = resource.NewQuantity(pickOther(r, e.rg, q.Value()/mi)*mi, resource.BinarySI)
-			}
-			list := next.Requests
-			if e.list == "limits" {
-				list = next.Limits
-			}
-			list[e.name] = *nq
-			if patch[e.list] == nil {
-				patch[e.list] = map[string]string{}
-			}
-			patch[e.list][string(e.name)] = nq.String()
-			params = append(params, fmt.Sprintf("%s.%s %s -> %s", e.list, e.name, q.String(), nq.String()))
+			params = append(params, e.change(r, next, patch))
 		}
 	}
 	for _, n := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
@@ -477,6 +460,37 @@ func planResources(r *rand.Rand, b config.Resources, s state) plan {
 		patch:     mergePatch(map[string]any{"redis": map[string]any{"resources": patch}}),
 		converged: resourcesConverged(next, s.rf.Spec.Redis.Replicas),
 	}
+}
+
+// resourceEntry is a request or limit of the redis container, its bounds,
+// and the list of the RedisFailover that sets it.
+type resourceEntry struct {
+	list  string
+	name  corev1.ResourceName
+	rg    config.Range
+	quant corev1.ResourceList
+}
+
+// change picks a new value of the entry within its bounds, sets it in next
+// and patch, and returns the change as a parameter.
+func (e resourceEntry) change(r *rand.Rand, next corev1.ResourceRequirements, patch map[string]map[string]string) string {
+	q := e.quant[e.name]
+	var nq *resource.Quantity
+	if e.name == corev1.ResourceCPU {
+		nq = resource.NewMilliQuantity(pickOther(r, e.rg, q.MilliValue()), resource.DecimalSI)
+	} else {
+		nq = resource.NewQuantity(pickOther(r, e.rg, q.Value()/mi)*mi, resource.BinarySI)
+	}
+	list := next.Requests
+	if e.list == "limits" {
+		list = next.Limits
+	}
+	list[e.name] = *nq
+	if patch[e.list] == nil {
+		patch[e.list] = map[string]string{}
+	}
+	patch[e.list][string(e.name)] = nq.String()
+	return fmt.Sprintf("%s.%s %s -> %s", e.list, e.name, q.String(), nq.String())
 }
 
 // qosClass is the QoS class of a pod with only this container.
