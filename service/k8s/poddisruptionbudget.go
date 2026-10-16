@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	policyv1 "k8s.io/api/policy/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -77,28 +76,12 @@ func (p *PodDisruptionBudgetService) UpdatePodDisruptionBudget(namespace string,
 // a ControlledByOtherError when another controller controls the stored
 // PodDisruptionBudget.
 func (p *PodDisruptionBudgetService) CreateOrUpdatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
-	storedPodDisruptionBudget, err := p.GetPodDisruptionBudget(namespace, podDisruptionBudget.Name)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return p.CreatePodDisruptionBudget(namespace, podDisruptionBudget)
-		}
-		return err
-	}
-
-	if err := checkNotControlledByOther("PodDisruptionBudget", storedPodDisruptionBudget, podDisruptionBudget); err != nil {
-		return err
-	}
-
-	// With the stored resource version, the update fails when the object
-	// changed after the read.
-	podDisruptionBudget.ResourceVersion = storedPodDisruptionBudget.ResourceVersion
-
-	if podDisruptionBudgetUpToDate(storedPodDisruptionBudget, podDisruptionBudget) {
-		p.logger.WithField("namespace", namespace).WithField("podDisruptionBudget", podDisruptionBudget.Name).Debugf("pod disruption budget already up to date, skipping update")
-		return nil
-	}
-
-	return p.UpdatePodDisruptionBudget(namespace, podDisruptionBudget)
+	return createOrUpdate(namespace, podDisruptionBudget, objectCalls[*policyv1.PodDisruptionBudget]{
+		kind: "PodDisruptionBudget", get: p.GetPodDisruptionBudget, create: p.CreatePodDisruptionBudget, update: p.UpdatePodDisruptionBudget, upToDate: podDisruptionBudgetUpToDate,
+		skipped: func() {
+			p.logger.WithField("namespace", namespace).WithField("podDisruptionBudget", podDisruptionBudget.Name).Debugf("pod disruption budget already up to date, skipping update")
+		},
+	})
 }
 
 // DeletePodDisruptionBudget deletes the named PodDisruptionBudget.

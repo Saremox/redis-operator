@@ -6,7 +6,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
@@ -107,28 +106,12 @@ func (d *DeploymentService) UpdateDeployment(namespace string, deployment *appsv
 
 // CreateOrUpdateDeployment will update the given deployment or create it if does not exist.
 func (d *DeploymentService) CreateOrUpdateDeployment(namespace string, deployment *appsv1.Deployment) error {
-	storedDeployment, err := d.GetDeployment(namespace, deployment.Name)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return d.CreateDeployment(namespace, deployment)
-		}
-		return err
-	}
-
-	if err := checkNotControlledByOther("Deployment", storedDeployment, deployment); err != nil {
-		return err
-	}
-
-	// With the stored resource version, the update fails when the object
-	// changed after the read.
-	deployment.ResourceVersion = storedDeployment.ResourceVersion
-
-	if deploymentUpToDate(storedDeployment, deployment) {
-		d.logger.WithField("namespace", namespace).WithField("deployment", deployment.Name).Debugf("deployment already up to date, skipping update")
-		return nil
-	}
-
-	return d.UpdateDeployment(namespace, deployment)
+	return createOrUpdate(namespace, deployment, objectCalls[*appsv1.Deployment]{
+		kind: "Deployment", get: d.GetDeployment, create: d.CreateDeployment, update: d.UpdateDeployment, upToDate: deploymentUpToDate,
+		skipped: func() {
+			d.logger.WithField("namespace", namespace).WithField("deployment", deployment.Name).Debugf("deployment already up to date, skipping update")
+		},
+	})
 }
 
 // DeleteDeployment will delete the given deployment.

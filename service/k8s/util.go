@@ -53,6 +53,45 @@ func CheckSameController(kind string, stored, desired metav1.Object) error {
 	return checkNotControlledByOther(kind, stored, desired)
 }
 
+// objectCalls are the calls of createOrUpdate for one kind. skipped logs an
+// object that is up to date.
+type objectCalls[T metav1.Object] struct {
+	kind     string
+	get      func(namespace, name string) (T, error)
+	create   func(namespace string, object T) error
+	update   func(namespace string, object T) error
+	upToDate func(stored, desired T) bool
+	skipped  func()
+}
+
+// createOrUpdate creates desired, or updates the stored object when it is not
+// up to date. It returns a ControlledByOtherError when another controller
+// controls the stored object.
+func createOrUpdate[T metav1.Object](namespace string, desired T, calls objectCalls[T]) error {
+	stored, err := calls.get(namespace, desired.GetName())
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return calls.create(namespace, desired)
+		}
+		return err
+	}
+
+	if err := checkNotControlledByOther(calls.kind, stored, desired); err != nil {
+		return err
+	}
+
+	// With the stored resource version, the update fails when the object
+	// changed after the read.
+	desired.SetResourceVersion(stored.GetResourceVersion())
+
+	if calls.upToDate(stored, desired) {
+		calls.skipped()
+		return nil
+	}
+
+	return calls.update(namespace, desired)
+}
+
 func controllerGroup(ref *metav1.OwnerReference) string {
 	gv, err := schema.ParseGroupVersion(ref.APIVersion)
 	if err != nil {

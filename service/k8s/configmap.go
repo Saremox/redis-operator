@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -77,28 +76,12 @@ func (p *ConfigMapService) UpdateConfigMap(namespace string, configMap *corev1.C
 // ConfigMap when it is not up to date. It returns a ControlledByOtherError
 // when another controller controls the stored ConfigMap.
 func (p *ConfigMapService) CreateOrUpdateConfigMap(namespace string, configMap *corev1.ConfigMap) error {
-	storedConfigMap, err := p.GetConfigMap(namespace, configMap.Name)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return p.CreateConfigMap(namespace, configMap)
-		}
-		return err
-	}
-
-	if err := checkNotControlledByOther("ConfigMap", storedConfigMap, configMap); err != nil {
-		return err
-	}
-
-	// With the stored resource version, the update fails when the object
-	// changed after the read.
-	configMap.ResourceVersion = storedConfigMap.ResourceVersion
-
-	if configMapUpToDate(storedConfigMap, configMap) {
-		p.logger.WithField("namespace", namespace).WithField("configMap", configMap.Name).Debugf("configmap already up to date, skipping update")
-		return nil
-	}
-
-	return p.UpdateConfigMap(namespace, configMap)
+	return createOrUpdate(namespace, configMap, objectCalls[*corev1.ConfigMap]{
+		kind: "ConfigMap", get: p.GetConfigMap, create: p.CreateConfigMap, update: p.UpdateConfigMap, upToDate: configMapUpToDate,
+		skipped: func() {
+			p.logger.WithField("namespace", namespace).WithField("configMap", configMap.Name).Debugf("configmap already up to date, skipping update")
+		},
+	})
 }
 
 // DeleteConfigMap deletes the named ConfigMap.
