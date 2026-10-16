@@ -17,7 +17,7 @@ func fillRedis(t *testing.T, rc *rediscli.Client, n int) {
 	t.Helper()
 	value := strings.Repeat("x", 1024)
 	pipe := rc.Pipeline()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		pipe.Set(bgCtx(), fmt.Sprintf("key:%d", i), value, 0)
 	}
 	_, err := pipe.Exec(bgCtx())

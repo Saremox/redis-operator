@@ -27,16 +27,16 @@ type levelLogger struct {
 	debugs []string
 }
 
-func (l *levelLogger) With(string, interface{}) log.Logger      { return l }
-func (l *levelLogger) WithField(string, interface{}) log.Logger { return l }
+func (l *levelLogger) With(string, any) log.Logger      { return l }
+func (l *levelLogger) WithField(string, any) log.Logger { return l }
 
-func (l *levelLogger) Errorf(format string, args ...interface{}) {
+func (l *levelLogger) Errorf(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.errors = append(l.errors, fmt.Sprintf(format, args...))
 }
 
-func (l *levelLogger) Debugf(format string, args ...interface{}) {
+func (l *levelLogger) Debugf(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.debugs = append(l.debugs, fmt.Sprintf(format, args...))

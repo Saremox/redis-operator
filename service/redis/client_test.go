@@ -854,21 +854,21 @@ func TestFlagsDown(t *testing.T) {
 func TestSentinelReplicaIPs(t *testing.T) {
 	tests := []struct {
 		name    string
-		res     []interface{}
+		res     []any
 		want    []string
 		wantErr bool
 	}{
-		{name: "no replica", res: []interface{}{}, want: []string{}},
+		{name: "no replica", res: []any{}, want: []string{}},
 		{
 			name: "two replicas",
-			res: []interface{}{
-				[]interface{}{"name", "10.0.0.2:6379", "ip", "10.0.0.2", "port", "6379"},
-				[]interface{}{"name", "10.0.0.3:6379", "ip", "10.0.0.3", "port", "6379"},
+			res: []any{
+				[]any{"name", "10.0.0.2:6379", "ip", "10.0.0.2", "port", "6379"},
+				[]any{"name", "10.0.0.3:6379", "ip", "10.0.0.3", "port", "6379"},
 			},
 			want: []string{"10.0.0.2", "10.0.0.3"},
 		},
-		{name: "an entry is not an array", res: []interface{}{"10.0.0.2"}, wantErr: true},
-		{name: "the ip is not a string", res: []interface{}{[]interface{}{"ip", int64(1)}}, wantErr: true},
+		{name: "an entry is not an array", res: []any{"10.0.0.2"}, wantErr: true},
+		{name: "the ip is not a string", res: []any{[]any{"ip", int64(1)}}, wantErr: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1121,7 +1121,7 @@ func TestSetCustomSentinelConfigIdempotent(t *testing.T) {
 	pointSharedSentinelAt(t, env.sentinel, master.IP, master.Port, 1)
 
 	configs := []string{"down-after-milliseconds 9999", "failover-timeout 8888"}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		require.NoError(t, c.SetCustomSentinelConfig(env.sentinel.IP, configs))
 	}
 

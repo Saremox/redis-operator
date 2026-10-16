@@ -18,7 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
@@ -225,7 +224,7 @@ func TestAutoscaleWritesAGrowingStoreOncePerWindow(t *testing.T) {
 	})
 	at.mrec.On("SetAutoscaler", "testns", "test", int64(0), mock.Anything, int32(0), 1024*mib)
 
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		at.now = autoscaleT0.Add(time.Duration(i) * time.Minute)
 		at.run(at.rf.Status.Autoscaling)
 	}
@@ -724,7 +723,7 @@ func TestCheckAndHealKeepsNoMasterWithoutAutoscaling(t *testing.T) {
 		for _, mode := range []string{"", redisfailoverv1.AutoscalingModeOff} {
 			t.Run(fmt.Sprintf("sentinel %v, mode %q", sentinelMode, mode), func(t *testing.T) {
 				at := newAutoscaleTest(t, mode)
-				at.rf.Spec.Sentinel.Enabled = ptr.To(sentinelMode)
+				at.rf.Spec.Sentinel.Enabled = new(sentinelMode)
 				at.h.mClient = metrics.Dummy
 				noAppliedSecret(at.mk)
 				at.mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Maybe().Return(&corev1.PodList{Items: make([]corev1.Pod, 5)}, nil)
@@ -1057,7 +1056,7 @@ func TestAutoscaleRecommendKeepsTheEffectiveLimit(t *testing.T) {
 func TestHandleUsesTheEffectiveLimit(t *testing.T) {
 	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
 	at.rf.Finalizers = []string{redisFailoverFinalizer}
-	at.rf.Spec.Sentinel.Enabled = ptr.To(false)
+	at.rf.Spec.Sentinel.Enabled = new(false)
 	at.h.mClient = metrics.Dummy
 	f := at.fakeStateStore(t)
 	f.stored = at.stateConfigMap(encodeState(t, autoscale.State{

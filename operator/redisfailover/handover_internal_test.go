@@ -26,10 +26,10 @@ type infoLogger struct {
 	infos []string
 }
 
-func (l *infoLogger) With(string, interface{}) log.Logger      { return l }
-func (l *infoLogger) WithField(string, interface{}) log.Logger { return l }
+func (l *infoLogger) With(string, any) log.Logger      { return l }
+func (l *infoLogger) WithField(string, any) log.Logger { return l }
 
-func (l *infoLogger) Infof(format string, args ...interface{}) {
+func (l *infoLogger) Infof(format string, args ...any) {
 	l.infos = append(l.infos, fmt.Sprintf(format, args...))
 }
 

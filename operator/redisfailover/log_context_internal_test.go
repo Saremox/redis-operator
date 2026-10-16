@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/utils/ptr"
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
@@ -27,26 +26,26 @@ type podFieldLogger struct {
 	lines *[]string
 }
 
-func (l podFieldLogger) WithField(key string, value interface{}) log.Logger {
+func (l podFieldLogger) WithField(key string, value any) log.Logger {
 	if key == "pod" {
 		l.pod = fmt.Sprintf("pod=%v ", value)
 	}
 	return l
 }
 
-func (l podFieldLogger) add(level, format string, args ...interface{}) {
+func (l podFieldLogger) add(level, format string, args ...any) {
 	*l.lines = append(*l.lines, level+": "+l.pod+fmt.Sprintf(format, args...))
 }
 
-func (l podFieldLogger) Infof(format string, args ...interface{}) {
+func (l podFieldLogger) Infof(format string, args ...any) {
 	l.add("info", format, args...)
 }
 
-func (l podFieldLogger) Warningf(format string, args ...interface{}) {
+func (l podFieldLogger) Warningf(format string, args ...any) {
 	l.add("warning", format, args...)
 }
 
-func (l podFieldLogger) Errorf(format string, args ...interface{}) {
+func (l podFieldLogger) Errorf(format string, args ...any) {
 	l.add("error", format, args...)
 }
 
@@ -54,7 +53,7 @@ func (l podFieldLogger) Errorf(format string, args ...interface{}) {
 // not a fault.
 func TestNoMasterWithLocalhostMastersLogsAtInfo(t *testing.T) {
 	rf := newCustomConfigTestRF()
-	rf.Spec.Sentinel.Enabled = ptr.To(true)
+	rf.Spec.Sentinel.Enabled = new(true)
 	mk := noAppliedSecret(&mK8SService.Services{})
 	mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{}, nil)
 	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
@@ -83,7 +82,7 @@ func TestNoMasterWithLocalhostMastersLogsAtInfo(t *testing.T) {
 // carries the error.
 func TestNoMasterWithoutSentinelQuorumLogsTheError(t *testing.T) {
 	rf := newCustomConfigTestRF()
-	rf.Spec.Sentinel.Enabled = ptr.To(true)
+	rf.Spec.Sentinel.Enabled = new(true)
 	mk := noAppliedSecret(&mK8SService.Services{})
 	mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{}, nil)
 	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
@@ -134,7 +133,7 @@ func TestSlaveNotAssociatedToMasterLogsThePod(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			rf := newCustomConfigTestRF()
-			rf.Spec.Sentinel.Enabled = ptr.To(test.sentinel)
+			rf.Spec.Sentinel.Enabled = new(test.sentinel)
 			mk := noAppliedSecret(&mK8SService.Services{})
 			mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{}, nil)
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()

@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -27,17 +26,17 @@ type levelLogger struct {
 	lines *[]string
 }
 
-func (l levelLogger) With(string, interface{}) log.Logger      { return l }
-func (l levelLogger) WithField(string, interface{}) log.Logger { return l }
-func (l levelLogger) Infof(format string, args ...interface{}) {
+func (l levelLogger) With(string, any) log.Logger      { return l }
+func (l levelLogger) WithField(string, any) log.Logger { return l }
+func (l levelLogger) Infof(format string, args ...any) {
 	*l.lines = append(*l.lines, "info: "+fmt.Sprintf(format, args...))
 }
 
-func (l levelLogger) Warningf(format string, args ...interface{}) {
+func (l levelLogger) Warningf(format string, args ...any) {
 	*l.lines = append(*l.lines, "warning: "+fmt.Sprintf(format, args...))
 }
 
-func (l levelLogger) Debugf(format string, args ...interface{}) {
+func (l levelLogger) Debugf(format string, args ...any) {
 	*l.lines = append(*l.lines, "debug: "+fmt.Sprintf(format, args...))
 }
 
@@ -96,7 +95,7 @@ func newSentinelFailoverTest(bootstrap bool) *sentinelFailoverTest {
 		rf:    newCustomConfigTestRF(),
 		clock: time.Unix(1000, 0),
 	}
-	ft.rf.Spec.Sentinel.Enabled = ptr.To(true)
+	ft.rf.Spec.Sentinel.Enabled = new(true)
 	if bootstrap {
 		ft.rf.Spec.BootstrapNode = &redisfailoverv1.BootstrapSettings{Host: sfMaster, Port: "6379", AllowSentinels: true}
 	}

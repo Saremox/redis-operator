@@ -66,7 +66,7 @@ func TestGetContainerSecurityContextMerge(t *testing.T) {
 
 	t.Run("partial user context keeps defaults for unset fields", func(t *testing.T) {
 		got := getContainerSecurityContext(&corev1.SecurityContext{
-			ReadOnlyRootFilesystem: ptr.To(false),
+			ReadOnlyRootFilesystem: new(false),
 		})
 		// User value wins.
 		assert.False(t, *got.ReadOnlyRootFilesystem)

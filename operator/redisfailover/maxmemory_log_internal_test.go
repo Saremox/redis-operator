@@ -24,16 +24,16 @@ type warnLogger struct {
 	debugs   []string
 }
 
-func (l *warnLogger) With(string, interface{}) log.Logger      { return l }
-func (l *warnLogger) WithField(string, interface{}) log.Logger { return l }
+func (l *warnLogger) With(string, any) log.Logger      { return l }
+func (l *warnLogger) WithField(string, any) log.Logger { return l }
 
-func (l *warnLogger) Warningf(format string, args ...interface{}) {
+func (l *warnLogger) Warningf(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.warnings = append(l.warnings, fmt.Sprintf(format, args...))
 }
 
-func (l *warnLogger) Debugf(format string, args ...interface{}) {
+func (l *warnLogger) Debugf(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.debugs = append(l.debugs, fmt.Sprintf(format, args...))

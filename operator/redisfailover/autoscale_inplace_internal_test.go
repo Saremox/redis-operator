@@ -2,6 +2,7 @@ package redisfailover
 
 import (
 	"encoding/json"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -90,15 +91,11 @@ func newInPlaceTest(t *testing.T) *inPlaceTest {
 		if p.Annotations == nil {
 			p.Annotations = map[string]string{}
 		}
-		for k, v := range annotations {
-			p.Annotations[k] = v
-		}
+		maps.Copy(p.Annotations, annotations)
 		return nil
 	})
 	mk.On("UpdatePodLabels", "testns", mock.Anything, mock.Anything).Return(func(_, name string, labels map[string]string) error {
-		for k, v := range labels {
-			pod(name).Labels[k] = v
-		}
+		maps.Copy(pod(name).Labels, labels)
 		return nil
 	})
 	mk.On("GetStatefulSet", "testns", "rfr-test").Return(func(string, string) (*appsv1.StatefulSet, error) {

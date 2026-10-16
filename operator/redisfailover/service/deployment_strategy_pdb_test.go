@@ -69,7 +69,7 @@ func TestPodDisruptionBudgetMinAvailableOverride(t *testing.T) {
 		},
 		{
 			name:        "explicit override wins",
-			override:    ptrIOS(intstr.FromString("60%")),
+			override:    new(intstr.FromString("60%")),
 			redisReplic: 3,
 			expected:    intstr.FromString("60%"),
 		},
@@ -100,8 +100,6 @@ func TestPodDisruptionBudgetMinAvailableOverride(t *testing.T) {
 	}
 }
 
-func ptrIOS(v intstr.IntOrString) *intstr.IntOrString { return &v }
-
 func TestSentinelPodDisruptionBudgetMinAvailable(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -109,7 +107,7 @@ func TestSentinelPodDisruptionBudgetMinAvailable(t *testing.T) {
 		expected intstr.IntOrString
 	}{
 		{name: "defaults from the sentinel replicas, not the redis ones", expected: intstr.FromInt(1)},
-		{name: "explicit override wins", override: ptrIOS(intstr.FromString("60%")), expected: intstr.FromString("60%")},
+		{name: "explicit override wins", override: new(intstr.FromString("60%")), expected: intstr.FromString("60%")},
 	}
 
 	for _, test := range tests {
