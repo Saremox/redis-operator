@@ -397,53 +397,75 @@ func updateCheckMetricLastUpdatedTracker(kind, namespace, resource, indicator, i
 // series that got no update in that time.
 func removeStaleMetrics() {
 	for {
-		metricsDeletedCount := 0
-		kubernetesResourceBasedLabels, customResourceBasedLabels, podBasedLabels := getLabelsOfStaleMetrics()
-		staleCheckMetrics := getStaleCheckMetrics()
-		mutex.Lock()
-		currentRecorders := make([]recorder, len(recorders))
-		copy(currentRecorders, recorders)
-		mutex.Unlock()
-		for _, recorder := range currentRecorders {
-			for _, label := range kubernetesResourceBasedLabels {
-				metricsDeletedCount += recorder.ensureResource.DeletePartialMatch(label)
-				metricsDeletedCount += recorder.k8sServiceOperations.DeletePartialMatch(label)
-			}
-			for _, label := range customResourceBasedLabels {
-				metricsDeletedCount += recorder.redisCheck.DeletePartialMatch(label)
-				metricsDeletedCount += recorder.sentinelCheck.DeletePartialMatch(label)
-				// A new map, because label is used again for the next recorder.
-				labelWithName := prometheus.Labels{"namespace": label["namespace"], "name": label["resource"]}
-				metricsDeletedCount += recorder.clusterOK.DeletePartialMatch(labelWithName)
-				metricsDeletedCount += recorder.recommendedMemory.DeletePartialMatch(labelWithName)
-				metricsDeletedCount += recorder.memoryUsedRatio.DeletePartialMatch(labelWithName)
-				metricsDeletedCount += recorder.highWindows.DeletePartialMatch(labelWithName)
-				metricsDeletedCount += recorder.effectiveMemory.DeletePartialMatch(labelWithName)
-				metricsDeletedCount += recorder.stepPhase.DeletePartialMatch(labelWithName)
-				metricsDeletedCount += recorder.steps.DeletePartialMatch(labelWithName)
-			}
-			for _, label := range podBasedLabels {
-				metricsDeletedCount += recorder.redisOperations.DeletePartialMatch(label)
-			}
-			// customResourceBasedLabels matches only a RedisFailover without
-			// reconciles. Without this loop, the series of each removed pod
-			// stay, and the memory use grows.
-			for _, entry := range staleCheckMetrics {
-				check := recorder.redisCheck
-				if entry.kind == "sentinel" {
-					check = recorder.sentinelCheck
-				}
-				// The tracker forgets the entry, so delete both status series now.
-				for _, status := range []string{STATUS_HEALTHY, STATUS_UNHEALTHY} {
-					if check.DeleteLabelValues(entry.namespace, entry.resource, entry.indicator, entry.instance, status) {
-						metricsDeletedCount++
-					}
-				}
-			}
-		}
+		metricsDeletedCount := deleteStaleMetrics()
 		log.Debugf("delete %v stale metrics", metricsDeletedCount)
 		time.Sleep(metricsGCIntervalMinutes * time.Minute)
 	}
+}
+
+// deleteStaleMetrics deletes the stale series of each recorder and returns
+// their count.
+func deleteStaleMetrics() int {
+	metricsDeletedCount := 0
+	kubernetesResourceBasedLabels, customResourceBasedLabels, podBasedLabels := getLabelsOfStaleMetrics()
+	staleCheckMetrics := getStaleCheckMetrics()
+	mutex.Lock()
+	currentRecorders := make([]recorder, len(recorders))
+	copy(currentRecorders, recorders)
+	mutex.Unlock()
+	for _, recorder := range currentRecorders {
+		metricsDeletedCount += recorder.deleteStale(kubernetesResourceBasedLabels, customResourceBasedLabels, podBasedLabels)
+		metricsDeletedCount += recorder.deleteStaleChecks(staleCheckMetrics)
+	}
+	return metricsDeletedCount
+}
+
+// deleteStale deletes the series that match the labels of getLabelsOfStaleMetrics.
+func (r recorder) deleteStale(kubernetesResourceBasedLabels, customResourceBasedLabels, podBasedLabels []prometheus.Labels) int {
+	metricsDeletedCount := 0
+	for _, label := range kubernetesResourceBasedLabels {
+		metricsDeletedCount += r.ensureResource.DeletePartialMatch(label)
+		metricsDeletedCount += r.k8sServiceOperations.DeletePartialMatch(label)
+	}
+	for _, label := range customResourceBasedLabels {
+		metricsDeletedCount += r.redisCheck.DeletePartialMatch(label)
+		metricsDeletedCount += r.sentinelCheck.DeletePartialMatch(label)
+		// A new map, because label is used again for the next recorder.
+		labelWithName := prometheus.Labels{"namespace": label["namespace"], "name": label["resource"]}
+		metricsDeletedCount += r.clusterOK.DeletePartialMatch(labelWithName)
+		metricsDeletedCount += r.recommendedMemory.DeletePartialMatch(labelWithName)
+		metricsDeletedCount += r.memoryUsedRatio.DeletePartialMatch(labelWithName)
+		metricsDeletedCount += r.highWindows.DeletePartialMatch(labelWithName)
+		metricsDeletedCount += r.effectiveMemory.DeletePartialMatch(labelWithName)
+		metricsDeletedCount += r.stepPhase.DeletePartialMatch(labelWithName)
+		metricsDeletedCount += r.steps.DeletePartialMatch(labelWithName)
+	}
+	for _, label := range podBasedLabels {
+		metricsDeletedCount += r.redisOperations.DeletePartialMatch(label)
+	}
+	return metricsDeletedCount
+}
+
+// deleteStaleChecks deletes the check series of the entries of
+// getStaleCheckMetrics.
+func (r recorder) deleteStaleChecks(staleCheckMetrics []checkMetricInfo) int {
+	metricsDeletedCount := 0
+	// customResourceBasedLabels matches only a RedisFailover without
+	// reconciles. Without this loop, the series of each removed pod
+	// stay, and the memory use grows.
+	for _, entry := range staleCheckMetrics {
+		check := r.redisCheck
+		if entry.kind == "sentinel" {
+			check = r.sentinelCheck
+		}
+		// The tracker forgets the entry, so delete both status series now.
+		for _, status := range []string{STATUS_HEALTHY, STATUS_UNHEALTHY} {
+			if check.DeleteLabelValues(entry.namespace, entry.resource, entry.indicator, entry.instance, status) {
+				metricsDeletedCount++
+			}
+		}
+	}
+	return metricsDeletedCount
 }
 
 func getLabelsOfStaleMetrics() (kubernetesResourceBasedLabels, customResourceBasedLabels, podBasedLabels []prometheus.Labels) {
