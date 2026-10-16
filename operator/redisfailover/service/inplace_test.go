@@ -944,3 +944,47 @@ func TestClearResizeRequested(t *testing.T) {
 	ms.On("UpdatePodAnnotations", "testns", resizePod, mock.Anything).Once().Return(fail)
 	assert.ErrorIs(t, NewRedisFailoverHealer(ms, nil, log.Dummy).ClearResizeRequested(resizeRF(), resizePod), fail)
 }
+
+func TestKeepsTemplate(t *testing.T) {
+	tmpl := podTemplate(resources("1", "2Gi"))
+	tests := []struct {
+		name string
+		pod  func() *corev1.Pod
+		want bool
+	}{
+		{"same resources", func() *corev1.Pod { return podFrom(tmpl) }, true},
+		{"larger redis memory limit", func() *corev1.Pod { return podFrom(podTemplate(resources("1", "3Gi"))) }, true},
+		{"smaller redis memory limit", func() *corev1.Pod { return podFrom(podTemplate(resources("1", "1Gi"))) }, false},
+		{"other cpu", func() *corev1.Pod { return podFrom(podTemplate(resources("2", "2Gi"))) }, false},
+		// The template requests its limit, so the pod keeps its own request.
+		{"larger limit, other request", func() *corev1.Pod {
+			r := resources("1", "3Gi")
+			r.Requests = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")}
+			return podFrom(podTemplate(r))
+		}, true},
+		{"no applied resources", func() *corev1.Pod {
+			pod := podFrom(tmpl)
+			pod.Status.ContainerStatuses[0].Resources = nil
+			return pod
+		}, false},
+		{"container missing in the spec", func() *corev1.Pod {
+			pod := podFrom(tmpl)
+			pod.Spec.Containers = pod.Spec.Containers[:1]
+			return pod
+		}, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.want, keepsTemplate(test.pod(), &tmpl))
+		})
+	}
+
+	// A template request below the limit stays a request to keep.
+	r := resources("1", "2Gi")
+	r.Requests = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")}
+	lower := podTemplate(r)
+	other := r.DeepCopy()
+	other.Requests[corev1.ResourceMemory] = resource.MustParse("512Mi")
+	assert.True(t, keepsTemplate(podFrom(lower), &lower))
+	assert.False(t, keepsTemplate(podFrom(podTemplate(*other)), &lower))
+}

@@ -1345,3 +1345,79 @@ func TestNewSentinelMonitorWithPort(t *testing.T) {
 		})
 	}
 }
+
+// The healer returns the error of a failed read before it changes a Redis.
+func TestHealerReadErrors(t *testing.T) {
+	readErr := errors.New("read failed")
+	pods := &corev1.PodList{Items: []corev1.Pod{podWithRole("pod-a", "1.1.1.1", nil)}}
+	tests := []struct {
+		name       string
+		secretPath bool
+		podsErr    bool
+		call       func(*rfservice.RedisFailoverHealer, *redisfailoverv1.RedisFailover) error
+	}{
+		{"PromoteBestReplica, no password", true, false, func(h *rfservice.RedisFailoverHealer, rf *redisfailoverv1.RedisFailover) error {
+			return h.PromoteBestReplica("1.1.1.1", rf)
+		}},
+		{"PromoteBestReplica, no pods", false, true, func(h *rfservice.RedisFailoverHealer, rf *redisfailoverv1.RedisFailover) error {
+			return h.PromoteBestReplica("1.1.1.1", rf)
+		}},
+		{"SetMasterOnAll, no pods", false, true, func(h *rfservice.RedisFailoverHealer, rf *redisfailoverv1.RedisFailover) error {
+			return h.SetMasterOnAll("1.1.1.1", rf)
+		}},
+		{"SetMasterOnAll, no password", true, false, func(h *rfservice.RedisFailoverHealer, rf *redisfailoverv1.RedisFailover) error {
+			return h.SetMasterOnAll("1.1.1.1", rf)
+		}},
+		{"SetExternalMasterOnAll, no password", true, false, func(h *rfservice.RedisFailoverHealer, rf *redisfailoverv1.RedisFailover) error {
+			return h.SetExternalMasterOnAll("5.5.5.5", "6379", rf)
+		}},
+		{"SetOldestAsMaster, no password", true, false, func(h *rfservice.RedisFailoverHealer, rf *redisfailoverv1.RedisFailover) error {
+			return h.SetOldestAsMaster(rf)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			ms := &mK8SService.Services{}
+			switch {
+			case test.podsErr:
+				ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(nil, readErr)
+			case test.name != "PromoteBestReplica, no password":
+				// PromoteBestReplica reads the password first.
+				ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+			}
+			if test.secretPath {
+				rf.Spec.Auth.SecretPath = "redis-secret"
+				ms.On("GetSecret", namespace, "redis-secret").Once().Return(nil, readErr)
+			}
+			mr := &mRedisService.Client{}
+
+			err := test.call(rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{}), rf)
+			require.ErrorIs(t, err, readErr)
+			ms.AssertExpectations(t)
+			mr.AssertExpectations(t) // no call to a Redis
+		})
+	}
+}
+
+// A failed master label stops PromoteBestReplica before it changes a replica.
+func TestPromoteBestReplicaMasterLabelFails(t *testing.T) {
+	rf := generateRF()
+	labelErr := errors.New("label failed")
+	pods := &corev1.PodList{Items: []corev1.Pod{
+		podWithRole("pod-master", "1.1.1.1", slaveRoleLabel),
+		podWithRole("pod-replica", "2.2.2.2", slaveRoleLabel),
+	}}
+
+	ms := &mK8SService.Services{}
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(pods, nil)
+	ms.On("UpdatePodLabels", namespace, "pod-master", masterRoleLabel).Once().Return(labelErr)
+	mr := &mRedisService.Client{}
+	mr.On("MakeMaster", "1.1.1.1", "0", "").Once().Return(nil)
+
+	err := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{}).PromoteBestReplica("1.1.1.1", rf)
+	require.ErrorIs(t, err, labelErr)
+	require.NotErrorIs(t, err, rfservice.ErrPartialReconciliation)
+	ms.AssertExpectations(t)
+	mr.AssertExpectations(t) // no MakeSlaveOfWithPort call
+}
