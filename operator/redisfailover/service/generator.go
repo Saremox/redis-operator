@@ -426,13 +426,9 @@ func sentinelConfigMilliseconds(rf *redisfailoverv1.RedisFailover, param string,
 	return time.Duration(ms) * time.Millisecond
 }
 
-func generateRedisReadinessConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.ConfigMap {
-	name := GetRedisReadinessName(rf)
-	port := rf.Spec.Redis.Port
-	namespace := rf.Namespace
-
-	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
-	readinessContent := fmt.Sprintf(`ROLE="role"
+// redisReadinessScript is ready.sh. Its format arguments are the Redis port
+// and the result of redisReadinessMaxLinkDownSeconds.
+const redisReadinessScript = `ROLE="role"
 ROLE_MASTER="role:master"
 ROLE_SLAVE="role:slave"
 IN_SYNC="master_sync_in_progress:1"
@@ -500,7 +496,15 @@ case $role in
 		*)
 				echo "unexpected"
 				exit 1
-esac`, port, redisReadinessMaxLinkDownSeconds(rf))
+esac`
+
+func generateRedisReadinessConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.ConfigMap {
+	name := GetRedisReadinessName(rf)
+	port := rf.Spec.Redis.Port
+	namespace := rf.Namespace
+
+	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
+	readinessContent := fmt.Sprintf(redisReadinessScript, port, redisReadinessMaxLinkDownSeconds(rf))
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
