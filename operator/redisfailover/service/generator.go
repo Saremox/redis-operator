@@ -240,54 +240,50 @@ func generateRedisConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string
 	}
 }
 
-func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.ConfigMap {
-	name := GetRedisShutdownConfigMapName(rf)
-	port := rf.Spec.Redis.Port
-	namespace := rf.Namespace
-
-	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
-	// The preStop hook runs this script with /bin/sh, which is BusyBox ash on
-	// the Alpine Redis images. Thus the script uses only POSIX syntax, without
-	// "let" and "[[ ]]". The sleep of BusyBox and of GNU coreutils accepts
-	// 0.1 seconds. The script retries both Sentinel calls, because one
-	// failed call must not stop the failover. The Redis pods have no service
-	// links, so the script finds Sentinel through the DNS name of the Sentinel
-	// Service.
-	//
-	// The kubelet stops the hook at the end of the grace period, and then the
-	// script cannot SAVE. The timing assumes the default grace period of 30s
-	// (redis.terminationGracePeriod). Each call has a 2s limit, and the
-	// Sentinel part ends before 19s. The last poll starts before the 12s
-	// deadline and ends before 15s. REPLICAOF and CLIENT UNPAUSE add a maximum
-	// of 4s. The last failover request starts at the latest 3s before the
-	// deadline. Thus an accepted request always leaves time for one poll and
-	// the REPLICAOF.
-	//
-	// Until Sentinel promotes a replica, the master still accepts writes, and
-	// the promotion loses those that did not reach the replica. Thus the script
-	// pauses the writes, and makes the old master a replica of the new master
-	// before it ends the pause: the clients then get READONLY and not a lost
-	// OK. The pause stops 6s after the deadline, also if the script stops.
-	//
-	// Sentinel promotes the replica with the highest offset that it knows, but
-	// this offset can be 10s old. Thus the script waits until each online
-	// replica confirms the offset of the master. The replicas confirm once per
-	// second. WAIT does not help: it waits only for the commands of its own
-	// connection, so on a new connection it returns at once. The wait stops 8s
-	// before the deadline. Then one failover request fits, and two fit when
-	// INFO answers. When the master lookups used this time, the script does
-	// not wait: a lookup that finds the master ends before 8s, so one failover
-	// request still fits.
-	//
-	// Without the pause, a failover loses writes, so the script asks for none.
-	// Then Redis 7 and later pause the writes on SIGTERM and wait for the
-	// replicas, and Sentinel fails over after down-after-milliseconds. The
-	// pause also fails after a password change in place: the env keeps the old
-	// password. Sentinel has no password, so only the local calls send
-	// REDIS_PASSWORD.
-	shutdownContent := ""
-	if rf.SentinelsAllowed() {
-		shutdownContent = fmt.Sprintf(`t=; command -v timeout >/dev/null 2>&1 && t="timeout 2"
+// redisShutdownFailoverScript is the part of shutdown.sh that asks Sentinel
+// for a failover. Its format arguments are the Sentinel Service name and the
+// Redis port.
+//
+// The preStop hook runs this script with /bin/sh, which is BusyBox ash on
+// the Alpine Redis images. Thus the script uses only POSIX syntax, without
+// "let" and "[[ ]]". The sleep of BusyBox and of GNU coreutils accepts
+// 0.1 seconds. The script retries both Sentinel calls, because one
+// failed call must not stop the failover. The Redis pods have no service
+// links, so the script finds Sentinel through the DNS name of the Sentinel
+// Service.
+//
+// The kubelet stops the hook at the end of the grace period, and then the
+// script cannot SAVE. The timing assumes the default grace period of 30s
+// (redis.terminationGracePeriod). Each call has a 2s limit, and the
+// Sentinel part ends before 19s. The last poll starts before the 12s
+// deadline and ends before 15s. REPLICAOF and CLIENT UNPAUSE add a maximum
+// of 4s. The last failover request starts at the latest 3s before the
+// deadline. Thus an accepted request always leaves time for one poll and
+// the REPLICAOF.
+//
+// Until Sentinel promotes a replica, the master still accepts writes, and
+// the promotion loses those that did not reach the replica. Thus the script
+// pauses the writes, and makes the old master a replica of the new master
+// before it ends the pause: the clients then get READONLY and not a lost
+// OK. The pause stops 6s after the deadline, also if the script stops.
+//
+// Sentinel promotes the replica with the highest offset that it knows, but
+// this offset can be 10s old. Thus the script waits until each online
+// replica confirms the offset of the master. The replicas confirm once per
+// second. WAIT does not help: it waits only for the commands of its own
+// connection, so on a new connection it returns at once. The wait stops 8s
+// before the deadline. Then one failover request fits, and two fit when
+// INFO answers. When the master lookups used this time, the script does
+// not wait: a lookup that finds the master ends before 8s, so one failover
+// request still fits.
+//
+// Without the pause, a failover loses writes, so the script asks for none.
+// Then Redis 7 and later pause the writes on SIGTERM and wait for the
+// replicas, and Sentinel fails over after down-after-milliseconds. The
+// pause also fails after a password change in place: the env keeps the old
+// password. Sentinel has no password, so only the local calls send
+// REDIS_PASSWORD.
+const redisShutdownFailoverScript = `t=; command -v timeout >/dev/null 2>&1 && t="timeout 2"
 local_cli() {
 	if [ -n "${REDIS_PASSWORD}" ]; then
 		REDISCLI_AUTH="${REDIS_PASSWORD}" $t redis-cli -p %[2]v "$@"
@@ -368,7 +364,17 @@ if [ "$master" = "$self" ]; then
   	local_cli CLIENT UNPAUSE
   fi
 fi
-`, GetSentinelName(rf), port)
+`
+
+func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.ConfigMap {
+	name := GetRedisShutdownConfigMapName(rf)
+	port := rf.Spec.Redis.Port
+	namespace := rf.Namespace
+
+	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
+	shutdownContent := ""
+	if rf.SentinelsAllowed() {
+		shutdownContent = fmt.Sprintf(redisShutdownFailoverScript, GetSentinelName(rf), port)
 	}
 	shutdownContent += fmt.Sprintf(`cmd="redis-cli -p %v"
 if [ ! -z "${REDIS_PASSWORD}" ]; then
