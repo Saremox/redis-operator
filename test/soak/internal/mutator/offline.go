@@ -96,7 +96,13 @@ func (m *Mutator) rotateOffline(ctx context.Context, o *offline, log *slog.Logge
 	if !o.forget {
 		return nil
 	}
+	return m.recoverForgotten(ctx, o, phase)
+}
 
+// recoverForgotten runs the phases of scenario C after the operator forgot the
+// applied passwords: it expects passwordNotApplied, puts the previous password
+// back, expects Healthy and rotates again.
+func (m *Mutator) recoverForgotten(ctx context.Context, o *offline, phase func(string, func() error) error) error {
 	var failed error
 	if err := phase("expect "+passwordNotApplied, func() error {
 		return m.waitRF(ctx, func(rf *redisfailoverv1.RedisFailover) error {
