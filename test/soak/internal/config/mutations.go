@@ -201,28 +201,45 @@ func (m Mutations) validate(in Instance) error {
 		if w < 1 {
 			return fmt.Errorf("%s: weight must be at least 1", k)
 		}
-		if sentinelOnly(k) && in.Mode != ModeSentinel {
-			return fmt.Errorf("%s needs a sentinel instance", k)
-		}
-		if maxMemoryOnly(k) && in.MaxMemoryPolicy == "" {
-			return fmt.Errorf("%s needs an instance with maxMemoryPolicy", k)
-		}
-		if AutoscaleOnly(k) && in.Autoscale == nil {
-			return fmt.Errorf("%s needs an instance with autoscale", k)
-		}
-		if in.Bootstrap != nil && !slices.Contains(bootstrapKinds, k) {
-			return fmt.Errorf("%s can't run on a bootstrapping instance", k)
-		}
-		if k == ImageUpgrade && in.Chain == nil {
-			return fmt.Errorf("%s needs a chain", k)
-		}
-		if k == SentinelImageUpgrade && (in.Chain == nil || in.Chain.Sentinel != SentinelSeparate) {
-			return fmt.Errorf("%s needs a chain whose sentinel is %s", k, SentinelSeparate)
+		if err := validateKind(k, in); err != nil {
+			return err
 		}
 	}
 	if m.ForceDeleteProbability < 0 || m.ForceDeleteProbability > 1 {
 		return errors.New("forceDeleteProbability must be between 0 and 1")
 	}
+	if err := m.validateRanges(in); err != nil {
+		return err
+	}
+	return m.validateMaxMemory(in)
+}
+
+// validateKind checks that the instance has what the kind needs.
+func validateKind(k Kind, in Instance) error {
+	if sentinelOnly(k) && in.Mode != ModeSentinel {
+		return fmt.Errorf("%s needs a sentinel instance", k)
+	}
+	if maxMemoryOnly(k) && in.MaxMemoryPolicy == "" {
+		return fmt.Errorf("%s needs an instance with maxMemoryPolicy", k)
+	}
+	if AutoscaleOnly(k) && in.Autoscale == nil {
+		return fmt.Errorf("%s needs an instance with autoscale", k)
+	}
+	if in.Bootstrap != nil && !slices.Contains(bootstrapKinds, k) {
+		return fmt.Errorf("%s can't run on a bootstrapping instance", k)
+	}
+	if k == ImageUpgrade && in.Chain == nil {
+		return fmt.Errorf("%s needs a chain", k)
+	}
+	if k == SentinelImageUpgrade && (in.Chain == nil || in.Chain.Sentinel != SentinelSeparate) {
+		return fmt.Errorf("%s needs a chain whose sentinel is %s", k, SentinelSeparate)
+	}
+	return nil
+}
+
+// validateRanges checks the ranges of the replica, resource and memory
+// kinds.
+func (m Mutations) validateRanges(in Instance) error {
 	if _, ok := m.Kinds[RedisReplicas]; ok {
 		if err := m.RedisReplicas.validate(1); err != nil {
 			return fmt.Errorf("redisReplicas: %w", err)
@@ -246,6 +263,11 @@ func (m Mutations) validate(in Instance) error {
 			return fmt.Errorf("redisMemory: %w", err)
 		}
 	}
+	return nil
+}
+
+// validateMaxMemory checks the settings of the maxMemory kinds.
+func (m Mutations) validateMaxMemory(in Instance) error {
 	if _, ok := m.Kinds[MaxMemoryPolicy]; ok {
 		// The mutation picks a policy other than the current one.
 		if len(slices.Compact(slices.Sorted(slices.Values(m.MaxMemoryPolicies)))) < 2 {
