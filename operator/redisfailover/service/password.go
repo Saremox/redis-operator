@@ -58,37 +58,55 @@ func (r *RedisFailoverHealer) ApplyPassword(rf *redisfailoverv1.RedisFailover, p
 		if redis.IsNoPasswordError(err) {
 			candidates = []string{""}
 		}
-		tried, err := r.changePassword(rp.Status.PodIP, port, password, candidates)
-		if (!tried || redis.IsAuthError(err)) && podStale {
-			if current := r.secretPassword(rf, ref); current != "" && !slices.Contains(candidates, current) {
-				tried, err = r.changePassword(rp.Status.PodIP, port, password, []string{current})
-			}
-		}
-		if !tried || redis.IsAuthError(err) {
+		known, err := r.changePodPassword(rf, rp, ref, podStale, port, password, candidates)
+		switch {
+		case !known:
 			unknown = append(unknown, rp.Name)
-			continue
+		case err != nil:
+			errs = append(errs, err)
 		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("changing the password of redis pod %s: %w", rp.Name, err))
-			continue
-		}
-		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("Changed the password of redis pod %s", rp.Name)
 	}
 	if len(unknown) > 0 {
-		refuse := "redis pod %s refuses the configured password and the operator doesn't know the one it runs with"
-		if len(unknown) > 1 {
-			refuse = "redis pods %s refuse the configured password and the operator doesn't know the ones they run with"
-		}
-		hint := "; put the previous password back in the secret until the RedisFailover is healthy, then change it again"
-		if rf.Spec.Auth.SecretPath == "" {
-			hint = "; set auth.secretPath to a Secret with the previous password until the RedisFailover is healthy, then remove it again"
-		}
-		errs = append(errs, fmt.Errorf(refuse+hint, strings.Join(unknown, ", ")))
+		errs = append(errs, unknownPasswordError(rf, unknown))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return false, false, err
 	}
 	return complete, stale, nil
+}
+
+// changePodPassword changes the password of the Redis of rp in place. With
+// a stale pod template, it also tries the password of the Secret of the pod.
+// known is false when no candidate is the password of the Redis.
+func (r *RedisFailoverHealer) changePodPassword(rf *redisfailoverv1.RedisFailover, rp v1.Pod, ref *v1.SecretKeySelector, podStale bool, port, password string, candidates []string) (known bool, err error) {
+	tried, err := r.changePassword(rp.Status.PodIP, port, password, candidates)
+	if (!tried || redis.IsAuthError(err)) && podStale {
+		if current := r.secretPassword(rf, ref); current != "" && !slices.Contains(candidates, current) {
+			tried, err = r.changePassword(rp.Status.PodIP, port, password, []string{current})
+		}
+	}
+	if !tried || redis.IsAuthError(err) {
+		return false, nil
+	}
+	if err != nil {
+		return true, fmt.Errorf("changing the password of redis pod %s: %w", rp.Name, err)
+	}
+	r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Infof("Changed the password of redis pod %s", rp.Name)
+	return true, nil
+}
+
+// unknownPasswordError tells the user how to recover the pods that refuse
+// the password.
+func unknownPasswordError(rf *redisfailoverv1.RedisFailover, unknown []string) error {
+	refuse := "redis pod %s refuses the configured password and the operator doesn't know the one it runs with"
+	if len(unknown) > 1 {
+		refuse = "redis pods %s refuse the configured password and the operator doesn't know the ones they run with"
+	}
+	hint := "; put the previous password back in the secret until the RedisFailover is healthy, then change it again"
+	if rf.Spec.Auth.SecretPath == "" {
+		hint = "; set auth.secretPath to a Secret with the previous password until the RedisFailover is healthy, then remove it again"
+	}
+	return fmt.Errorf(refuse+hint, strings.Join(unknown, ", "))
 }
 
 // changePassword logs in to the Redis at ip with each candidate in turn,
