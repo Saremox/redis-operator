@@ -97,7 +97,8 @@ func TestGetSentinelFailoverErrors(t *testing.T) {
 
 	startRawSentinel(t, "127.0.0.3", "-ERR No such master with that name\r\n")
 	_, err = newTestClient().GetSentinelFailover("127.0.0.3")
-	require.EqualError(t, err, "ERR No such master with that name")
+	require.EqualError(t, err, "SENTINEL MASTER: ERR No such master with that name")
+	assert.True(t, IsNoSuchMasterError(err))
 }
 
 // startSentinelOnAddr starts a Sentinel on ip:sentinelPort that monitors
@@ -185,7 +186,7 @@ func TestGetSentinelFailoverWithoutTheMaster(t *testing.T) {
 
 	_, err := newTestClient().GetSentinelFailover(sentinelIP)
 
-	require.EqualError(t, err, "ERR No such master with that name")
+	require.EqualError(t, err, "SENTINEL MASTER: ERR No such master with that name")
 	assert.True(t, IsNoSuchMasterError(err))
 	assert.False(t, IsUnreachableError(err))
 	assert.False(t, IsNoSuchMasterError(nil))

@@ -569,7 +569,7 @@ func (r *RedisFailoverHealer) revisionTemplate(rf *redisfailoverv1.RedisFailover
 		} `json:"spec"`
 	}
 	if err := json.Unmarshal(cr.Data.Raw, &data); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode controllerrevision %s/%s: %w", rf.Namespace, revision, err)
 	}
 	return &data.Spec.Template, nil
 }

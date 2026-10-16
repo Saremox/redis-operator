@@ -367,6 +367,13 @@ func TestGetNumberMastersAndGetMasterIPLogAPodThatIsNotReadyAtDebug(t *testing.T
 	assertRFFields(t, logs.all())
 }
 
+// replyError is an error reply of Redis. The client wraps it with the command.
+type replyError string
+
+func (e replyError) Error() string { return string(e) }
+
+func (replyError) RedisError() {}
+
 func TestSetOldestAsMasterLogLevels(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -375,6 +382,7 @@ func TestSetOldestAsMasterLogLevels(t *testing.T) {
 	}{
 		{name: "a pod that does not answer", err: errors.New("dial tcp 10.0.0.1:6379: connect: connection refused"), expLevel: "warning"},
 		{name: "a pod that loads its dataset", err: errors.New("LOADING Redis is loading the dataset in memory"), expLevel: "warning"},
+		{name: "a pod that loads its dataset, wrapped reply", err: fmt.Errorf("SLAVEOF NO ONE: %w", replyError("LOADING Redis is loading the dataset in memory")), expLevel: "warning"},
 		{name: "a command error", err: errors.New("ERR unknown command"), expLevel: "error"},
 	}
 	for _, test := range tests {
@@ -420,6 +428,7 @@ func TestSetMasterOnAllLogLevels(t *testing.T) {
 		{name: "a pod that does not answer is skipped", isMasterErr: errors.New("i/o timeout"), expLevel: "warning"},
 		{name: "a pod that does not answer REPLICAOF", replicaErr: errors.New("connection refused"), expLevel: "warning"},
 		{name: "a pod that loads its dataset", replicaErr: errors.New("LOADING Redis is loading the dataset in memory"), expLevel: "warning"},
+		{name: "a pod that loads its dataset, wrapped reply", replicaErr: fmt.Errorf("SLAVEOF: %w", replyError("LOADING Redis is loading the dataset in memory")), expLevel: "warning"},
 		{name: "a command error", replicaErr: errors.New("ERR unknown command"), expLevel: "error"},
 	}
 	for _, test := range tests {

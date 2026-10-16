@@ -87,7 +87,7 @@ func TestPodServicePodResizeSupportDiscoveryError(t *testing.T) {
 		return true, nil, errors.New("discovery down")
 	})
 	_, err := k8s.NewPodService(client, log.Dummy, metrics.Dummy).PodResizeSupport()
-	assert.EqualError(t, err, "discovery down")
+	assert.EqualError(t, err, "get the server version: discovery down")
 }
 
 func TestStatefulSetServiceGetControllerRevision(t *testing.T) {

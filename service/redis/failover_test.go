@@ -110,7 +110,7 @@ func TestFailoverToRefusesATargetThatIsNotAReplica(t *testing.T) {
 	err := newTestClient().FailoverTo(master.IP, strconv.Itoa(master.Port), "", "127.0.0.3", time.Second)
 
 	require.Error(t, err)
-	assert.Regexp(t, "^ERR FAILOVER target", err.Error())
+	assert.True(t, ReplyHasPrefix(err, "ERR FAILOVER target"), err.Error())
 }
 
 func TestFailoverToRenamedCommand(t *testing.T) {
@@ -127,7 +127,7 @@ func TestFailoverToRenamedCommand(t *testing.T) {
 	err = newTestClient().FailoverTo(master.IP, strconv.Itoa(master.Port), "", "127.0.0.2", time.Second)
 
 	require.Error(t, err)
-	assert.Regexp(t, "^ERR unknown command", err.Error())
+	assert.True(t, ReplyHasPrefix(err, "ERR unknown command"), err.Error())
 }
 
 func TestFailoverToConnectionError(t *testing.T) {
@@ -276,7 +276,7 @@ func TestFailoverAbortWithoutAFailover(t *testing.T) {
 	err := newTestClient().FailoverAbort(master.IP, strconv.Itoa(master.Port), "")
 
 	require.Error(t, err)
-	assert.Regexp(t, "^ERR No failover in progress", err.Error())
+	assert.True(t, ReplyHasPrefix(err, "ERR No failover in progress"), err.Error())
 }
 
 func TestFailoverAbortConnectionError(t *testing.T) {

@@ -586,6 +586,28 @@ func TestRFControllerProcessRejectsAnObjectOfAnotherType(t *testing.T) {
 	assert.Empty(t, h.forgotten())
 }
 
+type failingIndexer struct{ cache.Indexer }
+
+func (failingIndexer) GetByKey(string) (any, bool, error) {
+	return nil, false, errors.New("cache down")
+}
+
+type failingIndexInformer struct{ cache.SharedIndexInformer }
+
+func (failingIndexInformer) GetIndexer() cache.Indexer { return failingIndexer{} }
+
+func TestRFControllerProcessWrapsTheCacheError(t *testing.T) {
+	h := &recordingHandler{}
+	c, err := newRFController(h, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, log.Dummy)
+	require.NoError(t, err)
+	c.rfInformer = failingIndexInformer{c.rfInformer}
+
+	err = c.process(context.Background(), "ns/rf")
+
+	require.EqualError(t, err, "get ns/rf from the informer cache: cache down")
+	assert.Zero(t, h.count())
+}
+
 func TestRFControllerKeepsLiveRedisFailovers(t *testing.T) {
 	h := &recordingHandler{}
 	c, err := newRFController(h, staticRFs(), newPodListWatch(fakekubernetes.NewClientset()), staticSecrets(), time.Hour, 1, nil, metrics.Dummy, log.Dummy)

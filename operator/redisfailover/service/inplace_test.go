@@ -522,7 +522,7 @@ func TestResizePodInPlaceErrors(t *testing.T) {
 			ms.On("GetPod", "testns", resizePod).Return(stalePod(old, old), nil)
 			ms.On("GetControllerRevision", "testns", "old").Return(&appsv1.ControllerRevision{Data: runtime.RawExtension{Raw: []byte("{")}}, nil)
 		})
-		assert.Error(t, err)
+		assert.ErrorContains(t, err, "decode controllerrevision testns/old: ")
 	})
 
 	for name, pod := range map[string]*corev1.Pod{"requesting the resize": stalePod(old, old), "recording the request": stalePod(new, old)} {

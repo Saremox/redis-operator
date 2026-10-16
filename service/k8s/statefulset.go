@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -55,9 +56,9 @@ func (s *StatefulSetService) GetStatefulSet(namespace, name string) (*appsv1.Sta
 	statefulSet, err := s.kubeClient.AppsV1().StatefulSets(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "StatefulSet", name, "GET", err, s.metricsRecorder)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get statefulset %s/%s: %w", namespace, name, err)
 	}
-	return statefulSet, err
+	return statefulSet, nil
 }
 
 // GetStatefulSetPods will give a list of pods that are managed by the statefulset.
@@ -71,7 +72,7 @@ func (s *StatefulSetService) GetStatefulSetPods(namespace, name string) (*corev1
 	selector := labels.Set(statefulSet.Spec.Selector.MatchLabels).String()
 	pods, err := s.kubeClient.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list the pods of statefulset %s/%s: %w", namespace, name, err)
 	}
 	owned := pods.Items[:0]
 	for _, pod := range pods.Items {
@@ -103,10 +104,10 @@ func (s *StatefulSetService) CreateStatefulSet(namespace string, statefulSet *ap
 	_, err := s.kubeClient.AppsV1().StatefulSets(namespace).Create(context.TODO(), statefulSet, metav1.CreateOptions{})
 	recordMetrics(namespace, "StatefulSet", statefulSet.GetName(), "CREATE", err, s.metricsRecorder)
 	if err != nil {
-		return err
+		return fmt.Errorf("create statefulset %s/%s: %w", namespace, statefulSet.Name, err)
 	}
 	s.logger.WithField("namespace", namespace).WithField("statefulSet", statefulSet.ObjectMeta.Name).Debugf("statefulSet created")
-	return err
+	return nil
 }
 
 // UpdateStatefulSet will update the given statefulset.
@@ -114,10 +115,10 @@ func (s *StatefulSetService) UpdateStatefulSet(namespace string, statefulSet *ap
 	_, err := s.kubeClient.AppsV1().StatefulSets(namespace).Update(context.TODO(), statefulSet, metav1.UpdateOptions{})
 	recordMetrics(namespace, "StatefulSet", statefulSet.GetName(), "UPDATE", err, s.metricsRecorder)
 	if err != nil {
-		return err
+		return fmt.Errorf("update statefulset %s/%s: %w", namespace, statefulSet.Name, err)
 	}
 	s.logger.WithField("namespace", namespace).WithField("statefulSet", statefulSet.ObjectMeta.Name).Debugf("statefulSet updated")
-	return err
+	return nil
 }
 
 // CreateOrUpdateStatefulSet will update the statefulset or create it if does not exist.
@@ -174,7 +175,7 @@ func (s *StatefulSetService) updateStatefulSetPVCs(namespace string, storedState
 	selector := labels.Set(storedStatefulSet.Spec.Selector.MatchLabels).String()
 	pvcs, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
-		return err
+		return fmt.Errorf("list the pvcs of statefulset %s/%s: %w", namespace, storedStatefulSet.Name, err)
 	}
 	for i := range pvcs.Items {
 		pvc := &pvcs.Items[i]
@@ -190,18 +191,18 @@ func (s *StatefulSetService) updateStatefulSetPVCs(namespace string, storedState
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				current, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Get(context.TODO(), pvc.Name, metav1.GetOptions{})
 				if err != nil {
-					return err
+					return fmt.Errorf("get: %w", err)
 				}
 				current.OwnerReferences = withoutOwners(current.OwnerReferences, removedOwners)
 				updated, err := s.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Update(context.TODO(), current, metav1.UpdateOptions{})
 				if err != nil {
-					return err
+					return fmt.Errorf("update: %w", err)
 				}
 				pvc = updated
 				return nil
 			})
 			if err != nil {
-				return err
+				return fmt.Errorf("remove the owners of pvc %s/%s: %w", namespace, pvc.Name, err)
 			}
 		}
 		// A storage class can refuse the expansion, so a failed resize is
@@ -252,19 +253,28 @@ func (s *StatefulSetService) DeleteStatefulSet(namespace, name string) error {
 	propagation := metav1.DeletePropagationForeground
 	err := s.kubeClient.AppsV1().StatefulSets(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{PropagationPolicy: &propagation})
 	recordMetrics(namespace, "StatefulSet", name, "DELETE", err, s.metricsRecorder)
-	return err
+	if err != nil {
+		return fmt.Errorf("delete statefulset %s/%s: %w", namespace, name, err)
+	}
+	return nil
 }
 
 // ListStatefulSets will retrieve a list of statefulset in the given namespace.
 func (s *StatefulSetService) ListStatefulSets(namespace string) (*appsv1.StatefulSetList, error) {
 	stsList, err := s.kubeClient.AppsV1().StatefulSets(namespace).List(context.TODO(), metav1.ListOptions{})
 	recordMetrics(namespace, "StatefulSet", metrics.NOT_APPLICABLE, "LIST", err, s.metricsRecorder)
-	return stsList, err
+	if err != nil {
+		return stsList, fmt.Errorf("list statefulsets in %s: %w", namespace, err)
+	}
+	return stsList, nil
 }
 
 // GetControllerRevision returns the named ControllerRevision.
 func (s *StatefulSetService) GetControllerRevision(namespace, name string) (*appsv1.ControllerRevision, error) {
 	revision, err := s.kubeClient.AppsV1().ControllerRevisions(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "ControllerRevision", name, "GET", err, s.metricsRecorder)
-	return revision, err
+	if err != nil {
+		return revision, fmt.Errorf("get controllerrevision %s/%s: %w", namespace, name, err)
+	}
+	return revision, nil
 }

@@ -136,7 +136,7 @@ func (l logger) WithFields(values map[string]any) Logger {
 func (l *logger) Set(level Level) error {
 	leLev, err := logrus.ParseLevel(string(level))
 	if err != nil {
-		return err
+		return fmt.Errorf("set the log level: %w", err)
 	}
 	l.entry.Logger.Level = leLev
 	return nil

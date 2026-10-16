@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -44,9 +45,9 @@ func (s *ServiceAccountService) GetServiceAccount(namespace, name string) (*core
 	serviceAccount, err := s.kubeClient.CoreV1().ServiceAccounts(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "ServiceAccount", name, "GET", err, s.metricsRecorder)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get serviceaccount %s/%s: %w", namespace, name, err)
 	}
-	return serviceAccount, err
+	return serviceAccount, nil
 }
 
 // CreateServiceAccount creates the given ServiceAccount.
@@ -54,7 +55,7 @@ func (s *ServiceAccountService) CreateServiceAccount(namespace string, serviceAc
 	_, err := s.kubeClient.CoreV1().ServiceAccounts(namespace).Create(context.TODO(), serviceAccount, metav1.CreateOptions{})
 	recordMetrics(namespace, "ServiceAccount", serviceAccount.GetName(), "CREATE", err, s.metricsRecorder)
 	if err != nil {
-		return err
+		return fmt.Errorf("create serviceaccount %s/%s: %w", namespace, serviceAccount.Name, err)
 	}
 	s.logger.WithField("namespace", namespace).WithField("serviceAccount", serviceAccount.Name).Debugf("serviceAccount created")
 	return nil
@@ -66,7 +67,7 @@ func (s *ServiceAccountService) UpdateServiceAccount(namespace string, serviceAc
 	_, err := s.kubeClient.CoreV1().ServiceAccounts(namespace).Update(context.TODO(), serviceAccount, metav1.UpdateOptions{})
 	recordMetrics(namespace, "ServiceAccount", serviceAccount.GetName(), "UPDATE", err, s.metricsRecorder)
 	if err != nil {
-		return err
+		return fmt.Errorf("update serviceaccount %s/%s: %w", namespace, serviceAccount.Name, err)
 	}
 	s.logger.WithField("namespace", namespace).WithField("serviceAccount", serviceAccount.Name).Debugf("serviceAccount updated")
 	return nil
@@ -105,12 +106,18 @@ func (s *ServiceAccountService) CreateOrUpdateServiceAccount(namespace string, s
 func (s *ServiceAccountService) DeleteServiceAccount(namespace, name string) error {
 	err := s.kubeClient.CoreV1().ServiceAccounts(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 	recordMetrics(namespace, "ServiceAccount", name, "DELETE", err, s.metricsRecorder)
-	return err
+	if err != nil {
+		return fmt.Errorf("delete serviceaccount %s/%s: %w", namespace, name, err)
+	}
+	return nil
 }
 
 // ListServiceAccounts returns all the ServiceAccounts of the namespace.
 func (s *ServiceAccountService) ListServiceAccounts(namespace string) (*corev1.ServiceAccountList, error) {
 	objects, err := s.kubeClient.CoreV1().ServiceAccounts(namespace).List(context.TODO(), metav1.ListOptions{})
 	recordMetrics(namespace, "ServiceAccount", metrics.NOT_APPLICABLE, "LIST", err, s.metricsRecorder)
-	return objects, err
+	if err != nil {
+		return objects, fmt.Errorf("list serviceaccounts in %s: %w", namespace, err)
+	}
+	return objects, nil
 }

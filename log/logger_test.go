@@ -190,7 +190,7 @@ func TestLoggerSet(t *testing.T) {
 	require.Len(t, lines, 1)
 	assert.Equal(t, "kept", lines[0].Msg)
 
-	require.Error(t, l.Set("verbose"))
+	require.EqualError(t, l.Set("verbose"), `set the log level: not a valid logrus Level: "verbose"`)
 	assert.Equal(t, logrus.WarnLevel, l.entry.Logger.GetLevel(), "an unknown level keeps the level")
 }
 

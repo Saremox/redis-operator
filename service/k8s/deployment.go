@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -47,9 +48,9 @@ func (d *DeploymentService) GetDeployment(namespace, name string) (*appsv1.Deplo
 	deployment, err := d.kubeClient.AppsV1().Deployments(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "Deployment", name, "GET", err, d.metricsRecorder)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get deployment %s/%s: %w", namespace, name, err)
 	}
-	return deployment, err
+	return deployment, nil
 }
 
 // GetDeploymentPods will retrieve the pods managed by a given deployment.
@@ -61,12 +62,12 @@ func (d *DeploymentService) GetDeploymentPods(namespace, name string) (*corev1.P
 	deployment, err := d.kubeClient.AppsV1().Deployments(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "Deployment", name, "GET", err, d.metricsRecorder)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get deployment %s/%s: %w", namespace, name, err)
 	}
 	selector := labels.Set(deployment.Spec.Selector.MatchLabels).String()
 	pods, err := d.kubeClient.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list the pods of deployment %s/%s: %w", namespace, name, err)
 	}
 	owned := pods.Items[:0]
 	for _, pod := range pods.Items {
@@ -87,10 +88,10 @@ func (d *DeploymentService) CreateDeployment(namespace string, deployment *appsv
 	_, err := d.kubeClient.AppsV1().Deployments(namespace).Create(context.TODO(), deployment, metav1.CreateOptions{})
 	recordMetrics(namespace, "Deployment", deployment.GetName(), "CREATE", err, d.metricsRecorder)
 	if err != nil {
-		return err
+		return fmt.Errorf("create deployment %s/%s: %w", namespace, deployment.Name, err)
 	}
 	d.logger.WithField("namespace", namespace).WithField("deployment", deployment.ObjectMeta.Name).Debugf("deployment created")
-	return err
+	return nil
 }
 
 // UpdateDeployment will update the given deployment.
@@ -98,10 +99,10 @@ func (d *DeploymentService) UpdateDeployment(namespace string, deployment *appsv
 	_, err := d.kubeClient.AppsV1().Deployments(namespace).Update(context.TODO(), deployment, metav1.UpdateOptions{})
 	recordMetrics(namespace, "Deployment", deployment.GetName(), "UPDATE", err, d.metricsRecorder)
 	if err != nil {
-		return err
+		return fmt.Errorf("update deployment %s/%s: %w", namespace, deployment.Name, err)
 	}
 	d.logger.WithField("namespace", namespace).WithField("deployment", deployment.ObjectMeta.Name).Debugf("deployment updated")
-	return err
+	return nil
 }
 
 // CreateOrUpdateDeployment will update the given deployment or create it if does not exist.
@@ -135,12 +136,18 @@ func (d *DeploymentService) DeleteDeployment(namespace, name string) error {
 	propagation := metav1.DeletePropagationForeground
 	err := d.kubeClient.AppsV1().Deployments(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{PropagationPolicy: &propagation})
 	recordMetrics(namespace, "Deployment", name, "DELETE", err, d.metricsRecorder)
-	return err
+	if err != nil {
+		return fmt.Errorf("delete deployment %s/%s: %w", namespace, name, err)
+	}
+	return nil
 }
 
 // ListDeployments will give all the deployments on a given namespace.
 func (d *DeploymentService) ListDeployments(namespace string) (*appsv1.DeploymentList, error) {
 	deployments, err := d.kubeClient.AppsV1().Deployments(namespace).List(context.TODO(), metav1.ListOptions{})
 	recordMetrics(namespace, "Deployment", metrics.NOT_APPLICABLE, "LIST", err, d.metricsRecorder)
-	return deployments, err
+	if err != nil {
+		return deployments, fmt.Errorf("list deployments in %s: %w", namespace, err)
+	}
+	return deployments, nil
 }

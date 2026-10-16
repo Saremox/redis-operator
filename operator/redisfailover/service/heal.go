@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -179,7 +178,7 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 // redisErrorLogf logs at Warning when the pod does not answer or loads its
 // dataset, because a later reconcile repeats the change.
 func redisErrorLogf(logger log.Logger, err error) func(string, ...any) {
-	if redis.IsUnreachableError(err) || strings.HasPrefix(err.Error(), "LOADING") {
+	if redis.IsUnreachableError(err) || redis.ReplyHasPrefix(err, "LOADING") {
 		return logger.Warningf
 	}
 	return logger.Errorf

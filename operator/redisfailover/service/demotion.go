@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime/debug"
 	"slices"
 	"sync"
@@ -177,10 +178,10 @@ func (d *endpointAwareDisconnector) podGone(namespace string, pod corev1.Pod) bo
 
 func (d *endpointAwareDisconnector) waitForEndpointRemoval(namespace, service, ip string) error {
 	selector := metav1.ListOptions{LabelSelector: discoveryv1.LabelServiceName + "=" + service}
-	return wait.PollUntilContextTimeout(context.Background(), endpointPollInterval, d.timeout, true, func(ctx context.Context) (bool, error) {
+	err := wait.PollUntilContextTimeout(context.Background(), endpointPollInterval, d.timeout, true, func(ctx context.Context) (bool, error) {
 		endpointSlices, err := d.kubeClient.DiscoveryV1().EndpointSlices(namespace).List(ctx, selector)
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("list endpointslices: %w", err)
 		}
 		for _, endpointSlice := range endpointSlices.Items {
 			for _, endpoint := range endpointSlice.Endpoints {
@@ -191,4 +192,8 @@ func (d *endpointAwareDisconnector) waitForEndpointRemoval(namespace, service, i
 		}
 		return true, nil
 	})
+	if err != nil {
+		return fmt.Errorf("wait for the endpoint removal: %w", err)
+	}
+	return nil
 }
