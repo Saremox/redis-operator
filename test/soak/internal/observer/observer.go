@@ -552,35 +552,14 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 	o.judgeAutoscale(now, s, generation, userChange)
 	all := evaluate(s)
 	o.dropInvariants(all)
-	var checks []check
-	for _, c := range all {
-		if o.reportOnly[c.invariant] {
-			o.note(now, c)
-			continue
-		}
-		o.findings.WithLabelValues(c.invariant)
-		checks = append(checks, c)
-	}
-	var failing []string
+	checks := o.findingChecks(now, all)
 	// A recreated RedisFailover has new Sentinels behind a new Service: its
 	// Sentinel path is dropped, with its clients, for a round at least.
 	recreated := o.rfUID != "" && o.rfUID != s.uid
 	if recreated {
 		o.sentinelUp = false
 	}
-	allOK := true
-	for _, c := range checks {
-		o.ok.WithLabelValues(c.invariant).Set(gauge(c.err == nil))
-		allOK = allOK && c.err == nil
-		if c.err != nil {
-			failing = append(failing, c.invariant)
-		}
-		// The Sentinel Service routes to Ready pods only.
-		if c.invariant == invSentinelAgreement && c.err == nil && !recreated &&
-			podsReady("sentinel", sentinelPods(s), s.sentinelReplicas) == nil {
-			o.sentinelUp = true
-		}
-	}
+	failing, allOK := o.recordChecks(s, checks, recreated)
 	o.sentinelUp = o.sentinelUp && s.sentinel
 	for _, e := range o.tracker.update(now, checks, converged) {
 		o.record(e)
@@ -603,12 +582,53 @@ func (o *Observer) apply(now time.Time, s snapshot, generation int64, converged 
 	if _, err := s.master(); err == nil {
 		v.masterIP = o.master.IP
 	}
-	for _, p := range s.redis {
-		if p.IP != "" {
-			v.redis = append(v.redis, PodAddr{Name: p.Name, Addr: net.JoinHostPort(p.IP, strconv.Itoa(s.port))})
+	v.redis = redisAddrs(s)
+	o.view.Store(v)
+}
+
+// findingChecks notes the checks of the report-only invariants, and returns
+// the others, whose violations are findings.
+func (o *Observer) findingChecks(now time.Time, all []check) []check {
+	var checks []check
+	for _, c := range all {
+		if o.reportOnly[c.invariant] {
+			o.note(now, c)
+			continue
+		}
+		o.findings.WithLabelValues(c.invariant)
+		checks = append(checks, c)
+	}
+	return checks
+}
+
+// recordChecks sets the gauge of each check, and the Sentinel path once the
+// Sentinels agree. It returns the failing invariants, and whether all hold.
+func (o *Observer) recordChecks(s snapshot, checks []check, recreated bool) (failing []string, allOK bool) {
+	allOK = true
+	for _, c := range checks {
+		o.ok.WithLabelValues(c.invariant).Set(gauge(c.err == nil))
+		allOK = allOK && c.err == nil
+		if c.err != nil {
+			failing = append(failing, c.invariant)
+		}
+		// The Sentinel Service routes to Ready pods only.
+		if c.invariant == invSentinelAgreement && c.err == nil && !recreated &&
+			podsReady("sentinel", sentinelPods(s), s.sentinelReplicas) == nil {
+			o.sentinelUp = true
 		}
 	}
-	o.view.Store(v)
+	return failing, allOK
+}
+
+// redisAddrs returns the address of each redis pod with an IP.
+func redisAddrs(s snapshot) []PodAddr {
+	var addrs []PodAddr
+	for _, p := range s.redis {
+		if p.IP != "" {
+			addrs = append(addrs, PodAddr{Name: p.Name, Addr: net.JoinHostPort(p.IP, strconv.Itoa(s.port))})
+		}
+	}
+	return addrs
 }
 
 // externalWindow keeps a window open while a disturbance outside the instance
