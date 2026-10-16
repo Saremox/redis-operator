@@ -51,6 +51,18 @@ func (r *RedisFailover) validateAutoscaling() error {
 	if a == nil {
 		return nil
 	}
+	if err := validateAutoscalingSettings(a); err != nil {
+		return err
+	}
+	if a.Mode == AutoscalingModeOff {
+		return nil
+	}
+	return r.validateAutoscalingMemory(a)
+}
+
+// validateAutoscalingSettings sets the default mode and workload and checks
+// the fields that each mode accepts.
+func validateAutoscalingSettings(a *AutoscalingSettings) error {
 	if a.Mode == "" {
 		a.Mode = AutoscalingModeOff
 	}
@@ -70,9 +82,12 @@ func (r *RedisFailover) validateAutoscaling() error {
 	if ra := a.RecreateAfter; ra != nil && ra.Duration != 0 && ra.Duration < minRecreateAfter {
 		return fmt.Errorf("redis.autoscaling.recreateAfter %s must be 0s or at least %s", ra.Duration, minRecreateAfter)
 	}
-	if a.Mode == AutoscalingModeOff {
-		return nil
-	}
+	return nil
+}
+
+// validateAutoscalingMemory checks the memory rules of the modes Recommend
+// and Auto.
+func (r *RedisFailover) validateAutoscalingMemory(a *AutoscalingSettings) error {
 	if r.Bootstrapping() {
 		return fmt.Errorf("redis.autoscaling.mode %s is not available with bootstrapNode, because the RedisFailover has no master to sample", a.Mode)
 	}
