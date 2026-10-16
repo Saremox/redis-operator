@@ -91,3 +91,27 @@ func TestNewDescriptions(t *testing.T) {
 		}
 	}
 }
+
+// New registers the runtime metrics that show a stall of the tester process:
+// the GC pauses, the scheduler latencies, the memory classes, the goroutines
+// and the process CPU time.
+func TestNewRuntimeMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	New(reg, time.Minute)
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, f := range families {
+		got[f.GetName()] = true
+	}
+	for _, name := range []string{
+		"go_gc_pauses_seconds", "go_sched_latencies_seconds", "go_memory_classes_heap_objects_bytes",
+		"go_sched_goroutines_goroutines", "go_goroutines", "process_cpu_seconds_total",
+	} {
+		if !got[name] {
+			t.Errorf("%s is not registered", name)
+		}
+	}
+}

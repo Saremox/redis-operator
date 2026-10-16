@@ -61,6 +61,12 @@ type Metrics struct {
 	ChaosInProgress      *prometheus.GaugeVec
 	ChaosOperatorDown    *prometheus.HistogramVec
 	ChaosEvictionBlocked prometheus.Histogram
+
+	// ObserverRound, ObserverLateness and ProcessStalls tell a delay of the
+	// tester from a delay of the instances.
+	ObserverRound    *prometheus.HistogramVec
+	ObserverLateness *prometheus.HistogramVec
+	ProcessStalls    prometheus.Counter
 }
 
 // New registers the metrics. Convergence histograms reach up to
@@ -75,6 +81,7 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 	m.addMutation(labels, convergenceTimeout)
 	m.addData(labels)
 	m.addChaos(convergenceTimeout)
+	m.addTester(labels)
 	reg.MustRegister(
 		m.ProbeTotal, m.ProbeDuration, m.Writable, m.Readable, m.LastSuccess, m.OutageDuration, m.BuildInfo,
 		m.ExpectedNotWritable, m.ExpectedNotWritableSeconds,
@@ -83,7 +90,11 @@ func New(reg prometheus.Registerer, convergenceTimeout time.Duration) *Metrics {
 		m.WaitAckedReplicas, m.OOMRejections, m.LostWrites, m.UnexpectedLost, m.LedgerVerified,
 		m.VersionTransition, m.VersionMixed,
 		m.ChaosTotal, m.ChaosConverge, m.ChaosInProgress, m.ChaosOperatorDown, m.ChaosEvictionBlocked,
-		collectors.NewGoCollector(),
+		m.ObserverRound, m.ObserverLateness, m.ProcessStalls,
+		// The GC pauses and the scheduler latencies show a stall of the
+		// tester process.
+		collectors.NewGoCollector(collectors.WithGoCollectorRuntimeMetrics(
+			collectors.MetricsGC, collectors.MetricsMemory, collectors.MetricsScheduler)),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 	return m
@@ -294,6 +305,27 @@ func (m *Metrics) addChaos(convergenceTimeout time.Duration) {
 		Name:      "chaos_eviction_blocked_seconds",
 		Help:      "How long a PodDisruptionBudget blocked a drain's eviction of a pod.",
 		Buckets:   []float64{1, 2, 5, 10, 20, 30, 60, 120, 300, 600},
+	})
+}
+
+// addTester creates the metrics of the delays of the tester itself.
+func (m *Metrics) addTester(labels func(...string) []string) {
+	m.ObserverRound = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "observer_round_seconds",
+		Help:      "Duration of an observer round: the reads of the API and of the pods, and the checks.",
+		Buckets:   []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 30},
+	}, labels())
+	m.ObserverLateness = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "observer_round_lateness_seconds",
+		Help:      "Time from the tick of an observer round to its start.",
+		Buckets:   []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10},
+	}, labels())
+	m.ProcessStalls = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "process_stalls_total",
+		Help:      "Ticks of the stall detector that came more than 1 second late: the tester process did not run.",
 	})
 }
 

@@ -1,0 +1,132 @@
+package observer
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net"
+	"sync"
+	"time"
+)
+
+// slow is the duration above which the observer logs a round or a read at
+// warn level.
+const slow = time.Second
+
+// The phases of a failed read.
+const (
+	// phaseDial is a read without a connection: the dial failed or did not
+	// end in time.
+	phaseDial = "dial"
+	// phaseReply is a read whose connection was made, but no reply came.
+	phaseReply = "reply"
+	// phaseContext is a read that the end of the round's context stopped.
+	phaseContext = "context"
+)
+
+// read is one read of a pod. It records the dials of its client, because
+// go-redis returns the same context error for a dial and a reply that
+// did not end in time.
+type read struct {
+	kind, pod, ip string
+	start         time.Time
+
+	mu        sync.Mutex
+	dials     int
+	dialStart time.Time
+	// dialEnd is zero while a dial runs.
+	dialEnd   time.Time
+	connected bool
+}
+
+func (o *Observer) startRead(kind, pod, ip string) *read {
+	return &read{kind: kind, pod: pod, ip: ip, start: o.now()}
+}
+
+// dialer wraps dial. go-redis dials in a goroutine of its own, which can
+// continue after the read returned.
+func (r *read) dialer(dial func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		r.mu.Lock()
+		if r.dials == 0 {
+			r.dialStart = time.Now()
+		}
+		r.dials++
+		r.dialEnd = time.Time{}
+		r.mu.Unlock()
+		c, err := dial(ctx, network, addr)
+		r.mu.Lock()
+		r.dialEnd = time.Now()
+		r.connected = r.connected || err == nil
+		r.mu.Unlock()
+		return c, err
+	}
+}
+
+// phase returns the phase in which a read failed with err.
+func (r *read) phase(err error) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch {
+	case errors.Is(err, context.Canceled):
+		// Only the end of the round's context cancels a read.
+		return phaseContext
+	case r.connected:
+		return phaseReply
+	default:
+		return phaseDial
+	}
+}
+
+// dialTime returns the time from the first dial of r to the end of its last
+// dial, or to now while a dial runs.
+func (r *read) dialTime() (time.Duration, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.dials == 0 {
+		return 0, 0
+	}
+	end := r.dialEnd
+	if end.IsZero() {
+		end = time.Now()
+	}
+	return end.Sub(r.dialStart), r.dials
+}
+
+// endRead logs r when it failed with err or was slow.
+func (o *Observer) endRead(r *read, err error) {
+	d := o.now().Sub(r.start)
+	if err == nil && d <= slow {
+		return
+	}
+	phase, reason := "", ""
+	if err != nil {
+		phase, reason = r.phase(err), err.Error()
+	}
+	dial, dials := r.dialTime()
+	o.log.Warn("observer read slow", "pod", r.pod, "ip", r.ip, "kind", r.kind, "phase", phase,
+		"duration_seconds", d.Seconds(), "dial_seconds", dial.Seconds(), "dials", dials, "error", reason)
+}
+
+// timeRound records the lateness and the phases of a round. tick is when the
+// round was due, collected when the reads of the pods ended.
+func (o *Observer) timeRound(tick, start, collected, end time.Time, s snapshot) {
+	late, d := start.Sub(tick), end.Sub(start)
+	o.roundTime.Observe(d.Seconds())
+	o.lateness.Observe(max(late, 0).Seconds())
+	level := slog.LevelDebug
+	if d > slow || late > slow {
+		level = slog.LevelWarn
+	}
+	// Each round is due every few seconds in each instance: do not build
+	// the attributes for a disabled level.
+	if !o.log.Enabled(context.Background(), level) {
+		return
+	}
+	msg := "observer round"
+	if level == slog.LevelWarn {
+		msg = "observer round slow"
+	}
+	o.log.Log(context.Background(), level, msg, "lateness_seconds", late.Seconds(), "duration_seconds", d.Seconds(),
+		"kube_seconds", s.kubeTime.Seconds(), "read_seconds", s.readTime.Seconds(), "apply_seconds", end.Sub(collected).Seconds())
+}

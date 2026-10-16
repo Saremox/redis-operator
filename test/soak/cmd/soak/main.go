@@ -82,6 +82,7 @@ func run(configPath, listen string, log *slog.Logger) error {
 
 	var wg sync.WaitGroup
 	wg.Go(func() { reportBuildInfo(ctx, kube, cfg.Operator, m, log) })
+	wg.Go(func() { detectStalls(ctx, m.ProcessStalls, log) })
 	var lane []chaos.Instance
 	for _, in := range cfg.Instances {
 		o, a := observers[in.Name], sources[in.Name]

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"time"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/test/soak/internal/customconfig"
@@ -85,6 +86,9 @@ type snapshot struct {
 	sentinels        []sentinelPod
 	// endpoints are the ready addresses of the rfrm EndpointSlices.
 	endpoints []string
+	// kubeTime and readTime are how long the reads of the API and of the
+	// pods took.
+	kubeTime, readTime time.Duration
 }
 
 type check struct {
