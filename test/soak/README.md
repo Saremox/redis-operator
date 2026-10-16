@@ -470,6 +470,14 @@ empty `status.autoscaling` is mode `Off` or a lost state, and starts the
 budget again. An unknown pod limit or `maxmemory` keeps the last known
 limit and gives no `autoscale_maxmemory` check.
 
+At its start, the tester adopts the step of the status. Only a step in
+`Applying` has its first result still to come, because `Held` is a result.
+A `Done` step gives the cooldown from `lastStep`. A `Reverted` step gives
+the back-off up to `retryAfter`, or 1 hour after `lastStep` without a
+`retryAfter` that parses, which is an `autoscale_step_rate` violation. The
+judge follows the phase also without `lastStep`, because the held step of a
+lost state has none.
+
 A user path that may do the change excuses it. The excuse covers the round
 of the user path and the next round, because a change can show one round
 late. For `autoscale_maxmemory`, a user path that may shrink a pod excuses

@@ -1,6 +1,7 @@
 package autoscale
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -351,7 +352,7 @@ func TestBadStatus(t *testing.T) {
 		{"no lastStep in Applying", []Round{at(0), withStatus(at(1), PhaseApplying, "", "192Mi")},
 			[]string{JudgeStatus}},
 		{"no lastStep in Reverted", []Round{at(0), withStatus(at(1), PhaseReverted, "", "")},
-			[]string{JudgeStatus}},
+			[]string{JudgeStatus, JudgeRate}},
 		// A lost state gives a held step without lastStep.
 		{"no lastStep in Held", []Round{at(0), withStatus(at(1), PhaseHeld, "", "192Mi")}, nil},
 		{"lastStep before the last step", []Round{at(0), withLimit(stepped(at(10), 9, PhaseDone, "192Mi"), 192*mi),
@@ -417,6 +418,102 @@ func spec(r Round, limit int64) Round {
 func noMax(r Round) Round {
 	r.Max = 0
 	return r
+}
+
+// The state machine of the judge: the tester adopts each phase, with and
+// without lastStep, and the next round shows each phase, with the same
+// lastStep, a later one, or none.
+func TestStateMachine(t *testing.T) {
+	phases := []string{"", "Idle", PhaseApplying, PhaseDone, PhaseReverted, PhaseHeld, "Foo"}
+	results := map[string]bool{ResultDone: true, ResultReverted: true, ResultHeld: true}
+	for _, adoptPhase := range phases {
+		for _, adoptStep := range []string{minuteOf(0), ""} {
+			for _, next := range phases {
+				for _, nextStep := range []string{"same", "later", "none"} {
+					name := fmt.Sprintf("adopt %q %q, next %q %s", adoptPhase, adoptStep, next, nextStep)
+					round := func(m float64, phase, lastStep string) Round {
+						r := withLimit(at(m), 192*mi)
+						r.Status = redisfailoverv1.AutoscalingStatus{Phase: phase, LastStep: lastStep, EffectiveMemory: "192Mi",
+							RetryAfter: minuteOf(120)}
+						return r
+					}
+					step := map[string]string{"same": adoptStep, "later": minuteOf(3), "none": ""}[nextStep]
+					j := NewJudge()
+					observe(j, round(0, adoptPhase, adoptStep))
+					second := observe(j, round(4, next, step))
+					// The step of the second round started there when its
+					// lastStep changed. Else the adopted step continues, and
+					// only an adopted Applying has its result still to come.
+					started := step != "" && step != adoptStep
+					wantResult := results[resultOf(next)] && (started || adoptPhase == PhaseApplying && step == adoptStep)
+					if got := countResults(second, results); got != map[bool]int{true: 1, false: 0}[wantResult] {
+						t.Errorf("%s: %d results in %v", name, got, summary(second))
+					}
+					if j.phase != next {
+						t.Errorf("%s: cached phase %q", name, j.phase)
+					}
+					e, settling := j.Observe(round(4.5, next, step))
+					if countResults(e, results) != 0 || settling != (next == PhaseApplying) {
+						t.Errorf("%s: %v in the third round, settling %t", name, summary(e), settling)
+					}
+					// A restart and a handover are violations only while a
+					// step is in progress.
+					r := round(5, next, step)
+					r.Pods[1].UID, r.Master = "new", "rfr-x-1"
+					active := isActive(next)
+					e, _ = j.Observe(r)
+					if got := slices.Contains(summary(e), JudgeRestart); got != active {
+						t.Errorf("%s: restart finding %t", name, got)
+					}
+					if got := slices.Contains(summary(e), JudgeHandover); got != active {
+						t.Errorf("%s: handover finding %t", name, got)
+					}
+				}
+			}
+		}
+	}
+}
+
+func countResults(events []Event, results map[string]bool) int {
+	n := 0
+	for _, e := range events {
+		if e.Judge == "" && results[e.Result] {
+			n++
+		}
+	}
+	return n
+}
+
+// The tester adopts the rate state that the status allows.
+func TestAdoptRateState(t *testing.T) {
+	adopted := func(phase, retryAfter string) Round {
+		r := stepped(at(0), 0, phase, "192Mi")
+		r.Status.RetryAfter = retryAfter
+		return withLimit(r, 192*mi)
+	}
+	next := func(m float64, generation int64) Round {
+		r := withLimit(stepped(at(m), int(m), PhaseApplying, "256Mi"), 192*mi)
+		r.Generation = generation
+		return r
+	}
+	for _, c := range []struct {
+		name   string
+		rounds []Round
+		want   []string
+	}{
+		{"Done: the cooldown from lastStep", []Round{adopted(PhaseDone, ""), next(2, 1)}, []string{ResultStarted, JudgeRate}},
+		{"Done: after the cooldown", []Round{adopted(PhaseDone, ""), next(10, 1)}, []string{ResultStarted}},
+		{"Reverted: a step before retryAfter", []Round{adopted(PhaseReverted, minuteOf(60)), next(30, 1)}, []string{ResultStarted, JudgeRate}},
+		{"Reverted: a step after retryAfter", []Round{adopted(PhaseReverted, minuteOf(60)), next(70, 1)}, []string{ResultStarted}},
+		{"Reverted: a user change ends the back-off", []Round{adopted(PhaseReverted, minuteOf(60)), next(30, 2)}, []string{ResultStarted}},
+		// The back-off is at least 1 hour after lastStep.
+		{"Reverted: no retryAfter", []Round{adopted(PhaseReverted, ""), next(30, 1)}, []string{JudgeRate, ResultStarted, JudgeRate}},
+		{"Reverted: retryAfter is no time", []Round{adopted(PhaseReverted, "soon"), next(70, 1)}, []string{JudgeRate, ResultStarted}},
+	} {
+		if got := summary(observe(NewJudge(), c.rounds...)); !slices.Equal(got, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
 }
 
 func TestBackOffFor(t *testing.T) {

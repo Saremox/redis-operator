@@ -175,7 +175,7 @@ func (j *Judge) Observe(r Round) (events []Event, settling bool) {
 	step := r.Status.LastStep
 	newStep := prev != nil && step != "" && step != j.step
 	if prev == nil {
-		j.adopt(r)
+		events = append(events, j.adopt(r)...)
 	}
 	// A step that ended between two rounds still covers the interval.
 	active := newStep || isActive(j.phase) || isActive(r.Status.Phase)
@@ -188,7 +188,9 @@ func (j *Judge) Observe(r Round) (events []Event, settling bool) {
 	case newStep:
 		events = append(events, j.start(*prev, r)...)
 	}
-	if prev != nil && step != "" {
+	// A step of a lost state has no lastStep, so the phase alone tells its
+	// end.
+	if prev != nil {
 		events = append(events, j.follow(*prev, r)...)
 	}
 	events = append(events, j.checkTimeout(r)...)
@@ -203,12 +205,36 @@ func isActive(phase string) bool {
 }
 
 // adopt takes the step of the first round, which started before the tester.
-func (j *Judge) adopt(r Round) {
+// Only a step in Applying has its first result still to come. The step
+// started at lastStep, so its end and its revert came later: lastStep is the
+// earliest end for the cooldown, and lastStep plus one back-off the earliest
+// retry.
+func (j *Judge) adopt(r Round) []Event {
 	j.step, j.phase = r.Status.LastStep, r.Status.Phase
-	j.ended = !isActive(j.phase)
-	if at, err := parseTime(j.step); err == nil {
+	j.ended = j.phase != PhaseApplying
+	at, err := parseTime(j.step)
+	if err == nil {
 		j.starts = []time.Time{at}
 	}
+	switch j.phase {
+	case PhaseDone:
+		if err == nil {
+			j.doneAfter = at
+		}
+	case PhaseReverted:
+		j.reverts, j.revertGen = 1, r.Generation
+		retry, rerr := parseTime(r.Status.RetryAfter)
+		if rerr == nil {
+			j.retryAt = retry
+			return nil
+		}
+		if err == nil {
+			j.retryAt = at.Add(backOff - slack)
+		}
+		return []Event{{Judge: JudgeRate, Step: j.step,
+			Message: fmt.Sprintf("retryAfter %q of the Reverted step is not a time", r.Status.RetryAfter)}}
+	}
+	return nil
 }
 
 func (j *Judge) reset() {
