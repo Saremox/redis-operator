@@ -653,6 +653,29 @@ findings and the unexpected losses of the run, and for each instance its
 probes, invariants, window and mutations. Read a red part of `writable`
 together with the window: inside a window, it is the cost of the change.
 
+## Delays of the tester
+
+A delay of the tester itself can make the reads of all instances time out
+in one round. These logs and metrics tell such a delay from a fault of an
+instance. No alert uses them.
+
+- `observer round slow`: a round took more than 1 second, or started more
+  than 1 second after its tick. The fields give the time of the API reads,
+  the pod reads and the checks. Each other round logs `observer round` at
+  debug level.
+- `observer read slow`: a read of a pod failed or took more than 1 second.
+  The field `phase` is `dial` when no connection was made, `reply` when the
+  connection was made but no reply came, and `context` at a stop of the
+  tester. go-redis returns `context deadline exceeded` when the dial did
+  not end before the read timeout, and `i/o timeout` when the reply did
+  not come.
+- `soak process stalled`: the whole tester process did not run for more
+  than 1 second. `redis_soak_process_stalls_total` counts these stalls.
+- `redis_soak_observer_round_seconds` and
+  `redis_soak_observer_round_lateness_seconds` record each round.
+  `go_sched_latencies_seconds` and `go_gc_pauses_seconds` show the delays
+  of the Go scheduler and of the GC.
+
 ## Limits
 
 - The autoscale judges read the status of the RedisFailover, not the

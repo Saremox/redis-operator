@@ -24,9 +24,9 @@ const (
 	phaseContext = "context"
 )
 
-// read is one read of a pod. It records the dials of its client, because
-// go-redis returns the same context error for a dial and a reply that
-// did not end in time.
+// read is one read of a pod. It records the dials of its client, because a
+// read whose dial did not end in time returns only the error of its
+// context.
 type read struct {
 	kind, pod, ip string
 	start         time.Time
@@ -113,7 +113,7 @@ func (o *Observer) endRead(r *read, err error) {
 func (o *Observer) timeRound(tick, start, collected, end time.Time, s snapshot) {
 	late, d := start.Sub(tick), end.Sub(start)
 	o.roundTime.Observe(d.Seconds())
-	o.lateness.Observe(max(late, 0).Seconds())
+	o.lateness.Observe(late.Seconds())
 	level := slog.LevelDebug
 	if d > slow || late > slow {
 		level = slog.LevelWarn
