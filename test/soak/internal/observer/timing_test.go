@@ -364,6 +364,19 @@ func TestTimeRound(t *testing.T) {
 	}
 }
 
+// A round that starts before it is due has no lateness.
+func TestTimeRoundEarly(t *testing.T) {
+	o, lines := timingObserver(t)
+	at := time.Unix(1000, 0)
+	o.timeRound(at, at.Add(-time.Second), at, at, snapshot{})
+	if got := lines(); len(got) != 1 || got[0]["lateness_seconds"] != 0.0 {
+		t.Errorf("log %v", got)
+	}
+	if _, sum := samples(t, o.lateness); sum != 0 {
+		t.Errorf("lateness sum %v", sum)
+	}
+}
+
 func samples(t *testing.T, obs prometheus.Observer) (uint64, float64) {
 	t.Helper()
 	var m dto.Metric
