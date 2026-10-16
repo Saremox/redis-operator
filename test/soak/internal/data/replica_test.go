@@ -68,7 +68,7 @@ func TestReplicaSourceAgedOut(t *testing.T) {
 		_ = pod.Set(k, v)
 	}
 	var once sync.Once
-	pod.Server().SetPreHook(func(c *server.Peer, cmd string, args ...string) bool {
+	pod.Server().SetPreHook(func(c *server.Peer, cmd string, _ ...string) bool {
 		if !strings.EqualFold(cmd, "INFO") {
 			return false
 		}

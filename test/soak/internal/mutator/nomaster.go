@@ -266,13 +266,13 @@ func (m *Mutator) resetSentinels(ctx context.Context, pods []corev1.Pod, port in
 // pod, one pod is labelled master, and each Sentinel knows the master and all
 // its replicas again, which the next failover needs. The RedisFailover must be
 // Healthy.
-func noMasterConverged(name string, uid types.UID, redis, sentinels int32) func(state) error {
+func noMasterConverged(name string, uid types.UID, redisPods, sentinels int32) func(state) error {
 	replaced := redisPodReplaced(name, uid)
 	return func(s state) error {
 		if err := replaced(s); err != nil {
 			return err
 		}
-		if err := podsReady("redis", s.redis, redis); err != nil {
+		if err := podsReady("redis", s.redis, redisPods); err != nil {
 			return err
 		}
 		if err := podsReady("sentinel", s.sentinels, sentinels); err != nil {
@@ -281,7 +281,7 @@ func noMasterConverged(name string, uid types.UID, redis, sentinels int32) func(
 		if n := len(withRole(s.redis, roleMaster)); n != 1 {
 			return fmt.Errorf("%d pods are labelled master", n)
 		}
-		if err := sentinelsMonitor(s, redis); err != nil {
+		if err := sentinelsMonitor(s, redisPods); err != nil {
 			return err
 		}
 		return healthy(s.rf)

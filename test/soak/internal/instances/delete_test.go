@@ -39,7 +39,8 @@ type deleteEnv struct {
 func (e *deleteEnv) record(a k8stesting.Action) (bool, runtime.Object, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.n++; e.n == 40 {
+	e.n++
+	if e.n == 40 {
 		e.cancel()
 	}
 	c := a.GetVerb() + " " + a.GetResource().Resource

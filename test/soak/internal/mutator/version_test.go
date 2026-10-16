@@ -178,7 +178,7 @@ func TestPlanSentinelImage(t *testing.T) {
 // edge's resets take its starts in turn, and only unknown edges.
 func TestResetStarts(t *testing.T) {
 	m := versionMutator(t, "edge")
-	var starts []string
+	starts := make([]string, 0, 4)
 	for range 4 {
 		p := m.planReset(onImages("valkey/valkey:8.1.10-alpine", ""), "test")
 		starts = append(starts, strings.Fields(p.params)[2])
@@ -285,7 +285,7 @@ func TestClassify(t *testing.T) {
 		result  string
 		reasons string
 	}{
-		{"converged", tr, func(o observation) observation { return observation{converged: true, verified: true} }, transitionOK, ""},
+		{"converged", tr, func(observation) observation { return observation{converged: true, verified: true} }, transitionOK, ""},
 		// An unknown edge that did not converge within its bound, or got stuck.
 		{"stuck, stopped safely", tr, func(o observation) observation { return o }, transitionFailedSafe, "RDB format version 12"},
 		{"lost writes", tr, func(o observation) observation { o.lost = 3; return o }, transitionFailedUnsafe, "3 acknowledged writes lost"},

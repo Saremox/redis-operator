@@ -14,8 +14,9 @@ func at(s int) time.Time { return time.Unix(1000, 0).Add(time.Duration(s) * time
 // checksFor returns the pods and one_master checks, with the given ones
 // violated.
 func checksFor(bad ...string) []check {
-	var checks []check
-	for _, name := range []string{invPods, invOneMaster} {
+	names := []string{invPods, invOneMaster}
+	checks := make([]check, 0, len(names))
+	for _, name := range names {
 		c := check{invariant: name}
 		if slices.Contains(bad, name) {
 			c.err = errBad

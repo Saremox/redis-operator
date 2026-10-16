@@ -89,7 +89,7 @@ func TestPickOther(t *testing.T) {
 	rg := config.Range{Min: 1, Max: 5}
 	for step := range 200 {
 		r := stepRand(1, testInstance, step)
-		for current := int64(0); current <= 7; current++ {
+		for current := range int64(8) {
 			v := pickOther(r, rg, current)
 			if v == current || v < rg.Min || v > rg.Max {
 				t.Fatalf("pickOther(%d) = %d", current, v)

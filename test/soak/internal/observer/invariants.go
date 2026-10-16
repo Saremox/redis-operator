@@ -146,7 +146,7 @@ func (s snapshot) master() (*redisPod, error) {
 }
 
 func (s snapshot) checkPods() error {
-	var redis []pod
+	redis := make([]pod, 0, len(s.redis))
 	for _, p := range s.redis {
 		redis = append(redis, p.pod)
 	}
@@ -158,7 +158,7 @@ func (s snapshot) checkPods() error {
 }
 
 func sentinelPods(s snapshot) []pod {
-	var pods []pod
+	pods := make([]pod, 0, len(s.sentinels))
 	for _, p := range s.sentinels {
 		pods = append(pods, p.pod)
 	}

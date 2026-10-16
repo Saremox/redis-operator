@@ -171,8 +171,7 @@ func TestScenarioCForgetDeletesAppliedPasswords(t *testing.T) {
 			o := &offline{secret: "x-auth", previous: "old", first: "p1", second: "p2", forget: true}
 			err := r.m.rotateOffline(ctx, o, r.m.log)
 			// The fake has no pods, so the instance never reads Healthy.
-			var exp expectation
-			if !errors.As(err, &exp) {
+			if _, ok := errors.AsType[expectation](err); !ok {
 				t.Errorf("error %v, want an expectation", err)
 			}
 			want := []string{`{"spec":{"replicas":0}}`, "delete rfr-auth-applied-x", `{"spec":{"replicas":1}}`}

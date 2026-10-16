@@ -64,7 +64,7 @@ instances:
 		t.Errorf("mixed versions: %q %q", mixed.Version, mixed.SentinelVersion)
 	}
 	names := func(es []Edge) []string {
-		var out []string
+		out := make([]string, 0, len(es))
 		for _, e := range es {
 			out = append(out, e.String())
 		}
@@ -281,8 +281,9 @@ instances:
 		t.Fatal(err)
 	}
 	from := func(in Instance, version string) []string {
-		var out []string
-		for _, e := range c.EdgesFrom(version, in.Chain) {
+		edges := c.EdgesFrom(version, in.Chain)
+		out := make([]string, 0, len(edges))
+		for _, e := range edges {
 			out = append(out, e.String())
 		}
 		return out

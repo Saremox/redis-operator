@@ -57,7 +57,7 @@ func shippedMutator(t *testing.T, cfg *config.Config, name string) *Mutator {
 
 // walk follows the chain of an instance from one of its starts until it
 // resets, and returns the edges and the reset. The seed picks the edges.
-func walk(t *testing.T, m *Mutator, cfg *config.Config, start config.Version, seed int64) (edges []string, reset string) {
+func walk(t *testing.T, m *Mutator, _ *config.Config, start config.Version, seed int64) (edges []string, reset string) {
 	t.Helper()
 	cur, sentinel := start, start
 	sentinelOn := func() string {
@@ -111,7 +111,7 @@ func TestMorePathsChains(t *testing.T) {
 					if len(edges) == 0 || !strings.HasPrefix(reset, "recreate on ") {
 						t.Fatalf("walk from %s: %v, then %q", s, edges, reset)
 					}
-					if edges[0][:strings.Index(edges[0], " ")] != s {
+					if from, _, _ := strings.Cut(edges[0], " "); from != s {
 						t.Fatalf("walk from %s starts with %s", s, edges[0])
 					}
 					for _, e := range edges {
@@ -119,7 +119,7 @@ func TestMorePathsChains(t *testing.T) {
 					}
 				}
 			}
-			var got []string
+			got := make([]string, 0, len(taken))
 			for e := range taken {
 				got = append(got, e)
 			}
@@ -421,14 +421,15 @@ func stuckInstance(t *testing.T, sentinelIPs []string, sentinelSays string, repl
 	}
 	ready := []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
 	redis74, _ := cfg.VersionNamed("redis-7.4")
-	objects := []runtime.Object{
+	objects := make([]runtime.Object, 0, 2+len(replicas)+len(sentinelIPs))
+	objects = append(objects,
 		&appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "rfr-" + in.Name, Namespace: in.Namespace}},
 		&corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: "rfr-migrate-0", Namespace: in.Namespace, Labels: labels("redis"), UID: "r0"},
 			Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: redisName, Image: redis74.Image}}},
 			Status:     corev1.PodStatus{PodIP: "127.0.0.1", Phase: corev1.PodRunning, Conditions: ready},
 		},
-	}
+	)
 	for i, r := range replicas {
 		pod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: "rfr-migrate-" + strconv.Itoa(i+1), Namespace: in.Namespace, Labels: labels("redis"), UID: types.UID("r" + strconv.Itoa(i+1))},

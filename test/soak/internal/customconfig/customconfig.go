@@ -52,8 +52,9 @@ func redisEntries(rf *redisfailoverv1.RedisFailover) []entry {
 
 // RedisKeys returns the keys to CONFIG GET from every redis pod.
 func RedisKeys(rf *redisfailoverv1.RedisFailover) []string {
-	var keys []string
-	for _, e := range redisEntries(rf) {
+	entries := redisEntries(rf)
+	keys := make([]string, 0, len(entries))
+	for _, e := range entries {
 		keys = append(keys, e.key)
 	}
 	return keys

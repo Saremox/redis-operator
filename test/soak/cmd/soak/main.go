@@ -190,9 +190,9 @@ func ensureInstances(ctx context.Context, kube kubernetes.Interface, rfs version
 		if err != nil {
 			return nil, fmt.Errorf("instance %s: %w", in.Name, err)
 		}
-		redis, _ := cfg.VersionNamed(in.Version)
+		redisVersion, _ := cfg.VersionNamed(in.Version)
 		sentinel, _ := cfg.VersionNamed(in.SentinelVersion)
-		if err := i.Ensure(ctx, redis.Image, sentinel.Image); err != nil {
+		if err := i.Ensure(ctx, redisVersion.Image, sentinel.Image); err != nil {
 			return nil, fmt.Errorf("instance %s: %w", in.Name, err)
 		}
 		out[in.Name] = i
@@ -203,10 +203,10 @@ func ensureInstances(ctx context.Context, kube kubernetes.Interface, rfs version
 // authSources follows the auth Secret of each instance through an informer on
 // the Secrets of its namespace. Each source starts on the current secretPath,
 // so that the first probes authenticate.
-func authSources(ctx context.Context, kube kubernetes.Interface, rfs versioned.Interface, instances []config.Instance) (map[string]*auth.Source, error) {
+func authSources(ctx context.Context, kube kubernetes.Interface, rfs versioned.Interface, configured []config.Instance) (map[string]*auth.Source, error) {
 	factories := map[string]informers.SharedInformerFactory{}
 	sources := map[string]*auth.Source{}
-	for _, in := range instances {
+	for _, in := range configured {
 		f, ok := factories[in.Namespace]
 		if !ok {
 			f = informers.NewSharedInformerFactoryWithOptions(kube, 0, informers.WithNamespace(in.Namespace))
@@ -222,7 +222,7 @@ func authSources(ctx context.Context, kube kubernetes.Interface, rfs versioned.I
 			}
 		}
 	}
-	for _, in := range instances {
+	for _, in := range configured {
 		if rf, err := rfs.DatabasesV1().RedisFailovers(in.Namespace).Get(ctx, in.Name, metav1.GetOptions{}); err == nil {
 			sources[in.Name].Update(rf)
 		}

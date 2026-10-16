@@ -258,7 +258,7 @@ func setInstanceDefaults(in *Instance) {
 
 func (c *Config) validate() error {
 	if len(c.Instances) == 0 {
-		return fmt.Errorf("no instances configured")
+		return errors.New("no instances configured")
 	}
 	if err := c.Mutation.validate(c.Observer); err != nil {
 		return err
@@ -286,7 +286,7 @@ func (c *Config) validate() error {
 
 func (m Mutation) validate(o Observer) error {
 	if m.Interval.Duration < 0 || m.Jitter.Duration < 0 || m.StopAfter.Duration < 0 {
-		return fmt.Errorf("mutation: negative duration")
+		return errors.New("mutation: negative duration")
 	}
 	if MinDwell >= o.ConvergenceTimeout.Duration {
 		return fmt.Errorf("observer.convergenceTimeout must be longer than %s", MinDwell)

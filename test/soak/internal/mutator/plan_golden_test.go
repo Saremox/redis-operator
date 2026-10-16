@@ -148,7 +148,7 @@ func TestPlanAutoscaleStateLostReadFails(t *testing.T) {
 	denied := errors.New("denied")
 	kube.PrependReactor("get", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) { return true, nil, denied })
 	p := m.plan(stepRand(1, m.in, 1), config.AutoscaleStateLost, s)
-	var na notApplied
+	var na notAppliedError
 	if err := p.action(context.Background()); !errors.Is(err, denied) || errors.As(err, &na) {
 		t.Errorf("error %v", err)
 	}

@@ -120,12 +120,18 @@ func TestClassifyClientErrors(t *testing.T) {
 		}
 		defer func() { _ = l.Close() }()
 		go func() {
+			var conns []net.Conn
+			defer func() {
+				for _, c := range conns {
+					_ = c.Close()
+				}
+			}()
 			for {
 				c, err := l.Accept()
 				if err != nil {
 					return
 				}
-				defer func() { _ = c.Close() }()
+				conns = append(conns, c)
 			}
 		}()
 		if got := Classify(ping(l.Addr().String())); got != ResultTimeout {

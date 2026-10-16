@@ -373,7 +373,8 @@ func TestStuckRotationSecretNotUpdated(t *testing.T) {
 	r, ctx := newRotation(t, stuck, false, false)
 	updates := 0
 	r.kube.PrependReactor("update", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
-		if updates++; updates > 1 {
+		updates++
+		if updates > 1 {
 			return true, nil, errors.New("denied")
 		}
 		return false, nil, nil

@@ -45,16 +45,14 @@ func Classify(err error) string {
 	if err == nil {
 		return ResultOK
 	}
-	var redisErr redis.Error
-	if errors.As(err, &redisErr) {
+	if redisErr, ok := errors.AsType[redis.Error](err); ok {
 		code, _, _ := strings.Cut(redisErr.Error(), " ")
 		if r, ok := errorCodes[code]; ok {
 			return r
 		}
 		return ResultOther
 	}
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
+	if _, ok := errors.AsType[*net.DNSError](err); ok {
 		return ResultDNS
 	}
 	if errors.Is(err, syscall.ECONNREFUSED) {

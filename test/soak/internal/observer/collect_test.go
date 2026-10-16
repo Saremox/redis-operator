@@ -108,8 +108,9 @@ func TestCollect(t *testing.T) {
 	if s.bootstrap != nil || s.sourceErr != nil {
 		t.Errorf("source %+v", s)
 	}
-	var calls []string
-	for _, a := range kube.Actions() {
+	actions := kube.Actions()
+	calls := make([]string, 0, len(actions))
+	for _, a := range actions {
 		calls = append(calls, a.GetVerb()+" "+a.GetResource().Resource)
 	}
 	if got := strings.Join(calls, ", "); got != "list pods, list endpointslices" {
@@ -163,8 +164,9 @@ func TestCollectErrors(t *testing.T) {
 			if _, generation, err := o.collect(context.Background()); !errors.Is(err, denied) || generation != 0 {
 				t.Errorf("error %v, generation %d", err, generation)
 			}
-			var calls []string
-			for _, a := range kube.Actions() {
+			actions := kube.Actions()
+			calls := make([]string, 0, len(actions))
+			for _, a := range actions {
 				calls = append(calls, a.GetVerb()+" "+a.GetResource().Resource)
 			}
 			if got := strings.Join(calls, ", "); got != c.calls {

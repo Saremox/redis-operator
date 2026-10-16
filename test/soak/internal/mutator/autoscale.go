@@ -34,9 +34,9 @@ type loader interface {
 	Load(ctx context.Context, percent int64, hold time.Duration, until func(context.Context) (bool, error)) (string, error)
 }
 
-// notApplied is a mutation that found nothing to do when it ran, for example
-// no step to disturb. Its result is skipped.
-type notApplied struct{ error }
+// notAppliedError is a mutation that found nothing to do when it ran, for
+// example no step to disturb. Its result is skipped.
+type notAppliedError struct{ error }
 
 // The user paths of the autoscale kinds. Mode Off, a lower spec limit and a
 // memoryMax below a pod limit change the template of each pod, so they may
@@ -153,7 +153,7 @@ func (m *Mutator) planStateLost(converged func(state) error) plan {
 		action: func(ctx context.Context) error {
 			cm, err := configMaps.Get(ctx, name, metav1.GetOptions{})
 			if apierrors.IsNotFound(err) {
-				return notApplied{fmt.Errorf("no ConfigMap %s", name)}
+				return notAppliedError{fmt.Errorf("no ConfigMap %s", name)}
 			}
 			if err != nil {
 				return err
@@ -235,7 +235,7 @@ func (m *Mutator) planLoad(kind config.Kind, s state, pod string, uid types.UID,
 		}
 		if st.Phase != autoscale.PhaseApplying {
 			// The step ended before the tester saw it Applying.
-			return false, notApplied{fmt.Errorf("the step of %s is %s", st.LastStep, st.Phase)}
+			return false, notAppliedError{fmt.Errorf("the step of %s is %s", st.LastStep, st.Phase)}
 		}
 		return true, m.deletePod(ctx, pod, uid, false)
 	}
@@ -260,11 +260,11 @@ func (m *Mutator) planLoad(kind config.Kind, s state, pod string, uid types.UID,
 		})
 		switch {
 		case skip != "":
-			return notApplied{fmt.Errorf("load not started: %s", skip)}
+			return notAppliedError{fmt.Errorf("load not started: %s", skip)}
 		case err != nil:
 			return err
 		case pod != "" && !deleted:
-			return notApplied{fmt.Errorf("no step was Applying within %s", loadHold)}
+			return notAppliedError{fmt.Errorf("no step was Applying within %s", loadHold)}
 		}
 		return nil
 	}
