@@ -436,7 +436,11 @@ also inside a window, as `oom_killed` does:
 - `autoscale_step_size`: a step raises the limit to one target: 25 percent
   more, rounded up to a multiple of 64Mi, and `memoryMax` at most. A smaller
   or a larger step is a violation. Because the operator rounds up, a small
-  limit gets a larger step: 64Mi goes to 128Mi.
+  limit gets a larger step: 64Mi goes to 128Mi. The status shows the limit
+  of the step one reconcile after the start, so the check waits until
+  `effectiveMemory` moves in `Applying`, or the step is `Done` or `Held`. A
+  revert, and a user change of the spec limit or of `memoryMax` in the step,
+  give no check.
 - `autoscale_step_timeout`: a step leaves `Applying` within 18 minutes after
   `lastStep`. This is the timeout of 15 minutes, the minute of `lastStep`, and
   2 minutes for the reconcile that ends the step. Without a `lastStep` that

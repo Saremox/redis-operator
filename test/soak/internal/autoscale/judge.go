@@ -163,7 +163,11 @@ type Judge struct {
 	doneAfter time.Time
 	// retryAt is the retryAfter of the last revert. reverts counts the
 	// reverts at the generation revertGen.
-	retryAt   time.Time
+	retryAt time.Time
+	// size is the limit before the current step, and the spec limit and
+	// memoryMax at its start, while the size of the step waits for the
+	// status.
+	size      *pendingSize
 	reverts   int
 	revertGen int64
 	// highMaxMemory are the pods with a reported maxmemory above the limit.
@@ -209,6 +213,7 @@ func (j *Judge) Observe(r Round) (events []Event, settling bool) {
 	if prev != nil {
 		events = append(events, j.follow(*prev, r)...)
 	}
+	events = append(events, j.checkPendingSize(r)...)
 	events = append(events, j.checkTimeout(r)...)
 	events = append(events, j.checkPods(r, active && prev != nil)...)
 	events = append(events, j.checkMaster(r, active && prev != nil)...)
@@ -257,7 +262,13 @@ func (j *Judge) adopt(r Round) []Event {
 	return nil
 }
 
+// pendingSize is a step whose size the judge did not check yet.
+type pendingSize struct {
+	from, spec, max int64
+}
+
 func (j *Judge) reset() {
+	j.size = nil
 	j.step, j.phase, j.ended, j.timedOut = "", "", true, false
 	j.starts, j.doneAfter, j.retryAt, j.reverts = nil, time.Time{}, time.Time{}, 0
 }
@@ -266,21 +277,18 @@ func (j *Judge) reset() {
 func (j *Judge) start(prev, r Round) []Event {
 	step := r.Status.LastStep
 	from, fromOK := effective(prev)
-	to, toOK := effective(r)
-	events := []Event{{Result: ResultStarted, Step: step, Message: fmt.Sprintf("from %s to %s", format(from), format(to))}}
+	events := []Event{{Result: ResultStarted, Step: step, Message: "from " + format(from)}}
 	if at, err := parseTime(step); err == nil {
 		if last, err := parseTime(j.step); err == nil && at.Before(last) {
 			events = append(events, Event{Judge: JudgeStatus, Step: step, Message: fmt.Sprintf("lastStep %s is before the last step %s", step, j.step)})
 		}
 	}
-	// A revert shows the limit before the step, and a user change of the
-	// bounds in the same interval changes the limit too. checkStatus reports
-	// an effectiveMemory that is not valid, and a spec without a limit has no
-	// autoscaling.
-	if prev.Spec == r.Spec && prev.Max == r.Max && r.Status.Phase != PhaseReverted && fromOK && toOK && from > 0 {
-		if msg := checkSize(from, to, r.Max); msg != "" {
-			events = append(events, Event{Judge: JudgeSize, Step: step, Message: msg})
-		}
+	// A user change of the bounds in the same interval changes the limit
+	// too. checkStatus reports an effectiveMemory that is not valid, and a
+	// spec without a limit has no autoscaling.
+	j.size = nil
+	if prev.Spec == r.Spec && prev.Max == r.Max && fromOK && from > 0 {
+		j.size = &pendingSize{from: from, spec: r.Spec, max: r.Max}
 	}
 	if at, err := parseTime(step); err == nil {
 		for _, msg := range j.checkRate(at, r.Generation) {
@@ -290,6 +298,35 @@ func (j *Judge) start(prev, r Round) []Event {
 	j.step, j.phase, j.ended, j.timedOut, j.applyingSince = step, "", false, false, time.Time{}
 	j.doneAfter, j.retryAt = time.Time{}, time.Time{}
 	return events
+}
+
+// checkPendingSize checks the size of the current step when the status shows
+// its limit. The operator writes the step to the state first, and the
+// status shows the limit of the pods, which follows one reconcile later.
+// Thus the first round of a step can show the limit before the step. The
+// size is known in Applying when the limit moved, and at Done and Held,
+// which keep the limit of the step. A revert shows the limit before the step,
+// and a user change of the bounds changes the limit, so these give no check.
+func (j *Judge) checkPendingSize(r Round) []Event {
+	p := j.size
+	if p == nil {
+		return nil
+	}
+	to, ok := effective(r)
+	switch phase := r.Status.Phase; {
+	case r.Spec != p.spec || r.Max != p.max || phase == PhaseReverted:
+		j.size = nil
+		return nil
+	case !ok, phase == PhaseApplying && to == p.from:
+		return nil
+	case phase != PhaseApplying && phase != PhaseDone && phase != PhaseHeld:
+		return nil
+	}
+	j.size = nil
+	if msg := checkSize(p.from, to, p.max); msg != "" {
+		return []Event{{Judge: JudgeSize, Step: j.step, Message: msg}}
+	}
+	return nil
 }
 
 // checkSize returns why a step from from to to breaks the step rule, or "".
