@@ -155,6 +155,23 @@ func TestNoevictionFullUnknownRound(t *testing.T) {
 	}
 }
 
+// An instance without maxMemoryPolicy can get maxMemory by a change by hand.
+// Its finding series start at 0, so that the alert sees the increase of the
+// first finding.
+func TestNoevictionSeriesAtStart(t *testing.T) {
+	o, reg := newTestObserver(t)
+	for _, inv := range []string{invNoevictionFull, invMaxmemoryBelowUsed} {
+		if !hasSeries(t, reg, "redis_soak_findings_total", "invariant", inv) {
+			t.Errorf("no %s series at the start", inv)
+		}
+	}
+	o.apply(time.Unix(0, 0), withMemory(memory("noeviction", 200*mib, 150*mib, -1)), 1, false)
+	o.apply(time.Unix(5, 0), withMemory(memory("noeviction", 100*mib, 150*mib, -1)), 1, false)
+	if got := testutil.ToFloat64(o.findings.WithLabelValues(invMaxmemoryBelowUsed)); got != 3 {
+		t.Errorf("%v findings, want 3", got)
+	}
+}
+
 // The default limit is 30 minutes.
 func TestNoevictionFullDefault(t *testing.T) {
 	cfg, err := config.Parse([]byte("instances: [{name: x, namespace: ns}]"))

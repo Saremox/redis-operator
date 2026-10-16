@@ -140,11 +140,10 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		steps:      m.AutoscaleSteps.MustCurryWith(labels),
 	}
 	// Alerts use the increase of findings_total, which does not show a series
-	// that starts at 1.
-	o.findings.WithLabelValues(invOOMKilled)
-	if in.MaxMemoryPolicy != "" {
-		o.findings.WithLabelValues(invNoevictionFull)
-		o.findings.WithLabelValues(invMaxmemoryBelowUsed)
+	// that starts at 1. A change by hand can give each instance maxMemory, so
+	// the series of the maxmemory judges exist for each instance.
+	for _, inv := range []string{invOOMKilled, invNoevictionFull, invMaxmemoryBelowUsed} {
+		o.findings.WithLabelValues(inv)
 	}
 	if in.Autoscale != nil {
 		o.judge = autoscale.NewJudge()

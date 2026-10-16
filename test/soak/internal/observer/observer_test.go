@@ -69,6 +69,8 @@ redis_soak_failovers_total{` + labels + `} 1
 # TYPE redis_soak_findings_total counter
 redis_soak_findings_total{invariant="healthy",` + labels + `} 0
 redis_soak_findings_total{invariant="master_service",` + labels + `} 0
+redis_soak_findings_total{invariant="maxmemory_below_used",` + labels + `} 0
+redis_soak_findings_total{invariant="noeviction_full",` + labels + `} 0
 redis_soak_findings_total{invariant="one_master",` + labels + `} 0
 redis_soak_findings_total{invariant="oom_killed",` + labels + `} 0
 redis_soak_findings_total{invariant="pods",` + labels + `} 1
