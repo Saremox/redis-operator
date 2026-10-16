@@ -297,10 +297,13 @@ type maxMemoryOutcome struct {
 
 // logMaxMemoryOutcome logs an outcome at Warning when it differs from the last
 // one that was logged for the RedisFailover, and at Debug otherwise. The status
-// message shows an unchanged outcome to the user.
+// message shows an unchanged outcome to the user. The end of an outcome logs
+// at Info, so that the log shows how long it lasted.
 func (r *RedisFailoverHandler) logMaxMemoryOutcome(logger log.Logger, key string, result rfservice.MaxMemoryResult) {
 	if result.Message == "" && !result.HoldRollout {
-		r.maxMemoryLogged.Delete(key)
+		if last, loaded := r.maxMemoryLogged.LoadAndDelete(key); loaded {
+			logMaxMemoryOutcomeEnd(logger, last)
+		}
 		return
 	}
 	outcome := maxMemoryOutcome{message: result.Message, hold: result.HoldRollout}
@@ -314,6 +317,19 @@ func (r *RedisFailoverHandler) logMaxMemoryOutcome(logger log.Logger, key string
 	}
 	if result.HoldRollout {
 		logf("Holding the pod rollout until maxmemory fits the lowered memory limit")
+	}
+}
+
+func logMaxMemoryOutcomeEnd(logger log.Logger, last any) {
+	outcome, ok := last.(maxMemoryOutcome)
+	if !ok {
+		return
+	}
+	if outcome.message != "" {
+		logger.Infof("The maxmemory message ended: %s", outcome.message)
+	}
+	if outcome.hold {
+		logger.Infof("The pod rollout continues: maxmemory fits the memory limit")
 	}
 }
 

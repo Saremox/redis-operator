@@ -16,10 +16,11 @@ import (
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
-// warnLogger records the Warning and Debug lines.
+// warnLogger records the Info, Warning and Debug lines.
 type warnLogger struct {
 	log.DummyLogger
 	mu       sync.Mutex
+	infos    []string
 	warnings []string
 	debugs   []string
 }
@@ -33,6 +34,12 @@ func (l *warnLogger) Warningf(format string, args ...interface{}) {
 	l.warnings = append(l.warnings, fmt.Sprintf(format, args...))
 }
 
+func (l *warnLogger) Infof(format string, args ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.infos = append(l.infos, fmt.Sprintf(format, args...))
+}
+
 func (l *warnLogger) Debugf(format string, args ...interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -40,7 +47,7 @@ func (l *warnLogger) Debugf(format string, args ...interface{}) {
 }
 
 func (l *warnLogger) reset() {
-	l.warnings, l.debugs = nil, nil
+	l.infos, l.warnings, l.debugs = nil, nil, nil
 }
 
 func TestEnsureRedisMaxMemoryLogsAnUnchangedHoldOnce(t *testing.T) {
@@ -172,4 +179,38 @@ func TestEnsureRedisMaxMemoryForgetsTheLoggedOutcomeWhenMaxMemoryIsRemoved(t *te
 	require.NoError(t, err)
 	assert.Equal(t, []string{result.Message, "Holding the pod rollout until maxmemory fits the lowered memory limit"}, logger.warnings)
 	assert.Empty(t, logger.debugs)
+}
+
+// The end of an outcome is one Info line for each part of it.
+func TestEnsureRedisMaxMemoryLogsTheEndOfAnOutcome(t *testing.T) {
+	rf := newCustomConfigTestRF()
+	rf.Spec.Redis.MaxMemory = &redisfailoverv1.MaxMemorySettings{Percent: 75, Policy: "noeviction"}
+	ips := []string{"10.0.0.1"}
+	kept := rfservice.MaxMemoryResult{Message: "maxmemory kept at 1: lowering it to 2 would not fit", HoldRollout: true}
+
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfc.On("GetRedisesIPs", rf).Return(ips, nil)
+	mrfc.On("GetMasterIP", rf).Return("10.0.0.1", nil)
+	mrfh := &mRFService.RedisFailoverHeal{}
+	logger := &warnLogger{}
+	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, &mK8SService.Services{}, metrics.Dummy, logger)
+	ensure := func(result rfservice.MaxMemoryResult) []string {
+		logger.reset()
+		mrfh.ExpectedCalls = nil
+		mrfh.On("EnsureRedisMaxMemory", rf, "10.0.0.1", ips).Once().Return(result, nil)
+		_, err := handler.ensureRedisMaxMemory(rf, "10.0.0.1")
+		require.NoError(t, err)
+		return logger.infos
+	}
+
+	assert.Empty(t, ensure(kept))
+	assert.Equal(t, []string{
+		"The maxmemory message ended: " + kept.Message,
+		"The pod rollout continues: maxmemory fits the memory limit",
+	}, ensure(rfservice.MaxMemoryResult{}))
+	// Nothing ends a second time.
+	assert.Empty(t, ensure(rfservice.MaxMemoryResult{}))
+
+	ensure(rfservice.MaxMemoryResult{HoldRollout: true})
+	assert.Equal(t, []string{"The pod rollout continues: maxmemory fits the memory limit"}, ensure(rfservice.MaxMemoryResult{}))
 }
