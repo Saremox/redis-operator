@@ -379,7 +379,6 @@ func TestCheckAndHeal(t *testing.T) {
 				mrfc.On("GetNumberMasters", rf).Once().Return(test.nMasters, nil)
 				switch test.nMasters {
 				case 0:
-					//mrfc.On("GetRedisesIPs", rf).Once().Return(make([]string, test.nRedis), nil)
 					if rf.Spec.Redis.Replicas == 1 {
 						mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
 						continueTests = false
