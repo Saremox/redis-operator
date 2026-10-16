@@ -377,10 +377,10 @@ func TestSplitLines(t *testing.T) {
 	}
 }
 
-func TestIndexByte(t *testing.T) {
-	assert.Equal(t, 3, indexByte("foo:bar", ':'))
-	assert.Equal(t, -1, indexByte("foobar", ':'))
-	assert.Equal(t, 0, indexByte(":foo", ':'))
+// A line splits at its first colon. A line without a key is not a field.
+func TestParseRedisInfoSplitsAtTheFirstColon(t *testing.T) {
+	result := parseRedisInfo("foo:bar:baz\nfoobar\n:foo\n")
+	assert.Equal(t, map[string]string{"foo": "bar:baz"}, result)
 }
 
 func TestHealthServerStartStop(t *testing.T) {

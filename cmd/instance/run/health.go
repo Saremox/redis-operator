@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -391,7 +392,7 @@ func parseRedisInfo(info string) map[string]string {
 		}
 
 		// Parse key:value
-		idx := indexByte(line, ':')
+		idx := strings.IndexByte(line, ':')
 		if idx > 0 {
 			key := line[:idx]
 			value := line[idx+1:]
@@ -425,14 +426,4 @@ func splitLines(s string) []string {
 		lines = append(lines, line)
 	}
 	return lines
-}
-
-// indexByte returns the index of the first occurrence of c in s, or -1.
-func indexByte(s string, c byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
 }
