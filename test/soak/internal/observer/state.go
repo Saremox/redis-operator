@@ -4,6 +4,8 @@ import (
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/saremox/redis-operator/test/soak/internal/config"
 )
 
 // tracker follows the violations of each invariant and the convergence window
@@ -11,11 +13,10 @@ import (
 // finding, because the instance converges after a change. A window closes when
 // all invariants hold, or at the convergence timeout; violations still open at
 // the timeout become findings. A window that a mutation holds also needs the
-// mutation to converge and the minimum dwell to pass. Its timeout starts when
+// mutation to converge and config.MinDwell to pass. Its timeout starts when
 // the mutation is applied.
 type tracker struct {
 	timeout time.Duration
-	dwell   time.Duration
 	window  time.Time // zero when no window is open
 	// held is when a mutation took the window, zero when none holds it;
 	// applied is when the mutation was applied, zero until then, and
@@ -52,8 +53,8 @@ type event struct {
 	finding  bool
 }
 
-func newTracker(timeout, dwell time.Duration) *tracker {
-	return &tracker{timeout: timeout, dwell: dwell, violated: map[string]*violation{}}
+func newTracker(timeout time.Duration) *tracker {
+	return &tracker{timeout: timeout, violated: map[string]*violation{}}
 }
 
 // openWindow starts a convergence window, or restarts the open one, for a
@@ -122,18 +123,37 @@ func (t *tracker) closeWindow() {
 // update judges one round of checks. converged is whether the mutation
 // holding the window, if any, has converged.
 func (t *tracker) update(now time.Time, checks []check, converged bool) []event {
-	var events []event
-	if t.windowOpen() && t.timedOut(now) {
-		events = append(events, event{kind: evWindowTimedOut, duration: now.Sub(t.window)})
+	events := t.expire(now)
+	judged, allOK := t.judge(now, checks)
+	events = append(events, judged...)
+	released := !t.isHeld() || converged && !t.applied.IsZero() && now.Sub(t.applied) >= config.MinDwell
+	if t.windowOpen() && allOK && released {
+		events = append(events, event{kind: evWindowClosed, duration: now.Sub(t.window)})
 		t.closeWindow()
-		for _, name := range slices.Sorted(maps.Keys(t.violated)) {
-			if v := t.violated[name]; !v.finding {
-				v.finding = true
-				events = append(events, event{kind: evFinding, invariant: name, duration: now.Sub(v.since), finding: true})
-			}
+	}
+	return events
+}
+
+// expire closes a window at its timeout, and makes the violations still open
+// findings.
+func (t *tracker) expire(now time.Time) []event {
+	if !t.windowOpen() || !t.timedOut(now) {
+		return nil
+	}
+	events := []event{{kind: evWindowTimedOut, duration: now.Sub(t.window)}}
+	t.closeWindow()
+	for _, name := range slices.Sorted(maps.Keys(t.violated)) {
+		if v := t.violated[name]; !v.finding {
+			v.finding = true
+			events = append(events, event{kind: evFinding, invariant: name, duration: now.Sub(v.since), finding: true})
 		}
 	}
-	allOK := true
+	return events
+}
+
+// judge follows the violations of checks, and reports whether all hold.
+func (t *tracker) judge(now time.Time, checks []check) (events []event, allOK bool) {
+	allOK = true
 	for _, c := range checks {
 		v := t.violated[c.invariant]
 		switch {
@@ -147,10 +167,5 @@ func (t *tracker) update(now time.Time, checks []check, converged bool) []event 
 		}
 		allOK = allOK && c.err == nil
 	}
-	released := !t.isHeld() || converged && !t.applied.IsZero() && now.Sub(t.applied) >= t.dwell
-	if t.windowOpen() && allOK && released {
-		events = append(events, event{kind: evWindowClosed, duration: now.Sub(t.window)})
-		t.closeWindow()
-	}
-	return events
+	return events, allOK
 }

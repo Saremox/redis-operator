@@ -172,8 +172,9 @@ func TestFollowerSwitchesPassword(t *testing.T) {
 	path := Path{Name: PathRFRM, NewClient: func(c Client) *redis.Client {
 		return redis.NewClient(&redis.Options{Addr: s.Addr(), CredentialsProvider: credentials(c, a), MaxRetries: -1, PoolSize: 1})
 	}}
-	var probers []*Prober
-	for _, c := range []Client{Pooled, Follower} {
+	clients := []Client{Pooled, Follower}
+	probers := make([]*Prober, 0, len(clients))
+	for _, c := range clients {
 		probers = append(probers, New(in, path, c, fastProbe, a, m, discard()))
 	}
 	// miniredis reads its password unlocked in HELLO, so it is changed

@@ -63,12 +63,12 @@ type rotation struct {
 	// windows are the convergence windows the mutation opened.
 	windows []*windowHold
 	out     bytes.Buffer
-	ctx     context.Context
 }
 
-// newRotation returns a rotation whose RedisFailover has status. Window i
-// ends with converged[i]; a window after them cancels the run.
-func newRotation(t *testing.T, status redisfailoverv1.RedisFailoverStatus, converged ...bool) *rotation {
+// newRotation returns a rotation whose RedisFailover has status, and the ctx
+// of its run. Window i ends with converged[i]; a window after them cancels
+// the run.
+func newRotation(t *testing.T, status redisfailoverv1.RedisFailoverStatus, converged ...bool) (*rotation, context.Context) {
 	t.Helper()
 	in := config.Instance{Name: "x", Namespace: "ns", Mode: config.ModeSentinel,
 		Mutations: config.Mutations{Kinds: map[config.Kind]int{config.PasswordRotate: 1, config.KillMaster: 1}}}
@@ -77,7 +77,7 @@ func newRotation(t *testing.T, status redisfailoverv1.RedisFailoverStatus, conve
 	cfg.Observer.Interval.Duration = 10 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	r := &rotation{ctx: ctx}
+	r := &rotation{}
 	r.kube = fake.NewClientset(
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "x-auth", Namespace: "ns"}, Data: map[string][]byte{"password": []byte("old")}},
 		&appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "rfr-x", Namespace: "ns"}},
@@ -101,7 +101,7 @@ func newRotation(t *testing.T, status redisfailoverv1.RedisFailoverStatus, conve
 		r.windows = append(r.windows, h)
 		return h
 	}
-	return r
+	return r, ctx
 }
 
 func (r *rotation) password() string {
@@ -112,10 +112,10 @@ func (r *rotation) password() string {
 	return string(s.Data["password"])
 }
 
-func (r *rotation) run(t *testing.T, kind config.Kind) {
+func (r *rotation) run(ctx context.Context, t *testing.T, kind config.Kind) {
 	t.Helper()
 	p := planAuth(kind, authState())
-	if next := r.m.execute(r.ctx, 1, authState(), p, r.m.log); next != "" {
+	if next := r.m.execute(ctx, 1, authState(), p, r.m.log); next != "" {
 		t.Fatalf("next kind %q", next)
 	}
 }
@@ -145,8 +145,8 @@ var stuck = redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.NotHealth
 // counts as stuck_restored. The first timeout stays in the log, under a key
 // that no count of results reads.
 func TestStuckRotationRestored(t *testing.T) {
-	r := newRotation(t, stuck, false, true)
-	r.run(t, config.PasswordRotate)
+	r, ctx := newRotation(t, stuck, false, true)
+	r.run(ctx, t, config.PasswordRotate)
 	if len(r.windows) != 2 {
 		t.Fatalf("%d windows, want 2", len(r.windows))
 	}
@@ -195,8 +195,8 @@ func TestStuckRotationRestored(t *testing.T) {
 // A restore that does not converge either is a timeout, and the instance
 // keeps the previous password: the tester tries only once.
 func TestStuckRotationNotRestored(t *testing.T) {
-	r := newRotation(t, stuck, false, false)
-	r.run(t, config.PasswordRotate)
+	r, ctx := newRotation(t, stuck, false, false)
+	r.run(ctx, t, config.PasswordRotate)
 	if len(r.windows) != 2 {
 		t.Fatalf("%d windows, want 2", len(r.windows))
 	}
@@ -223,8 +223,8 @@ func TestRotationNotStuck(t *testing.T) {
 		"converged":                {stuck, true, resultConverged},
 	} {
 		t.Run(name, func(t *testing.T) {
-			r := newRotation(t, c.status, c.converged)
-			r.run(t, config.PasswordRotate)
+			r, ctx := newRotation(t, c.status, c.converged)
+			r.run(ctx, t, config.PasswordRotate)
 			if len(r.windows) != 1 {
 				t.Errorf("%d windows, want 1", len(r.windows))
 			}
@@ -293,8 +293,8 @@ func TestPlanAuthRemoveWithoutKnownPasswordHasNoRestore(t *testing.T) {
 // A stuck auth_remove ends with auth.secretPath set again, and the Secret
 // keeps the previous password.
 func TestRestoreAuthRemovePatchesSecretPathBack(t *testing.T) {
-	r := newRotation(t, stuck, false, true)
-	r.run(t, config.AuthRemove)
+	r, ctx := newRotation(t, stuck, false, true)
+	r.run(ctx, t, config.AuthRemove)
 	if len(r.windows) != 2 {
 		t.Fatalf("%d windows, want 2", len(r.windows))
 	}
@@ -317,7 +317,7 @@ func TestRestoreAuthRemovePatchesSecretPathBack(t *testing.T) {
 // The timeout alert uses increase(), which does not see a series that starts
 // at 1. So New creates the stuck_restored series of each kind with a restore.
 func TestNewCreatesStuckRestoredSeries(t *testing.T) {
-	r := newRotation(t, stuck)
+	r, _ := newRotation(t, stuck)
 	r.m = New(config.Instance{Name: "x", Namespace: "ns", Mode: config.ModeSentinel, Mutations: config.Mutations{Kinds: map[config.Kind]int{
 		config.PasswordRotate: 1, config.AuthRemove: 1, config.AuthAdd: 1, config.PasswordRotateOffline: 1,
 		config.PasswordRotateOfflineForget: 1, config.KillMaster: 1,
@@ -356,8 +356,8 @@ func TestAcceptedAndHealthy(t *testing.T) {
 
 // A run that ends in the restore records no result, as in any other window.
 func TestStuckRotationCanceled(t *testing.T) {
-	r := newRotation(t, stuck, false)
-	r.run(t, config.PasswordRotate)
+	r, ctx := newRotation(t, stuck, false)
+	r.run(ctx, t, config.PasswordRotate)
 	if len(r.windows) != 2 {
 		t.Fatalf("%d windows, want 2", len(r.windows))
 	}
@@ -370,15 +370,16 @@ func TestStuckRotationCanceled(t *testing.T) {
 // A previous password that the tester cannot set leaves the restore to time
 // out.
 func TestStuckRotationSecretNotUpdated(t *testing.T) {
-	r := newRotation(t, stuck, false, false)
+	r, ctx := newRotation(t, stuck, false, false)
 	updates := 0
 	r.kube.PrependReactor("update", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
-		if updates++; updates > 1 {
+		updates++
+		if updates > 1 {
 			return true, nil, errors.New("denied")
 		}
 		return false, nil, nil
 	})
-	r.run(t, config.PasswordRotate)
+	r.run(ctx, t, config.PasswordRotate)
 	if got := r.password(); got == "old" {
 		t.Error("the Secret has the previous password")
 	}
@@ -398,9 +399,9 @@ func TestRestoreWindowChecksPreviousPassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := newRotation(t, stuck, false, true)
+	r, runCtx := newRotation(t, stuck, false, true)
 	r.m.timeout = time.Second
-	r.run(t, config.PasswordRotate)
+	r.run(runCtx, t, config.PasswordRotate)
 	if len(r.windows) != 2 {
 		t.Fatalf("%d windows, want 2", len(r.windows))
 	}
@@ -437,11 +438,11 @@ func TestRestoreWindowChecksPreviousPassword(t *testing.T) {
 // A rotation whose Secret update the API refuses changed nothing, so the
 // tester has nothing to restore.
 func TestRejectedRotationNotRestored(t *testing.T) {
-	r := newRotation(t, stuck, false, true)
+	r, ctx := newRotation(t, stuck, false, true)
 	r.kube.PrependReactor("update", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("denied")
 	})
-	r.run(t, config.PasswordRotate)
+	r.run(ctx, t, config.PasswordRotate)
 	if len(r.windows) != 1 {
 		t.Errorf("%d windows, want 1", len(r.windows))
 	}
@@ -464,8 +465,8 @@ func TestNoRestoreWithoutPreviousPassword(t *testing.T) {
 		t.Errorf("password_rotate_offline not skipped: %+v", p)
 	}
 
-	r := newRotation(t, stuck)
-	restored, ok := r.m.restorePassword(r.ctx, &restore{secretChange: secretChange{name: "x-auth"}}, time.Minute, r.m.log)
+	r, ctx := newRotation(t, stuck)
+	restored, ok := r.m.restorePassword(ctx, &restore{secretChange: secretChange{name: "x-auth"}}, time.Minute, r.m.log)
 	if restored || !ok || len(r.windows) != 0 {
 		t.Errorf("restored %t, ok %t, %d windows, want no restore", restored, ok, len(r.windows))
 	}

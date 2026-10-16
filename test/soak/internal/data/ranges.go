@@ -17,17 +17,17 @@ type ranges struct {
 type span struct{ lo, hi int64 }
 
 func (r *ranges) add(n int64) {
-	if k := len(r.spans); k > 0 {
-		last := &r.spans[k-1]
-		switch {
-		case n == last.hi:
-			last.hi++
-			return
-		case n > last.hi:
-			r.spans = append(r.spans, span{n, n + 1})
-			return
-		}
-	} else {
+	k := len(r.spans)
+	if k == 0 {
+		r.spans = append(r.spans, span{n, n + 1})
+		return
+	}
+	last := &r.spans[k-1]
+	switch {
+	case n == last.hi:
+		last.hi++
+		return
+	case n > last.hi:
 		r.spans = append(r.spans, span{n, n + 1})
 		return
 	}

@@ -22,7 +22,7 @@ func describe(t *testing.T, m *Metrics) string {
 	labelsRE := regexp.MustCompile(`variableLabels: \{([^}]*)\}`)
 	v := reflect.ValueOf(m).Elem()
 	for i := range v.NumField() {
-		c, ok := v.Field(i).Interface().(prometheus.Collector)
+		c, ok := reflect.TypeAssert[prometheus.Collector](v.Field(i))
 		if !ok {
 			t.Fatalf("field %s is not a collector", v.Type().Field(i).Name)
 		}
@@ -32,7 +32,7 @@ func describe(t *testing.T, m *Metrics) string {
 		for d := range descs {
 			fmt.Fprintf(&b, "%s: %s\n", v.Type().Field(i).Name, d)
 			n := 0
-			if l := labelsRE.FindStringSubmatch(d.String()); l != nil && l[1] != "" {
+			if l := labelsRE.FindStringSubmatch(d.String()); len(l) > 1 && l[1] != "" {
 				n = len(strings.Split(l[1], ","))
 			}
 			values := make([]string, n)
@@ -49,11 +49,11 @@ func describe(t *testing.T, m *Metrics) string {
 			h.Observe(0)
 			ch := make(chan prometheus.Metric, 1)
 			c.Collect(ch)
-			var bounds []string
 			var out dto.Metric
 			if err := (<-ch).Write(&out); err != nil {
 				t.Fatal(err)
 			}
+			bounds := make([]string, 0, len(out.GetHistogram().GetBucket()))
 			for _, bk := range out.GetHistogram().GetBucket() {
 				bounds = append(bounds, fmt.Sprint(bk.GetUpperBound()))
 			}

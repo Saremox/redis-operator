@@ -31,7 +31,7 @@ func effective(r *redisfailoverv1.RedisFailover, limit string) *redisfailoverv1.
 }
 
 func pods(maxmemory int64, policy string, limits ...int64) []Pod {
-	var ps []Pod
+	ps := make([]Pod, 0, len(limits))
 	for i, l := range limits {
 		ps = append(ps, Pod{Name: "rfr-x-" + string(rune('0'+i)), Limit: l, MaxMemory: maxmemory, Policy: policy})
 	}

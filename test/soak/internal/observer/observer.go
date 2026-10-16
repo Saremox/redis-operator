@@ -121,7 +121,7 @@ func New(in config.Instance, cfg *config.Config, kube kubernetes.Interface, rfs 
 		auth:       a,
 		lock:       lock,
 		log:        log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
-		tracker:    newTracker(cfg.Observer.ConvergenceTimeout.Duration, config.MinDwell),
+		tracker:    newTracker(cfg.Observer.ConvergenceTimeout.Duration),
 		fullLimit:  cfg.Observer.NoevictionFullLimit.Duration,
 		holds:      make(chan *Hold, 1),
 		lagPods:    map[string]bool{},
@@ -666,27 +666,39 @@ func (o *Observer) observeMaster(s snapshot) {
 			lags = s.bootstrapLags()
 		}
 	case err == nil:
-		if o.master.UID != "" && o.master.UID != master.UID {
-			o.failovers.Inc()
-			event := config.EventFailover
-			// A new RedisFailover starts empty. So does a new only pod without
-			// a volume that replaced the master: it never held the data. A pod
-			// that replicated from the master, for example the pod that a
-			// scale-down left, has the data.
-			if o.recreated || s.redisReplicas == 1 && !s.pvc && !o.synced[master.UID] {
-				event = config.EventReset
-			}
-			o.recreated = false
-			o.log.Warn("failover", "from", o.master.Name, "to", master.Name, "event", event)
-			select {
-			case o.failoverCh <- event:
-			default:
-			}
-		}
-		o.master = master.pod
+		o.followMaster(s, master)
 		lags = s.lags(master)
 	}
 	o.synced = synced(s, o.synced)
+	o.setLags(lags)
+}
+
+// followMaster takes the master of the round, and reports a failover when it
+// is another pod.
+func (o *Observer) followMaster(s snapshot, master *redisPod) {
+	if o.master.UID != "" && o.master.UID != master.UID {
+		o.failovers.Inc()
+		event := config.EventFailover
+		// A new RedisFailover starts empty. So does a new only pod without
+		// a volume that replaced the master: it never held the data. A pod
+		// that replicated from the master, for example the pod that a
+		// scale-down left, has the data.
+		if o.recreated || s.redisReplicas == 1 && !s.pvc && !o.synced[master.UID] {
+			event = config.EventReset
+		}
+		o.recreated = false
+		o.log.Warn("failover", "from", o.master.Name, "to", master.Name, "event", event)
+		select {
+		case o.failoverCh <- event:
+		default:
+		}
+	}
+	o.master = master.pod
+}
+
+// setLags sets the replication lag of each pod in lags, and removes the
+// series of the other pods.
+func (o *Observer) setLags(lags map[string]int64) {
 	for name := range o.lagPods {
 		if _, ok := lags[name]; !ok {
 			o.lag.DeleteLabelValues(name)

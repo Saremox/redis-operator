@@ -72,22 +72,12 @@ type Data struct {
 	filled     atomic.Bool
 	mutating   atomic.Bool
 	failedOver atomic.Bool
-	requests   chan *request
+	turns      chan chan struct{}
 
 	oom        prometheus.Counter
 	lost       *prometheus.CounterVec
 	unexpected *prometheus.CounterVec
 	verified   *prometheus.CounterVec
-}
-
-type request struct {
-	ctx      context.Context
-	event    string
-	step     int
-	lossless bool
-	done     chan struct{}
-	lost     int
-	err      error
 }
 
 // New returns the Data of an instance. The instance must have data configured.
@@ -104,7 +94,7 @@ func New(in config.Instance, cfg *config.Config, master Master, a *auth.Source, 
 		auth:       a,
 		rnd:        rand.New(rand.NewPCG(uint64(cfg.Mutation.Seed), h.Sum64())),
 		log:        log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
-		requests:   make(chan *request),
+		turns:      make(chan chan struct{}),
 		oom:        m.OOMRejections.With(labels),
 		lost:       m.LostWrites.MustCurryWith(labels),
 		unexpected: m.UnexpectedLost.MustCurryWith(labels),
@@ -169,26 +159,32 @@ func (d *Data) Refill() {
 // the kind of the mutation, or config.EventReset for a mutation that loses the
 // data by design. Lost writes of a lossless event are unexpected. Verify
 // returns the number of lost writes, or an error if ctx is done before the
-// verification.
+// verification succeeds. Only ctx cancels the verification.
 func (d *Data) Verify(ctx context.Context, event string, step int, lossless bool) (int, error) {
-	// The verifier does not get the request if ctx is done first.
+	// The verifier does not give the turn if ctx is done first.
 	defer d.mutating.Store(false)
-	return verifyAfter(ctx, d.requests, &request{ctx: ctx, event: event, step: step, lossless: lossless})
+	release, err := takeTurn(ctx, d.turns)
+	if err != nil {
+		return 0, err
+	}
+	lost, err := d.verifyRetrying(ctx, event, step, lossless)
+	// Before the release, so that the verifier verifies a failover that waits.
+	d.mutating.Store(false)
+	release()
+	return lost, err
 }
 
-func verifyAfter(ctx context.Context, requests chan<- *request, r *request) (int, error) {
-	r.done = make(chan struct{})
+// takeTurn waits until the verifier of turns is free, or ctx is done. The
+// verifier then waits until the caller calls release, so that one
+// verification runs at a time, and the events that arrive meanwhile wait.
+func takeTurn(ctx context.Context, turns chan<- chan struct{}) (release func(), err error) {
+	done := make(chan struct{})
 	select {
-	case requests <- r:
+	case turns <- done:
+		return func() { close(done) }, nil
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return nil, ctx.Err()
 	}
-	select {
-	case <-r.done:
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	}
-	return r.lost, r.err
 }
 
 func (d *Data) runVerifier(ctx context.Context) {
@@ -202,10 +198,8 @@ func (d *Data) runVerifier(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case r := <-d.requests:
-			r.lost, r.err = d.verifyRetrying(r.ctx, r.event, r.step, r.lossless)
-			d.mutating.Store(false)
-			close(r.done)
+		case done := <-d.turns:
+			<-done
 		case event := <-d.master.Failovers():
 			d.failedOver.Store(true)
 			if !d.mutating.Load() {
@@ -257,38 +251,13 @@ func (d *Data) verify(ctx context.Context, event string, step int, lossless bool
 	if err != nil {
 		return 0, err
 	}
-
-	var r round
-	var lostRecent, lostOlder []int64
-	if d.ledger != nil {
-		r = d.ledger.plan(d.rnd, sampleKeys)
-		size := ledgerValueBytes
-		if lostRecent, _, err = d.check(ctx, c, LedgerKey, size, members(r.recent)); err != nil {
-			return 0, err
-		}
-		if lostOlder, _, err = d.check(ctx, c, LedgerKey, size, r.older); err != nil {
-			return 0, err
-		}
-		// If the sample lost writes, an unknown share of the older writes is
-		// lost. Count all of them now, so that later events do not get this
-		// loss.
-		if len(lostOlder) > 0 {
-			if lostOlder, _, err = d.check(ctx, c, LedgerKey, size, members(r.olderAll)); err != nil {
-				return 0, err
-			}
-		}
-	}
-	d.fillMu.Lock()
-	fillTo := d.fillNext
-	fillSeqs := sample(d.rnd, d.fillAck.spans, sampleKeys)
-	d.fillMu.Unlock()
-	lostFill, missingFill, err := d.check(ctx, c, FillKey, fillValueBytes, fillSeqs)
+	r, lostRecent, lostOlder, err := d.checkLedger(ctx, c)
 	if err != nil {
 		return 0, err
 	}
-	// Fill keys may be evicted or expire, but never change.
-	if d.cfg.Fill.TTL.Duration > 0 || mi.maxMemory > 0 && strings.HasPrefix(mi.policy, "allkeys-") {
-		lostFill = slices.DeleteFunc(lostFill, func(n int64) bool { return slices.Contains(missingFill, n) })
+	fillTo, fillSeqs, lostFill, err := d.checkFill(ctx, c, mi)
+	if err != nil {
+		return 0, err
 	}
 
 	if d.ledger != nil {
@@ -321,6 +290,48 @@ func (d *Data) verify(ctx context.Context, event string, step int, lossless bool
 	}
 	log.Info("data verified")
 	return lost, nil
+}
+
+// checkLedger checks the ledger writes of a round, without a ledger none.
+func (d *Data) checkLedger(ctx context.Context, c *redis.Client) (r round, lostRecent, lostOlder []int64, err error) {
+	if d.ledger == nil {
+		return round{}, nil, nil, nil
+	}
+	r = d.ledger.plan(d.rnd, sampleKeys)
+	size := ledgerValueBytes
+	if lostRecent, _, err = d.check(ctx, c, LedgerKey, size, members(r.recent)); err != nil {
+		return round{}, nil, nil, err
+	}
+	if lostOlder, _, err = d.check(ctx, c, LedgerKey, size, r.older); err != nil {
+		return round{}, nil, nil, err
+	}
+	// If the sample lost writes, an unknown share of the older writes is
+	// lost. Count all of them now, so that later events do not get this
+	// loss.
+	if len(lostOlder) > 0 {
+		if lostOlder, _, err = d.check(ctx, c, LedgerKey, size, members(r.olderAll)); err != nil {
+			return round{}, nil, nil, err
+		}
+	}
+	return r, lostRecent, lostOlder, nil
+}
+
+// checkFill checks a sample of the fill keys. It returns the next fill
+// sequence when it took the sample, the sample and the lost keys of it.
+func (d *Data) checkFill(ctx context.Context, c *redis.Client, mi memInfo) (fillTo int64, seqs, lost []int64, err error) {
+	d.fillMu.Lock()
+	fillTo = d.fillNext
+	seqs = sample(d.rnd, d.fillAck.spans, sampleKeys)
+	d.fillMu.Unlock()
+	lost, missing, err := d.check(ctx, c, FillKey, fillValueBytes, seqs)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	// Fill keys may be evicted or expire, but never change.
+	if d.cfg.Fill.TTL.Duration > 0 || mi.maxMemory > 0 && strings.HasPrefix(mi.policy, "allkeys-") {
+		lost = slices.DeleteFunc(lost, func(n int64) bool { return slices.Contains(missing, n) })
+	}
+	return fillTo, seqs, lost, nil
 }
 
 // podClient connects to a pod directly, for verifications, whose
@@ -564,9 +575,24 @@ func (d *Data) Load(ctx context.Context, percent int64, hold time.Duration, unti
 	if mi.policy != "noeviction" || mi.maxMemory == 0 {
 		return fmt.Sprintf("maxmemory %d, policy %s", mi.maxMemory, mi.policy), nil
 	}
-	target := mi.maxMemory * percent / 100
+	n, mi, err := d.loadTo(ctx, mi, mi.maxMemory*percent/100)
+	if err == nil {
+		d.log.Info("load written", "used_memory", mi.used, "maxmemory", mi.maxMemory, "keys", n)
+		err = waitUntil(ctx, hold, until)
+	}
+	for !d.deleteRange(ctx, n) {
+		if !sleep(ctx, time.Second) {
+			return "", ctx.Err()
+		}
+	}
+	d.log.Info("load deleted", "keys", n)
+	return "", err
+}
+
+// loadTo writes burst keys until used_memory reaches target. It returns the
+// number of keys and the last memory info.
+func (d *Data) loadTo(ctx context.Context, mi memInfo, target int64) (n int64, _ memInfo, err error) {
 	lim := rate.NewLimiter(4*fillRate, fillBatch)
-	var n int64
 	for mi.used < target {
 		b := min(fillBatch, (target-mi.used)/fillValueBytes+1)
 		if err = lim.WaitN(ctx, int(b)); err != nil {
@@ -582,27 +608,22 @@ func (d *Data) Load(ctx context.Context, percent int64, hold time.Duration, unti
 			break
 		}
 	}
-	if err == nil {
-		d.log.Info("load written", "used_memory", mi.used, "maxmemory", mi.maxMemory, "keys", n)
-		deadline := time.Now().Add(hold)
-		for {
-			var ok bool
-			if ok, err = until(ctx); ok || err != nil || !time.Now().Before(deadline) {
-				break
-			}
-			if !sleep(ctx, time.Second) {
-				err = ctx.Err()
-				break
-			}
+	return n, mi, err
+}
+
+// waitUntil calls until each second until it holds or fails, for at most
+// hold.
+func waitUntil(ctx context.Context, hold time.Duration, until func(context.Context) (bool, error)) error {
+	deadline := time.Now().Add(hold)
+	for {
+		ok, err := until(ctx)
+		if ok || err != nil || !time.Now().Before(deadline) {
+			return err
 		}
-	}
-	for !d.deleteRange(ctx, n) {
 		if !sleep(ctx, time.Second) {
-			return "", ctx.Err()
+			return ctx.Err()
 		}
 	}
-	d.log.Info("load deleted", "keys", n)
-	return "", err
 }
 
 func sinceOrZero(t time.Time) float64 {

@@ -98,7 +98,7 @@ func TestPlanAutoscaleSkips(t *testing.T) {
 	if p := m.plan(stepRand(1, m.in, 1), config.AutoscaleKillMaster, s); p.skip == "" {
 		t.Errorf("a stale master label: %+v", p)
 	}
-	if p := m.planAutoscale(stepRand(1, m.in, 1), config.KillMaster, s); p.skip == "" {
+	if p := m.planAutoscale(stepRand(1, m.in, 1), config.KillMaster, s); p.skip != "unknown kind" {
 		t.Errorf("another kind: %+v", p)
 	}
 }
@@ -120,7 +120,7 @@ func TestPlanAutoscaleLimit(t *testing.T) {
 			t.Fatalf("%+v %s", p, p.patch)
 		}
 		var want string
-		for _, part := range strings.Split(p.params, " ") {
+		for part := range strings.SplitSeq(p.params, " ") {
 			want = part
 		}
 		q := resource.MustParse(want)
@@ -244,7 +244,7 @@ func TestPlanAutoscaleStateLost(t *testing.T) {
 	if err := kube.CoreV1().ConfigMaps("ns").Delete(context.Background(), "rfa-x", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	var na notApplied
+	var na notAppliedError
 	if err := p.action(context.Background()); !errors.As(err, &na) {
 		t.Errorf("a second delete: %v", err)
 	}
@@ -293,10 +293,10 @@ func TestPlanLoad(t *testing.T) {
 		skip     string
 		statuses []redisfailoverv1.AutoscalingStatus
 		calls    int
-		// notApplied is a skipped result, and deleted is the pod that the
+		// notAppliedError is a skipped result, and deleted is the pod that the
 		// mutation deleted.
-		notApplied bool
-		deleted    string
+		notAppliedError bool
+		deleted         string
 		// unreadable is a RedisFailover that the mutator cannot read.
 		unreadable bool
 	}{
@@ -319,8 +319,8 @@ func TestPlanLoad(t *testing.T) {
 		}
 		p := m.plan(stepRand(1, m.in, 1), c.kind, s)
 		err := p.action(context.Background())
-		var na notApplied
-		if errors.As(err, &na) != c.notApplied || err != nil && !c.notApplied || l.calls != c.calls {
+		var na notAppliedError
+		if errors.As(err, &na) != c.notAppliedError || err != nil && !c.notAppliedError || l.calls != c.calls {
 			t.Errorf("%s: %v, %d calls", c.name, err, l.calls)
 		}
 		pods, _ := kube.CoreV1().Pods("ns").List(context.Background(), metav1.ListOptions{})
@@ -444,11 +444,11 @@ func TestAllowed(t *testing.T) {
 
 // A mutation that found nothing to do counts as skipped.
 func TestExecuteNotApplied(t *testing.T) {
-	r := newRotation(t, redisfailoverv1.RedisFailoverStatus{}, true)
+	r, ctx := newRotation(t, redisfailoverv1.RedisFailoverStatus{}, true)
 	p := plan{kind: config.KillMaster, action: func(context.Context) error {
-		return notApplied{errors.New("no step")}
+		return notAppliedError{errors.New("no step")}
 	}, converged: func(state) error { return nil }}
-	r.m.execute(r.ctx, 1, authState(), p, r.m.log)
+	r.m.execute(ctx, 1, authState(), p, r.m.log)
 	if n := testutil.ToFloat64(r.m.total.WithLabelValues(string(config.KillMaster), resultSkipped)); n != 1 {
 		t.Errorf("skipped %v", n)
 	}

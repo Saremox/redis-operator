@@ -431,7 +431,7 @@ func (m *Mutator) windowCheck(p plan, applied, rejected *atomic.Bool) func(conte
 func (m *Mutator) result(p plan, applyErr error, converged, restored bool, d time.Duration, appliedAt time.Time, log *slog.Logger) (string, *slog.Logger) {
 	result := resultTimeout
 	var exp expectation
-	var na notApplied
+	var na notAppliedError
 	switch {
 	case errors.As(applyErr, &na):
 		result = resultSkipped

@@ -124,7 +124,7 @@ func rotated() state {
 }
 
 func TestAuthConverged(t *testing.T) {
-	wrongpass := errors.New("WRONGPASS invalid username-password pair or user is disabled.")
+	wrongpass := errors.New("WRONGPASS invalid username-password pair or user is disabled")
 	runPredicateOn(t, rotated, authConverged("sum-old", 3), []predicateCase{
 		{"converged", func(*state) {}, true},
 		{"a pod refuses the password", func(s *state) { s.auth["rfr-x-1"] = wrongpass }, false},

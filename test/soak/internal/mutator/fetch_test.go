@@ -3,6 +3,7 @@ package mutator
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"testing"
 
@@ -60,7 +61,7 @@ func TestFetchOrder(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r := newRotation(t, redisfailoverv1.RedisFailoverStatus{})
+			r, _ := newRotation(t, redisfailoverv1.RedisFailoverStatus{})
 			rf, err := r.rfs.DatabasesV1().RedisFailovers("ns").Get(context.Background(), "x", metav1.GetOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -131,8 +132,6 @@ func TestFetchOrder(t *testing.T) {
 
 func podWith(name string, labels map[string]string, component string) *corev1.Pod {
 	l := map[string]string{"app.kubernetes.io/component": component}
-	for k, v := range labels {
-		l[k] = v
-	}
+	maps.Copy(l, labels)
 	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns", Labels: l}}
 }

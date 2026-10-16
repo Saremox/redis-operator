@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func replicationInfo(role, masterHost, link string, offset string) info {
+func replicationInfo(role, masterHost, link, offset string) info {
 	i := info{"role": role, "master_repl_offset": offset}
 	if role == "slave" {
 		i["master_host"], i["master_port"], i["master_link_status"] = masterHost, "6379", link

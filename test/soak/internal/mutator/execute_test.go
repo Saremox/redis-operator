@@ -41,19 +41,20 @@ func (h *recordedHold) Applied() {
 
 func (h *recordedHold) Done() <-chan bool { return h.done }
 
-// executeEnv is a rotation whose windows are recordedHolds.
-func executeEnv(t *testing.T, never, converged bool) (*rotation, *[]*recordedHold) {
+// executeEnv is a rotation whose windows are recordedHolds, and the ctx of
+// its run.
+func executeEnv(t *testing.T, never, converged bool) (*rotation, context.Context, *[]*recordedHold) {
 	t.Helper()
-	r := newRotation(t, redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.HealthyState})
+	r, ctx := newRotation(t, redisfailoverv1.RedisFailoverStatus{State: redisfailoverv1.HealthyState})
 	r.m.observer = &stubObserver{}
 	var holds []*recordedHold
 	r.m.hold = func(d time.Duration, check func(context.Context) error) holdHandle {
 		h := &recordedHold{timeout: d, check: check, never: never, converged: converged, done: make(chan bool, 1)}
-		h.early = check(r.ctx)
+		h.early = check(ctx)
 		holds = append(holds, h)
 		return h
 	}
-	return r, &holds
+	return r, ctx, &holds
 }
 
 const executeTimeout = 40 * time.Millisecond
@@ -88,11 +89,11 @@ func TestExecuteWindow(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r, holds := executeEnv(t, c.never, true)
+			r, ctx, holds := executeEnv(t, c.never, true)
 			withTimeout(r, c.p.kind)
 			c.p.converged = func(state) error { return nil }
 			start := time.Now()
-			if next := r.m.execute(r.ctx, 1, authState(), c.p, r.m.log); next != "" {
+			if next := r.m.execute(ctx, 1, authState(), c.p, r.m.log); next != "" {
 				t.Errorf("next %q", next)
 			}
 			if d := time.Since(start); d < c.least {
@@ -147,12 +148,12 @@ func TestExecuteCheck(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r, holds := executeEnv(t, false, true)
+			r, ctx, holds := executeEnv(t, false, true)
 			p := plan{kind: config.KillMaster, action: c.action, probe: c.probe, converged: func(state) error { return convErr }}
 			if c.action == nil {
 				p.action = func(context.Context) error { return nil }
 			}
-			r.m.execute(r.ctx, 1, authState(), p, r.m.log)
+			r.m.execute(ctx, 1, authState(), p, r.m.log)
 			h := (*holds)[0]
 			if h.early == nil || h.early.Error() != "still being applied" {
 				t.Errorf("before the mutation: %v", h.early)
@@ -168,7 +169,7 @@ func TestExecuteCheck(t *testing.T) {
 				return false, nil, nil
 			})
 			got := "<nil>"
-			if err := h.check(r.ctx); err != nil {
+			if err := h.check(ctx); err != nil {
 				got = err.Error()
 			}
 			if got != c.want || reads != c.reads {
@@ -180,10 +181,10 @@ func TestExecuteCheck(t *testing.T) {
 
 // A mutation step whose expectation did not hold is a timeout with its error.
 func TestExecuteExpectation(t *testing.T) {
-	r, _ := executeEnv(t, false, false)
+	r, ctx, _ := executeEnv(t, false, false)
 	p := plan{kind: config.KillMaster, action: func(context.Context) error { return expectation{errors.New("no failover")} },
 		converged: func(state) error { return nil }}
-	r.m.execute(r.ctx, 1, authState(), p, r.m.log)
+	r.m.execute(ctx, 1, authState(), p, r.m.log)
 	if n := testutil.ToFloat64(r.m.total.WithLabelValues(string(config.KillMaster), resultTimeout)); n != 1 {
 		t.Errorf("timeouts %v", n)
 	}
@@ -199,12 +200,12 @@ func TestExecuteJudgeReset(t *testing.T) {
 	fails := &transition{edge: config.Edge{From: "a", To: "d", Expect: config.ExpectFail}}
 	for name, inst := range map[string]*instances.Instance{"template": new(instances.Instance), "no template": nil} {
 		t.Run(name, func(t *testing.T) {
-			r, _ := executeEnv(t, true, false)
+			r, ctx, _ := executeEnv(t, true, false)
 			withTimeout(r, config.ImageUpgrade)
 			r.m.instance = inst
 			p := plan{kind: config.ImageUpgrade, edge: fails, action: func(context.Context) error { return nil },
 				converged: func(state) error { return nil }}
-			next := r.m.execute(r.ctx, 1, authState(), p, r.m.log)
+			next := r.m.execute(ctx, 1, authState(), p, r.m.log)
 			want, why := config.Kind(""), ""
 			if inst != nil {
 				want, why = config.Reset, "after a -> d didn't converge"

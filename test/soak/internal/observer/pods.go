@@ -75,7 +75,8 @@ func (o *Observer) redisInfo(ctx context.Context, p *redisPod, port int, keys []
 // ConfigGet reads several keys with one CONFIG GET, which Redis and Valkey
 // accept from 7.0 on.
 func ConfigGet(ctx context.Context, c *redis.Client, keys []string) (map[string]string, error) {
-	args := []any{"config", "get"}
+	args := make([]any, 0, 2+len(keys))
+	args = append(args, "config", "get")
 	for _, k := range keys {
 		args = append(args, k)
 	}

@@ -278,7 +278,7 @@ func newAdoptEnv(t *testing.T) *adoptEnv {
 		t.Fatal(err)
 	}
 	in := cfg.Instances[slices.IndexFunc(cfg.Instances, func(in config.Instance) bool { return in.Name == "edge" })]
-	var objects []runtime.Object
+	objects := make([]runtime.Object, 0, 1+len(ips))
 	objects = append(objects, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "rfr-edge", Namespace: in.Namespace}})
 	for i, ip := range ips {
 		image, ready := imageRedis74, corev1.ConditionTrue

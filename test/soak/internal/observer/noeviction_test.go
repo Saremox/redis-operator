@@ -3,6 +3,7 @@ package observer
 import (
 	"io"
 	"log/slog"
+	"maps"
 	"strconv"
 	"testing"
 	"time"
@@ -69,9 +70,7 @@ func newNoevictionObserver(t *testing.T, limit string) *Observer {
 func withMemory(i info) snapshot {
 	s := healthy(false)
 	for p := range s.redis {
-		for k, v := range i {
-			s.redis[p].info[k] = v
-		}
+		maps.Copy(s.redis[p].info, i)
 	}
 	return s
 }

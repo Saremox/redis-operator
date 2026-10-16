@@ -248,7 +248,7 @@ func helmArgs(ch config.Chaos, op config.Operator, to config.OperatorVersion) []
 // fails if the hook fails. hop then waits until a pod on the new image leads,
 // and until all instances are quiet. It returns the time from the start of the
 // upgrade to convergence, or why it failed or did not converge in time.
-func (l *Lane) hop(ctx context.Context, a *action, from, to config.OperatorVersion) (time.Duration, error, error) {
+func (l *Lane) hop(ctx context.Context, a *action, from, to config.OperatorVersion) (converged time.Duration, failed, late error) {
 	log := a.log.With("from", from.Name, "to", to.Name)
 	l.lock.Disturb("operator upgrade to " + to.Name)
 	defer l.lock.Disturb("")

@@ -60,7 +60,7 @@ func (c *calls) epoch(addr string) (string, bool) {
 	return e, ok
 }
 
-func (c *calls) add(format string, a ...any) {
+func (c *calls) addf(format string, a ...any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = append(c.events, fmt.Sprintf(format, a...))
@@ -105,7 +105,7 @@ func fakeSentinels(t *testing.T, rec *calls, failing map[string]string) (port in
 						c.WriteError("ERR no such master with that name")
 						return true
 					}
-					rec.add("epoch %s", addr)
+					rec.addf("epoch %s", addr)
 					c.WriteStrings([]string{"name", "mymaster", "flags", "master", "config-epoch", epoch})
 					return true
 				}
@@ -113,7 +113,7 @@ func fakeSentinels(t *testing.T, rec *calls, failing map[string]string) (port in
 					c.WriteError("ERR unexpected " + strings.Join(args, " "))
 					return true
 				}
-				rec.add("reset %s", addr)
+				rec.addf("reset %s", addr)
 				if msg := failing[addr]; msg != "" {
 					c.WriteError(msg)
 					return true
@@ -146,10 +146,10 @@ func noMasterEnv(t *testing.T, rec *calls, failing map[string]string) (*Mutator,
 	port, addrs := fakeSentinels(t, rec, failing)
 	s := authState()
 	s.rf.Spec.Auth.SecretPath = ""
-	var objects []runtime.Object
 	for i := range s.sentinels {
 		s.sentinels[i].Status.PodIP = addrs[i]
 	}
+	objects := make([]runtime.Object, 0, len(s.redis))
 	for i := range s.redis {
 		p := s.redis[i].DeepCopy()
 		p.Namespace = "ns"
@@ -166,7 +166,7 @@ func noMasterEnv(t *testing.T, rec *calls, failing map[string]string) (*Mutator,
 		if opts.GracePeriodSeconds != nil {
 			grace = fmt.Sprintf(" grace=%d", *opts.GracePeriodSeconds)
 		}
-		rec.add("delete %s uid=%s%s", d.GetName(), uid, grace)
+		rec.addf("delete %s uid=%s%s", d.GetName(), uid, grace)
 		return false, nil, nil
 	})
 	rfs := rffake.NewSimpleClientset(&redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "x", Namespace: "ns"}})
@@ -752,7 +752,7 @@ func TestExecuteRecordsTheRecovery(t *testing.T) {
 		t.Errorf("converged mutations = %v, want 1", got)
 	}
 	done := ""
-	for _, line := range strings.Split(out.String(), "\n") {
+	for line := range strings.SplitSeq(out.String(), "\n") {
 		if strings.Contains(line, `"mutation done"`) {
 			done = line
 		}

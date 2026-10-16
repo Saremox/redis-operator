@@ -47,7 +47,7 @@ func (f *fakeData) Begin() {
 	f.mutating = true
 }
 
-func (f *fakeData) Verify(_ context.Context, event string, step int, lossless bool) (int, error) {
+func (f *fakeData) Verify(_ context.Context, event string, _ int, lossless bool) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if lossless {
@@ -100,7 +100,7 @@ func TestActPausesMutators(t *testing.T) {
 		disturbance, chaos string
 		mutating           bool
 	}
-	l.actions[config.OperatorRestart] = func(ctx context.Context, a *action) outcome {
+	l.actions[config.OperatorRestart] = func(_ context.Context, a *action) outcome {
 		inAction.Store(true)
 		defer inAction.Store(false)
 		a.begin()

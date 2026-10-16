@@ -11,7 +11,8 @@ import (
 func TestUntil(t *testing.T) {
 	n := 0
 	err := Until(context.Background(), time.Millisecond, time.Second, func(context.Context) error {
-		if n++; n < 3 {
+		n++
+		if n < 3 {
 			return errors.New("not yet")
 		}
 		return nil

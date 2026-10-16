@@ -145,7 +145,7 @@ func (c *Config) Reaches(ch *Chain, from, to string) bool {
 	return seen[to]
 }
 
-func (v *Version) setDefaults() {
+func setVersionDefaults(v *Version) {
 	repo, tag := splitImage(v.Image)
 	v.Server = path.Base(repo)
 	v.Release, _, _ = strings.Cut(tag, "-")
@@ -165,21 +165,35 @@ func splitImage(image string) (repo, tag string) {
 // tags, edges between known versions that change the version, and no
 // downgrade that expects ok.
 func (c *Config) validateVersions() error {
+	seen, err := c.validateCatalogue()
+	if err != nil {
+		return err
+	}
+	return c.validateEdges(seen)
+}
+
+// validateCatalogue checks the versions, and returns their names.
+func (c *Config) validateCatalogue() (map[string]bool, error) {
 	seen := map[string]bool{}
 	images := map[string]bool{}
 	for _, v := range c.Versions {
 		switch {
 		case v.Name == "" || v.Image == "":
-			return errors.New("versions: name and image are required")
+			return nil, errors.New("versions: name and image are required")
 		case seen[v.Name]:
-			return fmt.Errorf("versions: %s is configured twice", v.Name)
+			return nil, fmt.Errorf("versions: %s is configured twice", v.Name)
 		case images[v.Image]:
-			return fmt.Errorf("versions: image %s is configured twice", v.Image)
+			return nil, fmt.Errorf("versions: image %s is configured twice", v.Image)
 		case strings.Count(v.Release, ".") < 2:
-			return fmt.Errorf("versions: %s: %s is not an exact patch tag", v.Name, v.Image)
+			return nil, fmt.Errorf("versions: %s: %s is not an exact patch tag", v.Name, v.Image)
 		}
 		seen[v.Name], images[v.Image] = true, true
 	}
+	return seen, nil
+}
+
+// validateEdges checks the edges between the versions of seen.
+func (c *Config) validateEdges(seen map[string]bool) error {
 	edges := map[string]bool{}
 	for _, e := range c.Edges {
 		switch {
@@ -187,7 +201,7 @@ func (c *Config) validateVersions() error {
 			return fmt.Errorf("edges: %s: unknown version", e)
 		case e.From == e.To:
 			return fmt.Errorf("edges: %s: an edge must change the version", e)
-		case e.Expect != ExpectOK && e.Expect != ExpectFail && e.Expect != ExpectUnknown:
+		case !validExpect(e.Expect):
 			return fmt.Errorf("edges: %s: expect must be %s, %s or %s", e, ExpectOK, ExpectFail, ExpectUnknown)
 		case edges[e.String()]:
 			return fmt.Errorf("edges: %s is configured twice", e)
@@ -216,10 +230,23 @@ func (c *Config) validateChain(in Instance) error {
 		}
 	}
 	for _, x := range ch.Expect {
-		if x != ExpectOK && x != ExpectFail && x != ExpectUnknown {
+		if !validExpect(x) {
 			return fmt.Errorf("expect: %q must be %s, %s or %s", x, ExpectOK, ExpectFail, ExpectUnknown)
 		}
 	}
+	if err := c.validateReach(ch); err != nil {
+		return err
+	}
+	return validateChainSentinel(ch.Sentinel, in.Mode)
+}
+
+func validExpect(x string) bool {
+	return x == ExpectOK || x == ExpectFail || x == ExpectUnknown
+}
+
+// validateReach checks that each start of the chain has an edge to take, and
+// that each version is reachable from a start.
+func (c *Config) validateReach(ch *Chain) error {
 	for _, s := range ch.Start {
 		if !slices.Contains(ch.Versions, s) {
 			return fmt.Errorf("start %s is not one of its versions", s)
@@ -233,11 +260,15 @@ func (c *Config) validateChain(in Instance) error {
 			return fmt.Errorf("version %s is not reachable from a start", v)
 		}
 	}
-	switch ch.Sentinel {
+	return nil
+}
+
+func validateChainSentinel(sentinel string, mode Mode) error {
+	switch sentinel {
 	case "":
 	case SentinelFollow, SentinelSeparate:
-		if in.Mode != ModeSentinel {
-			return fmt.Errorf("sentinel: %s needs a sentinel instance", ch.Sentinel)
+		if mode != ModeSentinel {
+			return fmt.Errorf("sentinel: %s needs a sentinel instance", sentinel)
 		}
 	default:
 		return fmt.Errorf("sentinel must be %q, %q or empty", SentinelFollow, SentinelSeparate)

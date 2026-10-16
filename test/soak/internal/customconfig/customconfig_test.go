@@ -1,6 +1,7 @@
 package customconfig
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -82,10 +83,7 @@ func TestSentinel(t *testing.T) {
 	if err := Sentinel(rf, sentinelMaster); err != nil {
 		t.Errorf("applied: %v", err)
 	}
-	fields := map[string]string{}
-	for k, v := range sentinelMaster {
-		fields[k] = v
-	}
+	fields := maps.Clone(sentinelMaster)
 	fields["down-after-milliseconds"] = "1000"
 	fields["parallel-syncs"] = "2"
 	err := Sentinel(rf, fields)

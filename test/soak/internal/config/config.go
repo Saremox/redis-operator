@@ -166,7 +166,7 @@ func Load(path string) (*Config, error) {
 			c.Instances[i].Template = filepath.Join(filepath.Dir(path), t)
 		}
 	}
-	c.Chaos.resolveCharts(filepath.Dir(path))
+	resolveCharts(&c.Chaos, filepath.Dir(path))
 	return c, nil
 }
 
@@ -207,9 +207,9 @@ func (c *Config) setDefaults() {
 		c.Observer.NoevictionFullLimit.Duration = 30 * time.Minute
 	}
 	setMutationDefaults(&c.Mutation, c.Observer)
-	c.Chaos.setDefaults(c.Observer)
+	setChaosDefaults(&c.Chaos, c.Observer)
 	for i := range c.Versions {
-		c.Versions[i].setDefaults()
+		setVersionDefaults(&c.Versions[i])
 	}
 	for i := range c.Instances {
 		setInstanceDefaults(&c.Instances[i])
@@ -266,7 +266,7 @@ func setInstanceDefaults(in *Instance) {
 
 func (c *Config) validate() error {
 	if len(c.Instances) == 0 {
-		return fmt.Errorf("no instances configured")
+		return errors.New("no instances configured")
 	}
 	if c.Observer.NoevictionFullLimit.Duration < 0 {
 		return errors.New("observer.noevictionFullLimit: negative duration")
@@ -297,7 +297,7 @@ func (c *Config) validate() error {
 
 func (m Mutation) validate(o Observer) error {
 	if m.Interval.Duration < 0 || m.Jitter.Duration < 0 || m.StopAfter.Duration < 0 {
-		return fmt.Errorf("mutation: negative duration")
+		return errors.New("mutation: negative duration")
 	}
 	if MinDwell >= o.ConvergenceTimeout.Duration {
 		return fmt.Errorf("observer.convergenceTimeout must be longer than %s", MinDwell)
