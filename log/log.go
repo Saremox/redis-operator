@@ -48,88 +48,88 @@ type logger struct {
 	entry *logrus.Entry
 }
 
-func (l logger) Debug(args ...any) {
+func (l *logger) Debug(args ...any) {
 	l.sourced().Debug(args...)
 }
 
-func (l logger) Debugln(args ...any) {
+func (l *logger) Debugln(args ...any) {
 	l.sourced().Debugln(args...)
 }
 
-func (l logger) Debugf(format string, args ...any) {
+func (l *logger) Debugf(format string, args ...any) {
 	l.sourced().Debugf(format, args...)
 }
 
-func (l logger) Info(args ...any) {
+func (l *logger) Info(args ...any) {
 	l.sourced().Info(args...)
 }
 
-func (l logger) Infoln(args ...any) {
+func (l *logger) Infoln(args ...any) {
 	l.sourced().Infoln(args...)
 }
 
-func (l logger) Infof(format string, args ...any) {
+func (l *logger) Infof(format string, args ...any) {
 	l.sourced().Infof(format, args...)
 }
 
-func (l logger) Warn(args ...any) {
+func (l *logger) Warn(args ...any) {
 	l.sourced().Warn(args...)
 }
 
-func (l logger) Warnln(args ...any) {
+func (l *logger) Warnln(args ...any) {
 	l.sourced().Warnln(args...)
 }
 
-func (l logger) Warnf(format string, args ...any) {
+func (l *logger) Warnf(format string, args ...any) {
 	l.sourced().Warnf(format, args...)
 }
 
-func (l logger) Warningf(format string, args ...any) {
+func (l *logger) Warningf(format string, args ...any) {
 	l.sourced().Warnf(format, args...)
 }
 
-func (l logger) Error(args ...any) {
+func (l *logger) Error(args ...any) {
 	l.sourced().Error(args...)
 }
 
-func (l logger) Errorln(args ...any) {
+func (l *logger) Errorln(args ...any) {
 	l.sourced().Errorln(args...)
 }
 
-func (l logger) Errorf(format string, args ...any) {
+func (l *logger) Errorf(format string, args ...any) {
 	l.sourced().Errorf(format, args...)
 }
 
-func (l logger) Fatal(args ...any) {
+func (l *logger) Fatal(args ...any) {
 	l.sourced().Fatal(args...)
 }
 
-func (l logger) Fatalln(args ...any) {
+func (l *logger) Fatalln(args ...any) {
 	l.sourced().Fatalln(args...)
 }
 
-func (l logger) Fatalf(format string, args ...any) {
+func (l *logger) Fatalf(format string, args ...any) {
 	l.sourced().Fatalf(format, args...)
 }
-func (l logger) Panic(args ...any) {
+func (l *logger) Panic(args ...any) {
 	l.sourced().Panic(args...)
 }
-func (l logger) Panicln(args ...any) {
+func (l *logger) Panicln(args ...any) {
 	l.sourced().Panicln(args...)
 }
-func (l logger) Panicf(format string, args ...any) {
+func (l *logger) Panicf(format string, args ...any) {
 	l.sourced().Panicf(format, args...)
 }
 
-func (l logger) With(key string, value any) Logger {
+func (l *logger) With(key string, value any) Logger {
 	return &logger{l.entry.WithField(key, value)}
 }
 
-func (l logger) WithField(key string, value any) Logger {
+func (l *logger) WithField(key string, value any) Logger {
 	return &logger{l.entry.WithField(key, value)}
 }
 
-func (l logger) WithFields(values map[string]any) Logger {
+func (l *logger) WithFields(values map[string]any) Logger {
 	return &logger{l.entry.WithFields(logrus.Fields(values))}
 }
 
@@ -144,7 +144,7 @@ func (l *logger) Set(level Level) error {
 
 // sourced adds the call site as the src field. Caller(2) skips sourced and
 // the logger function.
-func (l logger) sourced() *logrus.Entry {
+func (l *logger) sourced() *logrus.Entry {
 	_, file, line, ok := runtime.Caller(2)
 	if !ok {
 		file = "<???>"
