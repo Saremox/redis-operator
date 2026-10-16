@@ -111,13 +111,9 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 	if err != nil {
 		return err
 	}
-	for i := range ssp.Items {
-		// A terminating Ready master still accepts writes. Another master
-		// gives two writable masters.
-		if pod := &ssp.Items[i]; pod.DeletionTimestamp != nil && IsMasterPod(pod) && util.PodIsReady(pod) {
-			logger.WithField("pod", pod.Name).Infof("Master pod %s is stopping, waiting for it to exit before electing a master", pod.Name)
-			return nil
-		}
+	if pod := stoppingReadyMaster(ssp.Items); pod != nil {
+		logger.WithField("pod", pod.Name).Infof("Master pod %s is stopping, waiting for it to exit before electing a master", pod.Name)
+		return nil
 	}
 	pods := masterCandidates(ssp.Items)
 	if len(pods) < 1 {
@@ -133,46 +129,64 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 	newMasterIP := ""
 	for _, pod := range pods {
 		podLogger := logger.WithField("pod", pod.Name)
-		if newMasterIP == "" {
-			if pod.Status.PodIP == "" {
-				podLogger.Debugf("Pod %s has no IP yet, so it cannot be the master", pod.Name)
-				continue
-			}
-			newMasterIP = pod.Status.PodIP
-			podLogger.Infof("New master is %s with ip %s", pod.Name, newMasterIP)
-			if err := r.redisClient.MakeMaster(newMasterIP, port, password); err != nil {
-				newMasterIP = ""
-				redisErrorLogf(podLogger, err)("Make new master failed, master ip: %s, error: %v", pod.Status.PodIP, err)
-				continue
-			}
-
-			err = r.setMasterLabelIfNecessary(rf, pod)
-			if err != nil {
+		if newMasterIP != "" {
+			if err := r.makeReplicaOf(podLogger, rf, pod, newMasterIP, port, password); err != nil {
 				return err
 			}
-
-			newMasterIP = pod.Status.PodIP
-		} else {
-			if pod.Status.PodIP == "" {
-				podLogger.Debugf("Pod %s has no IP yet, so it is not made a replica", pod.Name)
-			} else {
-				podLogger.Infof("Making pod %s slave of %s", pod.Name, newMasterIP)
-				if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, newMasterIP, port, password); err != nil {
-					redisErrorLogf(podLogger, err)("Make slave failed, slave pod ip: %s, master ip: %s, error: %v", pod.Status.PodIP, newMasterIP, err)
-				}
-			}
-
-			err = r.setSlaveLabelIfNecessary(rf, pod, port, password)
-			if err != nil {
-				return err
-			}
+			continue
+		}
+		if newMasterIP, err = r.electMaster(podLogger, rf, pod, port, password); err != nil {
+			return err
 		}
 	}
 	if newMasterIP == "" {
 		return errors.New("SetOldestAsMaster- unable to set master")
-	} else {
-		return nil
 	}
+	return nil
+}
+
+// stoppingReadyMaster returns a terminating Ready master pod, or nil. Such a
+// pod still accepts writes. Another master gives two writable masters.
+func stoppingReadyMaster(items []v1.Pod) *v1.Pod {
+	for i := range items {
+		if pod := &items[i]; pod.DeletionTimestamp != nil && IsMasterPod(pod) && util.PodIsReady(pod) {
+			return pod
+		}
+	}
+	return nil
+}
+
+// electMaster makes pod the master. It returns the IP of the pod, or "" when
+// the pod has no IP or does not become the master.
+func (r *RedisFailoverHealer) electMaster(podLogger log.Logger, rf *redisfailoverv1.RedisFailover, pod v1.Pod, port, password string) (string, error) {
+	if pod.Status.PodIP == "" {
+		podLogger.Debugf("Pod %s has no IP yet, so it cannot be the master", pod.Name)
+		return "", nil
+	}
+	newMasterIP := pod.Status.PodIP
+	podLogger.Infof("New master is %s with ip %s", pod.Name, newMasterIP)
+	if err := r.redisClient.MakeMaster(newMasterIP, port, password); err != nil {
+		redisErrorLogf(podLogger, err)("Make new master failed, master ip: %s, error: %v", pod.Status.PodIP, err)
+		return "", nil
+	}
+	if err := r.setMasterLabelIfNecessary(rf, pod); err != nil {
+		return "", err
+	}
+	return newMasterIP, nil
+}
+
+// makeReplicaOf makes pod a replica of newMasterIP. A failed REPLICAOF only
+// logs, and the pod still gets the replica label.
+func (r *RedisFailoverHealer) makeReplicaOf(podLogger log.Logger, rf *redisfailoverv1.RedisFailover, pod v1.Pod, newMasterIP, port, password string) error {
+	if pod.Status.PodIP == "" {
+		podLogger.Debugf("Pod %s has no IP yet, so it is not made a replica", pod.Name)
+	} else {
+		podLogger.Infof("Making pod %s slave of %s", pod.Name, newMasterIP)
+		if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, port, newMasterIP, port, password); err != nil {
+			redisErrorLogf(podLogger, err)("Make slave failed, slave pod ip: %s, master ip: %s, error: %v", pod.Status.PodIP, newMasterIP, err)
+		}
+	}
+	return r.setSlaveLabelIfNecessary(rf, pod, port, password)
 }
 
 // redisErrorLogf logs at Warning when the pod does not answer or loads its
