@@ -191,9 +191,7 @@ func (j *Judge) Observe(r Round) (events []Event, settling bool) {
 	prev := j.prev
 	j.prev = &r
 	step := r.Status.LastStep
-	// lastStep has a resolution of a minute. Applying after the end of a step
-	// is a further step, also in the same minute.
-	newStep := prev != nil && step != "" && (step != j.step || r.Status.Phase == PhaseApplying && isEnd(j.phase))
+	newStep := prev != nil && j.isNewStep(r)
 	if prev == nil {
 		events = append(events, j.adopt(r)...)
 	}
@@ -219,6 +217,14 @@ func (j *Judge) Observe(r Round) (events []Event, settling bool) {
 	events = append(events, j.checkMaster(r, active && prev != nil)...)
 	events = append(events, j.checkMaxMemory(r, prev)...)
 	return events, settling && !j.timedOut
+}
+
+// isNewStep reports whether r shows a step after the current one. lastStep
+// has a resolution of a minute. Applying after the end of a step is a further
+// step, also in the same minute.
+func (j *Judge) isNewStep(r Round) bool {
+	step := r.Status.LastStep
+	return step != "" && (step != j.step || r.Status.Phase == PhaseApplying && isEnd(j.phase))
 }
 
 func isEnd(phase string) bool {
@@ -488,19 +494,7 @@ func (j *Judge) checkPods(r Round, active bool) []Event {
 		b, ok := j.pods[p.Name]
 		mine := r.Allow.forPod(p.Name)
 		if ok {
-			allow := b.allow.or(mine)
-			if (active || b.active) && !allow.Recreate {
-				switch {
-				case p.UID != b.uid:
-					events = append(events, Event{Judge: JudgeRestart, Step: j.step, Message: p.Name + " was recreated during a step"})
-				case p.Restarts > b.restarts:
-					events = append(events, Event{Judge: JudgeRestart, Step: j.step, Message: fmt.Sprintf("the redis container of %s restarted during a step", p.Name)})
-				}
-			}
-			if p.Limit != 0 && p.Limit < b.limit && !allow.Shrink {
-				events = append(events, Event{Judge: JudgeShrink, Step: j.step,
-					Message: fmt.Sprintf("the limit of %s fell from %s to %s without a user path", p.Name, format(b.limit), format(p.Limit))})
-			}
+			events = append(events, j.checkPod(p, b, b.allow.or(mine), active || b.active)...)
 		}
 		limit := p.Limit
 		if limit == 0 {
@@ -513,6 +507,25 @@ func (j *Judge) checkPods(r Round, active bool) []Event {
 			b.allow, b.active = b.allow.or(r.Allow.forPod(name)), b.active || active
 			j.pods[name] = b
 		}
+	}
+	return events
+}
+
+// checkPod judges a pod against its baseline b, with what allow permits.
+// active is true when a step covers the round or the baseline.
+func (j *Judge) checkPod(p Pod, b baseline, allow Allow, active bool) []Event {
+	var events []Event
+	if active && !allow.Recreate {
+		switch {
+		case p.UID != b.uid:
+			events = append(events, Event{Judge: JudgeRestart, Step: j.step, Message: p.Name + " was recreated during a step"})
+		case p.Restarts > b.restarts:
+			events = append(events, Event{Judge: JudgeRestart, Step: j.step, Message: fmt.Sprintf("the redis container of %s restarted during a step", p.Name)})
+		}
+	}
+	if p.Limit != 0 && p.Limit < b.limit && !allow.Shrink {
+		events = append(events, Event{Judge: JudgeShrink, Step: j.step,
+			Message: fmt.Sprintf("the limit of %s fell from %s to %s without a user path", p.Name, format(b.limit), format(p.Limit))})
 	}
 	return events
 }
