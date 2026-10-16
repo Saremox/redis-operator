@@ -193,15 +193,7 @@ func Resume(s State, live, spec, maxLimit int64) State {
 // step starts only from Recommended, so the dwell of Observe applies.
 func Plan(s State, o Observation) (State, Action) {
 	now := o.Now.Unix()
-	s = s.rebase(now)
-	if s.Frozen && o.Generation != s.Generation {
-		// The user saw the frozen limit and changed the spec.
-		s = Unfreeze(s)
-	}
-	s = Bound(s, o.Spec, o.Max)
-	if s.Phase == "" {
-		s.Phase = PhaseIdle
-	}
+	s = s.prepare(o, now)
 	if s.Frozen {
 		return s, ActionNone
 	}
@@ -214,26 +206,7 @@ func Plan(s State, o Observation) (State, Action) {
 	}
 	switch s.Phase {
 	case PhaseApplying:
-		// With a spec limit at the target of the step, a revert cannot lower
-		// the template.
-		revert := !o.AnyApplied && s.Effective != 0
-		switch {
-		case o.Applied:
-			return s.done(now), ActionDone
-		case o.Refusal != "" && revert:
-			return s.revert(o, now), ActionRevert
-		case o.Refusal != "":
-			s.Phase, s.Refusal = PhaseHeld, o.Refusal
-			return s, ActionHold
-		case now-s.StartedAt >= seconds(ApplyTimeout) && revert:
-			// For example, a pod of the step that no node can hold.
-			o.Refusal = RefusalTimeout
-			return s.revert(o, now), ActionRevert
-		case now-s.StartedAt >= seconds(ApplyTimeout):
-			s.Phase, s.Refusal = PhaseHeld, RefusalTimeout
-			return s, ActionHold
-		}
-		return s, ActionNone
+		return s.planApplying(o, now)
 	case PhaseReverted:
 		if now < s.RetryAt {
 			return s, ActionNone
@@ -253,6 +226,45 @@ func Plan(s State, o Observation) (State, Action) {
 		return s, ActionNone
 	}
 	return s.start(o, now)
+}
+
+// prepare applies the changes of the clock, the spec and memoryMax to the
+// state before a transition.
+func (s State) prepare(o Observation, now int64) State {
+	s = s.rebase(now)
+	if s.Frozen && o.Generation != s.Generation {
+		// The user saw the frozen limit and changed the spec.
+		s = Unfreeze(s)
+	}
+	s = Bound(s, o.Spec, o.Max)
+	if s.Phase == "" {
+		s.Phase = PhaseIdle
+	}
+	return s
+}
+
+// planApplying returns the transition of a step in the phase Applying.
+func (s State) planApplying(o Observation, now int64) (State, Action) {
+	// With a spec limit at the target of the step, a revert cannot lower
+	// the template.
+	revert := !o.AnyApplied && s.Effective != 0
+	switch {
+	case o.Applied:
+		return s.done(now), ActionDone
+	case o.Refusal != "" && revert:
+		return s.revert(o, now), ActionRevert
+	case o.Refusal != "":
+		s.Phase, s.Refusal = PhaseHeld, o.Refusal
+		return s, ActionHold
+	case now-s.StartedAt >= seconds(ApplyTimeout) && revert:
+		// For example, a pod of the step that no node can hold.
+		o.Refusal = RefusalTimeout
+		return s.revert(o, now), ActionRevert
+	case now-s.StartedAt >= seconds(ApplyTimeout):
+		s.Phase, s.Refusal = PhaseHeld, RefusalTimeout
+		return s, ActionHold
+	}
+	return s, ActionNone
 }
 
 func (s State) start(o Observation, now int64) (State, Action) {
