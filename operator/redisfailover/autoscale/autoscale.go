@@ -159,8 +159,8 @@ func Expire(s State, now time.Time) State {
 	}
 	at := now.Unix()
 	s.RunID, s.OOMErrors, s.Window = "", 0, Window{}
-	s.setHighWindows(0, at)
-	s.setRecommended(0, at)
+	setHighWindows(&s, 0, at)
+	setRecommended(&s, 0, at)
 	s.Reason = ReasonNoSample
 	return s
 }
@@ -207,7 +207,7 @@ func Observe(s State, in Input) State {
 	if reason := skipReason(in); reason != "" {
 		return s.withReason(reason)
 	}
-	if s.observeRunID(info, now) {
+	if observeRunID(&s, info, now) {
 		return s.withReason(ReasonRestarted)
 	}
 	if reason := warmUpReason(info); reason != "" {
@@ -221,17 +221,17 @@ func Observe(s State, in Input) State {
 	s.Workload = workload(in.Workload, in.Policy, info)
 	if s.Workload == redisfailoverv1.AutoscalingWorkloadCache {
 		s.Window = Window{}
-		s.setHighWindows(0, now)
-		s.setRecommended(0, now)
+		setHighWindows(&s, 0, now)
+		setRecommended(&s, 0, now)
 		return s.withReason(ReasonCache)
 	}
 
-	closed := s.advanceWindow(in.Limit, now)
+	closed := advanceWindow(&s, in.Limit, now)
 	r := usedRatio(info, in.Limit)
 	s.Window.PeakRatio = max(s.Window.PeakRatio, r)
 	s.Window.PeakUsed = max(s.Window.PeakUsed, roundUp(info.UsedMemory, 1<<20))
 
-	s.evaluate(in, now, oom, r, closed)
+	evaluate(&s, in, now, oom, r, closed)
 	return s
 }
 
@@ -251,7 +251,7 @@ func skipReason(in Input) string {
 
 // observeRunID starts the windows again when the run_id of Redis changed. It
 // reports whether Redis restarted after an earlier sample.
-func (s *State) observeRunID(info *redis.AutoscalerInfo, now int64) bool {
+func observeRunID(s *State, info *redis.AutoscalerInfo, now int64) bool {
 	if info.RunID == s.RunID {
 		return false
 	}
@@ -261,8 +261,8 @@ func (s *State) observeRunID(info *redis.AutoscalerInfo, now int64) bool {
 	restarted := s.RunID != ""
 	s.RunID, s.OOMErrors = info.RunID, info.OOMErrors
 	s.Window = Window{}
-	s.setHighWindows(0, now)
-	s.setRecommended(0, now)
+	setHighWindows(s, 0, now)
+	setRecommended(s, 0, now)
 	return restarted
 }
 
@@ -281,17 +281,17 @@ func warmUpReason(info *redis.AutoscalerInfo) string {
 
 // advanceWindow starts the window again after a change of the limit or of the
 // clock, and closes the window that ended. It reports whether a window closed.
-func (s *State) advanceWindow(limit, now int64) bool {
+func advanceWindow(s *State, limit, now int64) bool {
 	if s.Limit != limit {
 		// The peaks of the earlier limit do not show the use with this one.
 		// Without the reset, the window open at a step ends high, and a
 		// second step follows at once.
 		if limit < s.Limit {
 			// The recommendation is a step from the earlier, higher limit.
-			s.setRecommended(0, now)
+			setRecommended(s, 0, now)
 		}
 		s.Limit, s.Window = limit, Window{}
-		s.setHighWindows(0, now)
+		setHighWindows(s, 0, now)
 	}
 	if s.Window.Start > now {
 		// The clock went back. The window would stay open until the clock
@@ -300,7 +300,7 @@ func (s *State) advanceWindow(limit, now int64) bool {
 	}
 	closed := s.Window.Start != 0 && now >= s.Window.Start+int64(WindowLength/time.Second)
 	if closed {
-		s.closeWindow(now)
+		closeWindow(s, now)
 	}
 	if s.Window.Start == 0 {
 		s.Window.Start = now
@@ -310,16 +310,16 @@ func (s *State) advanceWindow(limit, now int64) bool {
 
 // evaluate sets the recommendation and the reason of the sample with the used
 // ratio r.
-func (s *State) evaluate(in Input, now int64, oom bool, r float64, closed bool) {
+func evaluate(s *State, in Input, now int64, oom bool, r float64, closed bool) {
 	switch {
 	case oom:
-		s.recommend(in.Limit, in.Max, now, ReasonOOM)
+		recommend(s, in.Limit, in.Max, now, ReasonOOM)
 	case r >= UrgentRatio:
-		s.recommend(in.Limit, in.Max, now, ReasonUrgent)
+		recommend(s, in.Limit, in.Max, now, ReasonUrgent)
 	case closed && s.HighWindows >= HighWindowsForStep:
 		// Only at the end of a window. A change of the limit resets the
 		// count, so 3 windows with the changed limit decide on a next step.
-		s.recommend(in.Limit, in.Max, now, ReasonSustained)
+		recommend(s, in.Limit, in.Max, now, ReasonSustained)
 	case s.Recommended != 0:
 		// Keep the recommendation and its reason until a low window.
 	case s.HighWindows == 0 && s.Window.PeakRatio < HighRatio:
@@ -403,43 +403,43 @@ func workload(spec, policy string, info *redis.AutoscalerInfo) string {
 // example while the RedisFailover was not Healthy, ends the sequence of
 // consecutive high windows. The count stops at HighWindowsForStep, so that
 // the status does not change at each window while the use stays high.
-func (s *State) closeWindow(now int64) {
+func closeWindow(s *State, now int64) {
 	count := s.HighWindows
 	if s.Window.PeakRatio >= HighRatio {
 		count = min(count+1, HighWindowsForStep)
 	} else {
 		count = 0
-		s.setRecommended(0, now)
+		setRecommended(s, 0, now)
 	}
 	if now >= s.Window.Start+2*int64(WindowLength/time.Second) {
 		count = 0
 	}
-	s.setHighWindows(count, now)
+	setHighWindows(s, count, now)
 	s.Window = Window{}
 }
 
 // setHighWindows stamps EvaluatedAt only on a change, as setRecommended.
-func (s *State) setHighWindows(count int32, now int64) {
+func setHighWindows(s *State, count int32, now int64) {
 	if s.HighWindows != count {
 		s.HighWindows = count
 		s.EvaluatedAt = now
 	}
 }
 
-func (s *State) recommend(limit, maxLimit, now int64, reason string) {
+func recommend(s *State, limit, maxLimit, now int64, reason string) {
 	target := min(roundUp(limit+limit*StepPercent/100, StepAlignment), maxLimit)
 	if target <= limit {
-		s.setRecommended(0, now)
+		setRecommended(s, 0, now)
 		s.Reason = ReasonMaximum
 		return
 	}
 	if s.Recommended != target {
-		s.setRecommended(target, now)
+		setRecommended(s, target, now)
 		s.Reason = reason
 	}
 }
 
-func (s *State) setRecommended(bytes, now int64) {
+func setRecommended(s *State, bytes, now int64) {
 	if s.Recommended != bytes {
 		s.Recommended = bytes
 		s.EvaluatedAt = now

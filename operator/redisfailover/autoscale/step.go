@@ -345,8 +345,8 @@ func WaitReason(s State, o Observation) string {
 func (s State) done(now int64) State {
 	s.Phase, s.Refusal, s.DoneAt = PhaseDone, "", now
 	s.Window, s.RunID = Window{}, ""
-	s.setHighWindows(0, now)
-	s.setRecommended(0, now)
+	setHighWindows(&s, 0, now)
+	setRecommended(&s, 0, now)
 	return s
 }
 
