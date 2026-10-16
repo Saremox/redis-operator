@@ -143,8 +143,8 @@ func TestGetSlaveOf_NonIPv4MasterHost(t *testing.T) {
 // replication is fully caught up (master_link_status:up) - because the
 // string "master_host:127.0.0.1" is present in INFO replication regardless
 // of sync state. This is exactly the shared test master/replica pair in this
-// package (everything here binds to 127.0.0.1), so it is confirmed directly
-// below rather than asserted as a TODO.
+// package (everything here binds to 127.0.0.1), so the test below shows it
+// directly.
 func TestSlaveIsReady_LoopbackMasterHostNeverReady(t *testing.T) {
 	env := getSharedEnv(t)
 	c := newTestClient()
