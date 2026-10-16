@@ -72,22 +72,12 @@ type Data struct {
 	filled     atomic.Bool
 	mutating   atomic.Bool
 	failedOver atomic.Bool
-	requests   chan *request
+	turns      chan chan struct{}
 
 	oom        prometheus.Counter
 	lost       *prometheus.CounterVec
 	unexpected *prometheus.CounterVec
 	verified   *prometheus.CounterVec
-}
-
-type request struct {
-	ctx      context.Context
-	event    string
-	step     int
-	lossless bool
-	done     chan struct{}
-	lost     int
-	err      error
 }
 
 // New returns the Data of an instance. The instance must have data configured.
@@ -104,7 +94,7 @@ func New(in config.Instance, cfg *config.Config, master Master, a *auth.Source, 
 		auth:       a,
 		rnd:        rand.New(rand.NewPCG(uint64(cfg.Mutation.Seed), h.Sum64())),
 		log:        log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
-		requests:   make(chan *request),
+		turns:      make(chan chan struct{}),
 		oom:        m.OOMRejections.With(labels),
 		lost:       m.LostWrites.MustCurryWith(labels),
 		unexpected: m.UnexpectedLost.MustCurryWith(labels),
@@ -169,26 +159,32 @@ func (d *Data) Refill() {
 // the kind of the mutation, or config.EventReset for a mutation that loses the
 // data by design. Lost writes of a lossless event are unexpected. Verify
 // returns the number of lost writes, or an error if ctx is done before the
-// verification.
+// verification succeeds. Only ctx cancels the verification.
 func (d *Data) Verify(ctx context.Context, event string, step int, lossless bool) (int, error) {
-	// The verifier does not get the request if ctx is done first.
+	// The verifier does not give the turn if ctx is done first.
 	defer d.mutating.Store(false)
-	return verifyAfter(ctx, d.requests, &request{ctx: ctx, event: event, step: step, lossless: lossless})
+	release, err := takeTurn(ctx, d.turns)
+	if err != nil {
+		return 0, err
+	}
+	lost, err := d.verifyRetrying(ctx, event, step, lossless)
+	// Before the release, so that the verifier verifies a failover that waits.
+	d.mutating.Store(false)
+	release()
+	return lost, err
 }
 
-func verifyAfter(ctx context.Context, requests chan<- *request, r *request) (int, error) {
-	r.done = make(chan struct{})
+// takeTurn waits until the verifier of turns is free, or ctx is done. The
+// verifier then waits until the caller calls release, so that one
+// verification runs at a time, and the events that arrive meanwhile wait.
+func takeTurn(ctx context.Context, turns chan<- chan struct{}) (release func(), err error) {
+	done := make(chan struct{})
 	select {
-	case requests <- r:
+	case turns <- done:
+		return func() { close(done) }, nil
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return nil, ctx.Err()
 	}
-	select {
-	case <-r.done:
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	}
-	return r.lost, r.err
 }
 
 func (d *Data) runVerifier(ctx context.Context) {
@@ -202,10 +198,8 @@ func (d *Data) runVerifier(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case r := <-d.requests:
-			r.lost, r.err = d.verifyRetrying(r.ctx, r.event, r.step, r.lossless)
-			d.mutating.Store(false)
-			close(r.done)
+		case done := <-d.turns:
+			<-done
 		case event := <-d.master.Failovers():
 			d.failedOver.Store(true)
 			if !d.mutating.Load() {

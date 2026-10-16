@@ -43,13 +43,13 @@ type position struct {
 // nothing, and checks that every pod holds what the source's master holds
 // of the source's ledger.
 type Replica struct {
-	in       config.Instance
-	source   *Data
-	pods     Pods
-	auth     *auth.Source
-	rnd      *rand.Rand
-	log      *slog.Logger
-	requests chan *request
+	in     config.Instance
+	source *Data
+	pods   Pods
+	auth   *auth.Source
+	rnd    *rand.Rand
+	log    *slog.Logger
+	turns  chan chan struct{}
 
 	lost       *prometheus.CounterVec
 	unexpected *prometheus.CounterVec
@@ -69,7 +69,7 @@ func NewReplica(in config.Instance, cfg *config.Config, source *Data, pods Pods,
 		auth:       a,
 		rnd:        rand.New(rand.NewPCG(uint64(cfg.Mutation.Seed), h.Sum64())),
 		log:        log.With("rf", in.Name, "namespace", in.Namespace, "mode", in.Mode),
-		requests:   make(chan *request),
+		turns:      make(chan chan struct{}),
 		lost:       m.LostWrites.MustCurryWith(labels),
 		unexpected: m.UnexpectedLost.MustCurryWith(labels),
 		verified:   m.LedgerVerified.MustCurryWith(labels),
@@ -88,9 +88,15 @@ func (r *Replica) Begin() {}
 func (r *Replica) Refill() {}
 
 // Verify checks the pods. A pod that caught up holds every write of the
-// source, so each loss is unexpected, whatever the event.
+// source, so each loss is unexpected, whatever the event. Only ctx cancels
+// the verification.
 func (r *Replica) Verify(ctx context.Context, event string, step int, _ bool) (int, error) {
-	return verifyAfter(ctx, r.requests, &request{ctx: ctx, event: event, step: step})
+	release, err := takeTurn(ctx, r.turns)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	return r.verifyRetrying(ctx, event, step)
 }
 
 // Burst does not start on a read-only instance, and returns the reason.
@@ -103,8 +109,8 @@ func (r *Replica) Writable(context.Context) error {
 	return errors.New("read-only instance")
 }
 
-// Run verifies the pods at each Verify request and one time in each
-// bootstrapInterval, until ctx is done.
+// Run verifies the pods one time in each bootstrapInterval, and gives each
+// Verify its turn, until ctx is done.
 func (r *Replica) Run(ctx context.Context) {
 	t := time.NewTicker(bootstrapInterval)
 	defer t.Stop()
@@ -112,9 +118,8 @@ func (r *Replica) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case req := <-r.requests:
-			req.lost, req.err = r.verifyRetrying(req.ctx, req.event, req.step)
-			close(req.done)
+		case done := <-r.turns:
+			<-done
 		case <-t.C:
 			_, _ = r.verifyRetrying(ctx, config.EventPeriodic, 0)
 		}
