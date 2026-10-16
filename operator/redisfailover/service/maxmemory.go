@@ -299,17 +299,7 @@ func (r *RedisFailoverHealer) redisMemoryLimits(rf *redisfailoverv1.RedisFailove
 		if pod.Status.PodIP == "" {
 			continue
 		}
-		var podLimits corev1.ResourceList
-		for _, c := range pod.Spec.Containers {
-			if c.Name == redisContainerName {
-				podLimits = c.Resources.Limits
-			}
-		}
-		for _, cs := range pod.Status.ContainerStatuses {
-			if cs.Name == redisContainerName && cs.Resources != nil {
-				podLimits = cs.Resources.Limits
-			}
-		}
+		podLimits := redisContainerLimits(&pod)
 		limit, running := spec, spec
 		if memory, ok := podLimits[corev1.ResourceMemory]; ok {
 			running = memory.Value()
@@ -323,17 +313,38 @@ func (r *RedisFailoverHealer) redisMemoryLimits(rf *redisfailoverv1.RedisFailove
 		} else if stale && (!ok || memory.Value() > spec) {
 			rp.downsizing = true
 		}
-		if limit >= redisfailoverv1.MinManagedMemoryLimit {
-			rp.limits[pod.Status.PodIP] = limit
-		}
-		if rp.smallest == 0 || limit < rp.smallest {
-			rp.smallest = limit
-		}
-		if rp.smallestRunning == 0 || running < rp.smallestRunning {
-			rp.smallestRunning = running
-		}
+		rp.add(pod.Status.PodIP, limit, running)
 	}
 	return rp, nil
+}
+
+// redisContainerLimits returns the limits of the redis container, preferring
+// the limits that the kubelet reports as applied over the pod spec.
+func redisContainerLimits(pod *corev1.Pod) corev1.ResourceList {
+	var podLimits corev1.ResourceList
+	for _, c := range pod.Spec.Containers {
+		if c.Name == redisContainerName {
+			podLimits = c.Resources.Limits
+		}
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name == redisContainerName && cs.Resources != nil {
+			podLimits = cs.Resources.Limits
+		}
+	}
+	return podLimits
+}
+
+func (rp *redisPods) add(ip string, limit, running int64) {
+	if limit >= redisfailoverv1.MinManagedMemoryLimit {
+		rp.limits[ip] = limit
+	}
+	if rp.smallest == 0 || limit < rp.smallest {
+		rp.smallest = limit
+	}
+	if rp.smallestRunning == 0 || running < rp.smallestRunning {
+		rp.smallestRunning = running
+	}
 }
 
 // setRedisConfigOn applies one config to the given redises, skipping unreachable ones.
