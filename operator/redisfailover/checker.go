@@ -2173,34 +2173,7 @@ func (r *RedisFailoverHandler) sentinelChangeAllowed(rf *redisfailoverv1.RedisFa
 // failoverHold. all is true when sentinels holds each Sentinel. The hold ends
 // after the failover-timeout of the Sentinel.
 func (r *RedisFailoverHandler) readSentinelFailovers(rf *redisfailoverv1.RedisFailover, sentinels []string, all bool, heal *sentinelHeal) {
-	var found *sentinelFailover
-	var timeout time.Duration
-	for _, sip := range sentinels {
-		if heal.unreachable[sip] {
-			continue
-		}
-		// skip records a Sentinel that does not answer, so it gets no change.
-		f, err := r.rfChecker.GetSentinelFailover(sip)
-		if heal.skip(sip, err) {
-			continue
-		}
-		if err != nil && !redis.IsNoSuchMasterError(err) {
-			r.holdOnReadError(rf, heal, sip, err)
-			continue
-		}
-		delete(heal.readErrors, sip)
-		// A Sentinel without the master has no failover.
-		if err != nil || !f.InProgress {
-			continue
-		}
-		timeout = max(timeout, f.Timeout)
-		// Each candidate of the election has the flag. The leader has the
-		// highest state.
-		state := slices.Index(sentinelFailoverStates, f.State)
-		if found == nil || state > found.state {
-			found = &sentinelFailover{sentinel: sip, master: f.Master, state: state}
-		}
-	}
+	found, timeout := r.findSentinelFailover(rf, sentinels, heal)
 	if found == nil {
 		if all {
 			r.sentinelFailovers.Delete(heal.key)
@@ -2216,7 +2189,7 @@ func (r *RedisFailoverHandler) readSentinelFailovers(rf *redisfailoverv1.RedisFa
 	// Sentinel changes only at the end of a failover.
 	v, ok := r.sentinelFailovers.Load(heal.key)
 	last, _ := v.(sentinelFailover)
-	newFailover := !ok || last.sentinel != found.sentinel || last.master != found.master || found.state < last.state
+	newFailover := !ok || !found.continues(last)
 	if newFailover && !all {
 		// Only a read of all the Sentinels finds the leader and starts a
 		// wait. Until then, the target alone gets no change, so a candidate
@@ -2259,6 +2232,47 @@ func (r *RedisFailoverHandler) readSentinelFailovers(rf *redisfailoverv1.RedisFa
 	if r.requeue != nil {
 		r.requeue(heal.key, timeout-elapsed)
 	}
+}
+
+// continues reports whether f is the failover last at the same or a later
+// failover-state.
+func (f sentinelFailover) continues(last sentinelFailover) bool {
+	return last.sentinel == f.sentinel && last.master == f.master && f.state >= last.state
+}
+
+// findSentinelFailover returns the failover of the leader among the
+// Sentinels, or nil, and the longest failover-timeout of the Sentinels that
+// fail over.
+func (r *RedisFailoverHandler) findSentinelFailover(rf *redisfailoverv1.RedisFailover, sentinels []string, heal *sentinelHeal) (*sentinelFailover, time.Duration) {
+	var found *sentinelFailover
+	var timeout time.Duration
+	for _, sip := range sentinels {
+		if heal.unreachable[sip] {
+			continue
+		}
+		// skip records a Sentinel that does not answer, so it gets no change.
+		f, err := r.rfChecker.GetSentinelFailover(sip)
+		if heal.skip(sip, err) {
+			continue
+		}
+		if err != nil && !redis.IsNoSuchMasterError(err) {
+			r.holdOnReadError(rf, heal, sip, err)
+			continue
+		}
+		delete(heal.readErrors, sip)
+		// A Sentinel without the master has no failover.
+		if err != nil || !f.InProgress {
+			continue
+		}
+		timeout = max(timeout, f.Timeout)
+		// Each candidate of the election has the flag. The leader has the
+		// highest state.
+		state := slices.Index(sentinelFailoverStates, f.State)
+		if found == nil || state > found.state {
+			found = &sentinelFailover{sentinel: sip, master: f.Master, state: state}
+		}
+	}
+	return found, timeout
 }
 
 // holdOnReadError holds the changes of a Sentinel that gives an error other
