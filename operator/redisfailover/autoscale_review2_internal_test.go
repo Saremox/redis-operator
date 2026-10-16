@@ -14,7 +14,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -83,7 +82,7 @@ func TestUpdateRedisesPodsKeepsAPodOfARevertedStep(t *testing.T) {
 		"reverted step":           {change: func(*redisfailoverv1.RedisFailover) {}, kept: true},
 		"change of another field": {change: func(rf *redisfailoverv1.RedisFailover) { rf.Generation = 7 }, kept: true},
 		"memoryMax below the step": {change: func(rf *redisfailoverv1.RedisFailover) {
-			rf.Spec.Redis.Autoscaling.MemoryMax = ptr.To(resource.MustParse("1536Mi"))
+			rf.Spec.Redis.Autoscaling.MemoryMax = new(resource.MustParse("1536Mi"))
 		}},
 		"mode Off": {change: func(rf *redisfailoverv1.RedisFailover) {
 			rf.Spec.Redis.Autoscaling.Mode = redisfailoverv1.AutoscalingModeOff
@@ -142,7 +141,7 @@ func TestAutoscalerLimitsStep(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rf := autoscaleRolloutRF(test.mode)
 			rf.Generation = 9
-			rf.Spec.Redis.Autoscaling.MemoryMax = ptr.To(resource.MustParse(test.max))
+			rf.Spec.Redis.Autoscaling.MemoryMax = new(resource.MustParse(test.max))
 			spec := resource.MustParse(test.spec)
 			s := autoscale.State{Phase: test.phase, To: 2 << 30, Generation: 1}
 			h.autoscaleReads.Store(failoverKey(rf), autoscaleRead{state: s, spec: spec.Value(), effective: spec.Value()})

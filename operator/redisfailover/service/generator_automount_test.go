@@ -10,7 +10,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
@@ -47,7 +46,7 @@ func TestSentinelDeploymentAutomountServiceAccountToken(t *testing.T) {
 	for name, serviceAccountName := range map[string]string{"no service account": "", "user service account": "custom"} {
 		t.Run(name, func(t *testing.T) {
 			rf := generateRF()
-			rf.Spec.Sentinel.Enabled = ptr.To(true)
+			rf.Spec.Sentinel.Enabled = new(true)
 			rf.Spec.Sentinel.ServiceAccountName = serviceAccountName
 
 			var gotD *appsv1.Deployment

@@ -28,7 +28,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8slabels "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -1141,7 +1140,7 @@ func TestRedisShutdownConfigMapRetries(t *testing.T) {
 	assert := assert.New(t)
 
 	rf := generateRF()
-	rf.Spec.Sentinel.Enabled = ptr.To(true)
+	rf.Spec.Sentinel.Enabled = new(true)
 
 	var script string
 	ms := &mK8SService.Services{}
@@ -2014,19 +2013,19 @@ func TestRedisHostNetworkAndDnsPolicy(t *testing.T) {
 		hostNetwork         bool
 		expectedHostNetwork bool
 		dnsPolicy           corev1.DNSPolicy
-		expectedDnsPolicy   corev1.DNSPolicy
+		expectedDNSPolicy   corev1.DNSPolicy
 	}{
 		{
 			name:                "Default",
 			expectedHostNetwork: false,
-			expectedDnsPolicy:   corev1.DNSClusterFirst,
+			expectedDNSPolicy:   corev1.DNSClusterFirst,
 		},
 		{
 			name:                "Custom",
 			hostNetwork:         true,
 			expectedHostNetwork: true,
 			dnsPolicy:           corev1.DNSClusterFirstWithHostNet,
-			expectedDnsPolicy:   corev1.DNSClusterFirstWithHostNet,
+			expectedDNSPolicy:   corev1.DNSClusterFirstWithHostNet,
 		},
 	}
 
@@ -2038,14 +2037,14 @@ func TestRedisHostNetworkAndDnsPolicy(t *testing.T) {
 		rf.Spec.Redis.DNSPolicy = test.dnsPolicy
 
 		var actualHostNetwork bool
-		var actualDnsPolicy corev1.DNSPolicy
+		var actualDNSPolicy corev1.DNSPolicy
 
 		ms := &mK8SService.Services{}
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
 		ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			ss := args.Get(1).(*appsv1.StatefulSet)
 			actualHostNetwork = ss.Spec.Template.Spec.HostNetwork
-			actualDnsPolicy = ss.Spec.Template.Spec.DNSPolicy
+			actualDNSPolicy = ss.Spec.Template.Spec.DNSPolicy
 		}).Return(nil)
 
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
@@ -2053,7 +2052,7 @@ func TestRedisHostNetworkAndDnsPolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(test.expectedHostNetwork, actualHostNetwork)
-		assert.Equal(test.expectedDnsPolicy, actualDnsPolicy)
+		assert.Equal(test.expectedDNSPolicy, actualDNSPolicy)
 	}
 }
 
@@ -2063,19 +2062,19 @@ func TestSentinelHostNetworkAndDnsPolicy(t *testing.T) {
 		hostNetwork         bool
 		expectedHostNetwork bool
 		dnsPolicy           corev1.DNSPolicy
-		expectedDnsPolicy   corev1.DNSPolicy
+		expectedDNSPolicy   corev1.DNSPolicy
 	}{
 		{
 			name:                "Default",
 			expectedHostNetwork: false,
-			expectedDnsPolicy:   corev1.DNSClusterFirst,
+			expectedDNSPolicy:   corev1.DNSClusterFirst,
 		},
 		{
 			name:                "Custom",
 			hostNetwork:         true,
 			expectedHostNetwork: true,
 			dnsPolicy:           corev1.DNSClusterFirstWithHostNet,
-			expectedDnsPolicy:   corev1.DNSClusterFirstWithHostNet,
+			expectedDNSPolicy:   corev1.DNSClusterFirstWithHostNet,
 		},
 	}
 
@@ -2087,7 +2086,7 @@ func TestSentinelHostNetworkAndDnsPolicy(t *testing.T) {
 		rf.Spec.Sentinel.DNSPolicy = test.dnsPolicy
 
 		var actualHostNetwork bool
-		var actualDnsPolicy corev1.DNSPolicy
+		var actualDNSPolicy corev1.DNSPolicy
 
 		ms := &mK8SService.Services{}
 		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
@@ -2095,7 +2094,7 @@ func TestSentinelHostNetworkAndDnsPolicy(t *testing.T) {
 		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			d := args.Get(1).(*appsv1.Deployment)
 			actualHostNetwork = d.Spec.Template.Spec.HostNetwork
-			actualDnsPolicy = d.Spec.Template.Spec.DNSPolicy
+			actualDNSPolicy = d.Spec.Template.Spec.DNSPolicy
 		}).Return(nil)
 
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
@@ -2103,7 +2102,7 @@ func TestSentinelHostNetworkAndDnsPolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(test.expectedHostNetwork, actualHostNetwork)
-		assert.Equal(test.expectedDnsPolicy, actualDnsPolicy)
+		assert.Equal(test.expectedDNSPolicy, actualDNSPolicy)
 	}
 }
 
@@ -3347,18 +3346,18 @@ func TestEnsureRedisShutdownConfigMapGenerated(t *testing.T) {
 		bootstrap    *redisfailoverv1.BootstrapSettings
 		wantSentinel bool
 	}{
-		{name: "sentinel enabled", sentinel: ptr.To(true), wantSentinel: true},
-		{name: "sentinel disabled", sentinel: ptr.To(false)},
+		{name: "sentinel enabled", sentinel: new(true), wantSentinel: true},
+		{name: "sentinel disabled", sentinel: new(false)},
 		{name: "sentinel unset", sentinel: nil},
 		{
 			name:         "bootstrap with sentinels allowed",
-			sentinel:     ptr.To(true),
+			sentinel:     new(true),
 			bootstrap:    &redisfailoverv1.BootstrapSettings{Host: "127.0.0.1", AllowSentinels: true},
 			wantSentinel: true,
 		},
 		{
 			name:      "bootstrap without sentinels",
-			sentinel:  ptr.To(true),
+			sentinel:  new(true),
 			bootstrap: &redisfailoverv1.BootstrapSettings{Host: "127.0.0.1"},
 		},
 	}
@@ -3415,7 +3414,7 @@ func TestRedisShutdownScriptEndsInsideGracePeriod(t *testing.T) {
 
 	rf := generateRF()
 	rf.Spec.Redis.Port = 6379
-	rf.Spec.Sentinel.Enabled = ptr.To(true)
+	rf.Spec.Sentinel.Enabled = new(true)
 	var script string
 	ms := &mK8SService.Services{}
 	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
@@ -3828,7 +3827,7 @@ func TestRedisShutdownScriptWaitsForTheReplica(t *testing.T) {
 
 	rf := generateRF()
 	rf.Spec.Redis.Port = int32(port)
-	rf.Spec.Sentinel.Enabled = ptr.To(true)
+	rf.Spec.Sentinel.Enabled = new(true)
 	var script string
 	ms := &mK8SService.Services{}
 	ms.On("CreateOrUpdateConfigMap", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
@@ -4182,14 +4181,14 @@ func TestRedisReadinessLinkDownWindow(t *testing.T) {
 		{
 			name: "sentinel mode, default config",
 			modify: func(rf *redisfailoverv1.RedisFailover) {
-				rf.Spec.Sentinel.Enabled = ptr.To(true)
+				rf.Spec.Sentinel.Enabled = new(true)
 			},
 			window: "75",
 		},
 		{
 			name: "sentinel mode, customConfig",
 			modify: func(rf *redisfailoverv1.RedisFailover) {
-				rf.Spec.Sentinel.Enabled = ptr.To(true)
+				rf.Spec.Sentinel.Enabled = new(true)
 				rf.Spec.Sentinel.CustomConfig = []string{"down-after-milliseconds 120000", "parallel-syncs 1", "failover-timeout 30000"}
 			},
 			window: "210",
@@ -4197,7 +4196,7 @@ func TestRedisReadinessLinkDownWindow(t *testing.T) {
 		{
 			name: "sentinel mode, customConfig keys in upper case",
 			modify: func(rf *redisfailoverv1.RedisFailover) {
-				rf.Spec.Sentinel.Enabled = ptr.To(true)
+				rf.Spec.Sentinel.Enabled = new(true)
 				rf.Spec.Sentinel.CustomConfig = []string{"DOWN-AFTER-MILLISECONDS 120000", "Failover-Timeout 30000"}
 			},
 			window: "210",

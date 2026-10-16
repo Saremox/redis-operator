@@ -207,7 +207,7 @@ func automountServiceAccountToken(serviceAccountName string) *bool {
 	return nil
 }
 
-func getDnsPolicy(dnspolicy corev1.DNSPolicy) corev1.DNSPolicy {
+func getDNSPolicy(dnspolicy corev1.DNSPolicy) corev1.DNSPolicy {
 	if dnspolicy == "" {
 		return corev1.DNSClusterFirst
 	}

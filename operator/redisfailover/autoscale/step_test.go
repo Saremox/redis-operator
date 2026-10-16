@@ -331,7 +331,7 @@ func TestPlanAfterTheClockWentBack(t *testing.T) {
 		require.Equal(t, ActionNone, action)
 		assert.Equal(t, at(back), s.StartedAt)
 		assert.Equal(t, at(back), s.Steps[StepBudget-1])
-		s, action = Plan(s, appliedObs(back+ApplyTimeout))
+		_, action = Plan(s, appliedObs(back+ApplyTimeout))
 		assert.Equal(t, ActionHold, action)
 	})
 

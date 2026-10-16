@@ -208,7 +208,7 @@ func waitForAck(t *testing.T, master *redisProc) {
 			return false
 		}
 		var offset, acked string
-		for _, line := range strings.Split(info, "\r\n") {
+		for line := range strings.SplitSeq(info, "\r\n") {
 			if v, ok := strings.CutPrefix(line, "master_repl_offset:"); ok {
 				offset = v
 			}

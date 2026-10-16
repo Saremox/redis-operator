@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"errors"
+	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,7 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
-	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	redisfailoverfake "github.com/saremox/redis-operator/client/k8s/clientset/versioned/fake"
@@ -38,7 +38,7 @@ func sentinelLifecycleRF() *redisfailoverv1.RedisFailover {
 				Replicas: int32(3),
 			},
 			Sentinel: redisfailoverv1.SentinelSettings{
-				Enabled:  ptr.To(true),
+				Enabled:  new(true),
 				Replicas: int32(3),
 			},
 		},
@@ -290,16 +290,14 @@ func TestEnsureSentinelDeploymentDeletesUnusedServiceAccount(t *testing.T) {
 
 	// A pod of the old ReplicaSet still uses the ServiceAccount.
 	podLabels := map[string]string{"pod-template-hash": "oldhash"}
-	for key, value := range d.Spec.Selector.MatchLabels {
-		podLabels[key] = value
-	}
+	maps.Copy(podLabels, d.Spec.Selector.MatchLabels)
 	oldPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "rfs-lifecycle-old",
 			Namespace: rf.Namespace,
 			Labels:    podLabels,
 			OwnerReferences: []metav1.OwnerReference{
-				{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: d.Name + "-oldhash", UID: "old-rs-uid", Controller: ptr.To(true)},
+				{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: d.Name + "-oldhash", UID: "old-rs-uid", Controller: new(true)},
 			},
 		},
 		Spec: corev1.PodSpec{ServiceAccountName: autoName},

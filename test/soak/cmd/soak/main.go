@@ -105,6 +105,7 @@ func run(configPath, listen string, log *slog.Logger) error {
 			wg.Go(func() { mu.Run(ctx) })
 		}
 		wg.Go(func() { o.Run(ctx) })
+		r.SetFull(o.NoevictionFull)
 		r.SetEvent(outageEvent(lock, mu))
 		wg.Go(func() { r.Run(ctx, func() []string { return prober.Names(in, o.SentinelPath()) }) })
 		lane = append(lane, chaos.Instance{Name: in.Name, Namespace: in.Namespace, Observer: o, Data: d})

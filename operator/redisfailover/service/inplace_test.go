@@ -44,7 +44,7 @@ func podTemplate(redis corev1.ResourceRequirements) corev1.PodTemplateSpec {
 }
 
 func revision(name string, t corev1.PodTemplateSpec) *appsv1.ControllerRevision {
-	raw, _ := json.Marshal(map[string]interface{}{"spec": map[string]interface{}{"template": t}})
+	raw, _ := json.Marshal(map[string]any{"spec": map[string]any{"template": t}})
 	return &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: name}, Data: runtime.RawExtension{Raw: raw}}
 }
 

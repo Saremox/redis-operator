@@ -67,6 +67,11 @@ type Observer struct {
 	// sync a finding, as other invariants are; default true. Off, it is
 	// only reported, for operators without the readiness fix.
 	ReplicaReadyWithoutData *bool `json:"replicaReadyWithoutData"`
+	// NoevictionFullLimit bounds the time that a master under noeviction
+	// with its data at maxmemory refuses writes as an expected state. Then
+	// it is a finding, because it stops the fill and the ledger. Default
+	// 30m.
+	NoevictionFullLimit metav1.Duration `json:"noevictionFullLimit"`
 }
 
 // ReplicaReadyWithoutDataFinding reports whether replica_ready_without_data
@@ -198,6 +203,9 @@ func (c *Config) setDefaults() {
 	if c.Observer.ConvergenceTimeout.Duration == 0 {
 		c.Observer.ConvergenceTimeout.Duration = 10 * time.Minute
 	}
+	if c.Observer.NoevictionFullLimit.Duration == 0 {
+		c.Observer.NoevictionFullLimit.Duration = 30 * time.Minute
+	}
 	setMutationDefaults(&c.Mutation, c.Observer)
 	setChaosDefaults(&c.Chaos, c.Observer)
 	for i := range c.Versions {
@@ -259,6 +267,9 @@ func setInstanceDefaults(in *Instance) {
 func (c *Config) validate() error {
 	if len(c.Instances) == 0 {
 		return errors.New("no instances configured")
+	}
+	if c.Observer.NoevictionFullLimit.Duration < 0 {
+		return errors.New("observer.noevictionFullLimit: negative duration")
 	}
 	if err := c.Mutation.validate(c.Observer); err != nil {
 		return err

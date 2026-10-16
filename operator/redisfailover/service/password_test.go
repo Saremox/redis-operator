@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -482,7 +481,7 @@ func TestApplySentinelPassword(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			rf := generateRF()
-			rf.Spec.Sentinel.Enabled = ptr.To(test.sentinel)
+			rf.Spec.Sentinel.Enabled = new(test.sentinel)
 
 			ms := &mK8SService.Services{}
 			ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Return(sentinels, test.listErr)

@@ -25,6 +25,7 @@ type Runner struct {
 	log     *slog.Logger
 	newPath func(string) Path
 	event   func() string
+	full    func() bool
 
 	running map[string]func()
 }
@@ -43,7 +44,14 @@ func NewRunner(in config.Instance, probe config.Probe, a *auth.Source, m *metric
 		},
 		running: map[string]func(){},
 		event:   func() string { return EventNone },
+		full:    func() bool { return false },
 	}
+}
+
+// SetFull sets the function that tells whether the master refuses writes by
+// design. Call it before Run.
+func (r *Runner) SetFull(full func() bool) {
+	r.full = full
 }
 
 // SetEvent sets the function that names what ran when an outage started: a
@@ -91,7 +99,7 @@ func (r *Runner) sync(ctx context.Context, names []string) {
 		var wg sync.WaitGroup
 		for _, c := range Clients {
 			p := New(r.in, path, c, r.probe, r.auth, r.m, r.base)
-			p.event = r.event
+			p.event, p.full = r.event, r.full
 			wg.Go(func() { p.Run(pctx) })
 		}
 		r.running[name] = func() {

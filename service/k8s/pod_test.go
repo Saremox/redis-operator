@@ -176,10 +176,10 @@ type levelLogger struct {
 	levels *[]string
 }
 
-func (l levelLogger) With(string, interface{}) log.Logger      { return l }
-func (l levelLogger) WithField(string, interface{}) log.Logger { return l }
-func (l levelLogger) Debugf(string, ...interface{})            { *l.levels = append(*l.levels, "debug") }
-func (l levelLogger) Errorf(string, ...interface{})            { *l.levels = append(*l.levels, "error") }
+func (l levelLogger) With(string, any) log.Logger      { return l }
+func (l levelLogger) WithField(string, any) log.Logger { return l }
+func (l levelLogger) Debugf(string, ...any)            { *l.levels = append(*l.levels, "debug") }
+func (l levelLogger) Errorf(string, ...any)            { *l.levels = append(*l.levels, "error") }
 
 // fieldLogger records each line with the level and the fields in front.
 type fieldLogger struct {
@@ -188,20 +188,20 @@ type fieldLogger struct {
 	lines  *[]string
 }
 
-func (l fieldLogger) With(key string, value interface{}) log.Logger { return l.WithField(key, value) }
+func (l fieldLogger) With(key string, value any) log.Logger { return l.WithField(key, value) }
 
-func (l fieldLogger) WithField(key string, value interface{}) log.Logger {
+func (l fieldLogger) WithField(key string, value any) log.Logger {
 	l.fields += fmt.Sprintf("%s=%v ", key, value)
 	return l
 }
 
-func (l fieldLogger) add(level, format string, args ...interface{}) {
+func (l fieldLogger) add(level, format string, args ...any) {
 	*l.lines = append(*l.lines, level+": "+l.fields+fmt.Sprintf(format, args...))
 }
 
-func (l fieldLogger) Debugf(format string, args ...interface{}) { l.add("debug", format, args...) }
-func (l fieldLogger) Infof(format string, args ...interface{})  { l.add("info", format, args...) }
-func (l fieldLogger) Errorf(format string, args ...interface{}) { l.add("error", format, args...) }
+func (l fieldLogger) Debugf(format string, args ...any) { l.add("debug", format, args...) }
+func (l fieldLogger) Infof(format string, args ...any)  { l.add("info", format, args...) }
+func (l fieldLogger) Errorf(format string, args ...any) { l.add("error", format, args...) }
 
 func TestPodServiceLogsTheNamespaceAndPod(t *testing.T) {
 	tests := []struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -29,7 +30,7 @@ import (
 
 type logEntry struct {
 	level  string
-	fields map[string]interface{}
+	fields map[string]any
 	msg    string
 }
 
@@ -48,31 +49,27 @@ func (r *recordedLogs) all() []logEntry {
 type recordingLogger struct {
 	log.DummyLogger
 	logs   *recordedLogs
-	fields map[string]interface{}
+	fields map[string]any
 }
 
 func newRecordingLogger() (recordingLogger, *recordedLogs) {
 	logs := &recordedLogs{}
-	return recordingLogger{logs: logs, fields: map[string]interface{}{}}, logs
+	return recordingLogger{logs: logs, fields: map[string]any{}}, logs
 }
 
-func (l recordingLogger) WithFields(values map[string]interface{}) log.Logger {
-	fields := make(map[string]interface{}, len(l.fields)+len(values))
-	for k, v := range l.fields {
-		fields[k] = v
-	}
-	for k, v := range values {
-		fields[k] = v
-	}
+func (l recordingLogger) WithFields(values map[string]any) log.Logger {
+	fields := make(map[string]any, len(l.fields)+len(values))
+	maps.Copy(fields, l.fields)
+	maps.Copy(fields, values)
 	l.fields = fields
 	return l
 }
 
-func (l recordingLogger) WithField(key string, value interface{}) log.Logger {
-	return l.WithFields(map[string]interface{}{key: value})
+func (l recordingLogger) WithField(key string, value any) log.Logger {
+	return l.WithFields(map[string]any{key: value})
 }
 
-func (l recordingLogger) With(key string, value interface{}) log.Logger {
+func (l recordingLogger) With(key string, value any) log.Logger {
 	return l.WithField(key, value)
 }
 
@@ -82,31 +79,31 @@ func (l recordingLogger) add(level, msg string) {
 	l.logs.entries = append(l.logs.entries, logEntry{level: level, fields: l.fields, msg: msg})
 }
 
-func (l recordingLogger) Debugf(format string, args ...interface{}) {
+func (l recordingLogger) Debugf(format string, args ...any) {
 	l.add("debug", fmt.Sprintf(format, args...))
 }
 
-func (l recordingLogger) Info(args ...interface{}) {
+func (l recordingLogger) Info(args ...any) {
 	l.add("info", fmt.Sprint(args...))
 }
 
-func (l recordingLogger) Infof(format string, args ...interface{}) {
+func (l recordingLogger) Infof(format string, args ...any) {
 	l.add("info", fmt.Sprintf(format, args...))
 }
 
-func (l recordingLogger) Warnf(format string, args ...interface{}) {
+func (l recordingLogger) Warnf(format string, args ...any) {
 	l.add("warning", fmt.Sprintf(format, args...))
 }
 
-func (l recordingLogger) Warningf(format string, args ...interface{}) {
+func (l recordingLogger) Warningf(format string, args ...any) {
 	l.add("warning", fmt.Sprintf(format, args...))
 }
 
-func (l recordingLogger) Error(args ...interface{}) {
+func (l recordingLogger) Error(args ...any) {
 	l.add("error", fmt.Sprint(args...))
 }
 
-func (l recordingLogger) Errorf(format string, args ...interface{}) {
+func (l recordingLogger) Errorf(format string, args ...any) {
 	l.add("error", fmt.Sprintf(format, args...))
 }
 
@@ -585,7 +582,7 @@ func TestCheckSentinelsCannotFailoverLogContext(t *testing.T) {
 		replicas  []string
 		replErr   error
 		expLevel  string
-		expPod    interface{}
+		expPod    any
 	}{
 		{name: "too few Sentinels run", sentinels: 3, expLevel: "warning"},
 		{name: "the master is unknown", monErr: errors.New("i/o timeout"), expLevel: "warning"},

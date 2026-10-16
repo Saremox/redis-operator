@@ -256,8 +256,10 @@ func recreateAfterSchema(t *testing.T) func(string) bool {
 	require.NotZero(t, maxLength)
 	re := regexp.MustCompile(pattern)
 	return func(value string) bool {
-		// The API server counts characters, not bytes.
-		return re.MatchString(value) && utf8.RuneCountInString(value) <= int(maxLength)
+		// The API server counts characters, not bytes. The fast length
+		// check is first: with the race detector, the regexp is slow for
+		// the long random values.
+		return utf8.RuneCountInString(value) <= int(maxLength) && re.MatchString(value)
 	}
 }
 
@@ -305,11 +307,15 @@ func TestRecreateAfterPattern(t *testing.T) {
 // the decode of each list of RedisFailovers. Overflow is the risk.
 func TestRecreateAfterSchemaAcceptsOnlyParsableValues(t *testing.T) {
 	accepts := recreateAfterSchema(t)
-	parses := func(value string) {
-		if accepts(value) {
-			_, err := time.ParseDuration(value)
-			require.NoError(t, err, "the schema accepts %q", value)
+	// parses requires that a value of the schema parses. It returns true
+	// if the schema accepts the value.
+	parses := func(value string) bool {
+		if !accepts(value) {
+			return false
 		}
+		_, err := time.ParseDuration(value)
+		require.NoError(t, err, "the schema accepts %q", value)
+		return true
 	}
 	// The largest sums that 16 characters allow.
 	for _, value := range []string{"999999h999999h9h", "999999h999999.9h", "999999.999999h9h", "-999999h999999h9h", "99999h99999h999h"} {
@@ -343,11 +349,9 @@ func TestRecreateAfterSchemaAcceptsOnlyParsableValues(t *testing.T) {
 				b.WriteString(units[rng.IntN(len(units))])
 			}
 		}
-		value := b.String()
-		if accepts(value) {
+		if parses(b.String()) {
 			accepted++
 		}
-		parses(value)
 	}
 	assert.Greater(t, accepted, 10_000)
 }

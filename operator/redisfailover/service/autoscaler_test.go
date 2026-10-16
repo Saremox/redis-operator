@@ -9,7 +9,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -22,7 +21,7 @@ import (
 func autoscalerTestRF(t *testing.T, autoscaling *redisfailoverv1.AutoscalingSettings) *redisfailoverv1.RedisFailover {
 	t.Helper()
 	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"}}
-	rf.Spec.Sentinel.Enabled = ptr.To(true)
+	rf.Spec.Sentinel.Enabled = new(true)
 	rf.Spec.Redis.Exporter.Enabled = true
 	rf.Spec.Sentinel.Exporter.Enabled = true
 	rf.Spec.Redis.Resources = corev1.ResourceRequirements{
@@ -58,7 +57,7 @@ func TestGeneratedObjectsIgnoreRecommend(t *testing.T) {
 
 func TestGenerateAutoscalerStateConfigMap(t *testing.T) {
 	rf := autoscalerTestRF(t, nil)
-	ownerRefs := []metav1.OwnerReference{{Name: "test", Controller: ptr.To(true)}}
+	ownerRefs := []metav1.OwnerReference{{Name: "test", Controller: new(true)}}
 
 	cm := GenerateAutoscalerStateConfigMap(rf, map[string]string{"app.kubernetes.io/managed-by": "redis-operator"}, ownerRefs, `{"version":1}`)
 

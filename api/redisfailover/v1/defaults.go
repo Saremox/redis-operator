@@ -27,7 +27,11 @@ const (
 // The Sentinel timeouts that apply when sentinel.customConfig does not set them.
 // sentinel.conf and the readiness script of the Redis pods use the same values.
 const (
-	DefaultSentinelDownAfterMilliseconds       = 5000
+	// DefaultSentinelDownAfterMilliseconds is the default of
+	// down-after-milliseconds.
+	DefaultSentinelDownAfterMilliseconds = 5000
+	// DefaultSentinelFailoverTimeoutMilliseconds is the default of
+	// failover-timeout.
 	DefaultSentinelFailoverTimeoutMilliseconds = 10000
 )
 

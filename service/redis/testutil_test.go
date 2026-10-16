@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -121,7 +122,7 @@ func killProc(proc *redisProc) {
 // TestMain for the long-lived shared environment.
 func newRedisProcess(extraArgs ...string) (*redisProc, error) {
 	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		dir, err := os.MkdirTemp("", "redis-operator-test-redis-")
 		if err != nil {
 			return nil, fmt.Errorf("mkdir temp dir: %w", err)
@@ -342,8 +343,8 @@ var sharedEnvVal *sharedEnv
 func TestMain(m *testing.M) {
 	var cleanups []func()
 	cleanupAll := func() {
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			cleanups[i]()
+		for _, cleanup := range slices.Backward(cleanups) {
+			cleanup()
 		}
 	}
 
