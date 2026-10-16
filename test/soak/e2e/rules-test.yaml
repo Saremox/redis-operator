@@ -15,6 +15,18 @@ tests:
         values: '1 0x12'
       - series: 'redis_soak_window_open{rf="b",namespace="b",mode="operator"}'
         values: '0 1x12'
+      # Full under noeviction: expected on the client that gets OOM.
+      - series: 'redis_soak_writable{rf="c",namespace="c",mode="operator",path="rfrm",client="pooled"}'
+        values: '1 0x12'
+      - series: 'redis_soak_window_open{rf="c",namespace="c",mode="operator"}'
+        values: '0x12'
+      - series: 'redis_soak_expected_not_writable{rf="c",namespace="c",mode="operator",path="rfrm",client="pooled",reason="noeviction_full"}'
+        values: '0 1x12'
+      # Another client of the same instance fails with another error.
+      - series: 'redis_soak_writable{rf="c",namespace="c",mode="operator",path="rfrm",client="retrying"}'
+        values: '1 0x12'
+      - series: 'redis_soak_expected_not_writable{rf="c",namespace="c",mode="operator",path="rfrm",client="retrying",reason="noeviction_full"}'
+        values: '0x12'
     alert_rule_test:
       - eval_time: 1m
         alertname: RedisSoakNotWritable
@@ -24,6 +36,9 @@ tests:
           - exp_labels: {severity: critical, rf: a, namespace: a, mode: operator, path: rfrm, client: pooled}
             exp_annotations:
               summary: "a/a has not been writable through rfrm (pooled client) for over 1m outside a convergence window."
+          - exp_labels: {severity: critical, rf: c, namespace: c, mode: operator, path: rfrm, client: retrying}
+            exp_annotations:
+              summary: "c/c has not been writable through rfrm (retrying client) for over 1m outside a convergence window."
 
   - name: masters outside a window
     interval: 15s

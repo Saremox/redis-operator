@@ -7,6 +7,8 @@ LastSuccess: Desc{fqName: "redis_soak_last_success_timestamp_seconds", help: "Un
 OutageDuration: Desc{fqName: "redis_soak_outage_duration_seconds", help: "Time from the first failed probe to the next successful one, by the chaos kind or the instance's mutation kind running when it started, or none.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,path,client,event}}
   buckets: 0.5 1 2 5 10 20 30 60 120 300 600 1800
 BuildInfo: Desc{fqName: "redis_soak_build_info", help: "Always 1. The operator version is the image tag of its Deployment.", unit: "", constLabels: {}, variableLabels: {operator_version,tester_version}}
+ExpectedNotWritable: Desc{fqName: "redis_soak_expected_not_writable", help: "1 if the last write probe failed in a documented state, by reason: noeviction_full.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,path,client,reason}}
+ExpectedNotWritableSeconds: Desc{fqName: "redis_soak_expected_not_writable_seconds_total", help: "Seconds of write probes that failed in a documented state, one probe interval for each, by reason: noeviction_full.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,path,client,reason}}
 InvariantOK: Desc{fqName: "redis_soak_invariant_ok", help: "1 if the invariant held at the last check.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,invariant}}
 InvariantViolation: Desc{fqName: "redis_soak_invariant_violation_seconds", help: "How long an invariant stayed violated.", unit: "", constLabels: {}, variableLabels: {rf,namespace,mode,invariant}}
   buckets: 1 2 5 10 20 30 60 120 300 600 1800 3600
