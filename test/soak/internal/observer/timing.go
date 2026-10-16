@@ -35,8 +35,10 @@ type read struct {
 	dials     int
 	dialStart time.Time
 	// dialEnd is zero while a dial runs.
-	dialEnd   time.Time
-	connected bool
+	dialEnd time.Time
+	// connected is the end of the first dial that made a connection, zero
+	// before.
+	connected time.Time
 }
 
 func (o *Observer) startRead(kind, pod, ip string) *read {
@@ -57,21 +59,35 @@ func (r *read) dialer(dial func(context.Context, string, string) (net.Conn, erro
 		c, err := dial(ctx, network, addr)
 		r.mu.Lock()
 		r.dialEnd = time.Now()
-		r.connected = r.connected || err == nil
+		if err == nil && r.connected.IsZero() {
+			r.connected = r.dialEnd
+		}
 		r.mu.Unlock()
 		return c, err
 	}
 }
 
-// phase returns the phase in which a read failed with err.
-func (r *read) phase(err error) string {
+// phase returns the phase in which a read that ended at end failed with err.
+// A connection made after end did not serve the read.
+func (r *read) phase(err error, end time.Time) string {
+	var opErr *net.OpError
+	isOp := errors.As(err, &opErr)
+	var netErr net.Error
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch {
 	case errors.Is(err, context.Canceled):
 		// Only the end of the round's context cancels a read.
 		return phaseContext
-	case r.connected:
+	case isOp && opErr.Op == "dial":
+		return phaseDial
+	case !isOp && errors.Is(err, context.DeadlineExceeded):
+		// go-redis returns the error of the context when no connection
+		// came in time.
+		return phaseDial
+	case errors.As(err, &netErr) && netErr.Timeout():
+		return phaseReply
+	case !r.connected.IsZero() && !r.connected.After(end):
 		return phaseReply
 	default:
 		return phaseDial
@@ -101,7 +117,7 @@ func (o *Observer) endRead(r *read, err error) {
 	}
 	phase, reason := "", ""
 	if err != nil {
-		phase, reason = r.phase(err), err.Error()
+		phase, reason = r.phase(err, time.Now()), err.Error()
 	}
 	dial, dials := r.dialTime()
 	o.log.Warn("observer read slow", "pod", r.pod, "ip", r.ip, "kind", r.kind, "phase", phase,
@@ -111,7 +127,7 @@ func (o *Observer) endRead(r *read, err error) {
 // timeRound records the lateness and the phases of a round. tick is when the
 // round was due, collected when the reads of the pods ended.
 func (o *Observer) timeRound(tick, start, collected, end time.Time, s snapshot) {
-	late, d := start.Sub(tick), end.Sub(start)
+	late, d := max(start.Sub(tick), 0), end.Sub(start)
 	o.roundTime.Observe(d.Seconds())
 	o.lateness.Observe(late.Seconds())
 	level := slog.LevelDebug

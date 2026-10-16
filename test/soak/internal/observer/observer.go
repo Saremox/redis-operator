@@ -319,19 +319,26 @@ func (o *Observer) Failovers() <-chan string {
 func (o *Observer) Run(ctx context.Context) {
 	t := time.NewTicker(o.interval)
 	defer t.Stop()
-	tick := o.now()
+	due := o.now()
 	for {
-		o.round(ctx, tick)
+		end := o.round(ctx, due)
 		select {
 		case <-ctx.Done():
 			return
-		case tick = <-t.C:
+		case due = <-t.C:
+		}
+		// After a round longer than the interval, the ticker gives the
+		// first tick that the round missed. The round itself caused that
+		// delay.
+		if end.After(due) {
+			due = end
 		}
 	}
 }
 
-// round collects and checks one snapshot. tick is when the round was due.
-func (o *Observer) round(ctx context.Context, tick time.Time) {
+// round collects and checks one snapshot, and returns when it ended. due is
+// when the round was due.
+func (o *Observer) round(ctx context.Context, due time.Time) time.Time {
 	start := o.now()
 	s, generation, err := o.collect(ctx)
 	collected := o.now()
@@ -343,7 +350,9 @@ func (o *Observer) round(ctx context.Context, tick time.Time) {
 		o.takeHold()
 		o.apply(time.Now(), s, generation, o.converged(ctx))
 	}
-	o.timeRound(tick, start, collected, o.now(), s)
+	end := o.now()
+	o.timeRound(due, start, collected, end, s)
+	return end
 }
 
 func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {

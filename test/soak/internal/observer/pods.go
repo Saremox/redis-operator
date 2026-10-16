@@ -50,8 +50,8 @@ func options(addr string, creds func() (string, string), timeout time.Duration) 
 	}
 }
 
-// client connects to the pod of r, authenticating with a's current password,
-// or with none for a nil a. r records the dials.
+// client connects to the pod of r with the current password of a, or with no
+// password for a nil a. r records the dials.
 func (o *Observer) client(r *read, port int, a *auth.Source) *redis.Client {
 	opt := options(net.JoinHostPort(r.ip, strconv.Itoa(port)), a.Provider(), o.timeout)
 	dial := o.dial
@@ -69,7 +69,13 @@ func (o *Observer) redisInfo(ctx context.Context, p *redisPod, port int, keys []
 		return
 	}
 	r := o.startRead("redis", p.Name, p.IP)
-	defer func() { o.endRead(r, errors.Join(p.err, p.configErr)) }()
+	defer func() {
+		err := p.err
+		if err == nil {
+			err = p.configErr
+		}
+		o.endRead(r, err)
+	}()
 	c := o.client(r, port, o.auth)
 	defer func() { _ = c.Close() }()
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)

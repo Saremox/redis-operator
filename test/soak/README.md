@@ -660,22 +660,29 @@ in one round. These logs and metrics tell such a delay from a fault of an
 instance. No alert uses them.
 
 - `observer round slow`: a round took more than 1 second, or started more
-  than 1 second after its tick. The fields give the time of the API reads,
+  than 1 second after its tick or after the end of the round before it.
+  The fields give the time of the API reads,
   the pod reads and the checks. The other rounds log `observer round` at
   debug level, which the tester does not enable.
 - `observer read slow`: a read of a pod failed or took more than 1 second.
-  The field `phase` is `dial` when no connection was made, `reply` when the
-  connection was made but no reply came, and `context` at a stop of the
-  tester. go-redis returns `context deadline exceeded` when the dial did
-  not end before the read timeout, and `i/o timeout` when the reply did
-  not come.
-- `soak process stalled`: a goroutine that ticks every 100 milliseconds
-  did not run for more than 1 second. `redis_soak_process_stalls_total`
-  counts these stalls.
+  The field `phase` tells where a read failed:
+  - `dial`: the tester made no connection.
+  - `reply`: the tester made the connection, but no reply came.
+  - `context`: the tester stopped.
+
+  go-redis returns `context deadline exceeded` when the dial did not end
+  before the read timeout. It returns `i/o timeout` when the reply did not
+  come.
+- `soak process stalled`: a goroutine with a tick of 100 milliseconds did
+  not run for more than 1 second. `redis_soak_process_stalls_total` counts
+  these stalls.
 - `redis_soak_observer_round_seconds` and
   `redis_soak_observer_round_lateness_seconds` record each round.
-  `go_sched_latencies_seconds` and `go_gc_pauses_seconds` show the delays
-  of the Go scheduler and of the GC.
+- `go_sched_latencies_seconds` and `go_gc_pauses_seconds` record the delays
+  of the Go scheduler and of the GC. client_golang puts them in larger
+  buckets, and the highest finite bucket is 0.117 seconds. Thus they show
+  only that a delay was longer than about 0.1 seconds. The stall detector
+  and the round histograms give the length of the delay.
 
 ## Limits
 

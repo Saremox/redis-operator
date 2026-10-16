@@ -319,7 +319,7 @@ func (m *Metrics) addTester(labels func(...string) []string) {
 	m.ObserverLateness = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: namespace,
 		Name:      "observer_round_lateness_seconds",
-		Help:      "Time from the tick of an observer round to its start.",
+		Help:      "Time from the tick of an observer round, or the end of a longer round before it, to its start.",
 		Buckets:   []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10},
 	}, labels())
 	m.ProcessStalls = prometheus.NewCounter(prometheus.CounterOpts{

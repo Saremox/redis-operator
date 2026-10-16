@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8stesting "k8s.io/client-go/testing"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	rffake "github.com/saremox/redis-operator/client/k8s/clientset/versioned/fake"
@@ -236,26 +239,61 @@ func TestReadSlowSentinel(t *testing.T) {
 // both from the end of the round.
 func TestPhase(t *testing.T) {
 	r := &read{}
-	if got := r.phase(context.DeadlineExceeded); got != phaseDial {
-		t.Errorf("no dial: %s", got)
-	}
 	if d, n := r.dialTime(); d != 0 || n != 0 {
 		t.Errorf("no dial: dial time %v %d", d, n)
 	}
 	conn, peer := net.Pipe()
 	defer func() { _ = conn.Close(); _ = peer.Close() }()
 	dial := r.dialer(func(context.Context, string, string) (net.Conn, error) { return conn, nil })
+	before := time.Now()
 	if c, err := dial(context.Background(), "tcp", "x"); c != conn || err != nil {
 		t.Fatal(c, err)
 	}
-	if got := r.phase(context.DeadlineExceeded); got != phaseReply {
-		t.Errorf("connected: %s", got)
-	}
-	if got := r.phase(&net.OpError{Op: "dial", Err: context.Canceled}); got != phaseContext {
-		t.Errorf("round ended: %s", got)
-	}
+	after := time.Now()
 	if d, n := r.dialTime(); n != 1 || d < 0 {
 		t.Errorf("dial time %v %d", d, n)
+	}
+	refused := errors.New("WRONGPASS invalid username-password pair")
+	for _, tc := range []struct {
+		name  string
+		r     *read
+		end   time.Time
+		err   error
+		phase string
+	}{
+		{"no connection", &read{}, after, refused, phaseDial},
+		{"connected", r, after, refused, phaseReply},
+		// The read ended before the dial made the connection.
+		{"connected late", r, before, refused, phaseDial},
+		{"no connection in time", r, after, context.DeadlineExceeded, phaseDial},
+		{"no reply in time", &read{}, after, &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}, phaseReply},
+		{"dial timeout", r, after, &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}, phaseDial},
+		{"round ended", r, after, &net.OpError{Op: "dial", Err: context.Canceled}, phaseContext},
+	} {
+		if got := tc.r.phase(tc.err, tc.end); got != tc.phase {
+			t.Errorf("%s: %s, want %s", tc.name, got, tc.phase)
+		}
+	}
+}
+
+// A read logs the error of INFO, or else the error of CONFIG GET, on one
+// line.
+func TestReadLogsOneError(t *testing.T) {
+	mr := miniredis.RunT(t)
+	ip, port := hostPort(t, mr.Addr())
+	o, lines := timingObserver(t)
+	p := &redisPod{pod: pod{Name: "rfr-x-0", IP: ip}}
+	// miniredis has no CONFIG GET.
+	o.redisInfo(context.Background(), p, port, []string{"maxmemory"})
+	if got := lines(); p.err != nil || p.configErr == nil || len(got) != 1 || got[0]["error"] != p.configErr.Error() || got[0]["phase"] != phaseReply {
+		t.Fatalf("config error: %v %v", p.configErr, got)
+	}
+	o, lines = timingObserver(t)
+	o.dial = blockingDial
+	p = &redisPod{pod: pod{Name: "rfr-x-0", IP: "10.0.0.1"}}
+	o.redisInfo(context.Background(), p, 6379, []string{"maxmemory"})
+	if got := lines(); p.err == nil || p.configErr == nil || len(got) != 1 || got[0]["error"] != "context deadline exceeded" {
+		t.Errorf("both errors: %v %v %v", p.err, p.configErr, got)
 	}
 }
 
@@ -423,6 +461,35 @@ func TestRunTicks(t *testing.T) {
 	}
 	if all[0]["msg"] != "observing" || all[0]["level"] != "WARN" {
 		t.Errorf("log %v", all[0])
+	}
+}
+
+// A round that takes more than two intervals does not make the next round
+// late: the next round is due at the end of the long round.
+func TestRunOverrun(t *testing.T) {
+	o, lines := timingObserver(t)
+	rfs := rffake.NewSimpleClientset()
+	var calls atomic.Int32
+	rfs.PrependReactor("get", "redisfailovers", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if calls.Add(1) == 1 {
+			time.Sleep(70 * time.Millisecond)
+		}
+		return false, nil, nil
+	})
+	o.rfs = rfs
+	o.interval = 20 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	o.Run(ctx)
+	got := roundLines(lines())
+	if len(got) < 2 {
+		t.Fatalf("rounds %v", got)
+	}
+	if d, _ := got[0]["duration_seconds"].(float64); d < 0.07 {
+		t.Errorf("first round %v", got[0])
+	}
+	if late, _ := got[1]["lateness_seconds"].(float64); late > 0.015 {
+		t.Errorf("round after the long round is %v seconds late", late)
 	}
 }
 
