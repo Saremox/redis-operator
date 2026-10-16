@@ -346,15 +346,7 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 		return snapshot{}, 0, err
 	}
 	slices.SortFunc(pods.Items, func(a, b corev1.Pod) int { return strings.Compare(a.Name, b.Name) })
-	for i := range pods.Items {
-		p := &pods.Items[i]
-		switch p.Labels["app.kubernetes.io/component"] {
-		case "redis":
-			s.redis = append(s.redis, redisPod{pod: newPod(p), limit: maxmem.RedisLimit(p), restarts: restarts(p, "redis")})
-		case "sentinel":
-			s.sentinels = append(s.sentinels, sentinelPod{pod: newPod(p)})
-		}
-	}
+	s.redis, s.sentinels = snapshotPods(pods.Items)
 
 	eps, err := o.kube.DiscoveryV1().EndpointSlices(o.in.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: discoveryv1.LabelServiceName + "=rfrm-" + o.in.Name,
@@ -362,22 +354,51 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 	if err != nil {
 		return snapshot{}, 0, err
 	}
-	for _, slice := range eps.Items {
+	s.endpoints = readyAddresses(eps.Items)
+	o.readPods(ctx, &s)
+	return s, rf.Generation, nil
+}
+
+// snapshotPods returns the redis pods and the Sentinel pods, in the order of
+// pods.
+func snapshotPods(pods []corev1.Pod) (redisPods []redisPod, sentinels []sentinelPod) {
+	for i := range pods {
+		p := &pods[i]
+		switch p.Labels["app.kubernetes.io/component"] {
+		case "redis":
+			redisPods = append(redisPods, redisPod{pod: newPod(p), limit: maxmem.RedisLimit(p), restarts: restarts(p, "redis")})
+		case "sentinel":
+			sentinels = append(sentinels, sentinelPod{pod: newPod(p)})
+		}
+	}
+	return redisPods, sentinels
+}
+
+// readyAddresses returns each address of the ready endpoints once, in the
+// order of the slices.
+func readyAddresses(items []discoveryv1.EndpointSlice) []string {
+	var addrs []string
+	for _, slice := range items {
 		for _, ep := range slice.Endpoints {
 			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
 				continue
 			}
 			for _, addr := range ep.Addresses {
-				if !slices.Contains(s.endpoints, addr) {
-					s.endpoints = append(s.endpoints, addr)
+				if !slices.Contains(addrs, addr) {
+					addrs = append(addrs, addr)
 				}
 			}
 		}
 	}
+	return addrs
+}
 
+// readPods asks every pod of s, and the master of the source of a
+// bootstrapping instance, in parallel.
+func (o *Observer) readPods(ctx context.Context, s *snapshot) {
 	var wg sync.WaitGroup
-	keys := customconfig.RedisKeys(spec)
-	if spec.Spec.Redis.MaxMemory != nil {
+	keys := customconfig.RedisKeys(s.rf)
+	if s.rf.Spec.Redis.MaxMemory != nil {
 		keys = append(keys, "maxmemory", "maxmemory-policy")
 	}
 	for i := range s.redis {
@@ -392,7 +413,6 @@ func (o *Observer) collect(ctx context.Context) (snapshot, int64, error) {
 		wg.Go(func() { s.sourceReplID, s.sourceOffset, s.sourceErr = o.source.masterPosition(ctx) })
 	}
 	wg.Wait()
-	return s, rf.Generation, nil
 }
 
 func newPod(p *corev1.Pod) pod {
