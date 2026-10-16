@@ -2068,43 +2068,11 @@ func (r *RedisFailoverHandler) skipped(rf *redisfailoverv1.RedisFailover, heal *
 // checkAndHealSentinels heals each Sentinel that answers. An unreachable
 // Sentinel makes the RedisFailover NotHealthy after the heal of the others.
 func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFailover, sentinels []string, heal *sentinelHeal) error {
-	for _, sip := range sentinels {
-		if r.skipped(rf, heal, sip, metrics.SENTINEL_NUMBER_IN_MEMORY_MISMATCH) {
-			continue
-		}
-		err := r.rfChecker.CheckSentinelNumberInMemory(sip, rf)
-		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_NUMBER_IN_MEMORY_MISMATCH, sip, err)
-		if heal.skip(sip, err) {
-			continue
-		}
-		if err != nil {
-			if err := r.restoreSentinel(rf, sentinels, sip, "sentinels", heal); err != nil {
-				rf.Status = redisfailoverv1.RedisFailoverStatus{
-					State:   redisfailoverv1.NotHealthyState,
-					Message: "unable to restore sentinel",
-				}
-				return err
-			}
-		}
+	if err := r.restoreSentinelMismatches(rf, sentinels, heal, metrics.SENTINEL_NUMBER_IN_MEMORY_MISMATCH, "sentinels", r.rfChecker.CheckSentinelNumberInMemory); err != nil {
+		return err
 	}
-	for _, sip := range sentinels {
-		if r.skipped(rf, heal, sip, metrics.REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH) {
-			continue
-		}
-		err := r.rfChecker.CheckSentinelSlavesNumberInMemory(sip, rf)
-		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH, sip, err)
-		if heal.skip(sip, err) {
-			continue
-		}
-		if err != nil {
-			if err := r.restoreSentinel(rf, sentinels, sip, "expected slaves", heal); err != nil {
-				rf.Status = redisfailoverv1.RedisFailoverStatus{
-					State:   redisfailoverv1.NotHealthyState,
-					Message: "unable to restore sentinel",
-				}
-				return err
-			}
-		}
+	if err := r.restoreSentinelMismatches(rf, sentinels, heal, metrics.REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH, "expected slaves", r.rfChecker.CheckSentinelSlavesNumberInMemory); err != nil {
+		return err
 	}
 	for _, sip := range sentinels {
 		if r.skipped(rf, heal, sip, metrics.APPLY_SENTINEL_CONFIG) {
@@ -2137,6 +2105,32 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 			Message: msg,
 		}
 		return errors.New(msg)
+	}
+	return nil
+}
+
+// restoreSentinelMismatches runs check on each Sentinel that answers, and
+// resets each Sentinel with a mismatch. property is the metric of the check,
+// and mismatch names the count in the log.
+func (r *RedisFailoverHandler) restoreSentinelMismatches(rf *redisfailoverv1.RedisFailover, sentinels []string, heal *sentinelHeal, property, mismatch string, check func(string, *redisfailoverv1.RedisFailover) error) error {
+	for _, sip := range sentinels {
+		if r.skipped(rf, heal, sip, property) {
+			continue
+		}
+		err := check(sip, rf)
+		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, property, sip, err)
+		if heal.skip(sip, err) {
+			continue
+		}
+		if err != nil {
+			if err := r.restoreSentinel(rf, sentinels, sip, mismatch, heal); err != nil {
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: "unable to restore sentinel",
+				}
+				return err
+			}
+		}
 	}
 	return nil
 }
