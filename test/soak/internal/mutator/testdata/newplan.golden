@@ -1,0 +1,1713 @@
+plain redis_replicas step 1
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 1" patch={"spec":{"redis":{"replicas":1}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 1 yet
+plain redis_replicas step 2
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+plain redis_replicas step 3
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+plain sentinel_replicas step 1
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 4" patch={"spec":{"sentinel":{"replicas":4}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 4 yet
+plain sentinel_replicas step 2
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+plain sentinel_replicas step 3
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+plain redis_resources step 1
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 49Mi, limits.memory 256Mi -> 189Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"189Mi"},"requests":{"memory":"49Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 49Mi
+rfr-x-1: requests.memory is 64Mi, want 49Mi
+rfr-x-2: requests.memory is 64Mi, want 49Mi
+plain redis_resources step 2
+  kind=redis_resources skip="" params="requests.cpu 50m -> 75m, requests.memory 64Mi -> 85Mi, limits.memory 256Mi -> 135Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"135Mi"},"requests":{"cpu":"75m","memory":"85Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.cpu is 50m, want 75m
+rfr-x-1: requests.cpu is 50m, want 75m
+rfr-x-2: requests.cpu is 50m, want 75m
+plain redis_resources step 3
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 46Mi, limits.memory 256Mi -> 144Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"144Mi"},"requests":{"memory":"46Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 46Mi
+rfr-x-1: requests.memory is 64Mi, want 46Mi
+rfr-x-2: requests.memory is 64Mi, want 46Mi
+plain kill_master step 1
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+plain kill_master step 2
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+plain kill_master step 3
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+plain kill_master_force step 1
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+plain kill_master_force step 2
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+plain kill_master_force step 3
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+plain kill_replica step 1
+  kind=kill_replica skip="" params="delete pod rfr-x-1 (force)" patch= pod=rfr-x-1 uid=u1 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-1 not deleted yet
+plain kill_replica step 2
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+plain kill_replica step 3
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+plain kill_sentinel step 1
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+plain kill_sentinel step 2
+  kind=kill_sentinel skip="" params="delete pod rfs-x-c (force)" patch= pod=rfs-x-c uid=sc force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-c not deleted yet
+plain kill_sentinel step 3
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+plain password_rotate step 1
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+plain password_rotate step 2
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+plain password_rotate step 3
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+plain auth_add step 1
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+plain auth_add step 2
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+plain auth_add step 3
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+plain auth_remove step 1
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+plain auth_remove step 2
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+plain auth_remove step 3
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+plain password_rotate_offline step 1
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+plain password_rotate_offline step 2
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+plain password_rotate_offline step 3
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+plain password_rotate_offline_forget step 1
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+plain password_rotate_offline_forget step 2
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+plain password_rotate_offline_forget step 3
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+plain sentinel_toggle step 1
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+plain sentinel_toggle step 2
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+plain sentinel_toggle step 3
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+plain redis_memory step 1
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain redis_memory step 2
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain redis_memory step 3
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain maxmemory_policy step 1
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain maxmemory_policy step 2
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain maxmemory_policy step 3
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain maxmemory_percent step 1
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain maxmemory_percent step 2
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain maxmemory_percent step 3
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain fill_burst step 1
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain fill_burst step 2
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain fill_burst step 3
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain reset step 1
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain reset step 2
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+plain reset step 3
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+noeviction redis_replicas step 1
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 1" patch={"spec":{"redis":{"replicas":1}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 1 yet
+noeviction redis_replicas step 2
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+noeviction redis_replicas step 3
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+noeviction sentinel_replicas step 1
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 4" patch={"spec":{"sentinel":{"replicas":4}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 4 yet
+noeviction sentinel_replicas step 2
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+noeviction sentinel_replicas step 3
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+noeviction redis_resources step 1
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 49Mi, limits.memory 192Mi -> 189Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"189Mi"},"requests":{"memory":"49Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 49Mi
+rfr-x-1: requests.memory is 64Mi, want 49Mi
+rfr-x-2: requests.memory is 64Mi, want 49Mi
+noeviction redis_resources step 2
+  kind=redis_resources skip="" params="requests.cpu 50m -> 75m, requests.memory 64Mi -> 85Mi, limits.memory 192Mi -> 135Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"135Mi"},"requests":{"cpu":"75m","memory":"85Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.cpu is 50m, want 75m
+rfr-x-1: requests.cpu is 50m, want 75m
+rfr-x-2: requests.cpu is 50m, want 75m
+noeviction redis_resources step 3
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 46Mi, limits.memory 192Mi -> 144Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"144Mi"},"requests":{"memory":"46Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 46Mi
+rfr-x-1: requests.memory is 64Mi, want 46Mi
+rfr-x-2: requests.memory is 64Mi, want 46Mi
+noeviction kill_master step 1
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+noeviction kill_master step 2
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+noeviction kill_master step 3
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+noeviction kill_master_force step 1
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+noeviction kill_master_force step 2
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+noeviction kill_master_force step 3
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+noeviction kill_replica step 1
+  kind=kill_replica skip="" params="delete pod rfr-x-1 (force)" patch= pod=rfr-x-1 uid=u1 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-1 not deleted yet
+noeviction kill_replica step 2
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+noeviction kill_replica step 3
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+noeviction kill_sentinel step 1
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+noeviction kill_sentinel step 2
+  kind=kill_sentinel skip="" params="delete pod rfs-x-c (force)" patch= pod=rfs-x-c uid=sc force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-c not deleted yet
+noeviction kill_sentinel step 3
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+noeviction password_rotate step 1
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+noeviction password_rotate step 2
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+noeviction password_rotate step 3
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+noeviction auth_add step 1
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+noeviction auth_add step 2
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+noeviction auth_add step 3
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+noeviction auth_remove step 1
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+noeviction auth_remove step 2
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+noeviction auth_remove step 3
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+noeviction password_rotate_offline step 1
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+noeviction password_rotate_offline step 2
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+noeviction password_rotate_offline step 3
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+noeviction password_rotate_offline_forget step 1
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+noeviction password_rotate_offline_forget step 2
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+noeviction password_rotate_offline_forget step 3
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+noeviction sentinel_toggle step 1
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+noeviction sentinel_toggle step 2
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+noeviction sentinel_toggle step 3
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+noeviction redis_memory step 1
+  kind=redis_memory skip="" params="limits.memory 192Mi -> 241Mi, requests.memory 64Mi -> 80Mi (maxmemory 180.8Mi)" patch={"spec":{"redis":{"resources":{"limits":{"memory":"241Mi"},"requests":{"memory":"80Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 80Mi
+rfr-x-1: requests.memory is 64Mi, want 80Mi
+rfr-x-2: requests.memory is 64Mi, want 80Mi, and the status doesn't keep maxmemory above 180.8Mi: ""
+noeviction redis_memory step 2
+  kind=redis_memory skip="" params="limits.memory 192Mi -> 299Mi, requests.memory 64Mi -> 99Mi (maxmemory 224.2Mi)" patch={"spec":{"redis":{"resources":{"limits":{"memory":"299Mi"},"requests":{"memory":"99Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 99Mi
+rfr-x-1: requests.memory is 64Mi, want 99Mi
+rfr-x-2: requests.memory is 64Mi, want 99Mi, and the status doesn't keep maxmemory above 224.2Mi: ""
+noeviction redis_memory step 3
+  kind=redis_memory skip="" params="limits.memory 192Mi -> 194Mi, requests.memory 64Mi -> 64Mi (maxmemory 145.5Mi)" patch={"spec":{"redis":{"resources":{"limits":{"memory":"194Mi"},"requests":{"memory":"64Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: limits.memory is 192Mi, want 194Mi
+rfr-x-1: limits.memory is 192Mi, want 194Mi
+rfr-x-2: limits.memory is 192Mi, want 194Mi, and the status doesn't keep maxmemory above 145.5Mi: ""
+noeviction maxmemory_policy step 1
+  kind=maxmemory_policy skip="" params="redis.maxMemory.policy noeviction -> volatile-lru" patch={"spec":{"redis":{"maxMemory":{"policy":"volatile-lru"}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+noeviction maxmemory_policy step 2
+  kind=maxmemory_policy skip="" params="redis.maxMemory.policy noeviction -> volatile-ttl" patch={"spec":{"redis":{"maxMemory":{"policy":"volatile-ttl"}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+noeviction maxmemory_policy step 3
+  kind=maxmemory_policy skip="" params="redis.maxMemory.policy noeviction -> volatile-ttl" patch={"spec":{"redis":{"maxMemory":{"policy":"volatile-ttl"}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+noeviction maxmemory_percent step 1
+  kind=maxmemory_percent skip="" params="redis.maxMemory.percent 75 -> 64" patch={"spec":{"redis":{"maxMemory":{"percent":64}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+noeviction maxmemory_percent step 2
+  kind=maxmemory_percent skip="" params="redis.maxMemory.percent 75 -> 88" patch={"spec":{"redis":{"maxMemory":{"percent":88}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+noeviction maxmemory_percent step 3
+  kind=maxmemory_percent skip="" params="redis.maxMemory.percent 75 -> 46" patch={"spec":{"redis":{"maxMemory":{"percent":46}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+noeviction fill_burst step 1
+  kind=fill_burst skip="" params="write past maxmemory, hold 10s" patch= pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=true recovery=false converged=true
+  converged(s)=<nil>
+noeviction fill_burst step 2
+  kind=fill_burst skip="" params="write past maxmemory, hold 10s" patch= pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=true recovery=false converged=true
+  converged(s)=<nil>
+noeviction fill_burst step 3
+  kind=fill_burst skip="" params="write past maxmemory, hold 10s" patch= pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=true probe=true recovery=false converged=true
+  converged(s)=<nil>
+noeviction reset step 1
+  kind=reset skip="unknown kind" params="" patch= pod= uid= force=false reset=false
+noeviction reset step 2
+  kind=reset skip="unknown kind" params="" patch= pod= uid= force=false reset=false
+noeviction reset step 3
+  kind=reset skip="unknown kind" params="" patch= pod= uid= force=false reset=false
+allkeys-lru redis_replicas step 1
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 1" patch={"spec":{"redis":{"replicas":1}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 1 yet
+allkeys-lru redis_replicas step 2
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+allkeys-lru redis_replicas step 3
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+allkeys-lru sentinel_replicas step 1
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 4" patch={"spec":{"sentinel":{"replicas":4}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 4 yet
+allkeys-lru sentinel_replicas step 2
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+allkeys-lru sentinel_replicas step 3
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+allkeys-lru redis_resources step 1
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 49Mi, limits.memory 192Mi -> 189Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"189Mi"},"requests":{"memory":"49Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 49Mi
+rfr-x-1: requests.memory is 64Mi, want 49Mi
+rfr-x-2: requests.memory is 64Mi, want 49Mi
+allkeys-lru redis_resources step 2
+  kind=redis_resources skip="" params="requests.cpu 50m -> 75m, requests.memory 64Mi -> 85Mi, limits.memory 192Mi -> 135Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"135Mi"},"requests":{"cpu":"75m","memory":"85Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.cpu is 50m, want 75m
+rfr-x-1: requests.cpu is 50m, want 75m
+rfr-x-2: requests.cpu is 50m, want 75m
+allkeys-lru redis_resources step 3
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 46Mi, limits.memory 192Mi -> 144Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"144Mi"},"requests":{"memory":"46Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 46Mi
+rfr-x-1: requests.memory is 64Mi, want 46Mi
+rfr-x-2: requests.memory is 64Mi, want 46Mi
+allkeys-lru kill_master step 1
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+allkeys-lru kill_master step 2
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+allkeys-lru kill_master step 3
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+allkeys-lru kill_master_force step 1
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+allkeys-lru kill_master_force step 2
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+allkeys-lru kill_master_force step 3
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+allkeys-lru kill_replica step 1
+  kind=kill_replica skip="" params="delete pod rfr-x-1 (force)" patch= pod=rfr-x-1 uid=u1 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-1 not deleted yet
+allkeys-lru kill_replica step 2
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+allkeys-lru kill_replica step 3
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+allkeys-lru kill_sentinel step 1
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+allkeys-lru kill_sentinel step 2
+  kind=kill_sentinel skip="" params="delete pod rfs-x-c (force)" patch= pod=rfs-x-c uid=sc force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-c not deleted yet
+allkeys-lru kill_sentinel step 3
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+allkeys-lru password_rotate step 1
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+allkeys-lru password_rotate step 2
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+allkeys-lru password_rotate step 3
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+allkeys-lru auth_add step 1
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+allkeys-lru auth_add step 2
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+allkeys-lru auth_add step 3
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+allkeys-lru auth_remove step 1
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+allkeys-lru auth_remove step 2
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+allkeys-lru auth_remove step 3
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+allkeys-lru password_rotate_offline step 1
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+allkeys-lru password_rotate_offline step 2
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+allkeys-lru password_rotate_offline step 3
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+allkeys-lru password_rotate_offline_forget step 1
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+allkeys-lru password_rotate_offline_forget step 2
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+allkeys-lru password_rotate_offline_forget step 3
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+allkeys-lru sentinel_toggle step 1
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+allkeys-lru sentinel_toggle step 2
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+allkeys-lru sentinel_toggle step 3
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+allkeys-lru redis_memory step 1
+  kind=redis_memory skip="" params="limits.memory 192Mi -> 241Mi, requests.memory 64Mi -> 80Mi (maxmemory 180.8Mi)" patch={"spec":{"redis":{"resources":{"limits":{"memory":"241Mi"},"requests":{"memory":"80Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 80Mi
+rfr-x-1: requests.memory is 64Mi, want 80Mi
+rfr-x-2: requests.memory is 64Mi, want 80Mi
+allkeys-lru redis_memory step 2
+  kind=redis_memory skip="" params="limits.memory 192Mi -> 299Mi, requests.memory 64Mi -> 99Mi (maxmemory 224.2Mi)" patch={"spec":{"redis":{"resources":{"limits":{"memory":"299Mi"},"requests":{"memory":"99Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 99Mi
+rfr-x-1: requests.memory is 64Mi, want 99Mi
+rfr-x-2: requests.memory is 64Mi, want 99Mi
+allkeys-lru redis_memory step 3
+  kind=redis_memory skip="" params="limits.memory 192Mi -> 194Mi, requests.memory 64Mi -> 64Mi (maxmemory 145.5Mi)" patch={"spec":{"redis":{"resources":{"limits":{"memory":"194Mi"},"requests":{"memory":"64Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: limits.memory is 192Mi, want 194Mi
+rfr-x-1: limits.memory is 192Mi, want 194Mi
+rfr-x-2: limits.memory is 192Mi, want 194Mi
+allkeys-lru maxmemory_policy step 1
+  kind=maxmemory_policy skip="" params="redis.maxMemory.policy allkeys-lru -> volatile-lru" patch={"spec":{"redis":{"maxMemory":{"policy":"volatile-lru"}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+allkeys-lru maxmemory_policy step 2
+  kind=maxmemory_policy skip="" params="redis.maxMemory.policy allkeys-lru -> volatile-ttl" patch={"spec":{"redis":{"maxMemory":{"policy":"volatile-ttl"}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+allkeys-lru maxmemory_policy step 3
+  kind=maxmemory_policy skip="" params="redis.maxMemory.policy allkeys-lru -> volatile-lru" patch={"spec":{"redis":{"maxMemory":{"policy":"volatile-lru"}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+allkeys-lru maxmemory_percent step 1
+  kind=maxmemory_percent skip="" params="redis.maxMemory.percent 75 -> 64" patch={"spec":{"redis":{"maxMemory":{"percent":64}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+allkeys-lru maxmemory_percent step 2
+  kind=maxmemory_percent skip="" params="redis.maxMemory.percent 75 -> 88" patch={"spec":{"redis":{"maxMemory":{"percent":88}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+allkeys-lru maxmemory_percent step 3
+  kind=maxmemory_percent skip="" params="redis.maxMemory.percent 75 -> 46" patch={"spec":{"redis":{"maxMemory":{"percent":46}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+allkeys-lru fill_burst step 1
+  kind=fill_burst skip="policy allkeys-lru" params="" patch= pod= uid= force=false reset=false
+allkeys-lru fill_burst step 2
+  kind=fill_burst skip="policy allkeys-lru" params="" patch= pod= uid= force=false reset=false
+allkeys-lru fill_burst step 3
+  kind=fill_burst skip="policy allkeys-lru" params="" patch= pod= uid= force=false reset=false
+allkeys-lru reset step 1
+  kind=reset skip="unknown kind" params="" patch= pod= uid= force=false reset=false
+allkeys-lru reset step 2
+  kind=reset skip="unknown kind" params="" patch= pod= uid= force=false reset=false
+allkeys-lru reset step 3
+  kind=reset skip="unknown kind" params="" patch= pod= uid= force=false reset=false
+changed redis_replicas step 1
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 1" patch={"spec":{"redis":{"replicas":1}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 1 yet
+changed redis_replicas step 2
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+changed redis_replicas step 3
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+changed sentinel_replicas step 1
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 4" patch={"spec":{"sentinel":{"replicas":4}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 4 yet
+changed sentinel_replicas step 2
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+changed sentinel_replicas step 3
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+changed redis_resources step 1
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 49Mi, limits.memory 192Mi -> 189Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"189Mi"},"requests":{"memory":"49Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 49Mi
+rfr-x-1: requests.memory is 64Mi, want 49Mi
+rfr-x-2: requests.memory is 64Mi, want 49Mi
+changed redis_resources step 2
+  kind=redis_resources skip="" params="requests.cpu 50m -> 75m, requests.memory 64Mi -> 85Mi, limits.memory 192Mi -> 135Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"135Mi"},"requests":{"cpu":"75m","memory":"85Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.cpu is 50m, want 75m
+rfr-x-1: requests.cpu is 50m, want 75m
+rfr-x-2: requests.cpu is 50m, want 75m
+changed redis_resources step 3
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 46Mi, limits.memory 192Mi -> 144Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"144Mi"},"requests":{"memory":"46Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 46Mi
+rfr-x-1: requests.memory is 64Mi, want 46Mi
+rfr-x-2: requests.memory is 64Mi, want 46Mi
+changed kill_master step 1
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+changed kill_master step 2
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+changed kill_master step 3
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+changed kill_master_force step 1
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+changed kill_master_force step 2
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+changed kill_master_force step 3
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+changed kill_replica step 1
+  kind=kill_replica skip="" params="delete pod rfr-x-1 (force)" patch= pod=rfr-x-1 uid=u1 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-1 not deleted yet
+changed kill_replica step 2
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+changed kill_replica step 3
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+changed kill_sentinel step 1
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+changed kill_sentinel step 2
+  kind=kill_sentinel skip="" params="delete pod rfs-x-c (force)" patch= pod=rfs-x-c uid=sc force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-c not deleted yet
+changed kill_sentinel step 3
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+changed password_rotate step 1
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+changed password_rotate step 2
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+changed password_rotate step 3
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+changed auth_add step 1
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+changed auth_add step 2
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+changed auth_add step 3
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+changed auth_remove step 1
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+changed auth_remove step 2
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+changed auth_remove step 3
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+changed password_rotate_offline step 1
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+changed password_rotate_offline step 2
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+changed password_rotate_offline step 3
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+changed password_rotate_offline_forget step 1
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+changed password_rotate_offline_forget step 2
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+changed password_rotate_offline_forget step 3
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+changed sentinel_toggle step 1
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+changed sentinel_toggle step 2
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+changed sentinel_toggle step 3
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+changed redis_memory step 1
+  kind=redis_memory skip="" params="limits.memory 192Mi -> 241Mi, requests.memory 64Mi -> 80Mi (maxmemory 96.4Mi)" patch={"spec":{"redis":{"resources":{"limits":{"memory":"241Mi"},"requests":{"memory":"80Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: maxmemory 1 (0.0Mi), want 80530636 (76.8Mi)
+changed redis_memory step 2
+  kind=redis_memory skip="" params="limits.memory 192Mi -> 299Mi, requests.memory 64Mi -> 99Mi (maxmemory 119.6Mi)" patch={"spec":{"redis":{"resources":{"limits":{"memory":"299Mi"},"requests":{"memory":"99Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: maxmemory 1 (0.0Mi), want 80530636 (76.8Mi)
+changed redis_memory step 3
+  kind=redis_memory skip="" params="limits.memory 192Mi -> 194Mi, requests.memory 64Mi -> 64Mi (maxmemory 77.6Mi)" patch={"spec":{"redis":{"resources":{"limits":{"memory":"194Mi"},"requests":{"memory":"64Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: maxmemory 1 (0.0Mi), want 80530636 (76.8Mi)
+changed maxmemory_policy step 1
+  kind=maxmemory_policy skip="" params="redis.maxMemory.policy volatile-lru -> noeviction" patch={"spec":{"redis":{"maxMemory":{"policy":"noeviction"}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+changed maxmemory_policy step 2
+  kind=maxmemory_policy skip="" params="redis.maxMemory.policy volatile-lru -> volatile-ttl" patch={"spec":{"redis":{"maxMemory":{"policy":"volatile-ttl"}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+changed maxmemory_policy step 3
+  kind=maxmemory_policy skip="" params="redis.maxMemory.policy volatile-lru -> volatile-ttl" patch={"spec":{"redis":{"maxMemory":{"policy":"volatile-ttl"}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+changed maxmemory_percent step 1
+  kind=maxmemory_percent skip="" params="redis.maxMemory.percent 40 -> 65" patch={"spec":{"redis":{"maxMemory":{"percent":65}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+changed maxmemory_percent step 2
+  kind=maxmemory_percent skip="" params="redis.maxMemory.percent 40 -> 88" patch={"spec":{"redis":{"maxMemory":{"percent":88}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+changed maxmemory_percent step 3
+  kind=maxmemory_percent skip="" params="redis.maxMemory.percent 40 -> 47" patch={"spec":{"redis":{"maxMemory":{"percent":47}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+changed fill_burst step 1
+  kind=fill_burst skip="policy volatile-lru" params="" patch= pod= uid= force=false reset=false
+changed fill_burst step 2
+  kind=fill_burst skip="policy volatile-lru" params="" patch= pod= uid= force=false reset=false
+changed fill_burst step 3
+  kind=fill_burst skip="policy volatile-lru" params="" patch= pod= uid= force=false reset=false
+changed reset step 1
+  kind=reset skip="unknown kind" params="" patch= pod= uid= force=false reset=false
+changed reset step 2
+  kind=reset skip="unknown kind" params="" patch= pod= uid= force=false reset=false
+changed reset step 3
+  kind=reset skip="unknown kind" params="" patch= pod= uid= force=false reset=false
+auth redis_replicas step 1
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 1" patch={"spec":{"redis":{"replicas":1}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 1 yet
+auth redis_replicas step 2
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+auth redis_replicas step 3
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+auth sentinel_replicas step 1
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 4" patch={"spec":{"sentinel":{"replicas":4}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 4 yet
+auth sentinel_replicas step 2
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+auth sentinel_replicas step 3
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+auth redis_resources step 1
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 49Mi, limits.memory 256Mi -> 189Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"189Mi"},"requests":{"memory":"49Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 49Mi
+rfr-x-1: requests.memory is 64Mi, want 49Mi
+rfr-x-2: requests.memory is 64Mi, want 49Mi
+auth redis_resources step 2
+  kind=redis_resources skip="" params="requests.cpu 50m -> 75m, requests.memory 64Mi -> 85Mi, limits.memory 256Mi -> 135Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"135Mi"},"requests":{"cpu":"75m","memory":"85Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.cpu is 50m, want 75m
+rfr-x-1: requests.cpu is 50m, want 75m
+rfr-x-2: requests.cpu is 50m, want 75m
+auth redis_resources step 3
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 46Mi, limits.memory 256Mi -> 144Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"144Mi"},"requests":{"memory":"46Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 46Mi
+rfr-x-1: requests.memory is 64Mi, want 46Mi
+rfr-x-2: requests.memory is 64Mi, want 46Mi
+auth kill_master step 1
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+auth kill_master step 2
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+auth kill_master step 3
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+auth kill_master_force step 1
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+auth kill_master_force step 2
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+auth kill_master_force step 3
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+auth kill_replica step 1
+  kind=kill_replica skip="" params="delete pod rfr-x-1 (force)" patch= pod=rfr-x-1 uid=u1 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-1 not deleted yet
+auth kill_replica step 2
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+auth kill_replica step 3
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+auth kill_sentinel step 1
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+auth kill_sentinel step 2
+  kind=kill_sentinel skip="" params="delete pod rfs-x-c (force)" patch= pod=rfs-x-c uid=sc force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-c not deleted yet
+auth kill_sentinel step 3
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+auth password_rotate step 1
+  kind=password_rotate skip="" params="rotate the password in secret x-auth" patch= pod= uid= force=false reset=false
+  secret=x-auth
+  restore=x-auth "old" patch=
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+auth password_rotate step 2
+  kind=password_rotate skip="" params="rotate the password in secret x-auth" patch= pod= uid= force=false reset=false
+  secret=x-auth
+  restore=x-auth "old" patch=
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+auth password_rotate step 3
+  kind=password_rotate skip="" params="rotate the password in secret x-auth" patch= pod= uid= force=false reset=false
+  secret=x-auth
+  restore=x-auth "old" patch=
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+auth auth_add step 1
+  kind=auth_add skip="auth is on, with secret x-auth" params="" patch= pod= uid= force=false reset=false
+auth auth_add step 2
+  kind=auth_add skip="auth is on, with secret x-auth" params="" patch= pod= uid= force=false reset=false
+auth auth_add step 3
+  kind=auth_add skip="auth is on, with secret x-auth" params="" patch= pod= uid= force=false reset=false
+auth auth_remove step 1
+  kind=auth_remove skip="" params="remove auth with secret x-auth" patch={"spec":{"auth":{"secretPath":null}}} pod= uid= force=false reset=false
+  restore=x-auth "old" patch={"spec":{"auth":{"secretPath":"x-auth"}}}
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+auth auth_remove step 2
+  kind=auth_remove skip="" params="remove auth with secret x-auth" patch={"spec":{"auth":{"secretPath":null}}} pod= uid= force=false reset=false
+  restore=x-auth "old" patch={"spec":{"auth":{"secretPath":"x-auth"}}}
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+auth auth_remove step 3
+  kind=auth_remove skip="" params="remove auth with secret x-auth" patch={"spec":{"auth":{"secretPath":null}}} pod= uid= force=false reset=false
+  restore=x-auth "old" patch={"spec":{"auth":{"secretPath":"x-auth"}}}
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+auth password_rotate_offline step 1
+  kind=password_rotate_offline skip="" params="rotate the password in secret x-auth while the operator is stopped" patch= pod= uid= force=false reset=false
+  restore=x-auth "old" patch=
+  offline=x-auth previous="old" forget=false
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+auth password_rotate_offline step 2
+  kind=password_rotate_offline skip="" params="rotate the password in secret x-auth while the operator is stopped" patch= pod= uid= force=false reset=false
+  restore=x-auth "old" patch=
+  offline=x-auth previous="old" forget=false
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+auth password_rotate_offline step 3
+  kind=password_rotate_offline skip="" params="rotate the password in secret x-auth while the operator is stopped" patch= pod= uid= force=false reset=false
+  restore=x-auth "old" patch=
+  offline=x-auth previous="old" forget=false
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+auth password_rotate_offline_forget step 1
+  kind=password_rotate_offline_forget skip="" params="rotate the password in secret x-auth while the operator is stopped, delete the applied passwords, put the password back, rotate again" patch= pod= uid= force=false reset=false
+  offline=x-auth previous="old" forget=true
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+auth password_rotate_offline_forget step 2
+  kind=password_rotate_offline_forget skip="" params="rotate the password in secret x-auth while the operator is stopped, delete the applied passwords, put the password back, rotate again" patch= pod= uid= force=false reset=false
+  offline=x-auth previous="old" forget=true
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+auth password_rotate_offline_forget step 3
+  kind=password_rotate_offline_forget skip="" params="rotate the password in secret x-auth while the operator is stopped, delete the applied passwords, put the password back, rotate again" patch= pod= uid= force=false reset=false
+  offline=x-auth previous="old" forget=true
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+auth sentinel_toggle step 1
+  kind=sentinel_toggle skip="" params="sentinel.enabled true -> false" patch={"spec":{"sentinel":{"enabled":false}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+auth sentinel_toggle step 2
+  kind=sentinel_toggle skip="" params="sentinel.enabled true -> false" patch={"spec":{"sentinel":{"enabled":false}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+auth sentinel_toggle step 3
+  kind=sentinel_toggle skip="" params="sentinel.enabled true -> false" patch={"spec":{"sentinel":{"enabled":false}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+auth redis_memory step 1
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth redis_memory step 2
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth redis_memory step 3
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth maxmemory_policy step 1
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth maxmemory_policy step 2
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth maxmemory_policy step 3
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth maxmemory_percent step 1
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth maxmemory_percent step 2
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth maxmemory_percent step 3
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth fill_burst step 1
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth fill_burst step 2
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth fill_burst step 3
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth reset step 1
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth reset step 2
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+auth reset step 3
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods redis_replicas step 1
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 1" patch={"spec":{"redis":{"replicas":1}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 1 yet
+no pods redis_replicas step 2
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+no pods redis_replicas step 3
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+no pods sentinel_replicas step 1
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 4" patch={"spec":{"sentinel":{"replicas":4}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 4 yet
+no pods sentinel_replicas step 2
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+no pods sentinel_replicas step 3
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+no pods redis_resources step 1
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 49Mi, limits.memory 256Mi -> 189Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"189Mi"},"requests":{"memory":"49Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=1 redis pods, want 3
+no pods redis_resources step 2
+  kind=redis_resources skip="" params="requests.cpu 50m -> 75m, requests.memory 64Mi -> 85Mi, limits.memory 256Mi -> 135Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"135Mi"},"requests":{"cpu":"75m","memory":"85Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=1 redis pods, want 3
+no pods redis_resources step 3
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 46Mi, limits.memory 256Mi -> 144Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"144Mi"},"requests":{"memory":"46Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=1 redis pods, want 3
+no pods kill_master step 1
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+no pods kill_master step 2
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+no pods kill_master step 3
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+no pods kill_master_force step 1
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+no pods kill_master_force step 2
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+no pods kill_master_force step 3
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+no pods kill_replica step 1
+  kind=kill_replica skip="no replica" params="" patch= pod= uid= force=false reset=false
+no pods kill_replica step 2
+  kind=kill_replica skip="no replica" params="" patch= pod= uid= force=false reset=false
+no pods kill_replica step 3
+  kind=kill_replica skip="no replica" params="" patch= pod= uid= force=false reset=false
+no pods kill_sentinel step 1
+  kind=kill_sentinel skip="no sentinel pod" params="" patch= pod= uid= force=false reset=false
+no pods kill_sentinel step 2
+  kind=kill_sentinel skip="no sentinel pod" params="" patch= pod= uid= force=false reset=false
+no pods kill_sentinel step 3
+  kind=kill_sentinel skip="no sentinel pod" params="" patch= pod= uid= force=false reset=false
+no pods password_rotate step 1
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no pods password_rotate step 2
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no pods password_rotate step 3
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no pods auth_add step 1
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+no pods auth_add step 2
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+no pods auth_add step 3
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+no pods auth_remove step 1
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no pods auth_remove step 2
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no pods auth_remove step 3
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no pods password_rotate_offline step 1
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no pods password_rotate_offline step 2
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no pods password_rotate_offline step 3
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no pods password_rotate_offline_forget step 1
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no pods password_rotate_offline_forget step 2
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no pods password_rotate_offline_forget step 3
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no pods sentinel_toggle step 1
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+no pods sentinel_toggle step 2
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+no pods sentinel_toggle step 3
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+no pods redis_memory step 1
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods redis_memory step 2
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods redis_memory step 3
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods maxmemory_policy step 1
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods maxmemory_policy step 2
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods maxmemory_policy step 3
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods maxmemory_percent step 1
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods maxmemory_percent step 2
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods maxmemory_percent step 3
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods fill_burst step 1
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods fill_burst step 2
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods fill_burst step 3
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods reset step 1
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods reset step 2
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no pods reset step 3
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth redis_replicas step 1
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 1" patch={"spec":{"redis":{"replicas":1}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 1 yet
+no auth redis_replicas step 2
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+no auth redis_replicas step 3
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+no auth sentinel_replicas step 1
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 4" patch={"spec":{"sentinel":{"replicas":4}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 4 yet
+no auth sentinel_replicas step 2
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+no auth sentinel_replicas step 3
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+no auth redis_resources step 1
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 49Mi, limits.memory 256Mi -> 189Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"189Mi"},"requests":{"memory":"49Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 49Mi
+rfr-x-1: requests.memory is 64Mi, want 49Mi
+rfr-x-2: requests.memory is 64Mi, want 49Mi
+no auth redis_resources step 2
+  kind=redis_resources skip="" params="requests.cpu 50m -> 75m, requests.memory 64Mi -> 85Mi, limits.memory 256Mi -> 135Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"135Mi"},"requests":{"cpu":"75m","memory":"85Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.cpu is 50m, want 75m
+rfr-x-1: requests.cpu is 50m, want 75m
+rfr-x-2: requests.cpu is 50m, want 75m
+no auth redis_resources step 3
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 46Mi, limits.memory 256Mi -> 144Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"144Mi"},"requests":{"memory":"46Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 46Mi
+rfr-x-1: requests.memory is 64Mi, want 46Mi
+rfr-x-2: requests.memory is 64Mi, want 46Mi
+no auth kill_master step 1
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+no auth kill_master step 2
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+no auth kill_master step 3
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+no auth kill_master_force step 1
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+no auth kill_master_force step 2
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+no auth kill_master_force step 3
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+no auth kill_replica step 1
+  kind=kill_replica skip="" params="delete pod rfr-x-1 (force)" patch= pod=rfr-x-1 uid=u1 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-1 not deleted yet
+no auth kill_replica step 2
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+no auth kill_replica step 3
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+no auth kill_sentinel step 1
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+no auth kill_sentinel step 2
+  kind=kill_sentinel skip="" params="delete pod rfs-x-c (force)" patch= pod=rfs-x-c uid=sc force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-c not deleted yet
+no auth kill_sentinel step 3
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+no auth password_rotate step 1
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no auth password_rotate step 2
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no auth password_rotate step 3
+  kind=password_rotate skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no auth auth_add step 1
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+no auth auth_add step 2
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+no auth auth_add step 3
+  kind=auth_add skip="" params="add auth with secret " patch={"spec":{"auth":{"secretPath":""}}} pod= uid= force=false reset=false
+  secret=
+  fetch password=true sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+no auth auth_remove step 1
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no auth auth_remove step 2
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no auth auth_remove step 3
+  kind=auth_remove skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no auth password_rotate_offline step 1
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no auth password_rotate_offline step 2
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no auth password_rotate_offline step 3
+  kind=password_rotate_offline skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no auth password_rotate_offline_forget step 1
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no auth password_rotate_offline_forget step 2
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no auth password_rotate_offline_forget step 3
+  kind=password_rotate_offline_forget skip="auth is off" params="" patch= pod= uid= force=false reset=false
+no auth sentinel_toggle step 1
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+no auth sentinel_toggle step 2
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+no auth sentinel_toggle step 3
+  kind=sentinel_toggle skip="" params="sentinel.enabled false -> true" patch={"spec":{"sentinel":{"enabled":true}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+no auth redis_memory step 1
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth redis_memory step 2
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth redis_memory step 3
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth maxmemory_policy step 1
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth maxmemory_policy step 2
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth maxmemory_policy step 3
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth maxmemory_percent step 1
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth maxmemory_percent step 2
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth maxmemory_percent step 3
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth fill_burst step 1
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth fill_burst step 2
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth fill_burst step 3
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth reset step 1
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth reset step 2
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+no auth reset step 3
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password redis_replicas step 1
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 1" patch={"spec":{"redis":{"replicas":1}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 1 yet
+unknown password redis_replicas step 2
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+unknown password redis_replicas step 3
+  kind=redis_replicas skip="" params="redis.replicas 3 -> 2" patch={"spec":{"redis":{"replicas":2}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=redis StatefulSet spec.replicas is not 2 yet
+unknown password sentinel_replicas step 1
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 4" patch={"spec":{"sentinel":{"replicas":4}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 4 yet
+unknown password sentinel_replicas step 2
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+unknown password sentinel_replicas step 3
+  kind=sentinel_replicas skip="" params="sentinel.replicas 3 -> 5" patch={"spec":{"sentinel":{"replicas":5}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=sentinel Deployment spec.replicas is not 5 yet
+unknown password redis_resources step 1
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 49Mi, limits.memory 256Mi -> 189Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"189Mi"},"requests":{"memory":"49Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 49Mi
+rfr-x-1: requests.memory is 64Mi, want 49Mi
+rfr-x-2: requests.memory is 64Mi, want 49Mi
+unknown password redis_resources step 2
+  kind=redis_resources skip="" params="requests.cpu 50m -> 75m, requests.memory 64Mi -> 85Mi, limits.memory 256Mi -> 135Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"135Mi"},"requests":{"cpu":"75m","memory":"85Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.cpu is 50m, want 75m
+rfr-x-1: requests.cpu is 50m, want 75m
+rfr-x-2: requests.cpu is 50m, want 75m
+unknown password redis_resources step 3
+  kind=redis_resources skip="" params="requests.memory 64Mi -> 46Mi, limits.memory 256Mi -> 144Mi" patch={"spec":{"redis":{"resources":{"limits":{"memory":"144Mi"},"requests":{"memory":"46Mi"}}}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0: requests.memory is 64Mi, want 46Mi
+rfr-x-1: requests.memory is 64Mi, want 46Mi
+rfr-x-2: requests.memory is 64Mi, want 46Mi
+unknown password kill_master step 1
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+unknown password kill_master step 2
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+unknown password kill_master step 3
+  kind=kill_master skip="" params="delete pod rfr-x-0 (graceful)" patch= pod=rfr-x-0 uid=u0 force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+unknown password kill_master_force step 1
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+unknown password kill_master_force step 2
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+unknown password kill_master_force step 3
+  kind=kill_master_force skip="" params="delete pod rfr-x-0 (force)" patch= pod=rfr-x-0 uid=u0 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-0 not deleted yet
+unknown password kill_replica step 1
+  kind=kill_replica skip="" params="delete pod rfr-x-1 (force)" patch= pod=rfr-x-1 uid=u1 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-1 not deleted yet
+unknown password kill_replica step 2
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+unknown password kill_replica step 3
+  kind=kill_replica skip="" params="delete pod rfr-x-2 (force)" patch= pod=rfr-x-2 uid=u2 force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfr-x-2 not deleted yet
+unknown password kill_sentinel step 1
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+unknown password kill_sentinel step 2
+  kind=kill_sentinel skip="" params="delete pod rfs-x-c (force)" patch= pod=rfs-x-c uid=sc force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-c not deleted yet
+unknown password kill_sentinel step 3
+  kind=kill_sentinel skip="" params="delete pod rfs-x-b (force)" patch= pod=rfs-x-b uid=sb force=true reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=rfs-x-b not deleted yet
+unknown password password_rotate step 1
+  kind=password_rotate skip="" params="rotate the password in secret x-auth" patch= pod= uid= force=false reset=false
+  secret=x-auth
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+unknown password password_rotate step 2
+  kind=password_rotate skip="" params="rotate the password in secret x-auth" patch= pod= uid= force=false reset=false
+  secret=x-auth
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+unknown password password_rotate step 3
+  kind=password_rotate skip="" params="rotate the password in secret x-auth" patch= pod= uid= force=false reset=false
+  secret=x-auth
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+unknown password auth_add step 1
+  kind=auth_add skip="auth is on, with secret x-auth" params="" patch= pod= uid= force=false reset=false
+unknown password auth_add step 2
+  kind=auth_add skip="auth is on, with secret x-auth" params="" patch= pod= uid= force=false reset=false
+unknown password auth_add step 3
+  kind=auth_add skip="auth is on, with secret x-auth" params="" patch= pod= uid= force=false reset=false
+unknown password auth_remove step 1
+  kind=auth_remove skip="" params="remove auth with secret x-auth" patch={"spec":{"auth":{"secretPath":null}}} pod= uid= force=false reset=false
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+unknown password auth_remove step 2
+  kind=auth_remove skip="" params="remove auth with secret x-auth" patch={"spec":{"auth":{"secretPath":null}}} pod= uid= force=false reset=false
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+unknown password auth_remove step 3
+  kind=auth_remove skip="" params="remove auth with secret x-auth" patch={"spec":{"auth":{"secretPath":null}}} pod= uid= force=false reset=false
+  fetch password=true sentinelMaster=true sentinelObjects=false servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the password wasn't checked
+unknown password password_rotate_offline step 1
+  kind=password_rotate_offline skip="the password in secret x-auth is unknown" params="" patch= pod= uid= force=false reset=false
+unknown password password_rotate_offline step 2
+  kind=password_rotate_offline skip="the password in secret x-auth is unknown" params="" patch= pod= uid= force=false reset=false
+unknown password password_rotate_offline step 3
+  kind=password_rotate_offline skip="the password in secret x-auth is unknown" params="" patch= pod= uid= force=false reset=false
+unknown password password_rotate_offline_forget step 1
+  kind=password_rotate_offline_forget skip="the password in secret x-auth is unknown" params="" patch= pod= uid= force=false reset=false
+unknown password password_rotate_offline_forget step 2
+  kind=password_rotate_offline_forget skip="the password in secret x-auth is unknown" params="" patch= pod= uid= force=false reset=false
+unknown password password_rotate_offline_forget step 3
+  kind=password_rotate_offline_forget skip="the password in secret x-auth is unknown" params="" patch= pod= uid= force=false reset=false
+unknown password sentinel_toggle step 1
+  kind=sentinel_toggle skip="" params="sentinel.enabled true -> false" patch={"spec":{"sentinel":{"enabled":false}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+unknown password sentinel_toggle step 2
+  kind=sentinel_toggle skip="" params="sentinel.enabled true -> false" patch={"spec":{"sentinel":{"enabled":false}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+unknown password sentinel_toggle step 3
+  kind=sentinel_toggle skip="" params="sentinel.enabled true -> false" patch={"spec":{"sentinel":{"enabled":false}}} pod= uid= force=false reset=false
+  fetch password=false sentinelMaster=false sentinelObjects=true servers=false
+  action=false probe=false recovery=false converged=true
+  converged(s)=the RedisFailover doesn't have the change
+unknown password redis_memory step 1
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password redis_memory step 2
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password redis_memory step 3
+  kind=redis_memory skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password maxmemory_policy step 1
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password maxmemory_policy step 2
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password maxmemory_policy step 3
+  kind=maxmemory_policy skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password maxmemory_percent step 1
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password maxmemory_percent step 2
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password maxmemory_percent step 3
+  kind=maxmemory_percent skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password fill_burst step 1
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password fill_burst step 2
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password fill_burst step 3
+  kind=fill_burst skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password reset step 1
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password reset step 2
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false
+unknown password reset step 3
+  kind=reset skip="the RedisFailover has no maxMemory" params="" patch= pod= uid= force=false reset=false

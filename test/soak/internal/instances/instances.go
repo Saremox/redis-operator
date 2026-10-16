@@ -153,48 +153,13 @@ func (i *Instance) Delete(ctx context.Context) error {
 		return err
 	}
 	selector := metav1.ListOptions{LabelSelector: "app.kubernetes.io/part-of=redis-failover,app.kubernetes.io/name=" + name}
-	err = i.wait(ctx, func() error {
-		if _, err := i.rfs.DatabasesV1().RedisFailovers(ns).Get(ctx, name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-			return errors.Join(errors.New("the RedisFailover is still there"), err)
-		}
-		if _, err := i.kube.AppsV1().StatefulSets(ns).Get(ctx, "rfr-"+name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-			return errors.Join(errors.New("the redis StatefulSet is still there"), err)
-		}
-		if _, err := i.kube.AppsV1().Deployments(ns).Get(ctx, "rfs-"+name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-			return errors.Join(errors.New("the Sentinel Deployment is still there"), err)
-		}
-		pods, err := i.kube.CoreV1().Pods(ns).List(ctx, selector)
-		if err != nil {
-			return err
-		}
-		if n := len(pods.Items); n > 0 {
-			return fmt.Errorf("%d pods left", n)
-		}
-		return nil
-	})
+	err = i.wait(ctx, func() error { return i.objectsGone(ctx, selector) })
 	if err != nil {
 		return err
 	}
 	// The operator owns the volumes unless keepAfterDeletion is set, and
 	// the StatefulSet keeps them either way: delete what is left.
-	pvcs := i.kube.CoreV1().PersistentVolumeClaims(ns)
-	err = i.wait(ctx, func() error {
-		list, err := pvcs.List(ctx, selector)
-		if err != nil {
-			return err
-		}
-		for _, p := range list.Items {
-			if p.DeletionTimestamp == nil {
-				if err := pvcs.Delete(ctx, p.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-					return err
-				}
-			}
-		}
-		if n := len(list.Items); n > 0 {
-			return fmt.Errorf("%d volumes left", n)
-		}
-		return nil
-	})
+	err = i.wait(ctx, func() error { return i.deleteVolumes(ctx, selector) })
 	if err != nil {
 		return err
 	}
@@ -203,6 +168,50 @@ func (i *Instance) Delete(ctx context.Context) error {
 		if err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
+	}
+	return nil
+}
+
+// objectsGone returns nil once the RedisFailover, the objects the operator
+// made for it and the pods of selector are gone.
+func (i *Instance) objectsGone(ctx context.Context, selector metav1.ListOptions) error {
+	ns, name := i.in.Namespace, i.in.Name
+	if _, err := i.rfs.DatabasesV1().RedisFailovers(ns).Get(ctx, name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		return errors.Join(errors.New("the RedisFailover is still there"), err)
+	}
+	if _, err := i.kube.AppsV1().StatefulSets(ns).Get(ctx, "rfr-"+name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		return errors.Join(errors.New("the redis StatefulSet is still there"), err)
+	}
+	if _, err := i.kube.AppsV1().Deployments(ns).Get(ctx, "rfs-"+name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		return errors.Join(errors.New("the Sentinel Deployment is still there"), err)
+	}
+	pods, err := i.kube.CoreV1().Pods(ns).List(ctx, selector)
+	if err != nil {
+		return err
+	}
+	if n := len(pods.Items); n > 0 {
+		return fmt.Errorf("%d pods left", n)
+	}
+	return nil
+}
+
+// deleteVolumes deletes the volumes of selector that are not in deletion,
+// and returns nil once none is left.
+func (i *Instance) deleteVolumes(ctx context.Context, selector metav1.ListOptions) error {
+	pvcs := i.kube.CoreV1().PersistentVolumeClaims(i.in.Namespace)
+	list, err := pvcs.List(ctx, selector)
+	if err != nil {
+		return err
+	}
+	for _, p := range list.Items {
+		if p.DeletionTimestamp == nil {
+			if err := pvcs.Delete(ctx, p.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+		}
+	}
+	if n := len(list.Items); n > 0 {
+		return fmt.Errorf("%d volumes left", n)
 	}
 	return nil
 }

@@ -198,52 +198,60 @@ func (c *Config) setDefaults() {
 	if c.Observer.ConvergenceTimeout.Duration == 0 {
 		c.Observer.ConvergenceTimeout.Duration = 10 * time.Minute
 	}
-	if c.Mutation.Interval.Duration == 0 {
-		c.Mutation.Interval.Duration = 2 * time.Minute
-	}
-	if c.Mutation.Seed == 0 {
-		c.Mutation.Seed = time.Now().UnixNano()
-	}
-	// A pod's start and sync per redis pod: image changes and resets
-	// replace every pod, one at a time.
-	for k, perPod := range map[Kind]time.Duration{ImageUpgrade: 2 * time.Minute, SentinelImageUpgrade: time.Minute, Reset: time.Minute} {
-		if _, ok := c.Mutation.Timeouts[k]; !ok {
-			if c.Mutation.Timeouts == nil {
-				c.Mutation.Timeouts = map[Kind]Timeout{}
-			}
-			c.Mutation.Timeouts[k] = Timeout{PerPod: metav1.Duration{Duration: perPod}}
-		}
-	}
-	for k, t := range c.Mutation.Timeouts {
-		if t.Base.Duration == 0 {
-			t.Base = c.Observer.ConvergenceTimeout
-			c.Mutation.Timeouts[k] = t
-		}
-	}
+	setMutationDefaults(&c.Mutation, c.Observer)
 	c.Chaos.setDefaults(c.Observer)
 	for i := range c.Versions {
 		c.Versions[i].setDefaults()
 	}
 	for i := range c.Instances {
-		if c.Instances[i].Namespace == "" {
-			c.Instances[i].Namespace = DefaultNamespace
-		}
-		if c.Instances[i].Mode == "" {
-			c.Instances[i].Mode = ModeOperator
-		}
-		if c.Instances[i].Port == 0 {
-			c.Instances[i].Port = 6379
-		}
-		if c.Instances[i].Data != nil {
-			c.Instances[i].Data.setDefaults()
-		}
-		if ch := c.Instances[i].Chain; ch != nil {
-			if c.Instances[i].Version == "" && len(ch.Start) > 0 {
-				c.Instances[i].Version = ch.Start[0]
+		setInstanceDefaults(&c.Instances[i])
+	}
+}
+
+func setMutationDefaults(m *Mutation, o Observer) {
+	if m.Interval.Duration == 0 {
+		m.Interval.Duration = 2 * time.Minute
+	}
+	if m.Seed == 0 {
+		m.Seed = time.Now().UnixNano()
+	}
+	// A pod's start and sync per redis pod: image changes and resets
+	// replace every pod, one at a time.
+	for k, perPod := range map[Kind]time.Duration{ImageUpgrade: 2 * time.Minute, SentinelImageUpgrade: time.Minute, Reset: time.Minute} {
+		if _, ok := m.Timeouts[k]; !ok {
+			if m.Timeouts == nil {
+				m.Timeouts = map[Kind]Timeout{}
 			}
-			if c.Instances[i].SentinelVersion == "" && ch.Sentinel != "" {
-				c.Instances[i].SentinelVersion = c.Instances[i].Version
-			}
+			m.Timeouts[k] = Timeout{PerPod: metav1.Duration{Duration: perPod}}
+		}
+	}
+	for k, t := range m.Timeouts {
+		if t.Base.Duration == 0 {
+			t.Base = o.ConvergenceTimeout
+			m.Timeouts[k] = t
+		}
+	}
+}
+
+func setInstanceDefaults(in *Instance) {
+	if in.Namespace == "" {
+		in.Namespace = DefaultNamespace
+	}
+	if in.Mode == "" {
+		in.Mode = ModeOperator
+	}
+	if in.Port == 0 {
+		in.Port = 6379
+	}
+	if in.Data != nil {
+		in.Data.setDefaults()
+	}
+	if ch := in.Chain; ch != nil {
+		if in.Version == "" && len(ch.Start) > 0 {
+			in.Version = ch.Start[0]
+		}
+		if in.SentinelVersion == "" && ch.Sentinel != "" {
+			in.SentinelVersion = in.Version
 		}
 	}
 }
@@ -252,16 +260,8 @@ func (c *Config) validate() error {
 	if len(c.Instances) == 0 {
 		return fmt.Errorf("no instances configured")
 	}
-	if c.Mutation.Interval.Duration < 0 || c.Mutation.Jitter.Duration < 0 || c.Mutation.StopAfter.Duration < 0 {
-		return fmt.Errorf("mutation: negative duration")
-	}
-	if MinDwell >= c.Observer.ConvergenceTimeout.Duration {
-		return fmt.Errorf("observer.convergenceTimeout must be longer than %s", MinDwell)
-	}
-	for k, t := range c.Mutation.Timeouts {
-		if !slices.Contains(kinds, k) || t.Base.Duration <= MinDwell || t.PerPod.Duration < 0 {
-			return fmt.Errorf("mutation.timeouts: %s: a known kind, base longer than %s, perPod not negative", k, MinDwell)
-		}
+	if err := c.Mutation.validate(c.Observer); err != nil {
+		return err
 	}
 	if err := c.validateVersions(); err != nil {
 		return err
@@ -271,35 +271,8 @@ func (c *Config) validate() error {
 	}
 	seen := map[string]bool{}
 	for _, in := range c.Instances {
-		if in.Name == "" {
-			return errors.New("instance: name is required")
-		}
-		if len(in.Name) > maxNameLength {
-			return fmt.Errorf("instance %q: name is longer than %d characters", in.Name, maxNameLength)
-		}
-		if in.Mode != ModeOperator && in.Mode != ModeSentinel {
-			return fmt.Errorf("instance %q: mode must be %q or %q", in.Name, ModeOperator, ModeSentinel)
-		}
-		if in.Port < 1 || in.Port > 65535 {
-			return fmt.Errorf("instance %q: invalid port %d", in.Name, in.Port)
-		}
-		if err := in.validateData(); err != nil {
-			return fmt.Errorf("instance %q: %w", in.Name, err)
-		}
-		if err := in.validateAutoscale(); err != nil {
-			return fmt.Errorf("instance %q: autoscale: %w", in.Name, err)
-		}
-		if err := c.validateBootstrap(in); err != nil {
-			return fmt.Errorf("instance %q: bootstrap: %w", in.Name, err)
-		}
-		if err := c.validateTemplate(in); err != nil {
-			return fmt.Errorf("instance %q: %w", in.Name, err)
-		}
-		if err := in.Mutations.validate(in); err != nil {
-			return fmt.Errorf("instance %q: mutations: %w", in.Name, err)
-		}
-		if err := c.validateFlip(in); err != nil {
-			return fmt.Errorf("instance %q: mutations: %w", in.Name, err)
+		if err := c.validateInstance(in); err != nil {
+			return err
 		}
 		// Other config refers to an instance by its name alone, for example as
 		// a source.
@@ -307,6 +280,55 @@ func (c *Config) validate() error {
 			return fmt.Errorf("instance %s is configured twice: names must be unique across namespaces", in.Name)
 		}
 		seen[in.Name] = true
+	}
+	return nil
+}
+
+func (m Mutation) validate(o Observer) error {
+	if m.Interval.Duration < 0 || m.Jitter.Duration < 0 || m.StopAfter.Duration < 0 {
+		return fmt.Errorf("mutation: negative duration")
+	}
+	if MinDwell >= o.ConvergenceTimeout.Duration {
+		return fmt.Errorf("observer.convergenceTimeout must be longer than %s", MinDwell)
+	}
+	for k, t := range m.Timeouts {
+		if !slices.Contains(kinds, k) || t.Base.Duration <= MinDwell || t.PerPod.Duration < 0 {
+			return fmt.Errorf("mutation.timeouts: %s: a known kind, base longer than %s, perPod not negative", k, MinDwell)
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateInstance(in Instance) error {
+	if in.Name == "" {
+		return errors.New("instance: name is required")
+	}
+	if len(in.Name) > maxNameLength {
+		return fmt.Errorf("instance %q: name is longer than %d characters", in.Name, maxNameLength)
+	}
+	if in.Mode != ModeOperator && in.Mode != ModeSentinel {
+		return fmt.Errorf("instance %q: mode must be %q or %q", in.Name, ModeOperator, ModeSentinel)
+	}
+	if in.Port < 1 || in.Port > 65535 {
+		return fmt.Errorf("instance %q: invalid port %d", in.Name, in.Port)
+	}
+	if err := in.validateData(); err != nil {
+		return fmt.Errorf("instance %q: %w", in.Name, err)
+	}
+	if err := in.validateAutoscale(); err != nil {
+		return fmt.Errorf("instance %q: autoscale: %w", in.Name, err)
+	}
+	if err := c.validateBootstrap(in); err != nil {
+		return fmt.Errorf("instance %q: bootstrap: %w", in.Name, err)
+	}
+	if err := c.validateTemplate(in); err != nil {
+		return fmt.Errorf("instance %q: %w", in.Name, err)
+	}
+	if err := in.Mutations.validate(in); err != nil {
+		return fmt.Errorf("instance %q: mutations: %w", in.Name, err)
+	}
+	if err := c.validateFlip(in); err != nil {
+		return fmt.Errorf("instance %q: mutations: %w", in.Name, err)
 	}
 	return nil
 }

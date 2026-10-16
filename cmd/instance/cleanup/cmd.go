@@ -67,40 +67,10 @@ func runCleanup(_ *cobra.Command, _ []string) error {
 	var totalSize int64
 
 	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+		if size, ok := cleanEntry(entry); ok {
+			cleaned++
+			totalSize += size
 		}
-
-		name := entry.Name()
-
-		if !strings.HasSuffix(name, ".rdb") {
-			continue
-		}
-
-		if name == dbFilename {
-			continue
-		}
-
-		filePath := filepath.Join(dataDir, name)
-
-		fileInfo, err := entry.Info()
-		if err != nil {
-			fmt.Printf("Warning: failed to get info for %s: %v\n", name, err)
-			continue
-		}
-
-		if dryRun {
-			fmt.Printf("Would delete: %s (%d bytes)\n", filePath, fileInfo.Size())
-		} else {
-			if err := os.Remove(filePath); err != nil {
-				fmt.Printf("Warning: failed to remove %s: %v\n", filePath, err)
-				continue
-			}
-			fmt.Printf("Deleted: %s (%d bytes)\n", filePath, fileInfo.Size())
-		}
-
-		cleaned++
-		totalSize += fileInfo.Size()
 	}
 
 	if cleaned > 0 {
@@ -114,4 +84,43 @@ func runCleanup(_ *cobra.Command, _ []string) error {
 	}
 
 	return nil
+}
+
+// cleanEntry removes the entry if it is a stale RDB file, or prints it in a
+// dry run. It returns the size of the file, and whether the file counts as
+// cleaned.
+func cleanEntry(entry os.DirEntry) (int64, bool) {
+	if entry.IsDir() {
+		return 0, false
+	}
+
+	name := entry.Name()
+
+	if !strings.HasSuffix(name, ".rdb") {
+		return 0, false
+	}
+
+	if name == dbFilename {
+		return 0, false
+	}
+
+	filePath := filepath.Join(dataDir, name)
+
+	fileInfo, err := entry.Info()
+	if err != nil {
+		fmt.Printf("Warning: failed to get info for %s: %v\n", name, err)
+		return 0, false
+	}
+
+	if dryRun {
+		fmt.Printf("Would delete: %s (%d bytes)\n", filePath, fileInfo.Size())
+	} else {
+		if err := os.Remove(filePath); err != nil {
+			fmt.Printf("Warning: failed to remove %s: %v\n", filePath, err)
+			return 0, false
+		}
+		fmt.Printf("Deleted: %s (%d bytes)\n", filePath, fileInfo.Size())
+	}
+
+	return fileInfo.Size(), true
 }
