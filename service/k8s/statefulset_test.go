@@ -837,3 +837,30 @@ func TestStatefulSetServiceListStatefulSets(t *testing.T) {
 	require.NoError(t, err)
 	assertTest.Len(list.Items, 2)
 }
+
+// TestStatefulSetServiceRejectedResizeKeepsTheNextPVCs checks that a rejected
+// resize of one PVC does not stop the owner removal and the resize of the
+// PVCs after it.
+func TestStatefulSetServiceRejectedResizeKeepsTheNextPVCs(t *testing.T) {
+	stored := pvcStatefulSet("1Gi", []metav1.OwnerReference{rfOwnerReference})
+	mcli := kubernetes.NewClientset(stored,
+		statefulSetPVC("data-rfr-test-0", "1Gi", rfOwnerReference),
+		statefulSetPVC("data-rfr-test-1", "1Gi", rfOwnerReference),
+	)
+	enforcePVCResourceVersion(mcli)
+	mcli.PrependReactor("update", "persistentvolumeclaims", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		pvc := action.(kubetesting.UpdateAction).GetObject().(*v1.PersistentVolumeClaim)
+		if pvc.Name == "data-rfr-test-0" && pvc.Spec.Resources.Requests.Storage().String() != "1Gi" {
+			return true, nil, errors.New("the storage class does not allow expansion")
+		}
+		return false, nil, nil
+	})
+
+	err := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy).CreateOrUpdateStatefulSet("testns", pvcStatefulSet("2Gi", nil))
+
+	require.NoError(t, err)
+	assertPVCStorage(t, mcli, "data-rfr-test-0", "1Gi")
+	assertPVCStorage(t, mcli, "data-rfr-test-1", "2Gi")
+	assert.Empty(t, getPVC(t, mcli, "data-rfr-test-0").OwnerReferences)
+	assert.Empty(t, getPVC(t, mcli, "data-rfr-test-1").OwnerReferences)
+}
