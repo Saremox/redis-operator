@@ -107,23 +107,30 @@ type maxMemoryRun struct {
 	redises                   []string
 	port, password, policy    string
 	policyManaged, downsizing bool
+	// masterPolicy is the maxmemory-policy in force on the master: the one
+	// read from it, or the managed one once the master accepted it.
+	masterPolicy string
 }
 
 func (m *maxMemoryRun) setPolicy() error {
 	if !m.policyManaged {
 		return nil
 	}
-	return m.r.setRedisConfigOn(m.rf, m.redises, m.port, m.password, "maxmemory-policy "+m.policy)
+	return m.r.setRedisConfigEach(m.rf, m.redises, m.port, m.password, "maxmemory-policy "+m.policy, func(ip string) {
+		if ip == m.master {
+			m.masterPolicy = m.policy
+		}
+	})
 }
 
-// setMaxMemory sets maxmemory to bytes on ips. old, used and policy are the
-// values that the operator read from the master. The operator does not read
-// the replicas, so it logs a replica only when the value of the master
-// changes, and then without the old value of the replica.
-func (m *maxMemoryRun) setMaxMemory(ips []string, old, bytes, used int64, policy string) error {
+// setMaxMemory sets maxmemory to bytes on ips. old and used are the values
+// that the operator read from the master. The operator does not read the
+// replicas, so it logs a replica only when bytes differs from the value read
+// from the master, and then without a value of the replica.
+func (m *maxMemoryRun) setMaxMemory(ips []string, old, bytes, used int64) error {
 	return m.r.setRedisConfigEach(m.rf, ips, m.port, m.password, fmt.Sprintf("maxmemory %d", bytes), func(ip string) {
 		if ip == m.master {
-			logMaxMemoryChange(m.logger, ip, old, bytes, used, policy)
+			logMaxMemoryChange(m.logger, ip, old, bytes, used, m.masterPolicy)
 			return
 		}
 		logReplicaMaxMemory(m.logger, ip, old, bytes)
@@ -156,6 +163,7 @@ func (m *maxMemoryRun) onMaster(master string, rp redisPods) (MaxMemoryResult, e
 		// E.g. a restarted master, which would seem to fit a lower value.
 		return MaxMemoryResult{HoldRollout: m.downsizing}, m.setPolicy()
 	}
+	m.masterPolicy = current.MaxMemoryPolicy
 	policy := current.MaxMemoryPolicy
 	if m.policyManaged {
 		policy = m.policy
@@ -164,7 +172,7 @@ func (m *maxMemoryRun) onMaster(master string, rp redisPods) (MaxMemoryResult, e
 	if !lowers(current.MaxMemory, target) {
 		// Before the policy, so a new evicting policy does not evict what
 		// fits under the raised value.
-		if err := m.setMaxMemory(m.redises, current.MaxMemory, target, current.UsedMemory, policy); err != nil {
+		if err := m.setMaxMemory(m.redises, current.MaxMemory, target, current.UsedMemory); err != nil {
 			return MaxMemoryResult{}, err
 		}
 		if evicts && m.downsizing && current.UsedMemory > target {
@@ -183,12 +191,12 @@ func (m *maxMemoryRun) onMaster(master string, rp redisPods) (MaxMemoryResult, e
 			// E.g. a restarted master: bounded by the smallest running
 			// container's reserve, or the memory in use.
 			current.MaxMemory = max(current.UsedMemory, rp.smallestRunning-redisfailoverv1.MaxMemoryReserve)
-			if err := m.setMaxMemory([]string{master}, old, current.MaxMemory, current.UsedMemory, policy); err != nil {
+			if err := m.setMaxMemory([]string{master}, old, current.MaxMemory, current.UsedMemory); err != nil {
 				return MaxMemoryResult{}, err
 			}
 		}
 		// Replicas follow the kept value, so a promoted one behaves the same.
-		return m.kept(notFitMessage(current.MaxMemory, target, policy)), m.setMaxMemory(others, old, current.MaxMemory, current.UsedMemory, policy)
+		return m.kept(notFitMessage(current.MaxMemory, target, policy)), m.setMaxMemory(others, old, current.MaxMemory, current.UsedMemory)
 	}
 	return m.lowerOnMaster(master, others, current, target, policy)
 }
@@ -203,13 +211,14 @@ func (m *maxMemoryRun) lowerOnMaster(master string, others []string, current *re
 	if evicts {
 		wait = evictionWait
 	}
-	logLowered := func() { logMaxMemoryChange(m.logger, master, previous, target, used, policy) }
+	usedBefore := used
+	logLowered := func() { logMaxMemoryChange(m.logger, master, previous, target, usedBefore, m.masterPolicy) }
 	after, lowered, err := m.r.lowerAndWait(master, m.port, m.password, target, wait, logLowered)
 	if after != nil {
 		used = after.UsedMemory
 	}
 	if err == nil && after.Role == "master" && (evicts || after.UsedMemory <= target) {
-		if err := m.setMaxMemory(others, previous, target, used, policy); err != nil || after.UsedMemory <= target {
+		if err := m.setMaxMemory(others, previous, target, used); err != nil || after.UsedMemory <= target {
 			return MaxMemoryResult{}, err
 		}
 		// Redis keeps evicting in the background, which can take longer for
@@ -218,7 +227,7 @@ func (m *maxMemoryRun) lowerOnMaster(master string, others []string, current *re
 	}
 	rerr := m.r.redisClient.SetCustomRedisConfig(master, m.port, []string{fmt.Sprintf("maxmemory %d", previous)}, m.password)
 	if rerr == nil && lowered {
-		logMaxMemoryChange(m.logger, master, target, previous, used, policy)
+		logMaxMemoryChange(m.logger, master, target, previous, used, m.masterPolicy)
 	}
 	if rerr != nil || err != nil {
 		return MaxMemoryResult{}, errors.Join(err, rerr)
@@ -228,7 +237,7 @@ func (m *maxMemoryRun) lowerOnMaster(master string, others []string, current *re
 		// container would lower it without checking its usage.
 		return m.kept(fmt.Sprintf("maxmemory kept at %s: %s stopped being the master while lowering it", formatBytes(previous), master)), nil
 	}
-	return m.kept(notFitMessage(previous, target, policy)), m.setMaxMemory(others, previous, previous, used, policy)
+	return m.kept(notFitMessage(previous, target, policy)), m.setMaxMemory(others, previous, previous, used)
 }
 
 // logMaxMemoryChange logs a change of the managed maxmemory on ip at Info, so
@@ -241,13 +250,14 @@ func logMaxMemoryChange(logger log.Logger, ip string, old, value, used int64, po
 	logger.Infof("Set maxmemory %s -> %s on %s (used %s, policy %s)", formatBytes(old), formatBytes(value), ip, formatMi(used), policy)
 }
 
-// logReplicaMaxMemory logs the value that a replica gets when the value of
-// the master changes from old.
+// logReplicaMaxMemory logs the value that a replica accepted when it
+// differs from old, the value read from the master. A replica can be set
+// before the master, so the line does not claim a change of the master.
 func logReplicaMaxMemory(logger log.Logger, ip string, old, value int64) {
 	if old == value {
 		return
 	}
-	logger.Infof("Set maxmemory %s on %s (replica, follows the master: %s -> %s)", formatBytes(value), ip, formatBytes(old), formatBytes(value))
+	logger.Infof("Set maxmemory %s on %s (replica, the master had %s)", formatBytes(value), ip, formatBytes(old))
 }
 
 // evictsEnough reports whether policy surely evicts enough. Only allkeys-*

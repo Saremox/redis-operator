@@ -262,7 +262,8 @@ func (r *RedisFailoverHandler) applyRedisCustomConfig(rf *redisfailoverv1.RedisF
 // bootstrapping. It reports whether the pod rollout must be held.
 func (r *RedisFailoverHandler) ensureRedisMaxMemory(rf *redisfailoverv1.RedisFailover, master string) (bool, error) {
 	if rf.Spec.Redis.MaxMemory == nil {
-		r.maxMemoryLogged.Delete(failoverKey(rf))
+		// The message and the hold end with the setting.
+		r.logMaxMemoryOutcome(r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace), failoverKey(rf), rfservice.MaxMemoryResult{})
 		return false, nil
 	}
 	redises, err := r.rfChecker.GetRedisesIPs(rf)
@@ -334,7 +335,7 @@ func logMaxMemoryOutcomeEnd(logger log.Logger, last any, current maxMemoryOutcom
 		logger.Infof("The maxmemory message ended: %s", previous.message)
 	}
 	if previous.hold && !current.hold {
-		logger.Infof("The pod rollout continues: maxmemory fits the memory limit")
+		logger.Infof("The maxmemory hold of the pod rollout ended")
 	}
 }
 

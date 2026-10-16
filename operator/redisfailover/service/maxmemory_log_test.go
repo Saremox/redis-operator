@@ -51,7 +51,7 @@ func TestEnsureRedisMaxMemoryLogsEachChange(t *testing.T) {
 
 		assert.Equal(t, []string{
 			"Set maxmemory 900.0Mi -> 768.0Mi on 10.0.0.1 (used 700.0Mi, policy noeviction)",
-			"Set maxmemory 768.0Mi on 10.0.0.2 (replica, follows the master: 900.0Mi -> 768.0Mi)",
+			"Set maxmemory 768.0Mi on 10.0.0.2 (replica, the master had 900.0Mi)",
 		}, ensureMaxMemoryLogs(t, "noeviction", mmMaster, mr))
 	})
 
@@ -64,7 +64,7 @@ func TestEnsureRedisMaxMemoryLogsEachChange(t *testing.T) {
 
 		assert.Equal(t, []string{
 			"Set maxmemory 512.0Mi -> 768.0Mi on 10.0.0.1 (used 500.0Mi, policy noeviction)",
-			"Set maxmemory 768.0Mi on 10.0.0.2 (replica, follows the master: 512.0Mi -> 768.0Mi)",
+			"Set maxmemory 768.0Mi on 10.0.0.2 (replica, the master had 512.0Mi)",
 		}, ensureMaxMemoryLogs(t, "noeviction", mmMaster, mr))
 	})
 
@@ -116,7 +116,7 @@ func TestEnsureRedisMaxMemoryLogsEachChange(t *testing.T) {
 
 		assert.Equal(t, []string{
 			"Set maxmemory unlimited -> 992.0Mi on 10.0.0.1 (used 800.0Mi, policy noeviction)",
-			"Set maxmemory 992.0Mi on 10.0.0.2 (replica, follows the master: unlimited -> 992.0Mi)",
+			"Set maxmemory 992.0Mi on 10.0.0.2 (replica, the master had unlimited)",
 		}, ensureMaxMemoryLogs(t, "noeviction", mmMaster, mr))
 	})
 
@@ -157,6 +157,53 @@ func TestEnsureRedisMaxMemoryLogsEachChange(t *testing.T) {
 		assert.Equal(t, []string{
 			"Set maxmemory 900.0Mi -> 768.0Mi on 10.0.0.1 (used 100.0Mi, policy noeviction)",
 		}, ensureMaxMemoryLogs(t, "noeviction", "", mr))
+	})
+}
+
+// The master line has the maxmemory-policy in force on the master when the
+// operator writes maxmemory.
+func TestEnsureRedisMaxMemoryLogsThePolicyInForce(t *testing.T) {
+	t.Run("raise before the policy change", func(t *testing.T) {
+		mr := redisMock()
+		expectMemoryInfo(mr, &redis.MemoryInfo{MaxMemory: 512 * mi, UsedMemory: 500 * mi, MaxMemoryPolicy: "noeviction"})
+		expectSet(mr, mmMaster, maxMemoryConfig(mmTarget))
+		expectSet(mr, mmReplica, maxMemoryConfig(mmTarget))
+		expectPolicy(mr, "allkeys-lru")
+
+		assert.Equal(t, []string{
+			"Set maxmemory 512.0Mi -> 768.0Mi on 10.0.0.1 (used 500.0Mi, policy noeviction)",
+			"Set maxmemory 768.0Mi on 10.0.0.2 (replica, the master had 512.0Mi)",
+		}, ensureMaxMemoryLogs(t, "allkeys-lru", mmMaster, mr))
+	})
+
+	t.Run("lower after the policy change", func(t *testing.T) {
+		mr := redisMock()
+		expectMemoryInfo(mr, &redis.MemoryInfo{MaxMemory: 900 * mi, UsedMemory: 700 * mi, MaxMemoryPolicy: "noeviction"})
+		expectPolicy(mr, "allkeys-lru")
+		expectSet(mr, mmMaster, maxMemoryConfig(mmTarget))
+		expectMemoryInfo(mr, afterLowering(650*mi))
+		expectSet(mr, mmReplica, maxMemoryConfig(mmTarget))
+
+		assert.Equal(t, []string{
+			"Set maxmemory 900.0Mi -> 768.0Mi on 10.0.0.1 (used 700.0Mi, policy allkeys-lru)",
+			"Set maxmemory 768.0Mi on 10.0.0.2 (replica, the master had 900.0Mi)",
+		}, ensureMaxMemoryLogs(t, "allkeys-lru", mmMaster, mr))
+	})
+
+	// The master skipped the policy as unreachable, so the read one stays.
+	t.Run("lower, the master did not take the policy", func(t *testing.T) {
+		mr := redisMock()
+		expectMemoryInfo(mr, &redis.MemoryInfo{MaxMemory: 900 * mi, UsedMemory: 700 * mi, MaxMemoryPolicy: "noeviction"})
+		mr.On("SetCustomRedisConfig", mmMaster, "0", []string{"maxmemory-policy allkeys-lru"}, "").Once().Return(errors.New("dial tcp 10.0.0.1:6379: connect: connection refused"))
+		expectSet(mr, mmReplica, "maxmemory-policy allkeys-lru")
+		expectSet(mr, mmMaster, maxMemoryConfig(mmTarget))
+		expectMemoryInfo(mr, afterLowering(650*mi))
+		expectSet(mr, mmReplica, maxMemoryConfig(mmTarget))
+
+		assert.Equal(t, []string{
+			"Set maxmemory 900.0Mi -> 768.0Mi on 10.0.0.1 (used 700.0Mi, policy noeviction)",
+			"Set maxmemory 768.0Mi on 10.0.0.2 (replica, the master had 900.0Mi)",
+		}, ensureMaxMemoryLogs(t, "allkeys-lru", mmMaster, mr))
 	})
 }
 

@@ -167,11 +167,15 @@ func TestEnsureRedisMaxMemoryForgetsTheLoggedOutcomeWhenMaxMemoryIsRemoved(t *te
 	// later re-enable is a Warning again.
 	maxMemory := rf.Spec.Redis.MaxMemory
 	rf.Spec.Redis.MaxMemory = nil
+	logger.reset()
 	held, err := handler.ensureRedisMaxMemory(rf, "10.0.0.1")
 	require.NoError(t, err)
 	assert.False(t, held)
 	_, tracked = handler.maxMemoryLogged.Load(failoverKey(rf))
 	assert.False(t, tracked)
+	// The message and the hold end with the setting.
+	assert.Equal(t, []string{"The maxmemory message ended: " + result.Message, "The maxmemory hold of the pod rollout ended"}, logger.infos)
+	assert.Empty(t, logger.warnings)
 
 	rf.Spec.Redis.MaxMemory = maxMemory
 	logger.reset()
@@ -189,7 +193,7 @@ func TestEnsureRedisMaxMemoryLogsTheEndOfAnOutcome(t *testing.T) {
 		m2        = "maxmemory kept at 1: lowering it to 3 would not fit"
 		hold      = "Holding the pod rollout until maxmemory fits the lowered memory limit"
 		ended     = "The maxmemory message ended: " + m
-		continues = "The pod rollout continues: maxmemory fits the memory limit"
+		holdEnded = "The maxmemory hold of the pod rollout ended"
 	)
 	mh := rfservice.MaxMemoryResult{Message: m, HoldRollout: true}
 	none := rfservice.MaxMemoryResult{}
@@ -198,11 +202,11 @@ func TestEnsureRedisMaxMemoryLogsTheEndOfAnOutcome(t *testing.T) {
 		steps                   []rfservice.MaxMemoryResult // the last step is checked
 		infos, warnings, debugs []string
 	}{
-		{"message and hold end", []rfservice.MaxMemoryResult{mh, none}, []string{ended, continues}, nil, nil},
+		{"message and hold end", []rfservice.MaxMemoryResult{mh, none}, []string{ended, holdEnded}, nil, nil},
 		{"the message ends", []rfservice.MaxMemoryResult{mh, {HoldRollout: true}}, []string{ended}, []string{hold}, nil},
-		{"the hold ends", []rfservice.MaxMemoryResult{mh, {Message: m}}, []string{continues}, []string{m}, nil},
+		{"the hold ends", []rfservice.MaxMemoryResult{mh, {Message: m}}, []string{holdEnded}, []string{m}, nil},
 		{"the message changes", []rfservice.MaxMemoryResult{{Message: m}, {Message: m2}}, nil, []string{m2}, nil},
-		{"a hold alone ends", []rfservice.MaxMemoryResult{{HoldRollout: true}, none}, []string{continues}, nil, nil},
+		{"a hold alone ends", []rfservice.MaxMemoryResult{{HoldRollout: true}, none}, []string{holdEnded}, nil, nil},
 		{"message and hold start", []rfservice.MaxMemoryResult{none, mh}, nil, []string{m, hold}, nil},
 		{"unchanged", []rfservice.MaxMemoryResult{mh, mh}, nil, nil, []string{m, hold}},
 		{"nothing ends a second time", []rfservice.MaxMemoryResult{mh, none, none}, nil, nil, nil},
