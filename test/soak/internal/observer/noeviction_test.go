@@ -112,6 +112,49 @@ func TestNoevictionFullBound(t *testing.T) {
 	}
 }
 
+// A round without a single master tells nothing about the memory. It keeps
+// the time of the full state, and it gives no time beyond the limit.
+func TestNoevictionFullUnknownRound(t *testing.T) {
+	full := withMemory(memory("noeviction", 200*mib, 201*mib, -1))
+	notFull := withMemory(memory("noeviction", 200*mib, 100*mib, -1))
+	unknown := withMemory(memory("noeviction", 200*mib, 201*mib, -1))
+	unknown.redis[0].info = nil
+	type round struct {
+		after    time.Duration
+		s        snapshot
+		expected bool
+		findings float64
+	}
+	for _, c := range []struct {
+		name   string
+		rounds []round
+	}{
+		{"unknown rounds keep the time", []round{
+			{0, full, true, 0}, {4 * time.Minute, unknown, true, 0}, {8 * time.Minute, unknown, true, 0},
+			{9 * time.Minute, full, true, 0}, {10 * time.Minute, full, false, 1}, {11 * time.Minute, full, false, 1},
+		}},
+		{"a not full round ends the state", []round{
+			{0, full, true, 0}, {4 * time.Minute, unknown, true, 0}, {5 * time.Minute, notFull, false, 0},
+			{6 * time.Minute, full, true, 0}, {15 * time.Minute, full, true, 0}, {16 * time.Minute, full, false, 1},
+		}},
+		{"unknown beyond the limit", []round{
+			{0, full, true, 0}, {5 * time.Minute, unknown, true, 0}, {12 * time.Minute, unknown, false, 1},
+			{13 * time.Minute, full, false, 1},
+		}},
+		{"unknown before a full round", []round{{0, unknown, false, 0}, {1 * time.Minute, full, true, 0}}},
+	} {
+		o := newNoevictionObserver(t, "10m")
+		start := time.Unix(10000, 0)
+		for _, r := range c.rounds {
+			o.apply(start.Add(r.after), r.s, 1, false)
+			got := testutil.ToFloat64(o.findings.WithLabelValues(invNoevictionFull))
+			if o.NoevictionFull() != r.expected || got != r.findings {
+				t.Errorf("%s, after %s: expected %t, %v findings; want %t, %v", c.name, r.after, o.NoevictionFull(), got, r.expected, r.findings)
+			}
+		}
+	}
+}
+
 // The default limit is 30 minutes.
 func TestNoevictionFullDefault(t *testing.T) {
 	cfg, err := config.Parse([]byte("instances: [{name: x, namespace: ns}]"))

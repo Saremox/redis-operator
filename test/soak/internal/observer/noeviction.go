@@ -49,17 +49,23 @@ func (o *Observer) NoevictionFull() bool {
 }
 
 // judgeNoeviction follows the time that the master is full under noeviction,
-// and returns whether this is still an expected state.
+// and returns whether this is still an expected state. Only a master that is
+// not full ends the state. A round without a single master, for example after
+// an INFO timeout, tells nothing about the memory: it keeps the time, so that
+// short gaps cannot start the limit again.
 func (o *Observer) judgeNoeviction(now time.Time, s snapshot) bool {
 	master, err := s.master()
-	if err != nil || !master.info.full() {
+	switch {
+	case err != nil && o.fullSince.IsZero():
+		return false
+	case err != nil:
+	case !master.info.full():
 		if !o.fullSince.IsZero() {
 			o.log.Info("noeviction full ended", "duration_seconds", now.Sub(o.fullSince).Seconds())
 		}
 		o.fullSince, o.fullFound = time.Time{}, false
 		return false
-	}
-	if o.fullSince.IsZero() {
+	case o.fullSince.IsZero():
 		o.fullSince = now
 		o.log.Info("noeviction full: the master refuses writes by design", "pod", master.Name,
 			"used_memory", master.info.counted(), "maxmemory", master.info.int("maxmemory"))
@@ -71,7 +77,7 @@ func (o *Observer) judgeNoeviction(now time.Time, s snapshot) bool {
 		o.fullFound = true
 		o.findings.WithLabelValues(invNoevictionFull).Inc()
 		o.log.Warn("noeviction full for longer than the limit", "invariant", invNoevictionFull, "finding", true,
-			"pod", master.Name, "limit_seconds", o.fullLimit.Seconds())
+			"since", o.fullSince.UTC().Format(time.RFC3339), "limit_seconds", o.fullLimit.Seconds())
 	}
 	return false
 }

@@ -185,7 +185,9 @@ is not expected, also while the master is full.
 A full state is expected for `observer.noevictionFullLimit`, 30 minutes by
 default. After that time, it counts one time as the finding
 `noeviction_full`, and `RedisSoakNotWritable` fires again, because the
-fill, the ledger and the mutations that need writes stop.
+fill, the ledger and the mutations that need writes stop. Only a round
+that shows a master that is not full ends the state. A round without a
+single master, for example after an `INFO` timeout, keeps the time.
 
 The finding `maxmemory_below_used` counts a `maxmemory` of a pod that
 decreased between two rounds below the used memory of that pod, plus the
