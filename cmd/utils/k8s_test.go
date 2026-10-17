@@ -43,8 +43,8 @@ func TestCreateKubernetesClients(t *testing.T) {
 	assert.NotNil(t, meta)
 }
 
-// The callers can match the cause of a configuration error, and the text of
-// the error stays equal.
+// The callers can match the cause of a configuration error. The text of the
+// error is the prefix and the text of the cause.
 func TestLoadKubernetesConfigWrapsTheCause(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 

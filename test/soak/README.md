@@ -633,7 +633,7 @@ the last scrape in `bin/kind-e2e-artifacts/`. The workflow
 window" is `redis_soak_window_open == 0`.
 
 - `RedisSoakNotWritable`: a path is not writable for 1 minute outside a
-  window. The client does not get the expected `OOM` of a full master (see
+  window. The expected `OOM` of a full master does not fire this alert (see
   [A full master under noeviction](#a-full-master-under-noeviction)).
 - `RedisSoakMasters`: an instance has no master or more than one outside a
   window.
