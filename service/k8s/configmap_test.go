@@ -121,10 +121,10 @@ func TestConfigMapServiceGetCreateOrUpdate(t *testing.T) {
 
 			// Mock.
 			mcli := &kubernetes.Clientset{}
-			mcli.AddReactor("get", "configmaps", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("get", "configmaps", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, test.getConfigMapResult, test.errorOnGet
 			})
-			mcli.AddReactor("create", "configmaps", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("create", "configmaps", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, nil, test.errorOnCreation
 			})
 
@@ -262,7 +262,7 @@ func TestConfigMapServiceUpdate(t *testing.T) {
 			assertTest := assert.New(t)
 
 			mcli := &kubernetes.Clientset{}
-			mcli.AddReactor("update", "configmaps", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("update", "configmaps", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, nil, test.errorOnUpdate
 			})
 
@@ -339,7 +339,7 @@ func TestConfigMapServiceList(t *testing.T) {
 
 		mcli := &kubernetes.Clientset{}
 		wantErr := errors.New("wanted error")
-		mcli.AddReactor("list", "configmaps", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		mcli.AddReactor("list", "configmaps", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 			return true, nil, wantErr
 		})
 		service := k8s.NewConfigMapService(mcli, log.Dummy, metrics.Dummy)
@@ -355,7 +355,7 @@ func TestConfigMapServiceGetMetricLabel(t *testing.T) {
 	for _, name := range []string{"shutdown", "team/shutdown-config-with-a-long-name"} {
 		t.Run(name, func(t *testing.T) {
 			cli := kubernetes.NewSimpleClientset()
-			cli.PrependReactor("get", "configmaps", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			cli.PrependReactor("get", "configmaps", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, &corev1.ConfigMap{}, nil
 			})
 			rec := &mmetrics.Recorder{}

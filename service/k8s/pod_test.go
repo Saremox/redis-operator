@@ -405,7 +405,7 @@ func TestPodServiceList(t *testing.T) {
 
 		mcli := &kubernetes.Clientset{}
 		wantErr := errors.New("wanted error")
-		mcli.AddReactor("list", "pods", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		mcli.AddReactor("list", "pods", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 			return true, nil, wantErr
 		})
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)

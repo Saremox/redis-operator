@@ -124,10 +124,10 @@ func TestDeploymentServiceGetCreateOrUpdate(t *testing.T) {
 
 			// Mock.
 			mcli := &kubernetes.Clientset{}
-			mcli.AddReactor("get", "deployments", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("get", "deployments", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, test.getDeploymentResult, test.errorOnGet
 			})
-			mcli.AddReactor("create", "deployments", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("create", "deployments", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, nil, test.errorOnCreation
 			})
 
@@ -360,7 +360,7 @@ func TestDeploymentServiceUpdate(t *testing.T) {
 			assertTest := assert.New(t)
 
 			mcli := &kubernetes.Clientset{}
-			mcli.AddReactor("update", "deployments", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("update", "deployments", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, nil, test.errorOnUpdate
 			})
 
@@ -437,7 +437,7 @@ func TestDeploymentServiceList(t *testing.T) {
 
 		mcli := &kubernetes.Clientset{}
 		wantErr := errors.New("wanted error")
-		mcli.AddReactor("list", "deployments", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		mcli.AddReactor("list", "deployments", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 			return true, nil, wantErr
 		})
 		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)

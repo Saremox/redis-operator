@@ -646,7 +646,7 @@ func TestHealthServerStopReturnsShutdownError(t *testing.T) {
 	release := make(chan struct{})
 	h := NewHealthServer(0, "6379", "")
 	h.server = &http.Server{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		Handler: http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 			close(entered)
 			<-release
 		}),

@@ -1594,7 +1594,7 @@ func TestIsRedisRunningQuorum(t *testing.T) {
 	assert := assert.New(t)
 	rf := generateRF()
 
-	t.Run("quorum of pods running", func(t *testing.T) {
+	t.Run("quorum of pods running", func(_ *testing.T) {
 		ms := &mK8SService.Services{}
 		ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
 			Return(podsWithPhases(corev1.PodRunning, corev1.PodRunning, corev1.PodPending), nil)
@@ -1602,7 +1602,7 @@ func TestIsRedisRunningQuorum(t *testing.T) {
 		assert.True(checker.IsRedisRunningQuorum(rf))
 	})
 
-	t.Run("below quorum", func(t *testing.T) {
+	t.Run("below quorum", func(_ *testing.T) {
 		ms := &mK8SService.Services{}
 		ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
 			Return(podsWithPhases(corev1.PodRunning, corev1.PodPending, corev1.PodPending), nil)
@@ -1610,7 +1610,7 @@ func TestIsRedisRunningQuorum(t *testing.T) {
 		assert.False(checker.IsRedisRunningQuorum(rf))
 	})
 
-	t.Run("GetStatefulSetPods errors", func(t *testing.T) {
+	t.Run("GetStatefulSetPods errors", func(_ *testing.T) {
 		ms := &mK8SService.Services{}
 		ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
 			Return(nil, errors.New("statefulset pods unavailable"))
@@ -1625,7 +1625,7 @@ func TestIsSentinelRunningQuorum(t *testing.T) {
 	assert := assert.New(t)
 	rf := generateRF()
 
-	t.Run("quorum of pods running", func(t *testing.T) {
+	t.Run("quorum of pods running", func(_ *testing.T) {
 		ms := &mK8SService.Services{}
 		ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().
 			Return(podsWithPhases(corev1.PodRunning, corev1.PodRunning, corev1.PodPending), nil)
@@ -1633,7 +1633,7 @@ func TestIsSentinelRunningQuorum(t *testing.T) {
 		assert.True(checker.IsSentinelRunningQuorum(rf))
 	})
 
-	t.Run("below quorum", func(t *testing.T) {
+	t.Run("below quorum", func(_ *testing.T) {
 		ms := &mK8SService.Services{}
 		ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().
 			Return(podsWithPhases(corev1.PodRunning, corev1.PodPending, corev1.PodPending), nil)
@@ -1641,7 +1641,7 @@ func TestIsSentinelRunningQuorum(t *testing.T) {
 		assert.False(checker.IsSentinelRunningQuorum(rf))
 	})
 
-	t.Run("GetDeploymentPods errors", func(t *testing.T) {
+	t.Run("GetDeploymentPods errors", func(_ *testing.T) {
 		ms := &mK8SService.Services{}
 		ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().
 			Return(nil, errors.New("deployment pods unavailable"))

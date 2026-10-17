@@ -4168,7 +4168,7 @@ func TestRedisReadinessLinkDownWindow(t *testing.T) {
 	}{
 		{
 			name:   "operator mode, default failoverTimeout",
-			modify: func(rf *redisfailoverv1.RedisFailover) {},
+			modify: func(_ *redisfailoverv1.RedisFailover) {},
 			window: "70",
 		},
 		{
@@ -4369,14 +4369,14 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 	}{
 		{
 			name: "Deployment delete error stops before other deletes",
-			setup: func(ms *mK8SService.Services, resName string, saName string) {
+			setup: func(ms *mK8SService.Services, resName string, _ string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(&appsv1.Deployment{ObjectMeta: ownedMeta()}, nil)
 				ms.On("DeleteDeployment", namespace, resName).Once().Return(errors.New("delete deployment failed"))
 			},
 		},
 		{
 			name: "Service delete error",
-			setup: func(ms *mK8SService.Services, resName string, saName string) {
+			setup: func(ms *mK8SService.Services, resName string, _ string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetService", namespace, resName).Once().Return(&corev1.Service{ObjectMeta: ownedMeta()}, nil)
 				ms.On("DeleteService", namespace, resName).Once().Return(errors.New("delete service failed"))
@@ -4384,7 +4384,7 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 		},
 		{
 			name: "ConfigMap delete error",
-			setup: func(ms *mK8SService.Services, resName string, saName string) {
+			setup: func(ms *mK8SService.Services, resName string, _ string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetConfigMap", namespace, resName).Once().Return(&corev1.ConfigMap{ObjectMeta: ownedMeta()}, nil)
@@ -4393,7 +4393,7 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 		},
 		{
 			name: "PodDisruptionBudget delete error",
-			setup: func(ms *mK8SService.Services, resName string, saName string) {
+			setup: func(ms *mK8SService.Services, resName string, _ string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetConfigMap", namespace, resName).Once().Return(nil, errors.New("not found"))

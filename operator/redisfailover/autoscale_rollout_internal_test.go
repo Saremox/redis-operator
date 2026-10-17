@@ -245,7 +245,7 @@ func TestRecordAutoscaleRollout(t *testing.T) {
 			p[1] = startingPod("old", "1Gi")
 			return p
 		}), observed: 2, want: want{false, false, false}},
-		"no pod applied": {pods: pods(func(p []corev1.Pod) []corev1.Pod {
+		"no pod applied": {pods: pods(func(_ []corev1.Pod) []corev1.Pod {
 			return []corev1.Pod{redisPod("rfr-test-0", "old", "1Gi"), redisPod("rfr-test-1", "old", "1Gi")}
 		}), observed: 2, want: want{false, false, false}},
 		"a pod not ready":   {pods: pods(func(p []corev1.Pod) []corev1.Pod { p[1].Status.Conditions = nil; return p }), observed: 2, want: want{false, true, true}},

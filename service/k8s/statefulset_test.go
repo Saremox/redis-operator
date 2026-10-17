@@ -244,10 +244,10 @@ func TestStatefulSetServiceGetCreateOrUpdate(t *testing.T) {
 
 			// Mock.
 			mcli := &kubernetes.Clientset{}
-			mcli.AddReactor("get", "statefulsets", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("get", "statefulsets", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, test.getStatefulSetResult, test.errorOnGet
 			})
-			mcli.AddReactor("create", "statefulsets", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("create", "statefulsets", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, nil, test.errorOnCreation
 			})
 
@@ -291,7 +291,7 @@ func TestStatefulSetServiceGetCreateOrUpdate(t *testing.T) {
 			assertPVCStorage(t, mcli, "data-rfr-test-extra", "0.5Gi")
 			assertPVCStorage(t, mcli, "cache-rfr-test-0", "0.5Gi")
 			// should not call update
-			mcli.PrependReactor("update", "persistentvolumeclaims", func(action kubetesting.Action) (handled bool, ret runtime.Object, err error) {
+			mcli.PrependReactor("update", "persistentvolumeclaims", func(_ kubetesting.Action) (handled bool, ret runtime.Object, err error) {
 				t.Error("shouldn't call update")
 				return true, nil, nil
 			})
@@ -580,18 +580,18 @@ func TestStatefulSetServiceCreateOrUpdatePVCs(t *testing.T) {
 			mcli := kubernetes.NewClientset(objects...)
 			enforcePVCResourceVersion(mcli)
 			if test.errorOnList != nil {
-				mcli.PrependReactor("list", "persistentvolumeclaims", func(action kubetesting.Action) (bool, runtime.Object, error) {
+				mcli.PrependReactor("list", "persistentvolumeclaims", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 					return true, nil, test.errorOnList
 				})
 			}
 			if test.errorOnUpdate != nil {
-				mcli.PrependReactor("update", "persistentvolumeclaims", func(action kubetesting.Action) (bool, runtime.Object, error) {
+				mcli.PrependReactor("update", "persistentvolumeclaims", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 					return true, nil, test.errorOnUpdate
 				})
 			}
 
 			if test.errorOnGet != nil {
-				mcli.PrependReactor("get", "persistentvolumeclaims", func(action kubetesting.Action) (bool, runtime.Object, error) {
+				mcli.PrependReactor("get", "persistentvolumeclaims", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 					return true, nil, test.errorOnGet
 				})
 			}

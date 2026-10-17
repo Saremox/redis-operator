@@ -669,14 +669,14 @@ func TestHandleRecordsClusterMetrics(t *testing.T) {
 		},
 		{
 			name: "validation failure reports cluster error",
-			setup: func(rf *redisfailoverv1.RedisFailover, mrfs *mRFService.RedisFailoverClient, mrfc *mRFService.RedisFailoverCheck) {
+			setup: func(rf *redisfailoverv1.RedisFailover, _ *mRFService.RedisFailoverClient, _ *mRFService.RedisFailoverCheck) {
 				rf.Name = "this-name-is-far-too-long-to-pass-the-forty-eight-character-limit"
 			},
 			wantMethod: "SetClusterError",
 		},
 		{
 			name: "ensure failure reports cluster error",
-			setup: func(rf *redisfailoverv1.RedisFailover, mrfs *mRFService.RedisFailoverClient, mrfc *mRFService.RedisFailoverCheck) {
+			setup: func(rf *redisfailoverv1.RedisFailover, mrfs *mRFService.RedisFailoverClient, _ *mRFService.RedisFailoverCheck) {
 				mrfs.On("EnsureNotPresentRedisService", rf).Once().Return(errors.New("ensure boom"))
 			},
 			wantMethod: "SetClusterError",
