@@ -19,13 +19,13 @@ func LoadKubernetesConfig(flags *CMDFlags) (*rest.Config, error) {
 	if flags.Development {
 		config, err := clientcmd.BuildConfigFromFlags("", flags.KubeConfig)
 		if err != nil {
-			return nil, fmt.Errorf("could not load configuration: %s", err)
+			return nil, fmt.Errorf("could not load configuration: %w", err)
 		}
 		cfg = config
 	} else {
 		config, err := rest.InClusterConfig()
 		if err != nil {
-			return nil, fmt.Errorf("error loading kubernetes configuration inside cluster, check app is running outside kubernetes cluster or run in development mode: %s", err)
+			return nil, fmt.Errorf("error loading kubernetes configuration inside cluster, check app is running outside kubernetes cluster or run in development mode: %w", err)
 		}
 		cfg = config
 	}

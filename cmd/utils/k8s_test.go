@@ -1,12 +1,15 @@
 package utils
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/rest"
 )
 
 // The client constructors do not connect, so any server address is sufficient.
@@ -38,6 +41,28 @@ func TestCreateKubernetesClients(t *testing.T) {
 	assert.NotNil(t, kube)
 	assert.NotNil(t, custom)
 	assert.NotNil(t, meta)
+}
+
+// The callers can match the cause of a configuration error, and the text of
+// the error stays equal.
+func TestLoadKubernetesConfigWrapsTheCause(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+
+	tests := map[string]struct {
+		flags  *CMDFlags
+		cause  error
+		prefix string
+	}{
+		"missing kubeconfig":  {&CMDFlags{Development: true, KubeConfig: filepath.Join(t.TempDir(), "missing")}, fs.ErrNotExist, "could not load configuration: "},
+		"outside the cluster": {&CMDFlags{}, rest.ErrNotInCluster, "error loading kubernetes configuration inside cluster, check app is running outside kubernetes cluster or run in development mode: "},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadKubernetesConfig(test.flags)
+			require.ErrorIs(t, err, test.cause)
+			assert.EqualError(t, err, test.prefix+errors.Unwrap(err).Error())
+		})
+	}
 }
 
 func TestCreateKubernetesClientsErrors(t *testing.T) {
