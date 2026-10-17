@@ -23,7 +23,7 @@ type Service interface {
 	ListServices(namespace string) (*corev1.ServiceList, error)
 }
 
-// ServiceService is the service service implementation using API calls to kubernetes.
+// ServiceService is the Service service implementation using API calls to kubernetes.
 type ServiceService struct {
 	kubeClient      kubernetes.Interface
 	logger          log.Logger
