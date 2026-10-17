@@ -40,7 +40,7 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 	configMapName := rfservice.GetRedisName(generateRF())
 	shutdownConfigMapName := rfservice.GetRedisShutdownConfigMapName(generateRF())
 	readinesConfigMapName := rfservice.GetRedisReadinessName(generateRF())
-	executeMode := int32(0744)
+	executeMode := int32(0o744)
 	tests := []struct {
 		name           string
 		ownerRefs      []metav1.OwnerReference
@@ -2497,7 +2497,7 @@ func TestRedisEnv(t *testing.T) {
 }
 
 func TestRedisStartupProbe(t *testing.T) {
-	mode := int32(0744)
+	mode := int32(0o744)
 	tests := []struct {
 		name                string
 		expectedVolume      corev1.Volume
@@ -2550,7 +2550,7 @@ func TestRedisStartupProbe(t *testing.T) {
 }
 
 func TestSentinelStartupProbe(t *testing.T) {
-	mode := int32(0744)
+	mode := int32(0o744)
 	tests := []struct {
 		name                string
 		expectedVolume      corev1.Volume
@@ -3687,14 +3687,16 @@ esac
 			require.NoError(t, err)
 			calls := strings.Split(strings.TrimSpace(string(raw)), "\n")
 			for i, call := range calls {
-				if m := pause.FindStringSubmatch(call); m != nil {
-					// The pause ends 6s after the 12s deadline.
-					ms, err := strconv.Atoi(m[1])
-					require.NoError(t, err)
-					assert.GreaterOrEqual(t, ms, cmp.Or(test.minPause, 17000))
-					assert.LessOrEqual(t, ms, 18000)
-					calls[i] = pause.ReplaceAllString(call, "CLIENT PAUSE <ms> WRITE")
+				m := pause.FindStringSubmatch(call)
+				if m == nil {
+					continue
 				}
+				// The pause ends 6s after the 12s deadline.
+				ms, err := strconv.Atoi(m[1])
+				require.NoError(t, err)
+				assert.GreaterOrEqual(t, ms, cmp.Or(test.minPause, 17000))
+				assert.LessOrEqual(t, ms, 18000)
+				calls[i] = pause.ReplaceAllString(call, "CLIENT PAUSE <ms> WRITE")
 			}
 			if test.manyInfo {
 				// One INFO call each 0.1s until 8s before the deadline.

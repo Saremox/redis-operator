@@ -195,13 +195,13 @@ func (l fieldLogger) WithField(key string, value any) log.Logger {
 	return l
 }
 
-func (l fieldLogger) add(level, format string, args ...any) {
+func (l fieldLogger) addf(level, format string, args ...any) {
 	*l.lines = append(*l.lines, level+": "+l.fields+fmt.Sprintf(format, args...))
 }
 
-func (l fieldLogger) Debugf(format string, args ...any) { l.add("debug", format, args...) }
-func (l fieldLogger) Infof(format string, args ...any)  { l.add("info", format, args...) }
-func (l fieldLogger) Errorf(format string, args ...any) { l.add("error", format, args...) }
+func (l fieldLogger) Debugf(format string, args ...any) { l.addf("debug", format, args...) }
+func (l fieldLogger) Infof(format string, args ...any)  { l.addf("info", format, args...) }
+func (l fieldLogger) Errorf(format string, args ...any) { l.addf("error", format, args...) }
 
 func TestPodServiceLogsTheNamespaceAndPod(t *testing.T) {
 	tests := []struct {

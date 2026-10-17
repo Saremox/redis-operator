@@ -98,7 +98,7 @@ func TestHealthServerHealthzHealthy(t *testing.T) {
 	h.SetRedisPID(1234)
 	h.redisHealthy.Store(true)
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", http.NoBody)
 	w := httptest.NewRecorder()
 
 	h.handleHealthz(w, req)
@@ -118,7 +118,7 @@ func TestHealthServerHealthzUnhealthy(t *testing.T) {
 	h := NewHealthServer(8080, "6379", "")
 	h.redisHealthy.Store(false)
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", http.NoBody)
 	w := httptest.NewRecorder()
 
 	h.handleHealthz(w, req)
@@ -146,7 +146,7 @@ func TestHealthServerReadyzReady(t *testing.T) {
 	}
 	h.mu.Unlock()
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 	w := httptest.NewRecorder()
 
 	h.handleReadyz(w, req)
@@ -175,7 +175,7 @@ func TestHealthServerReadyzNotReadyLoading(t *testing.T) {
 	}
 	h.mu.Unlock()
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 	w := httptest.NewRecorder()
 
 	h.handleReadyz(w, req)
@@ -205,7 +205,7 @@ func TestHealthServerReadyzNotReadySyncing(t *testing.T) {
 	}
 	h.mu.Unlock()
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 	w := httptest.NewRecorder()
 
 	h.handleReadyz(w, req)
@@ -235,7 +235,7 @@ func TestHealthServerReadyzNotReadyMasterLinkDown(t *testing.T) {
 	}
 	h.mu.Unlock()
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 	w := httptest.NewRecorder()
 
 	h.handleReadyz(w, req)
@@ -264,7 +264,7 @@ func TestHealthServerReadyzNotReadyNoMasterConfigured(t *testing.T) {
 	}
 	h.mu.Unlock()
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 	w := httptest.NewRecorder()
 
 	h.handleReadyz(w, req)
@@ -302,7 +302,7 @@ func TestHealthServerStatus(t *testing.T) {
 	}
 	h.mu.Unlock()
 
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/status", http.NoBody)
 	w := httptest.NewRecorder()
 
 	h.handleStatus(w, req)
@@ -341,7 +341,7 @@ func TestHealthServerMethodNotAllowed(t *testing.T) {
 
 	for _, endpoint := range endpoints {
 		for _, method := range methods {
-			req := httptest.NewRequest(method, endpoint, nil)
+			req := httptest.NewRequest(method, endpoint, http.NoBody)
 			w := httptest.NewRecorder()
 
 			switch endpoint {
@@ -713,7 +713,7 @@ func TestHealthServerReadyzNotReadyReasons(t *testing.T) {
 			h.mu.Unlock()
 
 			w := httptest.NewRecorder()
-			h.handleReadyz(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+			h.handleReadyz(w, httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody))
 
 			assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 			var resp ReadyResponse

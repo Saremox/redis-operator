@@ -43,7 +43,7 @@ func TestNewHTTPHandler(t *testing.T) {
 				"/debug/pprof/trace?seconds=1":   test.wantPprof,
 			} {
 				w := httptest.NewRecorder()
-				h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+				h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, http.NoBody))
 				assert.Equal(t, want, w.Code, path)
 			}
 		})

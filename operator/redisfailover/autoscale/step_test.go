@@ -387,6 +387,7 @@ func TestPlanUserChanges(t *testing.T) {
 // cannot lower the template.
 func TestPlanKeepsAStepWithTheSpecAtTo(t *testing.T) {
 	pinned := func(t *testing.T) State {
+		t.Helper()
 		o := obs(time.Minute)
 		o.Spec, o.Settled = 1280*mi, false
 		s, action := Plan(applying(t), o)

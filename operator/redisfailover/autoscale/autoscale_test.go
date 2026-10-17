@@ -370,7 +370,7 @@ func TestObserveAtTheMaximumIsStable(t *testing.T) {
 	}
 	s := known()
 	var statuses []redisfailoverv1.AutoscalingStatus
-	for i := 0; i <= 30; i++ {
+	for i := range 31 {
 		s = sample(s, time.Duration(i)*time.Minute)
 		if i >= 15 {
 			statuses = append(statuses, Report(s, 2*gi, 2*gi))
@@ -415,7 +415,7 @@ func TestObserveSampleSpacing(t *testing.T) {
 		want  int64
 	}{{9 * time.Minute, 1280 * mi}, {10 * time.Minute, 0}} {
 		s := known()
-		for i := 0; i <= 6; i++ {
+		for i := range 7 {
 			s = observeAll(s, time.Duration(i)*tc.every, 900)
 		}
 		assert.Equal(t, tc.want, s.Recommended, tc.every.String())

@@ -424,7 +424,7 @@ func getSharedEnv(t *testing.T) *sharedEnv {
 // Client under test so setup/teardown for tests that are not themselves
 // about MonitorRedisWithPort does not depend on it. It fails the test if the
 // commands do not succeed.
-func pointSharedSentinelAt(t *testing.T, sentinel *redisProc, masterIP string, masterPort int, quorum int) {
+func pointSharedSentinelAt(t *testing.T, sentinel *redisProc, masterIP string, masterPort, quorum int) {
 	t.Helper()
 	rc := rediscli.NewSentinelClient(&rediscli.Options{Addr: sentinel.Addr()})
 	defer func() { _ = rc.Close() }()

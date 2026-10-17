@@ -71,7 +71,7 @@ func TestRunCleanup(t *testing.T) {
 			// Create test files
 			for _, f := range tt.files {
 				filePath := filepath.Join(tmpDir, f)
-				if err := os.WriteFile(filePath, []byte("test content"), 0644); err != nil {
+				if err := os.WriteFile(filePath, []byte("test content"), 0o644); err != nil {
 					t.Fatalf("failed to create test file %s: %v", f, err)
 				}
 			}
@@ -113,7 +113,7 @@ func TestRunCleanupDryRun(t *testing.T) {
 	files := []string{"dump.rdb", "temp-1234.rdb"}
 	for _, f := range files {
 		filePath := filepath.Join(tmpDir, f)
-		if err := os.WriteFile(filePath, []byte("test content"), 0644); err != nil {
+		if err := os.WriteFile(filePath, []byte("test content"), 0o644); err != nil {
 			t.Fatalf("failed to create test file %s: %v", f, err)
 		}
 	}

@@ -29,7 +29,7 @@ func generateConfig() rfOperator.Config {
 	}
 }
 
-func generateRF(enableExporter bool, bootstrapping bool) *redisfailoverv1.RedisFailover {
+func generateRF(enableExporter, bootstrapping bool) *redisfailoverv1.RedisFailover {
 	// Explicitly enable sentinel for tests that expect sentinel behavior
 	// (sentinel is disabled by default in v4.0.0+)
 	return &redisfailoverv1.RedisFailover{

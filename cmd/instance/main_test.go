@@ -30,7 +30,7 @@ func runMain(t *testing.T, args ...string) int {
 }
 
 func TestRootCmdRegistersSubcommands(t *testing.T) {
-	var names []string
+	names := make([]string, 0, len(rootCmd.Commands()))
 	for _, cmd := range rootCmd.Commands() {
 		names = append(names, cmd.Name())
 	}

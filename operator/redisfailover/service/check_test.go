@@ -2035,7 +2035,7 @@ func TestGetReplicaReplicationOffsetsSkipsAMasterInAFailover(t *testing.T) {
 	replicas, err := checker.GetReplicaReplicationOffsets(rf)
 
 	require.NoError(t, err)
-	var ips []string
+	ips := make([]string, 0, len(replicas))
 	for _, replica := range replicas {
 		ips = append(ips, replica.IP)
 	}

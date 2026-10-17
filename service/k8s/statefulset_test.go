@@ -57,7 +57,7 @@ func ownedPod(statefulSet *appsv1.StatefulSet, name string, labels map[string]st
 }
 
 func podNames(podList *v1.PodList) []string {
-	names := []string{}
+	names := make([]string, 0, len(podList.Items))
 	for _, pod := range podList.Items {
 		names = append(names, pod.Name)
 	}
@@ -264,41 +264,39 @@ func TestStatefulSetServiceGetCreateOrUpdate(t *testing.T) {
 		})
 	}
 	// test resize pvc
-	{
-		t.Run("test_Resize_Pvc", func(t *testing.T) {
-			assertTest := assert.New(t)
-			owners := []metav1.OwnerReference{rfOwnerReference}
-			otherPVC := statefulSetPVC("data-rfr-other-0", "0.5Gi")
-			otherPVC.Labels["app.kubernetes.io/name"] = "other"
-			// Same labels, but not a PVC of the volume claim template.
-			foreignPVC := statefulSetPVC("data-rfr-test-extra", "0.5Gi")
-			wrongTemplatePVC := statefulSetPVC("cache-rfr-test-0", "0.5Gi")
-			mcli := kubernetes.NewClientset(
-				pvcStatefulSet("0.5Gi", owners),
-				statefulSetPVC("data-rfr-test-0", "0.5Gi", rfOwnerReference),
-				// resized already
-				statefulSetPVC("data-rfr-test-1", "1Gi", rfOwnerReference),
-				otherPVC,
-				foreignPVC,
-				wrongTemplatePVC,
-			)
-			service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
-			err := service.CreateOrUpdateStatefulSet(testns, pvcStatefulSet("1Gi", owners))
-			require.NoError(t, err)
-			assertPVCStorage(t, mcli, "data-rfr-test-0", "1Gi")
-			assertPVCStorage(t, mcli, "data-rfr-test-1", "1Gi")
-			assertPVCStorage(t, mcli, "data-rfr-other-0", "0.5Gi")
-			assertPVCStorage(t, mcli, "data-rfr-test-extra", "0.5Gi")
-			assertPVCStorage(t, mcli, "cache-rfr-test-0", "0.5Gi")
-			// should not call update
-			mcli.PrependReactor("update", "persistentvolumeclaims", func(_ kubetesting.Action) (handled bool, ret runtime.Object, err error) {
-				t.Error("shouldn't call update")
-				return true, nil, nil
-			})
-			err = service.CreateOrUpdateStatefulSet(testns, pvcStatefulSet("1Gi", owners))
-			assertTest.NoError(err)
+	t.Run("test_Resize_Pvc", func(t *testing.T) {
+		assertTest := assert.New(t)
+		owners := []metav1.OwnerReference{rfOwnerReference}
+		otherPVC := statefulSetPVC("data-rfr-other-0", "0.5Gi")
+		otherPVC.Labels["app.kubernetes.io/name"] = "other"
+		// Same labels, but not a PVC of the volume claim template.
+		foreignPVC := statefulSetPVC("data-rfr-test-extra", "0.5Gi")
+		wrongTemplatePVC := statefulSetPVC("cache-rfr-test-0", "0.5Gi")
+		mcli := kubernetes.NewClientset(
+			pvcStatefulSet("0.5Gi", owners),
+			statefulSetPVC("data-rfr-test-0", "0.5Gi", rfOwnerReference),
+			// resized already
+			statefulSetPVC("data-rfr-test-1", "1Gi", rfOwnerReference),
+			otherPVC,
+			foreignPVC,
+			wrongTemplatePVC,
+		)
+		service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
+		err := service.CreateOrUpdateStatefulSet(testns, pvcStatefulSet("1Gi", owners))
+		require.NoError(t, err)
+		assertPVCStorage(t, mcli, "data-rfr-test-0", "1Gi")
+		assertPVCStorage(t, mcli, "data-rfr-test-1", "1Gi")
+		assertPVCStorage(t, mcli, "data-rfr-other-0", "0.5Gi")
+		assertPVCStorage(t, mcli, "data-rfr-test-extra", "0.5Gi")
+		assertPVCStorage(t, mcli, "cache-rfr-test-0", "0.5Gi")
+		// should not call update
+		mcli.PrependReactor("update", "persistentvolumeclaims", func(_ kubetesting.Action) (handled bool, ret runtime.Object, err error) {
+			t.Error("shouldn't call update")
+			return true, nil, nil
 		})
-	}
+		err = service.CreateOrUpdateStatefulSet(testns, pvcStatefulSet("1Gi", owners))
+		assertTest.NoError(err)
+	})
 }
 
 var rfOwnerReference = metav1.OwnerReference{

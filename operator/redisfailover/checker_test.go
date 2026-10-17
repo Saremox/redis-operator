@@ -384,14 +384,15 @@ func TestCheckAndHeal(t *testing.T) {
 						break
 					}
 					mrfc.On("GetMaxRedisPodTime", rf).Once().Return(1*time.Hour, nil)
-					if test.forceNewMasterNoQrm {
+					switch {
+					case test.forceNewMasterNoQrm:
 						mrfc.On("CheckSentinelQuorum", rf).Once().Return(1, errors.New(""))
 						mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
-					} else if test.forceNewMasterFirstBoot {
+					case test.forceNewMasterFirstBoot:
 						mrfc.On("CheckSentinelQuorum", rf).Once().Return(3, nil)
 						mrfc.On("CheckIfMasterLocalhost", rf).Once().Return(true, nil)
 						mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
-					} else {
+					default:
 						mrfc.On("CheckSentinelQuorum", rf).Once().Return(3, nil)
 						mrfc.On("CheckIfMasterLocalhost", rf).Once().Return(false, nil)
 						mrfc.On("CheckSentinelsCannotFailover", rf).Once().Return(false, nil)
@@ -399,7 +400,6 @@ func TestCheckAndHeal(t *testing.T) {
 					}
 
 				case 1:
-					break
 				default:
 					// always expect error
 					expErr = true
@@ -478,13 +478,14 @@ func TestCheckAndHeal(t *testing.T) {
 			handler := rfOperator.NewRedisFailoverHandler(config, mrfs, mrfc, mrfh, mk, metrics.Dummy, log.Dummy)
 			err := handler.CheckAndHeal(rf)
 
-			if test.wantState != "" {
+			switch {
+			case test.wantState != "":
 				require.NoError(t, err)
 				assertTest.Equal(test.wantState, rf.Status.State)
-			} else if expErr {
+			case expErr:
 				require.Error(t, err)
 				assertTest.Equal(v1.NotHealthyState, rf.Status.State)
-			} else {
+			default:
 				require.NoError(t, err)
 				assertTest.Equal(v1.HealthyState, rf.Status.State)
 			}
@@ -2693,7 +2694,6 @@ func TestUpdate(t *testing.T) {
 						break
 					}
 				}
-				fmt.Printf("%v - %v\n", test.name, next)
 				if next && !test.bootstrapping {
 					if test.noMaster {
 						mrfc.On("GetRedisesMasterPod", rf).Once().Return("", errors.New(""))

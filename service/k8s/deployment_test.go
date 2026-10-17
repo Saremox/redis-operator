@@ -503,7 +503,7 @@ func TestDeploymentServiceGetDeploymentPods(t *testing.T) {
 
 		pods, err := service.GetDeploymentPods(testns, "testdeployment1")
 		require.NoError(t, err)
-		names := []string{}
+		names := make([]string, 0, len(pods.Items))
 		for _, pod := range pods.Items {
 			names = append(names, pod.Name)
 		}
