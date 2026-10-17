@@ -184,15 +184,15 @@ is not expected, also while the master is full.
 
 A full state is expected for `observer.noevictionFullLimit`, 30 minutes by
 default. After that time, it counts one time as the finding
-`noeviction_full`, and `RedisSoakNotWritable` fires again, because the
+`noeviction_full`. Then `RedisSoakNotWritable` fires again, because the
 fill, the ledger and the mutations that need writes stop. Only a round
 that shows a master that is not full ends the state. A round without a
 single master, for example after an `INFO` timeout, keeps the time.
 
 The finding `maxmemory_below_used` counts a `maxmemory` of a pod that
-decreased between two rounds below the used memory of that pod, plus the
-margin, under a policy that is not `allkeys-*`. Both findings count also
-inside a window, as `oom_killed` does.
+decreased between two rounds. It counts only a value below the used memory
+of that pod plus the margin, under a policy that is not `allkeys-*`. Both
+findings count also inside a window, as `oom_killed` does.
 
 ### Convergence windows
 
@@ -633,8 +633,8 @@ the last scrape in `bin/kind-e2e-artifacts/`. The workflow
 window" is `redis_soak_window_open == 0`.
 
 - `RedisSoakNotWritable`: a path is not writable for 1 minute outside a
-  window, and the client does not get the expected `OOM` of a full master
-  (see [A full master under noeviction](#a-full-master-under-noeviction)).
+  window. The client does not get the expected `OOM` of a full master (see
+  [A full master under noeviction](#a-full-master-under-noeviction)).
 - `RedisSoakMasters`: an instance has no master or more than one outside a
   window.
 - `RedisSoakFinding`: a finding.

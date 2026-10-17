@@ -335,7 +335,8 @@ func (j *Judge) checkPendingSize(r Round) []Event {
 	return nil
 }
 
-// checkSize returns why a step from from to to breaks the step rule, or "".
+// checkSize returns why a step from the limit from to the limit to breaks the
+// step rule, or "".
 // The rule gives one target: 25 percent more, rounded up to 64Mi, and
 // memoryMax at most. Thus a step can be more than 25 percent of a small
 // limit. A target at or below from gives no step.
