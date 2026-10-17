@@ -2355,8 +2355,8 @@ func TestSentinelExtraVolumeMounts(t *testing.T) {
 }
 
 func TestCustomPort(t *testing.T) {
-	default_port := int32(6379)
-	custom_port := int32(12345)
+	defaultPort := int32(6379)
+	customPort := int32(12345)
 	tests := []struct {
 		name                  string
 		port                  int32
@@ -2364,22 +2364,22 @@ func TestCustomPort(t *testing.T) {
 	}{
 		{
 			name: "Default port",
-			port: default_port,
+			port: defaultPort,
 			expectedContainerPort: []corev1.ContainerPort{
 				{
 					Name:          "redis",
-					ContainerPort: default_port,
+					ContainerPort: defaultPort,
 					Protocol:      corev1.ProtocolTCP,
 				},
 			},
 		},
 		{
 			name: "Custom port",
-			port: custom_port,
+			port: customPort,
 			expectedContainerPort: []corev1.ContainerPort{
 				{
 					Name:          "redis",
-					ContainerPort: custom_port,
+					ContainerPort: customPort,
 					Protocol:      corev1.ProtocolTCP,
 				},
 			},
@@ -2410,7 +2410,7 @@ func TestCustomPort(t *testing.T) {
 }
 
 func TestRedisEnv(t *testing.T) {
-	default_port := int32(6379)
+	defaultPort := int32(6379)
 	tests := []struct {
 		name             string
 		auth             string
@@ -2422,11 +2422,11 @@ func TestRedisEnv(t *testing.T) {
 			expectedRedisEnv: []corev1.EnvVar{
 				{
 					Name:  "REDIS_ADDR",
-					Value: fmt.Sprintf("redis://127.0.0.1:%[1]v", default_port),
+					Value: fmt.Sprintf("redis://127.0.0.1:%[1]v", defaultPort),
 				},
 				{
 					Name:  "REDIS_PORT",
-					Value: fmt.Sprintf("%[1]v", default_port),
+					Value: fmt.Sprintf("%[1]v", defaultPort),
 				},
 				{
 					Name:  "REDIS_USER",
@@ -2440,11 +2440,11 @@ func TestRedisEnv(t *testing.T) {
 			expectedRedisEnv: []corev1.EnvVar{
 				{
 					Name:  "REDIS_ADDR",
-					Value: fmt.Sprintf("redis://127.0.0.1:%[1]v", default_port),
+					Value: fmt.Sprintf("redis://127.0.0.1:%[1]v", defaultPort),
 				},
 				{
 					Name:  "REDIS_PORT",
-					Value: fmt.Sprintf("%[1]v", default_port),
+					Value: fmt.Sprintf("%[1]v", defaultPort),
 				},
 				{
 					Name:  "REDIS_USER",
@@ -2471,7 +2471,7 @@ func TestRedisEnv(t *testing.T) {
 		var env []corev1.EnvVar
 
 		rf := generateRF()
-		rf.Spec.Redis.Port = default_port
+		rf.Spec.Redis.Port = defaultPort
 		if test.auth != "" {
 			rf.Spec.Auth.SecretPath = test.auth
 		}

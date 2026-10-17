@@ -79,8 +79,8 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 				rf := generateRF(false, false)
 				rf.Spec.Redis.Resources.Limits = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}
 				if autoscaling != "unset" {
-					max := resource.MustParse("2Gi")
-					rf.Spec.Redis.Autoscaling = &v1.AutoscalingSettings{Mode: autoscaling, MemoryMax: &max, Workload: v1.AutoscalingWorkloadAuto}
+					memoryMax := resource.MustParse("2Gi")
+					rf.Spec.Redis.Autoscaling = &v1.AutoscalingSettings{Mode: autoscaling, MemoryMax: &memoryMax, Workload: v1.AutoscalingWorkloadAuto}
 				}
 				mk := settledK8sServices()
 				var patched v1.RedisFailoverStatus
@@ -144,8 +144,8 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 			rf.Spec.Sentinel.Enabled = new(false)
 			rf.Spec.Redis.Resources.Limits = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}
 			if autoscaling != "unset" {
-				max := resource.MustParse("2Gi")
-				rf.Spec.Redis.Autoscaling = &v1.AutoscalingSettings{Mode: autoscaling, MemoryMax: &max}
+				memoryMax := resource.MustParse("2Gi")
+				rf.Spec.Redis.Autoscaling = &v1.AutoscalingSettings{Mode: autoscaling, MemoryMax: &memoryMax}
 			}
 			if rf.AutoscalingEnabled() {
 				// effectiveRF adds the annotation of the spec limit, so the

@@ -55,8 +55,8 @@ func newInPlaceTest(t *testing.T) *inPlaceTest {
 	t.Helper()
 	rt := newRolloutTest(t)
 	rt.synced = true
-	max := resource.MustParse("4Gi")
-	rt.rf.Spec.Redis.Autoscaling = &redisfailoverv1.AutoscalingSettings{Mode: redisfailoverv1.AutoscalingModeAuto, MemoryMax: &max}
+	memoryMax := resource.MustParse("4Gi")
+	rt.rf.Spec.Redis.Autoscaling = &redisfailoverv1.AutoscalingSettings{Mode: redisfailoverv1.AutoscalingModeAuto, MemoryMax: &memoryMax}
 	rt.rf.Spec.Redis.MaxMemory = &redisfailoverv1.MaxMemorySettings{Percent: 75, Policy: "noeviction"}
 	rt.rf.Spec.Redis.Resources = memoryLimit("2Gi")
 	for i := range rt.pods {

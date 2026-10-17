@@ -27,8 +27,8 @@ import (
 // withAutoscaling sets the mode after Validate, because Validate refuses
 // mode Auto.
 func withAutoscaling(rf *redisfailoverv1.RedisFailover, mode string) *redisfailoverv1.RedisFailover {
-	max := resource.MustParse("64Gi")
-	rf.Spec.Redis.Autoscaling = &redisfailoverv1.AutoscalingSettings{Mode: mode, MemoryMax: &max, Workload: redisfailoverv1.AutoscalingWorkloadAuto}
+	memoryMax := resource.MustParse("64Gi")
+	rf.Spec.Redis.Autoscaling = &redisfailoverv1.AutoscalingSettings{Mode: mode, MemoryMax: &memoryMax, Workload: redisfailoverv1.AutoscalingWorkloadAuto}
 	return rf
 }
 
