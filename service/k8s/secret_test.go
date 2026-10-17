@@ -34,7 +34,7 @@ func TestSecretServiceGet(t *testing.T) {
 		}
 
 		mcli := &kubernetes.Clientset{}
-		mcli.AddReactor("create", "secrets", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		mcli.AddReactor("create", "secrets", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 			return true, &secret, nil
 		})
 		mcli.AddReactor("get", "secrets", func(action kubetesting.Action) (bool, runtime.Object, error) {
@@ -65,7 +65,7 @@ func TestSecretServiceGetMetricLabel(t *testing.T) {
 	for _, name := range []string{"auth", "team/auth-secret-with-a-long-name"} {
 		t.Run(name, func(t *testing.T) {
 			cli := kubernetes.NewSimpleClientset()
-			cli.PrependReactor("get", "secrets", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			cli.PrependReactor("get", "secrets", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, &corev1.Secret{}, nil
 			})
 			rec := &mmetrics.Recorder{}

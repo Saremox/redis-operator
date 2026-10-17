@@ -37,9 +37,9 @@ func autoscalerTestRF(t *testing.T, autoscaling *redisfailoverv1.AutoscalingSett
 // Recommend changes no pod: the generated objects must be the same as
 // without autoscaling, or the operator would roll the pods out.
 func TestGeneratedObjectsIgnoreRecommend(t *testing.T) {
-	max := resource.MustParse("2Gi")
+	memoryMax := resource.MustParse("2Gi")
 	plain := autoscalerTestRF(t, nil)
-	recommend := autoscalerTestRF(t, &redisfailoverv1.AutoscalingSettings{Mode: redisfailoverv1.AutoscalingModeRecommend, MemoryMax: &max})
+	recommend := autoscalerTestRF(t, &redisfailoverv1.AutoscalingSettings{Mode: redisfailoverv1.AutoscalingModeRecommend, MemoryMax: &memoryMax})
 	labels := map[string]string{"app": "test"}
 	ownerRefs := []metav1.OwnerReference{{Name: "test"}}
 

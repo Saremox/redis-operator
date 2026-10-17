@@ -422,7 +422,7 @@ func requireClosedByServer(t *testing.T, conn net.Conn) {
 	t.Helper()
 	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
 	_, err := conn.Read(make([]byte, 1))
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+	if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
 		t.Fatalf("read timed out: the server never closed the connection: %v", err)
 	}
 	require.ErrorIs(t, err, io.EOF)

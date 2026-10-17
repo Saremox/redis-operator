@@ -40,7 +40,7 @@ func TestGeneratedObjectsGolden(t *testing.T) {
 	files, err := filepath.Glob("../../example/redisfailover/*.yaml")
 	require.NoError(t, err)
 	require.NotEmpty(t, files)
-	var examples []string
+	examples := make([]string, 0, len(files))
 	for _, f := range files {
 		examples = append(examples, strings.TrimSuffix(filepath.Base(f), ".yaml"))
 	}

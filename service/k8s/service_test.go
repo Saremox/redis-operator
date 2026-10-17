@@ -112,10 +112,10 @@ func TestServiceServiceGetCreateOrUpdate(t *testing.T) {
 
 			// Mock.
 			mcli := &kubernetes.Clientset{}
-			mcli.AddReactor("get", "services", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("get", "services", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, test.getServiceResult, test.errorOnGet
 			})
-			mcli.AddReactor("create", "services", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("create", "services", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, nil, test.errorOnCreation
 			})
 
@@ -180,7 +180,7 @@ func TestCreateOrUpdateServicePreservesImmutableFields(t *testing.T) {
 
 	var updatedService *corev1.Service
 	mcli := &kubernetes.Clientset{}
-	mcli.AddReactor("get", "services", func(action kubetesting.Action) (bool, runtime.Object, error) {
+	mcli.AddReactor("get", "services", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 		return true, storedService, nil
 	})
 	mcli.AddReactor("update", "services", func(action kubetesting.Action) (bool, runtime.Object, error) {
@@ -237,7 +237,7 @@ func TestCreateOrUpdateServicePreservesHealthCheckNodePort(t *testing.T) {
 
 	var updatedService *corev1.Service
 	mcli := &kubernetes.Clientset{}
-	mcli.AddReactor("get", "services", func(action kubetesting.Action) (bool, runtime.Object, error) {
+	mcli.AddReactor("get", "services", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 		return true, storedService, nil
 	})
 	mcli.AddReactor("update", "services", func(action kubetesting.Action) (bool, runtime.Object, error) {
@@ -365,7 +365,7 @@ func TestServiceServiceCreateOrUpdateServiceGetError(t *testing.T) {
 	}
 
 	mcli := &kubernetes.Clientset{}
-	mcli.AddReactor("get", "services", func(action kubetesting.Action) (bool, runtime.Object, error) {
+	mcli.AddReactor("get", "services", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("connection refused")
 	})
 

@@ -195,13 +195,13 @@ func (l fieldLogger) WithField(key string, value any) log.Logger {
 	return l
 }
 
-func (l fieldLogger) add(level, format string, args ...any) {
+func (l fieldLogger) addf(level, format string, args ...any) {
 	*l.lines = append(*l.lines, level+": "+l.fields+fmt.Sprintf(format, args...))
 }
 
-func (l fieldLogger) Debugf(format string, args ...any) { l.add("debug", format, args...) }
-func (l fieldLogger) Infof(format string, args ...any)  { l.add("info", format, args...) }
-func (l fieldLogger) Errorf(format string, args ...any) { l.add("error", format, args...) }
+func (l fieldLogger) Debugf(format string, args ...any) { l.addf("debug", format, args...) }
+func (l fieldLogger) Infof(format string, args ...any)  { l.addf("info", format, args...) }
+func (l fieldLogger) Errorf(format string, args ...any) { l.addf("error", format, args...) }
 
 func TestPodServiceLogsTheNamespaceAndPod(t *testing.T) {
 	tests := []struct {
@@ -405,7 +405,7 @@ func TestPodServiceList(t *testing.T) {
 
 		mcli := &kubernetes.Clientset{}
 		wantErr := errors.New("wanted error")
-		mcli.AddReactor("list", "pods", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		mcli.AddReactor("list", "pods", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 			return true, nil, wantErr
 		})
 		service := k8s.NewPodService(mcli, log.Dummy, metrics.Dummy)

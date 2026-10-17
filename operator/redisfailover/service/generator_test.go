@@ -40,7 +40,7 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 	configMapName := rfservice.GetRedisName(generateRF())
 	shutdownConfigMapName := rfservice.GetRedisShutdownConfigMapName(generateRF())
 	readinesConfigMapName := rfservice.GetRedisReadinessName(generateRF())
-	executeMode := int32(0744)
+	executeMode := int32(0o744)
 	tests := []struct {
 		name           string
 		ownerRefs      []metav1.OwnerReference
@@ -2355,8 +2355,8 @@ func TestSentinelExtraVolumeMounts(t *testing.T) {
 }
 
 func TestCustomPort(t *testing.T) {
-	default_port := int32(6379)
-	custom_port := int32(12345)
+	defaultPort := int32(6379)
+	customPort := int32(12345)
 	tests := []struct {
 		name                  string
 		port                  int32
@@ -2364,22 +2364,22 @@ func TestCustomPort(t *testing.T) {
 	}{
 		{
 			name: "Default port",
-			port: default_port,
+			port: defaultPort,
 			expectedContainerPort: []corev1.ContainerPort{
 				{
 					Name:          "redis",
-					ContainerPort: default_port,
+					ContainerPort: defaultPort,
 					Protocol:      corev1.ProtocolTCP,
 				},
 			},
 		},
 		{
 			name: "Custom port",
-			port: custom_port,
+			port: customPort,
 			expectedContainerPort: []corev1.ContainerPort{
 				{
 					Name:          "redis",
-					ContainerPort: custom_port,
+					ContainerPort: customPort,
 					Protocol:      corev1.ProtocolTCP,
 				},
 			},
@@ -2410,7 +2410,7 @@ func TestCustomPort(t *testing.T) {
 }
 
 func TestRedisEnv(t *testing.T) {
-	default_port := int32(6379)
+	defaultPort := int32(6379)
 	tests := []struct {
 		name             string
 		auth             string
@@ -2422,11 +2422,11 @@ func TestRedisEnv(t *testing.T) {
 			expectedRedisEnv: []corev1.EnvVar{
 				{
 					Name:  "REDIS_ADDR",
-					Value: fmt.Sprintf("redis://127.0.0.1:%[1]v", default_port),
+					Value: fmt.Sprintf("redis://127.0.0.1:%[1]v", defaultPort),
 				},
 				{
 					Name:  "REDIS_PORT",
-					Value: fmt.Sprintf("%[1]v", default_port),
+					Value: fmt.Sprintf("%[1]v", defaultPort),
 				},
 				{
 					Name:  "REDIS_USER",
@@ -2440,11 +2440,11 @@ func TestRedisEnv(t *testing.T) {
 			expectedRedisEnv: []corev1.EnvVar{
 				{
 					Name:  "REDIS_ADDR",
-					Value: fmt.Sprintf("redis://127.0.0.1:%[1]v", default_port),
+					Value: fmt.Sprintf("redis://127.0.0.1:%[1]v", defaultPort),
 				},
 				{
 					Name:  "REDIS_PORT",
-					Value: fmt.Sprintf("%[1]v", default_port),
+					Value: fmt.Sprintf("%[1]v", defaultPort),
 				},
 				{
 					Name:  "REDIS_USER",
@@ -2471,7 +2471,7 @@ func TestRedisEnv(t *testing.T) {
 		var env []corev1.EnvVar
 
 		rf := generateRF()
-		rf.Spec.Redis.Port = default_port
+		rf.Spec.Redis.Port = defaultPort
 		if test.auth != "" {
 			rf.Spec.Auth.SecretPath = test.auth
 		}
@@ -2497,7 +2497,7 @@ func TestRedisEnv(t *testing.T) {
 }
 
 func TestRedisStartupProbe(t *testing.T) {
-	mode := int32(0744)
+	mode := int32(0o744)
 	tests := []struct {
 		name                string
 		expectedVolume      corev1.Volume
@@ -2550,7 +2550,7 @@ func TestRedisStartupProbe(t *testing.T) {
 }
 
 func TestSentinelStartupProbe(t *testing.T) {
-	mode := int32(0744)
+	mode := int32(0o744)
 	tests := []struct {
 		name                string
 		expectedVolume      corev1.Volume
@@ -3687,14 +3687,16 @@ esac
 			require.NoError(t, err)
 			calls := strings.Split(strings.TrimSpace(string(raw)), "\n")
 			for i, call := range calls {
-				if m := pause.FindStringSubmatch(call); m != nil {
-					// The pause ends 6s after the 12s deadline.
-					ms, err := strconv.Atoi(m[1])
-					require.NoError(t, err)
-					assert.GreaterOrEqual(t, ms, cmp.Or(test.minPause, 17000))
-					assert.LessOrEqual(t, ms, 18000)
-					calls[i] = pause.ReplaceAllString(call, "CLIENT PAUSE <ms> WRITE")
+				m := pause.FindStringSubmatch(call)
+				if m == nil {
+					continue
 				}
+				// The pause ends 6s after the 12s deadline.
+				ms, err := strconv.Atoi(m[1])
+				require.NoError(t, err)
+				assert.GreaterOrEqual(t, ms, cmp.Or(test.minPause, 17000))
+				assert.LessOrEqual(t, ms, 18000)
+				calls[i] = pause.ReplaceAllString(call, "CLIENT PAUSE <ms> WRITE")
 			}
 			if test.manyInfo {
 				// One INFO call each 0.1s until 8s before the deadline.
@@ -4168,7 +4170,7 @@ func TestRedisReadinessLinkDownWindow(t *testing.T) {
 	}{
 		{
 			name:   "operator mode, default failoverTimeout",
-			modify: func(rf *redisfailoverv1.RedisFailover) {},
+			modify: func(_ *redisfailoverv1.RedisFailover) {},
 			window: "70",
 		},
 		{
@@ -4369,14 +4371,14 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 	}{
 		{
 			name: "Deployment delete error stops before other deletes",
-			setup: func(ms *mK8SService.Services, resName string, saName string) {
+			setup: func(ms *mK8SService.Services, resName string, _ string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(&appsv1.Deployment{ObjectMeta: ownedMeta()}, nil)
 				ms.On("DeleteDeployment", namespace, resName).Once().Return(errors.New("delete deployment failed"))
 			},
 		},
 		{
 			name: "Service delete error",
-			setup: func(ms *mK8SService.Services, resName string, saName string) {
+			setup: func(ms *mK8SService.Services, resName string, _ string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetService", namespace, resName).Once().Return(&corev1.Service{ObjectMeta: ownedMeta()}, nil)
 				ms.On("DeleteService", namespace, resName).Once().Return(errors.New("delete service failed"))
@@ -4384,7 +4386,7 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 		},
 		{
 			name: "ConfigMap delete error",
-			setup: func(ms *mK8SService.Services, resName string, saName string) {
+			setup: func(ms *mK8SService.Services, resName string, _ string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetConfigMap", namespace, resName).Once().Return(&corev1.ConfigMap{ObjectMeta: ownedMeta()}, nil)
@@ -4393,7 +4395,7 @@ func TestEnsureNotPresentSentinelResourcesDeleteErrorPropagates(t *testing.T) {
 		},
 		{
 			name: "PodDisruptionBudget delete error",
-			setup: func(ms *mK8SService.Services, resName string, saName string) {
+			setup: func(ms *mK8SService.Services, resName string, _ string) {
 				ms.On("GetDeployment", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetService", namespace, resName).Once().Return(nil, errors.New("not found"))
 				ms.On("GetConfigMap", namespace, resName).Once().Return(nil, errors.New("not found"))

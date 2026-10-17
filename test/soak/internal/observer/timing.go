@@ -126,7 +126,7 @@ func (o *Observer) endRead(r *read, err error) {
 
 // timeRound records the lateness and the phases of a round. tick is when the
 // round was due, collected when the reads of the pods ended.
-func (o *Observer) timeRound(tick, start, collected, end time.Time, s snapshot) {
+func (o *Observer) timeRound(ctx context.Context, tick, start, collected, end time.Time, s snapshot) {
 	late, d := max(start.Sub(tick), 0), end.Sub(start)
 	o.roundTime.Observe(d.Seconds())
 	o.lateness.Observe(late.Seconds())
@@ -136,13 +136,13 @@ func (o *Observer) timeRound(tick, start, collected, end time.Time, s snapshot) 
 	}
 	// Each round is due every few seconds in each instance: do not build
 	// the attributes for a disabled level.
-	if !o.log.Enabled(context.Background(), level) {
+	if !o.log.Enabled(ctx, level) {
 		return
 	}
 	msg := "observer round"
 	if level == slog.LevelWarn {
 		msg = "observer round slow"
 	}
-	o.log.Log(context.Background(), level, msg, "lateness_seconds", late.Seconds(), "duration_seconds", d.Seconds(),
+	o.log.Log(ctx, level, msg, "lateness_seconds", late.Seconds(), "duration_seconds", d.Seconds(),
 		"kube_seconds", s.kubeTime.Seconds(), "read_seconds", s.readTime.Seconds(), "apply_seconds", end.Sub(collected).Seconds())
 }

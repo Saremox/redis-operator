@@ -336,6 +336,7 @@ func TestAutoscaleFrozenLimitPinnedBecomesAHeldStep(t *testing.T) {
 }
 
 func testFrozenLimitPinned(t *testing.T, mode string, later bool) {
+	t.Helper()
 	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
 	at.rf.Spec.Redis.Autoscaling.Mode = mode
 	at.now = stepNow

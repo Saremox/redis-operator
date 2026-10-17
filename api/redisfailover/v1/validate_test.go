@@ -175,10 +175,8 @@ func TestValidate(t *testing.T) {
 				// Validate runs again on each reconcile of the same object.
 				require.NoError(t, rf.Validate())
 				assert.Equal(expectedSentinelCustomConfig, rf.Spec.Sentinel.CustomConfig)
-			} else {
-				if assert.Error(err) {
-					assert.Contains(test.expectedError, err.Error())
-				}
+			} else if assert.Error(err) {
+				assert.Contains(test.expectedError, err.Error())
 			}
 		})
 	}

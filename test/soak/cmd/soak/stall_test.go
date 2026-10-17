@@ -23,7 +23,7 @@ func TestWatchStalls(t *testing.T) {
 		times <- start.Add(d)
 	}
 	ticks := make(chan time.Time)
-	stalls := prometheus.NewCounter(prometheus.CounterOpts{Name: "stalls"})
+	stalls := prometheus.NewCounter(prometheus.CounterOpts{Name: "stalls_total", Help: "Stalls of the test."})
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -44,7 +44,7 @@ func TestWatchStalls(t *testing.T) {
 
 // detectStalls returns when ctx is done.
 func TestDetectStalls(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	detectStalls(ctx, prometheus.NewCounter(prometheus.CounterOpts{Name: "stalls"}), slog.New(slog.DiscardHandler))
+	detectStalls(ctx, prometheus.NewCounter(prometheus.CounterOpts{Name: "stalls_total", Help: "Stalls of the test."}), slog.New(slog.DiscardHandler))
 }

@@ -33,20 +33,20 @@ func (l podFieldLogger) WithField(key string, value any) log.Logger {
 	return l
 }
 
-func (l podFieldLogger) add(level, format string, args ...any) {
+func (l podFieldLogger) addf(level, format string, args ...any) {
 	*l.lines = append(*l.lines, level+": "+l.pod+fmt.Sprintf(format, args...))
 }
 
 func (l podFieldLogger) Infof(format string, args ...any) {
-	l.add("info", format, args...)
+	l.addf("info", format, args...)
 }
 
 func (l podFieldLogger) Warningf(format string, args ...any) {
-	l.add("warning", format, args...)
+	l.addf("warning", format, args...)
 }
 
 func (l podFieldLogger) Errorf(format string, args ...any) {
-	l.add("error", format, args...)
+	l.addf("error", format, args...)
 }
 
 // Each Redis pod has 127.0.0.1 as master after the first start, so that is

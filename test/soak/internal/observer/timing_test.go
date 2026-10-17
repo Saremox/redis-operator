@@ -333,9 +333,9 @@ func TestTimeRound(t *testing.T) {
 	o, lines := timingObserver(t)
 	at := time.Unix(1000, 0)
 	s := snapshot{kubeTime: 100 * time.Millisecond, readTime: 300 * time.Millisecond}
-	o.timeRound(at, at.Add(50*time.Millisecond), at.Add(450*time.Millisecond), at.Add(500*time.Millisecond), s)
-	o.timeRound(at, at.Add(1500*time.Millisecond), at.Add(1600*time.Millisecond), at.Add(1700*time.Millisecond), snapshot{})
-	o.timeRound(at, at, at.Add(1900*time.Millisecond), at.Add(2*time.Second), snapshot{readTime: 1800 * time.Millisecond})
+	o.timeRound(t.Context(), at, at.Add(50*time.Millisecond), at.Add(450*time.Millisecond), at.Add(500*time.Millisecond), s)
+	o.timeRound(t.Context(), at, at.Add(1500*time.Millisecond), at.Add(1600*time.Millisecond), at.Add(1700*time.Millisecond), snapshot{})
+	o.timeRound(t.Context(), at, at, at.Add(1900*time.Millisecond), at.Add(2*time.Second), snapshot{readTime: 1800 * time.Millisecond})
 	got := lines()
 	if len(got) != 3 {
 		t.Fatalf("log %v", got)
@@ -369,7 +369,7 @@ func TestTimeRound(t *testing.T) {
 func TestTimeRoundEarly(t *testing.T) {
 	o, lines := timingObserver(t)
 	at := time.Unix(1000, 0)
-	o.timeRound(at, at.Add(-time.Second), at, at, snapshot{})
+	o.timeRound(t.Context(), at, at.Add(-time.Second), at, at, snapshot{})
 	if got := lines(); len(got) != 1 || got[0]["lateness_seconds"] != 0.0 {
 		t.Errorf("log %v", got)
 	}
@@ -469,7 +469,7 @@ func TestTimingCost(t *testing.T) {
 	o.log = slog.New(slog.NewJSONHandler(&buf, nil))
 	at := time.Unix(1000, 0)
 	if n := testing.AllocsPerRun(100, func() {
-		o.timeRound(at, at.Add(time.Millisecond), at.Add(20*time.Millisecond), at.Add(25*time.Millisecond), snapshot{})
+		o.timeRound(t.Context(), at, at.Add(time.Millisecond), at.Add(20*time.Millisecond), at.Add(25*time.Millisecond), snapshot{})
 	}); n != 0 {
 		t.Errorf("round timing allocates %v", n)
 	}

@@ -317,10 +317,10 @@ func TestServiceAccountServiceGetCreateOrUpdate(t *testing.T) {
 
 			// Mock.
 			mcli := &kubernetes.Clientset{}
-			mcli.AddReactor("get", "serviceaccounts", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("get", "serviceaccounts", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, test.getServiceAccountResult, test.errorOnGet
 			})
-			mcli.AddReactor("create", "serviceaccounts", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("create", "serviceaccounts", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, nil, test.errorOnCreation
 			})
 

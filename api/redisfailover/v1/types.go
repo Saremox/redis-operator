@@ -497,6 +497,7 @@ type RedisFailoverList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata"`
 
+	// Items holds the RedisFailovers that the list request returned.
 	Items []RedisFailover `json:"items"`
 }
 

@@ -51,8 +51,8 @@ func newAutoscaleTest(t *testing.T, mode string) *autoscaleTest {
 	rf := &redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns", UID: "rf-uid"}}
 	rf.Spec.Redis.Resources.Limits = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}
 	if mode != "" {
-		max := resource.MustParse("2Gi")
-		rf.Spec.Redis.Autoscaling = &redisfailoverv1.AutoscalingSettings{Mode: mode, MemoryMax: &max}
+		memoryMax := resource.MustParse("2Gi")
+		rf.Spec.Redis.Autoscaling = &redisfailoverv1.AutoscalingSettings{Mode: mode, MemoryMax: &memoryMax}
 	}
 	require.NoError(t, rf.Validate())
 	rf.Status.State = redisfailoverv1.HealthyState
@@ -239,8 +239,8 @@ func TestAutoscaleWritesAGrowingStoreOncePerWindow(t *testing.T) {
 // status gives the reason and no value that the validation would reject.
 func TestAutoscaleAtMemoryMax(t *testing.T) {
 	at := newAutoscaleTest(t, redisfailoverv1.AutoscalingModeRecommend)
-	max := resource.MustParse("1Gi")
-	at.rf.Spec.Redis.Autoscaling.MemoryMax = &max
+	memoryMax := resource.MustParse("1Gi")
+	at.rf.Spec.Redis.Autoscaling.MemoryMax = &memoryMax
 	require.NoError(t, at.rf.Validate())
 	at.fakeStateStore(t)
 	at.mrfc.On("GetAutoscalerInfo", at.rf, autoscaleMaster).Return(masterInfo(990), nil)

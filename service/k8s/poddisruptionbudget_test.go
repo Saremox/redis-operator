@@ -112,10 +112,10 @@ func TestPodDisruptionBudgetServiceGetCreateOrUpdate(t *testing.T) {
 
 			// Mock.
 			mcli := &kubernetes.Clientset{}
-			mcli.AddReactor("get", "poddisruptionbudgets", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("get", "poddisruptionbudgets", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, test.getPodDisruptionBudgetResult, test.errorOnGet
 			})
-			mcli.AddReactor("create", "poddisruptionbudgets", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("create", "poddisruptionbudgets", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, nil, test.errorOnCreation
 			})
 
@@ -237,7 +237,7 @@ func TestPodDisruptionBudgetServiceUpdate(t *testing.T) {
 			assertTest := assert.New(t)
 
 			mcli := &kubernetes.Clientset{}
-			mcli.AddReactor("update", "poddisruptionbudgets", func(action kubetesting.Action) (bool, runtime.Object, error) {
+			mcli.AddReactor("update", "poddisruptionbudgets", func(_ kubetesting.Action) (bool, runtime.Object, error) {
 				return true, nil, test.errorOnUpdate
 			})
 

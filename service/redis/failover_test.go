@@ -355,7 +355,7 @@ func TestGetFailoverState(t *testing.T) {
 
 // fakeServer accepts connections. With reply, it answers the first request
 // with reply. Without reply, it never answers, as a frozen node.
-func fakeServer(t *testing.T, reply string) (string, string) {
+func fakeServer(t *testing.T, reply string) (host, port string) {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -376,7 +376,7 @@ func fakeServer(t *testing.T, reply string) (string, string) {
 			}()
 		}
 	}()
-	host, port, err := net.SplitHostPort(l.Addr().String())
+	host, port, err = net.SplitHostPort(l.Addr().String())
 	require.NoError(t, err)
 	return host, port
 }

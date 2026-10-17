@@ -187,9 +187,12 @@ func setShutdownTimeouts(t *testing.T, graceful, total time.Duration) {
 // errOnlyContext reports an error from Err, but its Done channel never
 // closes. It lets a test reach the code that runs when Redis exits after
 // the context is cancelled, which a select cannot reach in a fixed order.
-type errOnlyContext struct{ context.Context }
+type errOnlyContext struct{}
 
-func (errOnlyContext) Err() error { return context.Canceled }
+func (errOnlyContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (errOnlyContext) Done() <-chan struct{}       { return nil }
+func (errOnlyContext) Err() error                  { return context.Canceled }
+func (errOnlyContext) Value(any) any               { return nil }
 
 func TestRunProcessLoopReturnsStartError(t *testing.T) {
 	useStandIn(t, "")
@@ -220,7 +223,7 @@ func TestRunProcessLoopIgnoresExitErrorAfterCancel(t *testing.T) {
 	useStandIn(t, writeScript(t, "exit 3\n"))
 	reaper := startReaper(t)
 
-	err := runProcessLoop(errOnlyContext{context.Background()}, func() {}, reaper)
+	err := runProcessLoop(errOnlyContext{}, func() {}, reaper)
 
 	require.NoError(t, err)
 }

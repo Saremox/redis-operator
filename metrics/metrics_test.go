@@ -125,7 +125,7 @@ func TestPrometheusMetrics(t *testing.T) {
 			// Make the request to the metrics.
 			h := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 			w := httptest.NewRecorder()
-			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", http.NoBody))
 
 			resp := w.Result()
 			if assert.Equal(test.expCode, resp.StatusCode) {

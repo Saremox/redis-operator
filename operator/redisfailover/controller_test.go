@@ -459,7 +459,7 @@ func TestRFControllerRunWaitsForInFlightReconciles(t *testing.T) {
 
 func TestRFControllerStopsTakingQueuedReconcilesOnceCancelled(t *testing.T) {
 	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)
-	var rfs []redisfailoverv1.RedisFailover
+	rfs := make([]redisfailoverv1.RedisFailover, 0, 4)
 	for _, name := range []string{"a", "b", "c", "d"} {
 		rfs = append(rfs, redisfailoverv1.RedisFailover{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns"}})
 	}
@@ -746,7 +746,7 @@ func (m *recordingMetrics) ObserveResourceProcessingDuration(_ context.Context, 
 	m.processed = append(m.processed, success)
 }
 
-func (m *recordingMetrics) snapshot() (int, int, []bool) {
+func (m *recordingMetrics) snapshot() (queued, inQueue int, processed []bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.queued, m.inQueue, append([]bool(nil), m.processed...)
