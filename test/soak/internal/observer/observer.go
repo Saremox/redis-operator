@@ -351,7 +351,7 @@ func (o *Observer) round(ctx context.Context, due time.Time) time.Time {
 		o.apply(time.Now(), s, generation, o.converged(ctx))
 	}
 	end := o.now()
-	o.timeRound(due, start, collected, end, s)
+	o.timeRound(ctx, due, start, collected, end, s)
 	return end
 }
 
