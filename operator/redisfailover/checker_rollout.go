@@ -271,7 +271,7 @@ const (
 //
 // The preStop hook of the master sends SENTINEL FAILOVER through the Sentinel
 // Service. When the Sentinel that accepts it stops, no other Sentinel knows
-// the promoted replica. A second failover then can lose the writes that this
+// the promoted replica. A second failover can then lose the writes that this
 // replica accepted.
 func (r *RedisFailoverHandler) sentinelRolloutWait(rf *redisfailoverv1.RedisFailover) (*rolloutWait, error) {
 	if rf.OperatorManagedFailover() {
