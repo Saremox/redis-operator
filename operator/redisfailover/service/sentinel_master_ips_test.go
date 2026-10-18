@@ -58,4 +58,7 @@ func TestSentinelFailoverWindow(t *testing.T) {
 	assert.Equal(t, 15*time.Second, rfservice.SentinelFailoverWindow(rf), "the defaults")
 	rf.Spec.Sentinel.CustomConfig = []string{"down-after-milliseconds 1000", "failover-timeout 2500"}
 	assert.Equal(t, 3500*time.Millisecond, rfservice.SentinelFailoverWindow(rf))
+	downAfter, failoverTimeout := rfservice.SentinelTimeouts(rf)
+	assert.Equal(t, time.Second, downAfter)
+	assert.Equal(t, 2500*time.Millisecond, failoverTimeout)
 }

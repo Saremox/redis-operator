@@ -23,8 +23,11 @@ type sentinelMasterWait struct {
 	named  string
 	master string
 	since  time.Time
-	// limit is the bound, fixed at the start of the wait.
-	limit time.Duration
+	// downAfter and failoverTimeout are the largest values of the
+	// customConfig at the start of the wait and of the Sentinels in known.
+	downAfter, failoverTimeout time.Duration
+	// known holds the Sentinels that gave their timeouts in this wait.
+	known map[string]bool
 	// ended is true after the log of the end of the wait.
 	ended bool
 	// seen is true after the check of the wait in the current reconcile.
@@ -71,10 +74,14 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 	started := !ok || wait.named != named || wait.master != master
 	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).WithField("pod", pod)
 	if started {
-		wait = sentinelMasterWait{named: named, master: master, since: now, limit: r.sentinelMasterLimit(rf, logger)}
+		downAfter, failoverTimeout := rfservice.SentinelTimeouts(rf)
+		wait = sentinelMasterWait{named: named, master: master, since: now, downAfter: downAfter, failoverTimeout: failoverTimeout, known: map[string]bool{}}
 	}
 	wait.seen = true
-	limit := wait.limit
+	if !wait.ended {
+		r.readSentinelTimeouts(rf, &wait, logger)
+	}
+	limit := wait.downAfter + wait.failoverTimeout
 	elapsed := now.Sub(wait.since)
 	if elapsed >= limit {
 		if !wait.ended {
@@ -100,27 +107,37 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 	return true
 }
 
-// sentinelMasterLimit returns the bound of a wait that starts. The running
-// Sentinels keep their old timeouts until the heal applies the customConfig,
-// and the wait stops that heal. Thus the bound is the larger of the
-// customConfig window and the longest window of the Sentinels that answer.
-// It stays the same for the whole wait.
-func (r *RedisFailoverHandler) sentinelMasterLimit(rf *redisfailoverv1.RedisFailover, logger log.Logger) time.Duration {
-	limit := rfservice.SentinelFailoverWindow(rf)
+// readSentinelTimeouts adds the timeouts of each running Sentinel that did
+// not give them yet in this wait. The running Sentinels keep their old
+// timeouts until the heal applies the customConfig, and the wait stops that
+// heal. One Sentinel can flag the master down late and another can lead the
+// failover, so the bound is the largest down-after-milliseconds plus the
+// largest failover-timeout. A new value can only make the bound longer. A
+// Sentinel that never answers stays unknown, and the wait ends at the bound
+// of the known values.
+func (r *RedisFailoverHandler) readSentinelTimeouts(rf *redisfailoverv1.RedisFailover, wait *sentinelMasterWait, logger log.Logger) {
 	sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
 	if err != nil {
-		logger.Debugf("The operator did not read the Sentinels, so the wait uses the customConfig timeouts: %v", err)
-		return limit
+		logger.Debugf("The operator did not read the Sentinels, so the wait uses the known timeouts: %v", err)
+		return
 	}
 	for _, sip := range sentinels {
-		f, err := r.rfChecker.GetSentinelFailover(sip)
-		if err != nil || f.DownAfter == 0 || f.Timeout == 0 {
-			logger.Debugf("Sentinel %s did not give its timeouts, so the wait does not use them: %v", sip, err)
+		if wait.known[sip] {
 			continue
 		}
-		limit = max(limit, f.DownAfter+f.Timeout)
+		f, err := r.rfChecker.GetSentinelFailover(sip)
+		if err != nil {
+			logger.Debugf("Sentinel %s did not give its timeouts, so the operator reads them again in the next check: %v", sip, err)
+			continue
+		}
+		if f.DownAfter == 0 || f.Timeout == 0 {
+			logger.Debugf("Sentinel %s did not give its timeouts, so the operator reads them again in the next check", sip)
+			continue
+		}
+		wait.known[sip] = true
+		wait.downAfter = max(wait.downAfter, f.DownAfter)
+		wait.failoverTimeout = max(wait.failoverTimeout, f.Timeout)
 	}
-	return limit
 }
 
 // sentinelsNameOtherPod returns the IP and the name of the Redis pod that the

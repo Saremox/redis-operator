@@ -57,14 +57,24 @@ type smReconcile struct {
 	live *redis.SentinelFailover
 	// liveErr is the error of GetSentinelFailover.
 	liveErr error
+	// lives holds the reply of GetSentinelFailover of single Sentinels.
+	lives map[string]smLive
+}
+
+// smLive is a reply of GetSentinelFailover.
+type smLive struct {
+	f   redis.SentinelFailover
+	err error
 }
 
 // smResult is what a reconcile did.
 type smResult struct {
-	labels    int
-	replicaOf int
-	monitored []string
-	elected   int
+	// timeoutReads counts the reads of the Sentinel timeouts.
+	timeoutReads int
+	labels       int
+	replicaOf    int
+	monitored    []string
+	elected      int
 }
 
 // sentinelMasterTest runs CheckAndHeal in Sentinel mode with three Redis pods
@@ -79,6 +89,8 @@ type sentinelMasterTest struct {
 	clock    time.Time
 	lines    []string
 	requeues []time.Duration
+	// viaHandle runs Handle with a successful Ensure, not CheckAndHeal.
+	viaHandle bool
 }
 
 func smPod(name, ip string, master, deleting bool) corev1.Pod {
@@ -173,13 +185,22 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	c.On("GetSentinelsIPs", rf).Maybe().Return(smSentinels, nil)
 	for _, sip := range smSentinels {
 		c.On("CheckSentinelMonitor", sip, s.master, mock.Anything).Maybe().Return(errors.New("sentinel monitoring another master"))
-		c.On("GetSentinelFailover", sip).Maybe().Return(live, s.liveErr)
+		reply := smLive{f: live, err: s.liveErr}
+		if l, ok := s.lives[sip]; ok {
+			reply = l
+		}
+		c.On("GetSentinelFailover", sip).Maybe().Return(reply.f, reply.err)
 		h.On("NewSentinelMonitor", sip, s.master, rf).Maybe().Return(nil)
 		c.On("CheckSentinelNumberInMemory", sip, rf).Maybe().Return(nil)
 		c.On("CheckSentinelSlavesNumberInMemory", sip, rf).Maybe().Return(nil)
 		h.On("SetSentinelCustomConfig", sip, rf).Maybe().Return(nil)
 	}
-	err := st.handler.CheckAndHeal(rf)
+	var err error
+	if st.viaHandle {
+		err = st.handle(rf)
+	} else {
+		err = st.handler.CheckAndHeal(rf)
+	}
 	// The heal reads the pods again after the wait, and two masters are an
 	// error.
 	if s.podsErr == nil && s.nMasters < 2 && s.nMastersErr == nil && s.masterErr == nil && s.passwordErr == nil && s.liveErr == nil {
@@ -187,8 +208,11 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	}
 	var res smResult
 	for _, call := range c.Calls {
-		if call.Method == "CheckAllSlavesFromMaster" {
+		switch call.Method {
+		case "CheckAllSlavesFromMaster":
 			res.labels++
+		case "GetSentinelFailover":
+			res.timeoutReads++
 		}
 	}
 	for _, call := range h.Calls {
@@ -211,6 +235,29 @@ func (st *sentinelMasterTest) assertWait(t *testing.T, res smResult) {
 	assert.Empty(t, res.monitored, "no SENTINEL MONITOR")
 	assert.Equal(t, redisfailoverv1.NotHealthyState, st.rf.Status.State)
 	assert.Equal(t, sentinelMasterMsg, st.rf.Status.Message)
+}
+
+// handle runs Handle on rf, the production path, with a successful Ensure.
+func (st *sentinelMasterTest) handle(rf *redisfailoverv1.RedisFailover) error {
+	rfs := &mRFService.RedisFailoverClient{}
+	rfs.On("EnsureNotPresentRedisService", mock.Anything).Maybe().Return(nil)
+	rfs.On("EnsureNotPresentSentinelResources", mock.Anything).Maybe().Return(nil)
+	for _, m := range []string{"EnsureRedisConfigMap", "EnsureRedisMasterService", "EnsureRedisReadinessConfigMap", "EnsureRedisService", "EnsureRedisShutdownConfigMap", "EnsureRedisSlaveService", "EnsureRedisStatefulset", "EnsureSentinelConfigMap", "EnsureSentinelDeployment", "EnsureSentinelService"} {
+		rfs.On(m, mock.Anything, mock.Anything, mock.Anything).Maybe().Return(nil)
+	}
+	st.handler.rfService = rfs
+	st.k8s.On("GetConfigMap", mock.Anything, mock.Anything).Maybe().Return(nil, apierrors.NewNotFound(corev1.Resource("configmaps"), "state"))
+	rf.Finalizers = []string{redisFailoverFinalizer}
+	return st.handler.Handle(context.Background(), rf)
+}
+
+// assertEnd checks the end of a wait: the roles heal. A Sentinel with a read
+// error gets no SENTINEL MONITOR, as in the failover hold.
+func (st *sentinelMasterTest) assertEnd(t *testing.T, res smResult) {
+	t.Helper()
+	assert.Equal(t, 1, res.labels)
+	assert.Equal(t, 1, res.replicaOf)
+	assert.NotEqual(t, sentinelMasterMsg, st.rf.Status.Message)
 }
 
 func (st *sentinelMasterTest) assertHeal(t *testing.T, res smResult) {
@@ -270,12 +317,38 @@ func TestSentinelMasterWaitEndsAtTheBound(t *testing.T) {
 	st.assertHeal(t, res)
 	assert.Contains(t, st.lines, smEndLine)
 
-	st.clock = st.clock.Add(time.Second)
-	res = st.run(t, orphaned)
-	st.assertHeal(t, res)
-	for _, line := range st.lines {
-		assert.NotContains(t, line, "The Sentinels give pod", "one log line for the end")
+	// The ended wait stays: each later round heals and starts no wait.
+	for range 3 {
+		st.clock = st.clock.Add(time.Second)
+		res = st.run(t, orphaned)
+		st.assertHeal(t, res)
+		for _, line := range st.lines {
+			assert.NotContains(t, line, "The Sentinels give pod", "one log line for the end")
+		}
 	}
+}
+
+// TestSentinelMasterWaitThroughHandle covers the wait in Handle, the path of
+// the controller. Each requeue is a Handle, and it keeps the start of the
+// wait.
+func TestSentinelMasterWaitThroughHandle(t *testing.T) {
+	st := newSentinelMasterTest()
+	st.viaHandle = true
+	st.assertWait(t, st.run(t, orphaned))
+	v, ok := st.handler.sentinelMasterWaits.Load("testns/test")
+	require.True(t, ok)
+	first, _ := v.(sentinelMasterWait)
+
+	st.clock = st.clock.Add(5 * time.Second)
+	st.assertWait(t, st.run(t, orphaned))
+	assert.Equal(t, []string{"debug: " + smWaitLine}, st.lines)
+	v, ok = st.handler.sentinelMasterWaits.Load("testns/test")
+	require.True(t, ok, "Handle dropped a wait that it checked")
+	second, _ := v.(sentinelMasterWait)
+	assert.Equal(t, first.since, second.since)
+
+	st.clock = st.clock.Add(10 * time.Second)
+	st.assertHeal(t, st.run(t, orphaned))
 }
 
 // TestSentinelMasterWaitUsesTheSentinelConfig covers the bound from the
@@ -441,40 +514,114 @@ func TestSentinelMasterWaitUsesTheLiveTimeouts(t *testing.T) {
 	short := []string{"down-after-milliseconds 1000", "failover-timeout 2000"}
 	tests := map[string]struct {
 		config []string
-		start  smReconcile
+		each   smReconcile
 		// waits is a time after the start that still waits, and heals the
 		// time that heals.
 		waits, heals time.Duration
 	}{
-		"a lowered customConfig waits for the live timeouts": {config: short, start: withLive(orphaned, &redis.SentinelFailover{DownAfter: 5 * time.Second, Timeout: 10 * time.Second}, nil), waits: 14 * time.Second, heals: 15 * time.Second},
-		"a live read error uses the customConfig":            {config: short, start: withLive(orphaned, nil, errors.New("boom")), waits: 2 * time.Second, heals: 3 * time.Second},
-		"a Sentinel without the timeouts":                    {config: short, start: withLive(orphaned, &redis.SentinelFailover{Timeout: 10 * time.Second}, nil), waits: 2 * time.Second, heals: 3 * time.Second},
-		"shorter live timeouts use the customConfig":         {start: withLive(orphaned, &redis.SentinelFailover{DownAfter: time.Second, Timeout: 2 * time.Second}, nil), waits: 14 * time.Second, heals: 15 * time.Second},
+		"a lowered customConfig waits for the live timeouts": {config: short, each: withLive(orphaned, &redis.SentinelFailover{DownAfter: 5 * time.Second, Timeout: 10 * time.Second}, nil), waits: 14 * time.Second, heals: 15 * time.Second},
+		"Sentinels that never answer use the customConfig":   {config: short, each: withLive(orphaned, nil, errors.New("boom")), waits: 2 * time.Second, heals: 3 * time.Second},
+		"a Sentinel without the timeouts":                    {config: short, each: withLive(orphaned, &redis.SentinelFailover{Timeout: 10 * time.Second}, nil), waits: 2 * time.Second, heals: 3 * time.Second},
+		"shorter live timeouts use the customConfig":         {each: withLive(orphaned, &redis.SentinelFailover{DownAfter: time.Second, Timeout: 2 * time.Second}, nil), waits: 14 * time.Second, heals: 15 * time.Second},
+		// One Sentinel flags the master down late, another leads the
+		// failover with its long failover-timeout.
+		"mixed timeouts add the largest values": {each: withLives(orphaned, map[string]smLive{
+			smSentinels[0]: {f: redis.SentinelFailover{DownAfter: 100 * time.Second, Timeout: time.Second}},
+			smSentinels[1]: {f: redis.SentinelFailover{DownAfter: time.Second, Timeout: 100 * time.Second}},
+			smSentinels[2]: {f: redis.SentinelFailover{DownAfter: time.Second, Timeout: 100 * time.Second}},
+		}), waits: 199 * time.Second, heals: 200 * time.Second},
+		// The wait ends at the bound of the known values.
+		"a Sentinel that never answers": {each: withLives(orphaned, map[string]smLive{
+			smSentinels[0]: {err: errors.New("boom")},
+			smSentinels[1]: {f: redis.SentinelFailover{DownAfter: 20 * time.Second, Timeout: 20 * time.Second}},
+			smSentinels[2]: {f: redis.SentinelFailover{DownAfter: 20 * time.Second, Timeout: 20 * time.Second}},
+		}), waits: 39 * time.Second, heals: 40 * time.Second},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			st := newSentinelMasterTest()
 			st.rf.Spec.Sentinel.CustomConfig = test.config
-			st.assertWait(t, st.run(t, test.start))
+			st.assertWait(t, st.run(t, test.each))
 			st.clock = st.clock.Add(test.waits)
-			st.assertWait(t, st.run(t, orphaned))
+			st.assertWait(t, st.run(t, test.each))
 			st.clock = st.clock.Add(test.heals - test.waits)
-			st.assertHeal(t, st.run(t, orphaned))
+			st.assertEnd(t, st.run(t, test.each))
 		})
 	}
-	t.Run("the bound stays for the wait", func(t *testing.T) {
+	t.Run("the customConfig counts at the start only", func(t *testing.T) {
 		st := newSentinelMasterTest()
 		st.assertWait(t, st.run(t, orphaned))
-		// The customConfig changes and the live read fails during the wait.
 		st.rf.Spec.Sentinel.CustomConfig = short
 		st.clock = st.clock.Add(10 * time.Second)
-		st.assertWait(t, st.run(t, withLive(orphaned, nil, errors.New("boom"))))
+		st.assertWait(t, st.run(t, orphaned))
 	})
 	t.Run("no Sentinel list", func(t *testing.T) {
 		st := newSentinelMasterTest()
 		st.check.On("GetSentinelsIPs", st.rf).Return(nil, errors.New("boom"))
-		assert.Equal(t, 15*time.Second, st.handler.sentinelMasterLimit(st.rf, st.handler.logger))
+		wait := sentinelMasterWait{downAfter: 5 * time.Second, failoverTimeout: 10 * time.Second, known: map[string]bool{}}
+		st.handler.readSentinelTimeouts(st.rf, &wait, st.handler.logger)
+		assert.Equal(t, 5*time.Second, wait.downAfter)
+		assert.Equal(t, 10*time.Second, wait.failoverTimeout)
 	})
+}
+
+// TestSentinelMasterWaitReadsTheTimeoutsAgain covers a Sentinel that gives
+// its timeouts only in a later check of the wait.
+func TestSentinelMasterWaitReadsTheTimeoutsAgain(t *testing.T) {
+	failing := withLives(orphaned, map[string]smLive{smSentinels[2]: {err: errors.New("boom")}})
+	answers := func(downAfter, failoverTimeout time.Duration) smReconcile {
+		return withLives(orphaned, map[string]smLive{smSentinels[2]: {f: redis.SentinelFailover{DownAfter: downAfter, Timeout: failoverTimeout}}})
+	}
+	t.Run("a later answer makes the bound longer", func(t *testing.T) {
+		st := newSentinelMasterTest()
+		st.assertWait(t, st.run(t, failing))
+		st.clock = st.clock.Add(5 * time.Second)
+		st.assertWait(t, st.run(t, answers(30*time.Second, 10*time.Second)))
+		st.clock = st.clock.Add(34 * time.Second)
+		st.assertWait(t, st.run(t, orphaned))
+		st.clock = st.clock.Add(time.Second)
+		st.assertHeal(t, st.run(t, orphaned))
+	})
+	t.Run("a later smaller answer keeps the bound", func(t *testing.T) {
+		st := newSentinelMasterTest()
+		big := redis.SentinelFailover{DownAfter: 20 * time.Second, Timeout: 20 * time.Second}
+		start := withLives(orphaned, map[string]smLive{smSentinels[0]: {f: big}, smSentinels[1]: {f: big}, smSentinels[2]: {err: errors.New("boom")}})
+		st.assertWait(t, st.run(t, start))
+		st.clock = st.clock.Add(5 * time.Second)
+		st.assertWait(t, st.run(t, answers(time.Second, time.Second)))
+		st.clock = st.clock.Add(34 * time.Second)
+		st.assertWait(t, st.run(t, orphaned))
+	})
+	t.Run("the reads stop after the first answer", func(t *testing.T) {
+		st := newSentinelMasterTest()
+		res := st.run(t, failing)
+		st.assertWait(t, res)
+		assert.Equal(t, 3, res.timeoutReads)
+		st.clock = st.clock.Add(time.Second)
+		res = st.run(t, failing)
+		st.assertWait(t, res)
+		assert.Equal(t, 1, res.timeoutReads, "only the Sentinel without an answer")
+		st.clock = st.clock.Add(time.Second)
+		st.assertWait(t, st.run(t, orphaned))
+		st.clock = st.clock.Add(time.Second)
+		res = st.run(t, orphaned)
+		st.assertWait(t, res)
+		assert.Zero(t, res.timeoutReads)
+	})
+	t.Run("no reads after the end", func(t *testing.T) {
+		st := newSentinelMasterTest()
+		st.assertWait(t, st.run(t, failing))
+		st.clock = st.clock.Add(15 * time.Second)
+		st.assertEnd(t, st.run(t, failing))
+		// A late answer does not start the ended wait again.
+		st.clock = st.clock.Add(time.Second)
+		st.assertHeal(t, st.run(t, answers(30*time.Second, 10*time.Second)))
+	})
+}
+
+func withLives(s smReconcile, lives map[string]smLive) smReconcile {
+	s.lives = lives
+	return s
 }
 
 func withLive(s smReconcile, live *redis.SentinelFailover, err error) smReconcile {

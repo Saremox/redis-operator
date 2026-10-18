@@ -261,7 +261,14 @@ func redisReadinessMaxLinkDownSeconds(rf *redisfailoverv1.RedisFailover) int64 {
 // after the loss of the master and to end it: the down-after-milliseconds plus
 // the failover-timeout of the Sentinel customConfig.
 func SentinelFailoverWindow(rf *redisfailoverv1.RedisFailover) time.Duration {
-	return sentinelConfigMilliseconds(rf, "down-after-milliseconds", redisfailoverv1.DefaultSentinelDownAfterMilliseconds) +
+	downAfter, failoverTimeout := SentinelTimeouts(rf)
+	return downAfter + failoverTimeout
+}
+
+// SentinelTimeouts returns the down-after-milliseconds and the
+// failover-timeout of the Sentinel customConfig.
+func SentinelTimeouts(rf *redisfailoverv1.RedisFailover) (time.Duration, time.Duration) {
+	return sentinelConfigMilliseconds(rf, "down-after-milliseconds", redisfailoverv1.DefaultSentinelDownAfterMilliseconds),
 		sentinelConfigMilliseconds(rf, "failover-timeout", redisfailoverv1.DefaultSentinelFailoverTimeoutMilliseconds)
 }
 

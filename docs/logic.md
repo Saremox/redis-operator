@@ -127,8 +127,9 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
   - A Sentinel leader can promote a replica and stop before it tells the other Sentinels. The other Sentinels then fail over the old master to another replica. That failover discards the writes that the first promoted replica accepted.
   - The operator reads `SENTINEL get-master-addr-by-name` from each running Sentinel. It waits only when all the Sentinels that answer give the same IP, and they are a quorum. That IP must be a pod of the RedisFailover, also a pod in deletion.
   - The wait ends after `down-after-milliseconds` plus `failover-timeout` (default 15s). Then the operator heals as usual.
-  - The bound is the larger of the Sentinel `customConfig` values and the values of the running Sentinels. The Sentinels get a changed `customConfig` only after the wait. The operator fixes the bound at the start of the wait.
-  - Another master or another pod that the Sentinels give starts a new wait. A reconcile that does not check the wait, for example after a read error or with the skip annotation, also starts a new wait.
+  - The bound is the largest `down-after-milliseconds` plus the largest `failover-timeout`, of the Sentinel `customConfig` and of the running Sentinels. The Sentinels get a changed `customConfig` only after the wait, and one Sentinel can flag the master down late while another leads the failover. The operator sets the `customConfig` part of the bound at the start of the wait and keeps it.
+  - In each check of the wait, the operator reads the timeouts of each Sentinel that did not give them yet. A new value can only make the bound longer. A Sentinel that never answers stays unknown, and the wait ends at the bound of the known values.
+  - Another master or another pod that the Sentinels give starts a new wait. A reconcile that skips the check, for example after a read error or with the skip annotation, ends the wait. The next check starts a new wait.
   - In the wait, the master Service can have no endpoint, because the old master pod stops.
   - After an election in the same reconcile, the operator does not wait. The Sentinels give the old master until the operator monitors the elected master.
 - All Redis replicas replicate from the master.
