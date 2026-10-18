@@ -314,15 +314,16 @@ func (r *RedisFailoverHandler) sentinelRolloutWait(rf *redisfailoverv1.RedisFail
 }
 
 // sentinelRolloutReason returns why the rollout of the Sentinel Deployment d
-// is not finished, or "". The terminating pods of an old ReplicaSet are not in
-// the status, so the caller checks the pods too.
+// is not finished, or "". An available pod is ready, so the ready count needs
+// no check. The terminating pods of an old ReplicaSet are not in the status,
+// so the caller checks the pods too.
 func sentinelRolloutReason(d *appsv1.Deployment) string {
 	if d.Status.ObservedGeneration < d.Generation {
 		return fmt.Sprintf("the Deployment controller did not observe generation %d of Deployment %s", d.Generation, d.Name)
 	}
 	want := ptr.Deref(d.Spec.Replicas, 1)
 	s := d.Status
-	if s.Replicas != want || s.UpdatedReplicas != want || s.ReadyReplicas != want || s.AvailableReplicas != want {
+	if s.Replicas != want || s.UpdatedReplicas != want || s.AvailableReplicas != want {
 		return fmt.Sprintf("Deployment %s has %d pods, %d updated, %d ready and %d available, of %d", d.Name, s.Replicas, s.UpdatedReplicas, s.ReadyReplicas, s.AvailableReplicas, want)
 	}
 	return ""

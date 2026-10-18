@@ -80,14 +80,25 @@ func TestUpdateRedisesPodsKeepsTheMasterDuringTheSentinelRollout(t *testing.T) {
 		reason      string
 	}{
 		{
+			name:   "a surge pod is not ready",
+			status: appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 4, UpdatedReplicas: 2, ReadyReplicas: 3, AvailableReplicas: 3},
+			reason: "Deployment rfs-test has 4 pods, 2 updated, 3 ready and 3 available, of 3",
+		},
+		{
+			// A strategy with maxSurge 0 replaces one pod after the other.
 			name:   "a pod is not updated",
-			status: appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 4, UpdatedReplicas: 2, ReadyReplicas: 4, AvailableReplicas: 4},
-			reason: "Deployment rfs-test has 4 pods, 2 updated, 4 ready and 4 available, of 3",
+			status: appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 3, UpdatedReplicas: 2, ReadyReplicas: 3, AvailableReplicas: 3},
+			reason: "Deployment rfs-test has 3 pods, 2 updated, 3 ready and 3 available, of 3",
 		},
 		{
 			name:   "an old pod is not stopped",
 			status: appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 4, UpdatedReplicas: 3, ReadyReplicas: 4, AvailableReplicas: 4},
 			reason: "Deployment rfs-test has 4 pods, 3 updated, 4 ready and 4 available, of 3",
+		},
+		{
+			name:   "an old pod that is not ready is not stopped",
+			status: appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 4, UpdatedReplicas: 3, ReadyReplicas: 3, AvailableReplicas: 3},
+			reason: "Deployment rfs-test has 4 pods, 3 updated, 3 ready and 3 available, of 3",
 		},
 		{
 			name:   "an updated pod is not ready",
@@ -171,7 +182,8 @@ func TestUpdateRedisesPodsReplacesTheMasterAfterTheSentinelRollout(t *testing.T)
 func TestUpdateRedisesPodsReportsAStalledSentinelRollout(t *testing.T) {
 	st := newSentinelRolloutTest(t)
 	st.sentinels.Status.ReadyReplicas = 2
-	reason := "Deployment rfs-test has 3 pods, 3 updated, 2 ready and 3 available, of 3"
+	st.sentinels.Status.AvailableReplicas = 2
+	reason := "Deployment rfs-test has 3 pods, 3 updated, 2 ready and 2 available, of 3"
 	assert.Equal(t, sentinelRolloutMsg, st.update(""))
 	assert.Empty(t, st.logger.warnings)
 
