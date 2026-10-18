@@ -326,7 +326,7 @@ A spec change replaces the Redis pods one at a time: the replicas first and the 
 
 With Sentinel, the master pod waits until the Sentinel Deployment has finished its rollout and no Sentinel pod is `Terminating`. The shutdown script of the master asks a Sentinel for a failover. When that Sentinel stops during the failover, a second failover can lose writes. The status message during the wait is `the master pod replacement waits for the Sentinel rollout`. The wait ends after 10 minutes, so that a Sentinel rollout that does not finish cannot hold the master pod for ever. Then a Warning and the status message give the reason, and the master replacement continues.
 
-The same wait applies when a Sentinel pod is not available outside a rollout, for example a pod in `CrashLoopBackOff`.
+The same wait applies when a Sentinel pod is not available outside a rollout, for example a pod in `CrashLoopBackOff`. A restart of the operator starts the 10 minutes again, because the operator keeps the start of the wait in memory.
 
 ### Pod updates with one Redis pod
 

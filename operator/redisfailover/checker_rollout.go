@@ -280,7 +280,8 @@ const (
 //
 // A Sentinel rollout that does not finish must not hold the master pod on its
 // revision for ever. After rolloutStallTimeout, the wait is passed, and the
-// master replacement continues.
+// master replacement continues. The start of the wait is in memory, so a
+// restart of the operator starts the bound again.
 func (r *RedisFailoverHandler) sentinelRolloutWait(rf *redisfailoverv1.RedisFailover) (*rolloutWait, error) {
 	if rf.OperatorManagedFailover() {
 		return nil, nil
