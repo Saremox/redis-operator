@@ -43,6 +43,7 @@ type sentinelRolloutTest struct {
 	*rolloutTest
 	logger   *warnLogger
 	requeues []time.Duration
+	clock    time.Time
 }
 
 func newSentinelRolloutTest(t *testing.T) *sentinelRolloutTest {
@@ -52,6 +53,10 @@ func newSentinelRolloutTest(t *testing.T) *sentinelRolloutTest {
 	st.heal.On("ResizePodInPlace", st.rf, "rfr-test-0", "new", rfservice.AutoscalerLimits{}).Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
 	st.handler.logger = st.logger
 	st.handler.requeue = func(_ string, after time.Duration) { st.requeues = append(st.requeues, after) }
+	st.clock = time.Date(2026, 10, 18, 16, 0, 0, 0, time.UTC)
+	st.handler.now = func() time.Time { return st.clock }
+	// newRolloutTest restores the bound.
+	rolloutStallTimeout = 10 * time.Minute
 	return st
 }
 
@@ -137,7 +142,7 @@ func TestUpdateRedisesPodsKeepsTheMasterDuringTheSentinelRollout(t *testing.T) {
 			v, _ := st.handler.rolloutWaits.Load(passwordKey(st.rf))
 			last, ok := v.(rolloutWait)
 			require.True(t, ok)
-			assert.Equal(t, types.UID("sentinels"), last.uid)
+			assert.Equal(t, types.UID("sentinels/2"), last.uid)
 			assert.Equal(t, test.reason, last.reason)
 
 			// A later reconcile of the same wait logs at Debug.
@@ -176,22 +181,63 @@ func TestUpdateRedisesPodsReplacesTheMasterAfterTheSentinelRollout(t *testing.T)
 	assert.False(t, ok)
 }
 
-// A Sentinel rollout that does not finish holds the master pod. After
-// rolloutStallTimeout, the status and a Warning say so, as for each other
-// wait of the rollout.
-func TestUpdateRedisesPodsReportsAStalledSentinelRollout(t *testing.T) {
+// A Sentinel rollout that does not finish holds the master pod only for
+// rolloutStallTimeout. Then one Warning and the status say so, and the master
+// replacement continues with the Sentinel quorum check.
+func TestUpdateRedisesPodsReplacesTheMasterAfterAStalledSentinelRollout(t *testing.T) {
 	st := newSentinelRolloutTest(t)
 	st.sentinels.Status.ReadyReplicas = 2
 	st.sentinels.Status.AvailableReplicas = 2
 	reason := "Deployment rfs-test has 3 pods, 3 updated, 2 ready and 2 available, of 3"
 	assert.Equal(t, sentinelRolloutMsg, st.update(""))
+
+	st.clock = st.clock.Add(rolloutStallTimeout - time.Millisecond)
+	assert.Equal(t, sentinelRolloutMsg, st.update(""))
+	st.assertMasterKept(t)
 	assert.Empty(t, st.logger.warnings)
 
-	time.Sleep(2 * rolloutStallTimeout)
-	stall := "rollout waiting for more than 0m: " + reason
-	assert.Equal(t, sentinelRolloutMsg+"; "+stall, st.update(""))
+	st.clock = st.clock.Add(time.Millisecond)
+	stall := "rollout waiting for more than 10m: " + reason + ", so the master pod replacement continues before the end of the Sentinel rollout"
+	st.check.On("GetSentinelsIPs", st.rf).Once().Return([]string{"10.0.1.1"}, nil)
+	st.check.On("CheckSentinelSlavesNumberQuorumInMemory", "10.0.1.1", st.rf).Once().Return(errors.New("below quorum"))
+	assert.Equal(t, stall, st.update(""))
 	assert.Equal(t, []string{stall}, st.logger.warnings)
+	st.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+
+	// The passed wait stays, so a later reconcile deletes the master without
+	// a second Warning or a stall report.
+	st.clock = st.clock.Add(time.Minute)
+	st.requeues = nil
+	st.expectMasterDelete()
+	assert.Empty(t, st.update(""))
+	assert.Equal(t, []string{stall}, st.logger.warnings)
+	assert.Empty(t, st.requeues)
+	st.heal.AssertExpectations(t)
+	st.check.AssertExpectations(t)
+}
+
+// A new generation of the Sentinel Deployment is a new rollout, so the bound
+// starts again.
+func TestUpdateRedisesPodsRestartsTheSentinelRolloutWaitForANewGeneration(t *testing.T) {
+	st := newSentinelRolloutTest(t)
+	st.sentinels.Status.UpdatedReplicas = 2
+	assert.Equal(t, sentinelRolloutMsg, st.update(""))
+
+	st.clock = st.clock.Add(rolloutStallTimeout - time.Minute)
+	st.sentinels.Generation, st.sentinels.Status.ObservedGeneration = 3, 3
+	st.logger.reset()
+	assert.Equal(t, sentinelRolloutMsg, st.update(""))
+	assert.Len(t, st.logger.infos, 1)
+
+	st.clock = st.clock.Add(time.Minute)
+	assert.Equal(t, sentinelRolloutMsg, st.update(""))
 	st.assertMasterKept(t)
+	assert.Empty(t, st.logger.warnings)
+
+	st.clock = st.clock.Add(rolloutStallTimeout - time.Minute)
+	st.expectMasterDelete()
+	assert.Contains(t, st.update(""), "so the master pod replacement continues")
+	st.heal.AssertExpectations(t)
 }
 
 // Without Sentinel, the master hands its role over, and no Sentinel
