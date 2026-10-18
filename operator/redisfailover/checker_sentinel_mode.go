@@ -20,16 +20,10 @@ import (
 //   - the Sentinel and replica counts in each Sentinel, and the custom
 //     Sentinel config.
 func (r *RedisFailoverHandler) checkAndHealSentinelMode(rf *redisfailoverv1.RedisFailover, allRunning bool) error {
-	// A wait counts only rounds in a row, so a pair of IPs that comes back
-	// after a round without the check of the Sentinels gets a new bound.
 	if !r.redisQuorumRunning(rf, allRunning) || !r.sentinelQuorumRunning(rf) {
-		r.sentinelMasterWaits.Delete(failoverKey(rf))
 		return nil
 	}
 	nMasters, done, err := r.healSentinelModeMasters(rf)
-	if nMasters != 1 || err != nil {
-		r.sentinelMasterWaits.Delete(failoverKey(rf))
-	}
 	if err != nil || done {
 		return err
 	}
@@ -209,7 +203,6 @@ func (r *RedisFailoverHandler) setOldestAsMaster(rf *redisfailoverv1.RedisFailov
 func (r *RedisFailoverHandler) sentinelModeMaster(rf *redisfailoverv1.RedisFailover, checkSentinels bool) (string, error) {
 	master, err := r.rfChecker.GetMasterIP(rf)
 	if err != nil {
-		r.sentinelMasterWaits.Delete(failoverKey(rf))
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: "unable to get master IP",

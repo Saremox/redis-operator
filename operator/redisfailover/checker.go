@@ -19,6 +19,7 @@ import (
 // CheckAndHeal checks the state of the RedisFailover and heals each check
 // that fails. It writes the status one time, at the end.
 func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) error {
+	defer r.startSentinelMasterRound(failoverKey(rf))()
 	return r.checkAndHeal(context.Background(), rf)
 }
 
@@ -52,8 +53,6 @@ func (r *RedisFailoverHandler) checkAndHeal(ctx context.Context, rf *redisfailov
 
 	// Every check below authenticates, so a changed password goes first.
 	if err := r.applyPassword(rf); err != nil {
-		// The Sentinel master wait counts only rounds in a row.
-		r.sentinelMasterWaits.Delete(failoverKey(rf))
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: "unable to apply the configured password",

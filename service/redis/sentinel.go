@@ -270,6 +270,9 @@ type SentinelFailover struct {
 	State string
 	// Timeout is the failover-timeout of the Sentinel, or 0 for a missing value.
 	Timeout time.Duration
+	// DownAfter is the down-after-milliseconds of the Sentinel, or 0 for a
+	// missing value.
+	DownAfter time.Duration
 	// Master is the address of the master as ip:port. It stays the old master
 	// until the failover ends.
 	Master string
@@ -306,10 +309,12 @@ func (c *client) GetSentinelFailover(ip string) (SentinelFailover, error) {
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_FAILOVER, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	// A missing or bad value gives 0, and the caller uses its default.
 	ms, _ := strconv.ParseInt(info["failover-timeout"], 10, 64)
+	downAfter, _ := strconv.ParseInt(info["down-after-milliseconds"], 10, 64)
 	return SentinelFailover{
 		InProgress: slices.Contains(strings.Split(info["flags"], ","), "failover_in_progress"),
 		State:      info["failover-state"],
 		Timeout:    time.Duration(max(ms, 0)) * time.Millisecond,
+		DownAfter:  time.Duration(max(downAfter, 0)) * time.Millisecond,
 		Master:     net.JoinHostPort(info["ip"], info["port"]),
 	}, nil
 }

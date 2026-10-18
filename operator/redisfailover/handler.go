@@ -160,6 +160,7 @@ func (r *RedisFailoverHandler) Handle(ctx context.Context, obj runtime.Object) e
 	if !ok {
 		return fmt.Errorf("can't handle the received object: not a redisfailover")
 	}
+	defer r.startSentinelMasterRound(failoverKey(rf))()
 	// The controller waits for a running reconcile on shutdown, and the heal
 	// steps ignore a cancel. Thus the writes keep only the values of ctx.
 	ctx = context.WithoutCancel(ctx)

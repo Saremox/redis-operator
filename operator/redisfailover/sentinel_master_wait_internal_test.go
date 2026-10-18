@@ -1,6 +1,7 @@
 package redisfailover
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -9,6 +10,8 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -47,6 +50,13 @@ type smReconcile struct {
 	// nMastersErr, masterErr and passwordErr are the errors of
 	// GetNumberMasters, GetMasterIP and ApplyPassword.
 	nMastersErr, masterErr, passwordErr error
+	// mode is "bootstrap" or "operator" for a reconcile in another mode.
+	mode string
+	// live is the reply of GetSentinelFailover, with the live timeouts.
+	// Without it, the Sentinels give the defaults.
+	live *redis.SentinelFailover
+	// liveErr is the error of GetSentinelFailover.
+	liveErr error
 }
 
 // smResult is what a reconcile did.
@@ -120,6 +130,18 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	}
 	st.lines, st.requeues = nil, nil
 	c, h, k, rf := st.check, st.heal, st.k8s, st.rf
+	switch s.mode {
+	case "bootstrap":
+		rf.Spec.BootstrapNode = &redisfailoverv1.BootstrapSettings{Host: "10.0.9.9", Port: "6379", AllowSentinels: true}
+		defer func() { rf.Spec.BootstrapNode = nil }()
+	case "operator":
+		rf.Spec.Sentinel.Enabled = new(false)
+		defer func() { rf.Spec.Sentinel.Enabled = new(true) }()
+	}
+	live := redis.SentinelFailover{Timeout: 10 * time.Second, DownAfter: 5 * time.Second}
+	if s.live != nil {
+		live = *s.live
+	}
 	noAppliedSecret(k)
 	k.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Maybe().Return(&corev1.PodList{Items: st.pods}, s.podsErr)
 	k.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe().Return()
@@ -129,7 +151,9 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	}
 	h.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 	h.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
-	c.On("IsRedisRunning", rf).Maybe().Return(true)
+	// In another mode, the reconcile ends at the first check.
+	c.On("IsRedisRunning", rf).Maybe().Return(s.mode == "")
+	c.On("IsRedisRunningQuorum", rf).Maybe().Return(false)
 	c.On("IsSentinelRunningQuorum", rf).Maybe().Return(!s.noSentinelQuorum)
 	c.On("GetNumberMasters", rf).Maybe().Return(s.nMasters, s.nMastersErr)
 	// The election of a master when the Sentinels have no quorum.
@@ -149,7 +173,7 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	c.On("GetSentinelsIPs", rf).Maybe().Return(smSentinels, nil)
 	for _, sip := range smSentinels {
 		c.On("CheckSentinelMonitor", sip, s.master, mock.Anything).Maybe().Return(errors.New("sentinel monitoring another master"))
-		c.On("GetSentinelFailover", sip).Maybe().Return(redis.SentinelFailover{}, nil)
+		c.On("GetSentinelFailover", sip).Maybe().Return(live, s.liveErr)
 		h.On("NewSentinelMonitor", sip, s.master, rf).Maybe().Return(nil)
 		c.On("CheckSentinelNumberInMemory", sip, rf).Maybe().Return(nil)
 		c.On("CheckSentinelSlavesNumberInMemory", sip, rf).Maybe().Return(nil)
@@ -158,7 +182,7 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	err := st.handler.CheckAndHeal(rf)
 	// The heal reads the pods again after the wait, and two masters are an
 	// error.
-	if s.podsErr == nil && s.nMasters < 2 && s.nMastersErr == nil && s.masterErr == nil && s.passwordErr == nil {
+	if s.podsErr == nil && s.nMasters < 2 && s.nMastersErr == nil && s.masterErr == nil && s.passwordErr == nil && s.liveErr == nil {
 		require.NoError(t, err)
 	}
 	var res smResult
@@ -255,11 +279,11 @@ func TestSentinelMasterWaitEndsAtTheBound(t *testing.T) {
 }
 
 // TestSentinelMasterWaitUsesTheSentinelConfig covers the bound from the
-// Sentinel customConfig.
+// Sentinel customConfig, after the Sentinels applied it.
 func TestSentinelMasterWaitUsesTheSentinelConfig(t *testing.T) {
 	st := newSentinelMasterTest()
 	st.rf.Spec.Sentinel.CustomConfig = []string{"down-after-milliseconds 1000", "failover-timeout 2000"}
-	st.assertWait(t, st.run(t, orphaned))
+	st.assertWait(t, st.run(t, withLive(orphaned, &redis.SentinelFailover{DownAfter: time.Second, Timeout: 2 * time.Second}, nil)))
 	st.clock = st.clock.Add(3 * time.Second)
 	st.assertHeal(t, st.run(t, orphaned))
 }
@@ -336,21 +360,67 @@ func TestSentinelMasterWaitWithAQuorumOfAnswers(t *testing.T) {
 // that ends before the wait, or reads no answer for it. The pair of IPs that
 // comes back after more than the bound from the first start gets a new bound.
 func TestSentinelMasterWaitStartsAgainAfterAnInterruption(t *testing.T) {
-	for name, s := range map[string]smReconcile{
-		"no Sentinel quorum":              {nMasters: 1, master: smPod1, named: orphaned.named, noSentinelQuorum: true},
-		"no master":                       {nMasters: 0, master: smPod1, named: orphaned.named},
-		"two masters":                     {nMasters: 2, master: smPod1, named: orphaned.named},
-		"the count of the masters fails":  {nMasters: 1, master: smPod1, named: orphaned.named, nMastersErr: errors.New("boom")},
-		"the read of the master fails":    {nMasters: 1, master: smPod1, named: orphaned.named, masterErr: errors.New("boom")},
-		"the read of the Sentinels fails": {nMasters: 1, master: smPod1, namedErr: errors.New("boom")},
-		"the pod list fails":              {nMasters: 1, master: smPod1, named: orphaned.named, podsErr: errors.New("boom")},
-		"the password fails":              {nMasters: 1, master: smPod1, named: orphaned.named, passwordErr: errors.New("boom")},
+	interrupted := func(s smReconcile) func(*testing.T, *sentinelMasterTest) {
+		return func(t *testing.T, st *sentinelMasterTest) { st.run(t, s) }
+	}
+	// handled runs Handle, which returns wantErr before the checks.
+	handled := func(wantErr string, edit func(*redisfailoverv1.RedisFailover), k8s func(*mK8SService.Services)) func(*testing.T, *sentinelMasterTest) {
+		return func(t *testing.T, st *sentinelMasterTest) {
+			st.k8s.ExpectedCalls, st.k8s.Calls = nil, nil
+			noAppliedSecret(st.k8s)
+			if k8s != nil {
+				k8s(st.k8s)
+			}
+			st.k8s.On("GetConfigMap", mock.Anything, mock.Anything).Maybe().Return(nil, apierrors.NewNotFound(corev1.Resource("configmaps"), "state"))
+			st.k8s.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe().Return()
+			rfs := &mRFService.RedisFailoverClient{}
+			rfs.On("EnsureNotPresentRedisService", mock.Anything).Maybe().Return(errors.New("ensure"))
+			st.handler.rfService = rfs
+			rf := st.rf.DeepCopy()
+			rf.Finalizers = []string{redisFailoverFinalizer}
+			if edit != nil {
+				edit(rf)
+			}
+			err := st.handler.Handle(context.Background(), rf)
+			if wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.EqualError(t, err, wantErr)
+			}
+		}
+	}
+	boom := errors.New("boom")
+	for name, interrupt := range map[string]func(*testing.T, *sentinelMasterTest){
+		"no Sentinel quorum":              interrupted(smReconcile{nMasters: 1, master: smPod1, named: orphaned.named, noSentinelQuorum: true}),
+		"no master":                       interrupted(smReconcile{nMasters: 0, master: smPod1, named: orphaned.named}),
+		"two masters":                     interrupted(smReconcile{nMasters: 2, master: smPod1, named: orphaned.named}),
+		"the count of the masters fails":  interrupted(smReconcile{nMasters: 1, master: smPod1, named: orphaned.named, nMastersErr: boom}),
+		"the read of the master fails":    interrupted(smReconcile{nMasters: 1, master: smPod1, named: orphaned.named, masterErr: boom}),
+		"the read of the Sentinels fails": interrupted(smReconcile{nMasters: 1, master: smPod1, namedErr: boom}),
+		"the pod list fails":              interrupted(smReconcile{nMasters: 1, master: smPod1, named: orphaned.named, podsErr: boom}),
+		"the password fails":              interrupted(smReconcile{nMasters: 1, master: smPod1, named: orphaned.named, passwordErr: boom}),
+		"bootstrap mode":                  interrupted(smReconcile{nMasters: 1, master: smPod1, named: orphaned.named, mode: "bootstrap"}),
+		"operator-managed mode":           interrupted(smReconcile{nMasters: 1, master: smPod1, named: orphaned.named, mode: "operator"}),
+		"the skip annotation": handled("", func(rf *redisfailoverv1.RedisFailover) {
+			rf.Annotations = map[string]string{skipReconcileAnnotation: "true"}
+		}, nil),
+		"the finalizer write fails": handled("boom", func(rf *redisfailoverv1.RedisFailover) { rf.Finalizers = nil }, func(k *mK8SService.Services) {
+			k.On("PatchRedisFailoverFinalizers", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(boom)
+		}),
+		"the autoscaler state fails": handled("autoscaler state: boom", func(rf *redisfailoverv1.RedisFailover) {
+			rf.Spec.Redis.Resources.Limits = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}
+			memoryMax := resource.MustParse("2Gi")
+			rf.Spec.Redis.Autoscaling = &redisfailoverv1.AutoscalingSettings{Mode: redisfailoverv1.AutoscalingModeRecommend, MemoryMax: &memoryMax}
+		}, func(k *mK8SService.Services) {
+			k.On("GetConfigMap", mock.Anything, mock.Anything).Return(nil, boom)
+		}),
+		"Ensure fails": handled("ensure", nil, nil),
 	} {
 		t.Run(name, func(t *testing.T) {
 			st := newSentinelMasterTest()
 			st.assertWait(t, st.run(t, orphaned))
 			st.clock = st.clock.Add(10 * time.Second)
-			st.run(t, s)
+			interrupt(t, st)
 			_, waiting := st.handler.sentinelMasterWaits.Load("testns/test")
 			assert.False(t, waiting)
 
@@ -362,6 +432,54 @@ func TestSentinelMasterWaitStartsAgainAfterAnInterruption(t *testing.T) {
 			st.assertWait(t, st.run(t, orphaned))
 		})
 	}
+}
+
+// TestSentinelMasterWaitUsesTheLiveTimeouts covers the timeouts of the
+// running Sentinels. They keep their old values until the heal applies the
+// customConfig, and the wait stops that heal.
+func TestSentinelMasterWaitUsesTheLiveTimeouts(t *testing.T) {
+	short := []string{"down-after-milliseconds 1000", "failover-timeout 2000"}
+	tests := map[string]struct {
+		config []string
+		start  smReconcile
+		// waits is a time after the start that still waits, and heals the
+		// time that heals.
+		waits, heals time.Duration
+	}{
+		"a lowered customConfig waits for the live timeouts": {config: short, start: withLive(orphaned, &redis.SentinelFailover{DownAfter: 5 * time.Second, Timeout: 10 * time.Second}, nil), waits: 14 * time.Second, heals: 15 * time.Second},
+		"a live read error uses the customConfig":            {config: short, start: withLive(orphaned, nil, errors.New("boom")), waits: 2 * time.Second, heals: 3 * time.Second},
+		"a Sentinel without the timeouts":                    {config: short, start: withLive(orphaned, &redis.SentinelFailover{Timeout: 10 * time.Second}, nil), waits: 2 * time.Second, heals: 3 * time.Second},
+		"shorter live timeouts use the customConfig":         {start: withLive(orphaned, &redis.SentinelFailover{DownAfter: time.Second, Timeout: 2 * time.Second}, nil), waits: 14 * time.Second, heals: 15 * time.Second},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			st := newSentinelMasterTest()
+			st.rf.Spec.Sentinel.CustomConfig = test.config
+			st.assertWait(t, st.run(t, test.start))
+			st.clock = st.clock.Add(test.waits)
+			st.assertWait(t, st.run(t, orphaned))
+			st.clock = st.clock.Add(test.heals - test.waits)
+			st.assertHeal(t, st.run(t, orphaned))
+		})
+	}
+	t.Run("the bound stays for the wait", func(t *testing.T) {
+		st := newSentinelMasterTest()
+		st.assertWait(t, st.run(t, orphaned))
+		// The customConfig changes and the live read fails during the wait.
+		st.rf.Spec.Sentinel.CustomConfig = short
+		st.clock = st.clock.Add(10 * time.Second)
+		st.assertWait(t, st.run(t, withLive(orphaned, nil, errors.New("boom"))))
+	})
+	t.Run("no Sentinel list", func(t *testing.T) {
+		st := newSentinelMasterTest()
+		st.check.On("GetSentinelsIPs", st.rf).Return(nil, errors.New("boom"))
+		assert.Equal(t, 15*time.Second, st.handler.sentinelMasterLimit(st.rf, st.handler.logger))
+	})
+}
+
+func withLive(s smReconcile, live *redis.SentinelFailover, err error) smReconcile {
+	s.live, s.liveErr = live, err
+	return s
 }
 
 // TestSentinelMasterWaitAfterAnElection covers the election of a master in

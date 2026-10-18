@@ -5,6 +5,7 @@ import (
 	"time"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/log"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
@@ -22,8 +23,32 @@ type sentinelMasterWait struct {
 	named  string
 	master string
 	since  time.Time
+	// limit is the bound, fixed at the start of the wait.
+	limit time.Duration
 	// ended is true after the log of the end of the wait.
 	ended bool
+	// seen is true after the check of the wait in the current reconcile.
+	seen bool
+}
+
+// startSentinelMasterRound marks the wait of key as not seen, and returns the
+// function that drops it at the end of a reconcile that did not check it. A
+// wait counts only reconciles in a row: after a reconcile that returned
+// early, for example on an error, the same pair of IPs gets a new bound. The
+// controller runs one reconcile of a key at a time.
+func (r *RedisFailoverHandler) startSentinelMasterRound(key string) func() {
+	if v, ok := r.sentinelMasterWaits.Load(key); ok {
+		wait, _ := v.(sentinelMasterWait)
+		wait.seen = false
+		r.sentinelMasterWaits.Store(key, wait)
+	}
+	return func() {
+		if v, ok := r.sentinelMasterWaits.Load(key); ok {
+			if wait, _ := v.(sentinelMasterWait); !wait.seen {
+				r.sentinelMasterWaits.Delete(key)
+			}
+		}
+	}
 }
 
 // waitForSentinelMaster reports whether the master and replica heal waits,
@@ -44,18 +69,19 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 	v, _ := r.sentinelMasterWaits.Load(key)
 	wait, ok := v.(sentinelMasterWait)
 	started := !ok || wait.named != named || wait.master != master
-	if started {
-		wait = sentinelMasterWait{named: named, master: master, since: now}
-	}
 	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).WithField("pod", pod)
-	limit := rfservice.SentinelFailoverWindow(rf)
+	if started {
+		wait = sentinelMasterWait{named: named, master: master, since: now, limit: r.sentinelMasterLimit(rf, logger)}
+	}
+	wait.seen = true
+	limit := wait.limit
 	elapsed := now.Sub(wait.since)
 	if elapsed >= limit {
 		if !wait.ended {
 			logger.Warningf("The Sentinels give pod %s (%s) as the master for %s, but the Redis master is %s, so the operator heals the roles and the Sentinels", pod, named, elapsed.Round(time.Second), master)
 			wait.ended = true
-			r.sentinelMasterWaits.Store(key, wait)
 		}
+		r.sentinelMasterWaits.Store(key, wait)
 		return false
 	}
 	r.sentinelMasterWaits.Store(key, wait)
@@ -72,6 +98,29 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 		r.requeue(key, min(sentinelMasterRecheck, limit-elapsed))
 	}
 	return true
+}
+
+// sentinelMasterLimit returns the bound of a wait that starts. The running
+// Sentinels keep their old timeouts until the heal applies the customConfig,
+// and the wait stops that heal. Thus the bound is the larger of the
+// customConfig window and the longest window of the Sentinels that answer.
+// It stays the same for the whole wait.
+func (r *RedisFailoverHandler) sentinelMasterLimit(rf *redisfailoverv1.RedisFailover, logger log.Logger) time.Duration {
+	limit := rfservice.SentinelFailoverWindow(rf)
+	sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
+	if err != nil {
+		logger.Debugf("The operator did not read the Sentinels, so the wait uses the customConfig timeouts: %v", err)
+		return limit
+	}
+	for _, sip := range sentinels {
+		f, err := r.rfChecker.GetSentinelFailover(sip)
+		if err != nil || f.DownAfter == 0 || f.Timeout == 0 {
+			logger.Debugf("Sentinel %s did not give its timeouts, so the wait does not use them: %v", sip, err)
+			continue
+		}
+		limit = max(limit, f.DownAfter+f.Timeout)
+	}
+	return limit
 }
 
 // sentinelsNameOtherPod returns the IP and the name of the Redis pod that the
