@@ -76,8 +76,8 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 
 // sentinelsNameOtherPod returns the IP and the name of the Redis pod that the
 // Sentinels give as the master, when that IP is not master. All the Sentinels
-// that answer must give the same IP, and they must be a quorum. Otherwise the
-// Sentinels cannot end a failover together, and a wait only delays the heal.
+// that answer must give the same IP, and they must be a quorum. Otherwise no
+// Sentinel quorum supports that pod, and a wait only delays the heal.
 func (r *RedisFailoverHandler) sentinelsNameOtherPod(rf *redisfailoverv1.RedisFailover, master string) (string, string) {
 	ips, err := r.rfChecker.GetSentinelMasterIPs(rf)
 	// The quorum of the Sentinel monitor.

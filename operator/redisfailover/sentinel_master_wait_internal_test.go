@@ -239,8 +239,9 @@ func TestSentinelMasterWaitEndsAtTheBound(t *testing.T) {
 	st.clock = st.clock.Add(time.Second)
 	res = st.run(t, orphaned)
 	st.assertHeal(t, res)
-	assert.NotContains(t, st.lines, smEndLine)
-	assert.NotContains(t, st.lines, "debug: "+smWaitLine)
+	for _, line := range st.lines {
+		assert.NotContains(t, line, "The Sentinels give pod", "one log line for the end")
+	}
 }
 
 // TestSentinelMasterWaitUsesTheSentinelConfig covers the bound from the

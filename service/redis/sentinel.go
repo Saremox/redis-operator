@@ -16,11 +16,12 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// errMalformedSentinelMaster does not carry the reply, because the reply is
-// not trusted.
-var errMalformedSentinelMaster = errors.New("malformed SENTINEL MASTER reply")
-
-var errMalformedMasterAddr = errors.New("malformed reply")
+// The malformed reply errors do not carry the reply, because the reply is not
+// trusted.
+var (
+	errMalformedSentinelMaster = errors.New("malformed SENTINEL MASTER reply")
+	errMalformedMasterAddr     = errors.New("malformed reply")
+)
 
 var (
 	sentinelNumberRE = regexp.MustCompile(sentinelsNumberREString)
