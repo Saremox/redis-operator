@@ -20,6 +20,8 @@ import (
 // not trusted.
 var errMalformedSentinelMaster = errors.New("malformed SENTINEL MASTER reply")
 
+var errMalformedMasterAddr = errors.New("malformed reply")
+
 var (
 	sentinelNumberRE = regexp.MustCompile(sentinelsNumberREString)
 	sentinelStatusRE = regexp.MustCompile(sentinelStatusREString)
@@ -234,6 +236,27 @@ func (c *client) SentinelMasterDown(ip string) (bool, error) {
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MASTER_DOWN, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	return flagsDown(info["flags"]), nil
+}
+
+// GetSentinelMasterIP returns the master IP that the Sentinel gives to the
+// clients. In a failover, the leader gives the promoted replica before the end
+// of the failover, and the other Sentinels give the old master.
+func (c *client) GetSentinelMasterIP(ip string) (string, error) {
+	if ip == "" {
+		return "", errNoIP
+	}
+	rClient := rediscli.NewClient(redisOptions(net.JoinHostPort(ip, sentinelPort), ""))
+	defer closeClient(rClient)
+	addr, err := rClient.Do(context.TODO(), "SENTINEL", "get-master-addr-by-name", masterName).StringSlice()
+	if err == nil && len(addr) != 2 {
+		err = errMalformedMasterAddr
+	}
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MASTER_ADDR, metrics.FAIL, getRedisError(err))
+		return "", fmt.Errorf("SENTINEL GET-MASTER-ADDR-BY-NAME: %w", err)
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MASTER_ADDR, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return addr[0], nil
 }
 
 // SentinelFailover is the failover state of a Sentinel in SENTINEL MASTER.

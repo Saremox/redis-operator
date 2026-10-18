@@ -88,6 +88,7 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 					patched = args.Get(2).(*v1.RedisFailover).Status
 				}).Return()
 				mrfc := &mRFService.RedisFailoverCheck{}
+				mrfc.On("GetSentinelMasterIPs", mock.Anything).Maybe().Return(nil, nil)
 				mrfh := &mRFService.RedisFailoverHeal{}
 				mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 				mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
@@ -165,6 +166,7 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 				mrfs.On(ensure, rf, mock.Anything, mock.Anything).Once().Return(nil)
 			}
 			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc.On("GetSentinelMasterIPs", mock.Anything).Maybe().Return(nil, nil)
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
 			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)

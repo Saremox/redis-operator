@@ -215,3 +215,19 @@ func (r *RedisFailoverChecker) CheckSentinelMonitor(sentinel string, monitor ...
 func (r *RedisFailoverChecker) GetSentinelFailover(sentinel string) (redis.SentinelFailover, error) {
 	return r.redisClient.GetSentinelFailover(sentinel)
 }
+
+// GetSentinelMasterIPs returns the master IP that each running Sentinel gives
+// to the clients. A Sentinel that gives an error has no entry.
+func (r *RedisFailoverChecker) GetSentinelMasterIPs(rf *redisfailoverv1.RedisFailover) ([]string, error) {
+	sentinels, err := r.GetSentinelsIPs(rf)
+	if err != nil {
+		return nil, err
+	}
+	var ips []string
+	for _, sip := range sentinels {
+		if ip, err := r.redisClient.GetSentinelMasterIP(sip); err == nil {
+			ips = append(ips, ip)
+		}
+	}
+	return ips, nil
+}

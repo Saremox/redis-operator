@@ -87,6 +87,9 @@ type RedisFailoverHandler struct {
 	// sentinelReadErrors holds, per namespace/name, the time of the first read
 	// error of the failover state of each Sentinel IP.
 	sentinelReadErrors sync.Map
+	// sentinelMasterWaits holds, per namespace/name, the sentinelMasterWait of
+	// the master and replica heal.
+	sentinelMasterWaits sync.Map
 	// autoscaleReads holds, per namespace/name, the autoscaleRead of the
 	// current reconcile.
 	autoscaleReads sync.Map
@@ -147,6 +150,7 @@ func (r *RedisFailoverHandler) Forget(key string) {
 	r.sentinelResets.Delete(key)
 	r.sentinelFailovers.Delete(key)
 	r.sentinelReadErrors.Delete(key)
+	r.sentinelMasterWaits.Delete(key)
 	r.forgetAutoscaler(key)
 }
 
