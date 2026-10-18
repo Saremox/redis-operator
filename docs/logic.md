@@ -123,6 +123,12 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
   - Sentinel promotes only a replica that it knows, and it learns the replicas from its master. After a `SENTINEL RESET` while the master stops, the Sentinels know no replica. Then they stay without a master.
   - The operator promotes only when all Sentinels of the spec run and answer, and each Sentinel flags its master as down. A Sentinel must not monitor a Redis pod or know one as replica. The address 127.0.0.1 of a new Sentinel needs no down flag, because no Redis listens there. Otherwise a Sentinel can still fail over, or the old master can still answer, and a promotion gives two masters.
   - Before the promotion, the operator counts the masters and checks for a stopping master again. A new master in that time gives two masters.
+- One master, but the Sentinels give another pod as the master: the operator waits. It changes no role label, no replica and no Sentinel. The status is `NotHealthy` while it waits.
+  - A Sentinel leader can promote a replica and stop before it tells the other Sentinels. The other Sentinels then fail over the old master to another replica. That failover discards the writes that the first promoted replica accepted.
+  - The operator reads `SENTINEL get-master-addr-by-name` from each running Sentinel. It waits only when all the Sentinels that answer give the same IP, and they are a quorum. That IP must be a pod of the RedisFailover, also a pod in deletion.
+  - The wait ends after `down-after-milliseconds` plus `failover-timeout` of the Sentinel `customConfig` (default 15s). Then the operator heals as usual. Another master or another pod of the Sentinels starts a new wait.
+  - In the wait, the master Service can have no endpoint, because the old master pod stops.
+  - After an election in the same reconcile, the operator does not wait. The Sentinels give the old master until the operator monitors the elected master.
 - All Redis replicas replicate from the master.
 - Redis has the custom configuration and the managed `maxmemory`.
 - Stale Redis pods get the new statefulset revision. The operator deletes the master pod only when every Sentinel knows a quorum of the replicas. Otherwise, Sentinel has no replica to promote.
