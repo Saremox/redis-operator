@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
@@ -206,8 +207,15 @@ func (r *RedisFailoverHandler) replaceStaleMaster(rf *redisfailoverv1.RedisFailo
 	if recreate, err := r.resizeInPlace(rf, master, ssUR); err != nil || !recreate {
 		return nil, err
 	}
+	wait, err := r.sentinelRolloutWait(rf)
+	if err != nil || (wait != nil && !wait.passed) {
+		return wait, err
+	}
+	// A passed wait stays tracked, so that the next reconcile does not wait
+	// again. Another wait of the rollout replaces it, and then the bound
+	// starts again.
 	if allowed, err := r.masterDeleteAllowed(rf, masterIP, master); err != nil || !allowed {
-		return nil, err
+		return wait, err
 	}
 
 	err = r.rfHealer.DeletePod(master, rf)
@@ -253,6 +261,97 @@ func (r *RedisFailoverHandler) masterDeleteAllowed(rf *redisfailoverv1.RedisFail
 		}
 	}
 	return true, nil
+}
+
+const (
+	sentinelRolloutMsg = "the master pod replacement waits for the Sentinel rollout"
+	// sentinelRolloutRecheck is the next check of a wait on the Sentinel
+	// rollout, because a change of the Deployment status starts no reconcile.
+	sentinelRolloutRecheck = 5 * time.Second
+)
+
+// sentinelRolloutWait returns a wait until the Sentinel Deployment has
+// finished its rollout and no Sentinel pod is terminating, or nil.
+//
+// The preStop hook of the master sends SENTINEL FAILOVER through the Sentinel
+// Service. When the Sentinel that accepts it stops, no other Sentinel knows
+// the promoted replica. A second failover can then lose the writes that this
+// replica accepted.
+//
+// A Sentinel rollout that does not finish must not hold the master pod on its
+// revision for ever. After rolloutStallTimeout, the wait is passed, and the
+// master replacement continues. The start of the wait is in memory, so a
+// restart of the operator starts the bound again.
+func (r *RedisFailoverHandler) sentinelRolloutWait(rf *redisfailoverv1.RedisFailover) (*rolloutWait, error) {
+	if rf.OperatorManagedFailover() {
+		return nil, nil
+	}
+	name := rfservice.GetSentinelName(rf)
+	deployment, err := r.k8sservice.GetDeployment(rf.Namespace, name)
+	if err != nil {
+		return nil, err
+	}
+	reason := sentinelRolloutReason(deployment)
+	if reason == "" {
+		pods, err := r.k8sservice.GetDeploymentPods(rf.Namespace, name)
+		if err != nil {
+			return nil, err
+		}
+		for _, pod := range pods.Items {
+			if pod.DeletionTimestamp != nil {
+				reason = fmt.Sprintf("pod %s of Deployment %s is terminating", pod.Name, name)
+				break
+			}
+		}
+	}
+	if reason == "" {
+		return nil, nil
+	}
+	// A new generation is a new rollout, so its wait starts from zero.
+	wait := &rolloutWait{uid: types.UID(fmt.Sprintf("%s/%d", deployment.UID, deployment.Generation)), reason: reason}
+	logger := r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name)
+	key := passwordKey(rf)
+	v, _ := r.rolloutWaits.Load(key)
+	last, ok := v.(rolloutWait)
+	switch {
+	case !ok || last.uid != wait.uid:
+		logger.Infof("%s: %s", sentinelRolloutMsg, reason)
+	case last.passed || r.now().Sub(last.since) >= rolloutStallTimeout:
+		// The checks set the status again in each reconcile.
+		msg := fmt.Sprintf("rollout waiting for more than %dm: %s, so the master pod replacement continues before the end of the Sentinel rollout", int(rolloutStallTimeout.Minutes()), reason)
+		rf.Status.Message = msg
+		if last.passed {
+			logger.Debugf("%s", msg)
+		} else {
+			logger.Warningf("%s", msg)
+		}
+		wait.since, wait.passed = last.since, true
+		r.rolloutWaits.Store(key, *wait)
+		return wait, nil
+	default:
+		logger.Debugf("%s: %s", sentinelRolloutMsg, reason)
+	}
+	rf.Status.Message = sentinelRolloutMsg
+	if r.requeue != nil {
+		r.requeue(failoverKey(rf), sentinelRolloutRecheck)
+	}
+	return wait, nil
+}
+
+// sentinelRolloutReason returns why the rollout of the Sentinel Deployment d
+// is not finished, or "". An available pod is ready, so the ready count needs
+// no check. The terminating pods of an old ReplicaSet are not in the status,
+// so the caller checks the pods too.
+func sentinelRolloutReason(d *appsv1.Deployment) string {
+	if d.Status.ObservedGeneration < d.Generation {
+		return fmt.Sprintf("the Deployment controller did not observe generation %d of Deployment %s", d.Generation, d.Name)
+	}
+	want := ptr.Deref(d.Spec.Replicas, 1)
+	s := d.Status
+	if s.Replicas != want || s.UpdatedReplicas != want || s.AvailableReplicas != want {
+		return fmt.Sprintf("Deployment %s has %d pods, %d updated, %d ready and %d available, of %d", d.Name, s.Replicas, s.UpdatedReplicas, s.ReadyReplicas, s.AvailableReplicas, want)
+	}
+	return ""
 }
 
 // updateRevision returns the update revision of the redis StatefulSet, or a
@@ -591,16 +690,20 @@ func (r *RedisFailoverHandler) replicaRolloutWait(rf *redisfailoverv1.RedisFailo
 
 // rolloutStallTimeout is how long the rollout waits on the same pod before the
 // status message says so. A full sync, even of a dataset of tens of GB, takes
-// less.
+// less. It also ends the wait of the master replacement for the Sentinel
+// rollout.
 var rolloutStallTimeout = 10 * time.Minute
 
-// rolloutWait is what the redis pod rollout waits on: a pod, or, without uid,
-// a missing one.
+// rolloutWait is what the redis pod rollout waits on: a pod, or, without pod,
+// the Sentinel Deployment (with uid) or a missing pod (without uid). passed is
+// true after the master replacement stopped its wait for the Sentinel
+// rollout.
 type rolloutWait struct {
 	uid    types.UID
 	pod    string
 	reason string
 	since  time.Time
+	passed bool
 }
 
 func (w *rolloutWait) String() string {
@@ -623,10 +726,11 @@ func (r *RedisFailoverHandler) reportRolloutWait(rf *redisfailoverv1.RedisFailov
 	if last, ok := v.(rolloutWait); ok && last.uid == wait.uid {
 		wait.since = last.since
 	} else {
-		wait.since = time.Now()
+		wait.since = r.now()
 		r.rolloutWaits.Store(key, *wait)
 	}
-	if time.Since(wait.since) < rolloutStallTimeout {
+	// The Sentinel rollout wait reports its own end at the bound.
+	if wait.passed || r.now().Sub(wait.since) < rolloutStallTimeout {
 		return
 	}
 	msg := fmt.Sprintf("rollout waiting for more than %dm: %s", int(rolloutStallTimeout.Minutes()), wait.reason)

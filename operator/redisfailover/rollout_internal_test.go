@@ -34,10 +34,15 @@ type rolloutTest struct {
 	synced  bool
 	revErr  error
 	podsErr error
-	check   *mRFService.RedisFailoverCheck
-	heal    *mRFService.RedisFailoverHeal
-	k8s     *mK8SService.Services
-	handler *RedisFailoverHandler
+	// sentinels is the Sentinel Deployment, and sentinelPods are its pods.
+	sentinels       *appsv1.Deployment
+	sentinelsErr    error
+	sentinelPods    []corev1.Pod
+	sentinelPodsErr error
+	check           *mRFService.RedisFailoverCheck
+	heal            *mRFService.RedisFailoverHeal
+	k8s             *mK8SService.Services
+	handler         *RedisFailoverHandler
 }
 
 func newRolloutTest(t *testing.T) *rolloutTest {
@@ -62,7 +67,8 @@ func newRolloutTest(t *testing.T) *rolloutTest {
 				Status:     corev1.PodStatus{PodIP: "10.0.0.2"},
 			},
 		},
-		heal: &mRFService.RedisFailoverHeal{},
+		heal:      &mRFService.RedisFailoverHeal{},
+		sentinels: rolledOutSentinels(),
 	}
 	rf := rt.rf
 	mrfc := &mRFService.RedisFailoverCheck{}
@@ -89,6 +95,12 @@ func newRolloutTest(t *testing.T) *rolloutTest {
 	mk := &mK8SService.Services{}
 	mk.On("GetStatefulSetPods", "testns", "rfr-test").Return(func(string, string) (*corev1.PodList, error) {
 		return &corev1.PodList{Items: rt.pods}, rt.podsErr
+	})
+	mk.On("GetDeployment", "testns", "rfs-test").Maybe().Return(func(string, string) (*appsv1.Deployment, error) {
+		return rt.sentinels, rt.sentinelsErr
+	})
+	mk.On("GetDeploymentPods", "testns", "rfs-test").Maybe().Return(func(string, string) (*corev1.PodList, error) {
+		return &corev1.PodList{Items: rt.sentinelPods}, rt.sentinelPodsErr
 	})
 	rt.k8s = mk
 	rt.handler = NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, rt.heal, mk, metrics.Dummy, log.Dummy)
