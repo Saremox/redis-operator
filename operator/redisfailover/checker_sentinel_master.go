@@ -140,29 +140,49 @@ func (r *RedisFailoverHandler) readSentinelTimeouts(rf *redisfailoverv1.RedisFai
 	}
 }
 
-// sentinelsNameOtherPod returns the IP and the name of the Redis pod that the
-// Sentinels give as the master, when that IP is not master. All the Sentinels
-// that answer must give the same IP, and they must be a quorum. Otherwise no
-// Sentinel quorum supports that pod, and a wait only delays the heal.
+// sentinelsNameOtherPod returns the IP and the name of a Redis pod that a
+// quorum of the Sentinels gives as the master, when that IP is not master.
+// Such a quorum can fail over the old master later, also when other Sentinels
+// give the promoted replica. Without a quorum for another pod, a wait only
+// delays the heal.
 func (r *RedisFailoverHandler) sentinelsNameOtherPod(rf *redisfailoverv1.RedisFailover, master string) (string, string) {
 	ips, err := r.rfChecker.GetSentinelMasterIPs(rf)
+	if err != nil {
+		return "", ""
+	}
+	votes := map[string]int{}
+	for _, ip := range ips {
+		// A pod without an IP must not match an empty answer. The 127.0.0.1
+		// of a new Sentinel is no pod.
+		if ip != "" && ip != master {
+			votes[ip]++
+		}
+	}
 	// The quorum of the Sentinel monitor.
-	if err != nil || len(ips) < int(rf.Spec.Sentinel.Replicas/2+1) {
+	quorum := int(rf.Spec.Sentinel.Replicas/2 + 1)
+	var named []string
+	for ip, n := range votes {
+		if n >= quorum {
+			named = append(named, ip)
+		}
+	}
+	if len(named) == 0 {
 		return "", ""
 	}
-	named := ips[0]
-	if named == "" || named == master || slices.ContainsFunc(ips, func(ip string) bool { return ip != named }) {
-		return "", ""
-	}
+	// More Sentinels than the spec run during a rollout, so two IPs can have
+	// a quorum.
+	slices.Sort(named)
 	// A pod in deletion still counts: its Redis can still be the master of
 	// the Sentinels.
 	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
 	if err != nil {
 		return "", ""
 	}
-	for i := range pods.Items {
-		if pods.Items[i].Status.PodIP == named {
-			return named, pods.Items[i].Name
+	for _, ip := range named {
+		for i := range pods.Items {
+			if pods.Items[i].Status.PodIP == ip {
+				return ip, pods.Items[i].Name
+			}
 		}
 	}
 	return "", ""

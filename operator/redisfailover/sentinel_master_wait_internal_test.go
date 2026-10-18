@@ -392,12 +392,13 @@ func TestSentinelMasterWaitNotNeeded(t *testing.T) {
 	tests := map[string]smReconcile{
 		// A planned failover after +switch-master, and the steady state.
 		"the Sentinels agree with Redis": {named: []string{smPod1, smPod1, smPod1}},
-		// The leader gives the promoted replica before the end of the failover.
-		"the leader gives the promoted replica": {named: []string{smPod0, smPod1, smPod0}},
+		// The leader and one more Sentinel give the promoted replica.
+		"a quorum gives the promoted replica": {named: []string{smPod0, smPod1, smPod1}},
+		"no IP has a quorum":                  {named: []string{smPod0, smPod2, smPod1}},
 		// A forced delete: no pod has the old IP.
 		"the old master is not a pod":    {named: []string{"10.0.0.9", "10.0.0.9", "10.0.0.9"}},
 		"the Sentinels have no master":   {named: []string{"127.0.0.1", "127.0.0.1", "127.0.0.1"}},
-		"a new Sentinel":                 {named: []string{smPod0, smPod0, "127.0.0.1"}},
+		"new Sentinels":                  {named: []string{smPod0, "127.0.0.1", "127.0.0.1"}},
 		"less than a quorum answers":     {named: []string{smPod0}},
 		"no Sentinel answers":            {},
 		"the Sentinels give an empty IP": {named: []string{"", "", ""}},
@@ -420,6 +421,55 @@ func TestSentinelMasterWaitNotNeeded(t *testing.T) {
 			assert.Empty(t, st.requeues)
 		})
 	}
+}
+
+// TestSentinelMasterWaitForAQuorum covers the answers that give a quorum for
+// another pod. Such a quorum can fail over the old master later, also when
+// the other Sentinels give the Redis master.
+func TestSentinelMasterWaitForAQuorum(t *testing.T) {
+	x, y, m := smPod0, smPod2, smPod1
+	tests := map[string]struct {
+		named []string
+		wait  bool
+	}{
+		"[X, X, X]":                 {named: []string{x, x, x}, wait: true},
+		"[X, X, M]":                 {named: []string{x, x, m}, wait: true},
+		"[X, M, X]":                 {named: []string{x, m, x}, wait: true},
+		"[X, X, 127.0.0.1]":         {named: []string{x, x, "127.0.0.1"}, wait: true},
+		"[X, X, empty]":             {named: []string{x, x, ""}, wait: true},
+		"[X, X] of three":           {named: []string{x, x}, wait: true},
+		"[X, X, M, M] of four":      {named: []string{x, x, m, m}, wait: true},
+		"[X, M, M]":                 {named: []string{x, m, m}},
+		"[X, Y, M]":                 {named: []string{x, y, m}},
+		"[M, M, M]":                 {named: []string{m, m, m}},
+		"[X, 127.0.0.1, 127.0.0.1]": {named: []string{x, "127.0.0.1", "127.0.0.1"}},
+		"[X] of three":              {named: []string{x}},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			st := newSentinelMasterTest()
+			res := st.run(t, smReconcile{nMasters: 1, master: m, named: test.named})
+			if test.wait {
+				st.assertWait(t, res)
+			} else {
+				st.assertHeal(t, res)
+			}
+		})
+	}
+	// During a rollout, more Sentinels than the spec run, and two IPs can
+	// have a quorum. The wait is the same in each reconcile.
+	t.Run("two IPs with a quorum", func(t *testing.T) {
+		for range 20 {
+			st := newSentinelMasterTest()
+			st.assertWait(t, st.run(t, smReconcile{nMasters: 1, master: m, named: []string{y, y, x, x}}))
+			assert.Equal(t, []string{"info: " + smWaitLine}, st.lines)
+		}
+	})
+	t.Run("two IPs with a quorum, one not a pod", func(t *testing.T) {
+		st := newSentinelMasterTest()
+		st.assertWait(t, st.run(t, smReconcile{nMasters: 1, master: m, named: []string{"10.0.0.0", "10.0.0.0", x, x}}))
+		assert.Equal(t, []string{"info: " + smWaitLine}, st.lines)
+	})
 }
 
 // TestSentinelMasterWaitWithAQuorumOfAnswers covers a node drain: one of the
