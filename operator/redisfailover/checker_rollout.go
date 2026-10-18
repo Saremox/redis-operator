@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
@@ -206,6 +207,9 @@ func (r *RedisFailoverHandler) replaceStaleMaster(rf *redisfailoverv1.RedisFailo
 	if recreate, err := r.resizeInPlace(rf, master, ssUR); err != nil || !recreate {
 		return nil, err
 	}
+	if wait, err := r.sentinelRolloutWait(rf); err != nil || wait != nil {
+		return wait, err
+	}
 	if allowed, err := r.masterDeleteAllowed(rf, masterIP, master); err != nil || !allowed {
 		return nil, err
 	}
@@ -253,6 +257,75 @@ func (r *RedisFailoverHandler) masterDeleteAllowed(rf *redisfailoverv1.RedisFail
 		}
 	}
 	return true, nil
+}
+
+const (
+	sentinelRolloutMsg = "the master pod replacement waits for the Sentinel rollout"
+	// sentinelRolloutRecheck is the next check of a wait on the Sentinel
+	// rollout, because a change of the Deployment status starts no reconcile.
+	sentinelRolloutRecheck = 5 * time.Second
+)
+
+// sentinelRolloutWait returns a wait until the Sentinel Deployment has
+// finished its rollout and no Sentinel pod is terminating, or nil.
+//
+// The preStop hook of the master sends SENTINEL FAILOVER through the Sentinel
+// Service. When the Sentinel that accepts it stops, no other Sentinel knows
+// the promoted replica. A second failover then can lose the writes that this
+// replica accepted.
+func (r *RedisFailoverHandler) sentinelRolloutWait(rf *redisfailoverv1.RedisFailover) (*rolloutWait, error) {
+	if rf.OperatorManagedFailover() {
+		return nil, nil
+	}
+	name := rfservice.GetSentinelName(rf)
+	deployment, err := r.k8sservice.GetDeployment(rf.Namespace, name)
+	if err != nil {
+		return nil, err
+	}
+	reason := sentinelRolloutReason(deployment)
+	if reason == "" {
+		pods, err := r.k8sservice.GetDeploymentPods(rf.Namespace, name)
+		if err != nil {
+			return nil, err
+		}
+		for _, pod := range pods.Items {
+			if pod.DeletionTimestamp != nil {
+				reason = fmt.Sprintf("pod %s of Deployment %s is terminating", pod.Name, name)
+				break
+			}
+		}
+	}
+	if reason == "" {
+		return nil, nil
+	}
+	wait := &rolloutWait{uid: deployment.UID, reason: reason}
+	logger := r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name)
+	v, _ := r.rolloutWaits.Load(passwordKey(rf))
+	if last, ok := v.(rolloutWait); ok && last.uid == wait.uid {
+		logger.Debugf("%s: %s", sentinelRolloutMsg, reason)
+	} else {
+		logger.Infof("%s: %s", sentinelRolloutMsg, reason)
+	}
+	rf.Status.Message = sentinelRolloutMsg
+	if r.requeue != nil {
+		r.requeue(failoverKey(rf), sentinelRolloutRecheck)
+	}
+	return wait, nil
+}
+
+// sentinelRolloutReason returns why the rollout of the Sentinel Deployment d
+// is not finished, or "". The terminating pods of an old ReplicaSet are not in
+// the status, so the caller checks the pods too.
+func sentinelRolloutReason(d *appsv1.Deployment) string {
+	if d.Status.ObservedGeneration < d.Generation {
+		return fmt.Sprintf("the Deployment controller did not observe generation %d of Deployment %s", d.Generation, d.Name)
+	}
+	want := ptr.Deref(d.Spec.Replicas, 1)
+	s := d.Status
+	if s.Replicas != want || s.UpdatedReplicas != want || s.ReadyReplicas != want || s.AvailableReplicas != want {
+		return fmt.Sprintf("Deployment %s has %d pods, %d updated, %d ready and %d available, of %d", d.Name, s.Replicas, s.UpdatedReplicas, s.ReadyReplicas, s.AvailableReplicas, want)
+	}
+	return ""
 }
 
 // updateRevision returns the update revision of the redis StatefulSet, or a
@@ -594,8 +667,8 @@ func (r *RedisFailoverHandler) replicaRolloutWait(rf *redisfailoverv1.RedisFailo
 // less.
 var rolloutStallTimeout = 10 * time.Minute
 
-// rolloutWait is what the redis pod rollout waits on: a pod, or, without uid,
-// a missing one.
+// rolloutWait is what the redis pod rollout waits on: a pod, or, without pod,
+// the Sentinel Deployment (with uid) or a missing pod (without uid).
 type rolloutWait struct {
 	uid    types.UID
 	pod    string

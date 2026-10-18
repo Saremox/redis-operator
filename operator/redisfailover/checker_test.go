@@ -3008,6 +3008,18 @@ func TestUpdateRedisesPodsErrorBranches(t *testing.T) {
 func settledK8sServices() *mK8SService.Services {
 	mk := noAppliedSecret(&mK8SService.Services{})
 	mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Maybe().Return(&corev1.PodList{Items: make([]corev1.Pod, 5)}, nil)
+	return withRolledOutSentinels(mk)
+}
+
+// withRolledOutSentinels adds a Sentinel Deployment that has finished its rollout.
+func withRolledOutSentinels(mk *mK8SService.Services) *mK8SService.Services {
+	replicas := int32(3)
+	deployment := &appsv1.Deployment{
+		Spec:   appsv1.DeploymentSpec{Replicas: &replicas},
+		Status: appsv1.DeploymentStatus{Replicas: 3, UpdatedReplicas: 3, ReadyReplicas: 3, AvailableReplicas: 3},
+	}
+	mk.On("GetDeployment", mock.Anything, mock.Anything).Maybe().Return(deployment, nil)
+	mk.On("GetDeploymentPods", mock.Anything, mock.Anything).Maybe().Return(&corev1.PodList{}, nil)
 	return mk
 }
 
