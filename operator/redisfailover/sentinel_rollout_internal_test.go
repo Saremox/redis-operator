@@ -82,6 +82,7 @@ func TestUpdateRedisesPodsKeepsTheMasterDuringTheSentinelRollout(t *testing.T) {
 		name        string
 		status      appsv1.DeploymentStatus
 		terminating bool
+		noReplicas  bool
 		reason      string
 	}{
 		{
@@ -121,6 +122,13 @@ func TestUpdateRedisesPodsKeepsTheMasterDuringTheSentinelRollout(t *testing.T) {
 			reason: "the Deployment controller did not observe generation 2 of Deployment rfs-test",
 		},
 		{
+			// The API server sets 1 for a missing spec.replicas.
+			name:       "a missing spec.replicas is 1",
+			status:     rolledOutSentinels().Status,
+			noReplicas: true,
+			reason:     "Deployment rfs-test has 3 pods, 3 updated, 3 ready and 3 available, of 1",
+		},
+		{
 			name:        "a Sentinel pod is terminating",
 			status:      rolledOutSentinels().Status,
 			terminating: true,
@@ -131,6 +139,9 @@ func TestUpdateRedisesPodsKeepsTheMasterDuringTheSentinelRollout(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			st := newSentinelRolloutTest(t)
 			st.sentinels.Status = test.status
+			if test.noReplicas {
+				st.sentinels.Spec.Replicas = nil
+			}
 			if test.terminating {
 				st.sentinelPods = append(st.sentinelPods, sentinelPod("rfs-test-old", true))
 			}
@@ -204,12 +215,20 @@ func TestUpdateRedisesPodsReplacesTheMasterAfterAStalledSentinelRollout(t *testi
 	assert.Equal(t, []string{stall}, st.logger.warnings)
 	st.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
 
+	// While the quorum check holds the master, the status keeps the reason.
+	st.clock = st.clock.Add(time.Minute)
+	st.check.On("GetSentinelsIPs", st.rf).Once().Return([]string{"10.0.1.1"}, nil)
+	st.check.On("CheckSentinelSlavesNumberQuorumInMemory", "10.0.1.1", st.rf).Once().Return(errors.New("below quorum"))
+	assert.Equal(t, stall, st.update(""))
+	assert.Equal(t, []string{stall}, st.logger.warnings)
+	st.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
+
 	// The passed wait stays, so a later reconcile deletes the master without
-	// a second Warning or a stall report.
+	// a second Warning.
 	st.clock = st.clock.Add(time.Minute)
 	st.requeues = nil
 	st.expectMasterDelete()
-	assert.Empty(t, st.update(""))
+	assert.Equal(t, stall, st.update(""))
 	assert.Equal(t, []string{stall}, st.logger.warnings)
 	assert.Empty(t, st.requeues)
 	st.heal.AssertExpectations(t)

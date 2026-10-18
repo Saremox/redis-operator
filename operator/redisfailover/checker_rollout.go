@@ -211,7 +211,9 @@ func (r *RedisFailoverHandler) replaceStaleMaster(rf *redisfailoverv1.RedisFailo
 	if err != nil || (wait != nil && !wait.passed) {
 		return wait, err
 	}
-	// A passed wait stays tracked, so that the bound does not start again.
+	// A passed wait stays tracked, so that the next reconcile does not wait
+	// again. Another wait of the rollout replaces it, and then the bound
+	// starts again.
 	if allowed, err := r.masterDeleteAllowed(rf, masterIP, master); err != nil || !allowed {
 		return wait, err
 	}
@@ -313,14 +315,15 @@ func (r *RedisFailoverHandler) sentinelRolloutWait(rf *redisfailoverv1.RedisFail
 	switch {
 	case !ok || last.uid != wait.uid:
 		logger.Infof("%s: %s", sentinelRolloutMsg, reason)
-	case last.passed:
-		logger.Debugf("the master pod replacement passed the wait for the Sentinel rollout: %s", reason)
-		wait.since, wait.passed = last.since, true
-		return wait, nil
-	case r.now().Sub(last.since) >= rolloutStallTimeout:
+	case last.passed || r.now().Sub(last.since) >= rolloutStallTimeout:
+		// The checks set the status again in each reconcile.
 		msg := fmt.Sprintf("rollout waiting for more than %dm: %s, so the master pod replacement continues before the end of the Sentinel rollout", int(rolloutStallTimeout.Minutes()), reason)
-		logger.Warningf("%s", msg)
 		rf.Status.Message = msg
+		if last.passed {
+			logger.Debugf("%s", msg)
+		} else {
+			logger.Warningf("%s", msg)
+		}
 		wait.since, wait.passed = last.since, true
 		r.rolloutWaits.Store(key, *wait)
 		return wait, nil
@@ -686,7 +689,8 @@ func (r *RedisFailoverHandler) replicaRolloutWait(rf *redisfailoverv1.RedisFailo
 
 // rolloutStallTimeout is how long the rollout waits on the same pod before the
 // status message says so. A full sync, even of a dataset of tens of GB, takes
-// less.
+// less. It also ends the wait of the master replacement for the Sentinel
+// rollout.
 var rolloutStallTimeout = 10 * time.Minute
 
 // rolloutWait is what the redis pod rollout waits on: a pod, or, without pod,
