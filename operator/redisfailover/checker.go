@@ -52,6 +52,8 @@ func (r *RedisFailoverHandler) checkAndHeal(ctx context.Context, rf *redisfailov
 
 	// Every check below authenticates, so a changed password goes first.
 	if err := r.applyPassword(rf); err != nil {
+		// The Sentinel master wait counts only rounds in a row.
+		r.sentinelMasterWaits.Delete(failoverKey(rf))
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: "unable to apply the configured password",

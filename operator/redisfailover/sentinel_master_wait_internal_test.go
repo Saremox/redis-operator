@@ -44,6 +44,9 @@ type smReconcile struct {
 	podsErr error
 	// noSentinelQuorum: the Sentinel pods do not run a quorum.
 	noSentinelQuorum bool
+	// nMastersErr, masterErr and passwordErr are the errors of
+	// GetNumberMasters, GetMasterIP and ApplyPassword.
+	nMastersErr, masterErr, passwordErr error
 }
 
 // smResult is what a reconcile did.
@@ -120,16 +123,20 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	noAppliedSecret(k)
 	k.On("GetStatefulSetPods", rf.Namespace, rfservice.GetRedisName(rf)).Maybe().Return(&corev1.PodList{Items: st.pods}, s.podsErr)
 	k.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe().Return()
+	if s.passwordErr != nil {
+		st.handler.passwords.Delete("testns/test")
+		h.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(false, false, s.passwordErr)
+	}
 	h.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 	h.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	c.On("IsRedisRunning", rf).Maybe().Return(true)
 	c.On("IsSentinelRunningQuorum", rf).Maybe().Return(!s.noSentinelQuorum)
-	c.On("GetNumberMasters", rf).Maybe().Return(s.nMasters, nil)
+	c.On("GetNumberMasters", rf).Maybe().Return(s.nMasters, s.nMastersErr)
 	// The election of a master when the Sentinels have no quorum.
 	c.On("GetMaxRedisPodTime", rf).Maybe().Return(time.Hour, nil)
 	c.On("CheckSentinelQuorum", rf).Maybe().Return(2, errors.New("no quorum"))
 	h.On("SetOldestAsMaster", rf).Maybe().Return(nil)
-	c.On("GetMasterIP", rf).Maybe().Return(s.master, nil)
+	c.On("GetMasterIP", rf).Maybe().Return(s.master, s.masterErr)
 	c.On("GetSentinelMasterIPs", rf).Maybe().Return(s.named, s.namedErr)
 	c.On("CheckAllSlavesFromMaster", s.master, rf).Maybe().Return(&rfservice.WrongMasterError{Pod: "rfr-test-2", IP: smPod2, Master: s.master, Has: smPod0})
 	h.On("SetMasterOnAll", s.master, rf).Maybe().Return(nil)
@@ -151,7 +158,7 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	err := st.handler.CheckAndHeal(rf)
 	// The heal reads the pods again after the wait, and two masters are an
 	// error.
-	if s.podsErr == nil && s.nMasters < 2 {
+	if s.podsErr == nil && s.nMasters < 2 && s.nMastersErr == nil && s.masterErr == nil && s.passwordErr == nil {
 		require.NoError(t, err)
 	}
 	var res smResult
@@ -326,12 +333,18 @@ func TestSentinelMasterWaitWithAQuorumOfAnswers(t *testing.T) {
 }
 
 // TestSentinelMasterWaitStartsAgainAfterAnInterruption covers a reconcile
-// that ends before the wait. The pair of IPs that comes back gets a new bound.
+// that ends before the wait, or reads no answer for it. The pair of IPs that
+// comes back after more than the bound from the first start gets a new bound.
 func TestSentinelMasterWaitStartsAgainAfterAnInterruption(t *testing.T) {
 	for name, s := range map[string]smReconcile{
-		"no Sentinel quorum": {nMasters: 1, master: smPod1, named: orphaned.named, noSentinelQuorum: true},
-		"no master":          {nMasters: 0, master: smPod1, named: orphaned.named},
-		"two masters":        {nMasters: 2, master: smPod1, named: orphaned.named},
+		"no Sentinel quorum":              {nMasters: 1, master: smPod1, named: orphaned.named, noSentinelQuorum: true},
+		"no master":                       {nMasters: 0, master: smPod1, named: orphaned.named},
+		"two masters":                     {nMasters: 2, master: smPod1, named: orphaned.named},
+		"the count of the masters fails":  {nMasters: 1, master: smPod1, named: orphaned.named, nMastersErr: errors.New("boom")},
+		"the read of the master fails":    {nMasters: 1, master: smPod1, named: orphaned.named, masterErr: errors.New("boom")},
+		"the read of the Sentinels fails": {nMasters: 1, master: smPod1, namedErr: errors.New("boom")},
+		"the pod list fails":              {nMasters: 1, master: smPod1, named: orphaned.named, podsErr: errors.New("boom")},
+		"the password fails":              {nMasters: 1, master: smPod1, named: orphaned.named, passwordErr: errors.New("boom")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			st := newSentinelMasterTest()
