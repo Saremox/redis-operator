@@ -20,10 +20,16 @@ import (
 //   - the Sentinel and replica counts in each Sentinel, and the custom
 //     Sentinel config.
 func (r *RedisFailoverHandler) checkAndHealSentinelMode(rf *redisfailoverv1.RedisFailover, allRunning bool) error {
+	// A wait counts only rounds in a row, so a pair of IPs that comes back
+	// gets a new bound.
 	if !r.redisQuorumRunning(rf, allRunning) || !r.sentinelQuorumRunning(rf) {
+		r.sentinelMasterWaits.Delete(failoverKey(rf))
 		return nil
 	}
 	nMasters, done, err := r.healSentinelModeMasters(rf)
+	if nMasters != 1 {
+		r.sentinelMasterWaits.Delete(failoverKey(rf))
+	}
 	if err != nil || done {
 		return err
 	}

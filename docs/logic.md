@@ -126,7 +126,7 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
 - One master, but the Sentinels give another pod as the master: the operator waits. It changes no role label, no replica and no Sentinel. The status is `NotHealthy` while it waits.
   - A Sentinel leader can promote a replica and stop before it tells the other Sentinels. The other Sentinels then fail over the old master to another replica. That failover discards the writes that the first promoted replica accepted.
   - The operator reads `SENTINEL get-master-addr-by-name` from each running Sentinel. It waits only when all the Sentinels that answer give the same IP, and they are a quorum. That IP must be a pod of the RedisFailover, also a pod in deletion.
-  - The wait ends after `down-after-milliseconds` plus `failover-timeout` of the Sentinel `customConfig` (default 15s). Then the operator heals as usual. Another master or another pod of the Sentinels starts a new wait.
+  - The wait ends after `down-after-milliseconds` plus `failover-timeout` of the Sentinel `customConfig` (default 15s). Then the operator heals as usual. Another master or another pod that the Sentinels give starts a new wait.
   - In the wait, the master Service can have no endpoint, because the old master pod stops.
   - After an election in the same reconcile, the operator does not wait. The Sentinels give the old master until the operator monitors the elected master.
 - All Redis replicas replicate from the master.

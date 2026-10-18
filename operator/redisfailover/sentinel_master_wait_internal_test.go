@@ -42,6 +42,8 @@ type smReconcile struct {
 	namedErr error
 	// podsErr is the error of the pod list.
 	podsErr error
+	// noSentinelQuorum: the Sentinel pods do not run a quorum.
+	noSentinelQuorum bool
 }
 
 // smResult is what a reconcile did.
@@ -121,7 +123,7 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	h.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 	h.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	c.On("IsRedisRunning", rf).Maybe().Return(true)
-	c.On("IsSentinelRunningQuorum", rf).Maybe().Return(true)
+	c.On("IsSentinelRunningQuorum", rf).Maybe().Return(!s.noSentinelQuorum)
 	c.On("GetNumberMasters", rf).Maybe().Return(s.nMasters, nil)
 	// The election of a master when the Sentinels have no quorum.
 	c.On("GetMaxRedisPodTime", rf).Maybe().Return(time.Hour, nil)
@@ -147,8 +149,9 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 		h.On("SetSentinelCustomConfig", sip, rf).Maybe().Return(nil)
 	}
 	err := st.handler.CheckAndHeal(rf)
-	// The heal reads the pods again after the wait.
-	if s.podsErr == nil {
+	// The heal reads the pods again after the wait, and two masters are an
+	// error.
+	if s.podsErr == nil && s.nMasters < 2 {
 		require.NoError(t, err)
 	}
 	var res smResult
@@ -311,6 +314,39 @@ func TestSentinelMasterWaitNotNeeded(t *testing.T) {
 			}
 			assert.NotEqual(t, sentinelMasterMsg, st.rf.Status.Message)
 			assert.Empty(t, st.requeues)
+		})
+	}
+}
+
+// TestSentinelMasterWaitWithAQuorumOfAnswers covers a node drain: one of the
+// three Sentinels does not answer, and the two others are a quorum.
+func TestSentinelMasterWaitWithAQuorumOfAnswers(t *testing.T) {
+	st := newSentinelMasterTest()
+	st.assertWait(t, st.run(t, smReconcile{nMasters: 1, master: smPod1, named: []string{smPod0, smPod0}}))
+}
+
+// TestSentinelMasterWaitStartsAgainAfterAnInterruption covers a reconcile
+// that ends before the wait. The pair of IPs that comes back gets a new bound.
+func TestSentinelMasterWaitStartsAgainAfterAnInterruption(t *testing.T) {
+	for name, s := range map[string]smReconcile{
+		"no Sentinel quorum": {nMasters: 1, master: smPod1, named: orphaned.named, noSentinelQuorum: true},
+		"no master":          {nMasters: 0, master: smPod1, named: orphaned.named},
+		"two masters":        {nMasters: 2, master: smPod1, named: orphaned.named},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := newSentinelMasterTest()
+			st.assertWait(t, st.run(t, orphaned))
+			st.clock = st.clock.Add(10 * time.Second)
+			st.run(t, s)
+			_, waiting := st.handler.sentinelMasterWaits.Load("testns/test")
+			assert.False(t, waiting)
+
+			st.clock = st.clock.Add(time.Second)
+			st.assertWait(t, st.run(t, orphaned))
+			assert.Equal(t, []string{"info: " + smWaitLine}, st.lines)
+			// 16s after the first wait, 5s after the second.
+			st.clock = st.clock.Add(5 * time.Second)
+			st.assertWait(t, st.run(t, orphaned))
 		})
 	}
 }
