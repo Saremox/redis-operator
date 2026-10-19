@@ -369,6 +369,7 @@ func (r *RedisFailoverHandler) electMasterForSentinel(rf *redisfailoverv1.RedisF
 		setPromotionFailedStatus(rf, err, "Sentinel cannot fail over and the promotion of a replica failed")
 		return false, err
 	}
+	r.recordElection(rf, best.IP)
 	// The checks below make the Sentinels monitor the new master. The status
 	// stays NotHealthy until the next check finds them healthy.
 	rf.Status = redisfailoverv1.RedisFailoverStatus{
