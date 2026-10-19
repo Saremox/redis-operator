@@ -153,8 +153,8 @@ func TestObserveSentinelAddrs(t *testing.T) {
 			rounds: []upRound{
 				{addrs: upOwn},
 				{after: 30 * time.Second, addrs: upPeers(upS1, upS2)},
-				{after: 90 * time.Second, addrs: upMaster(upForeign, upS1)},
-				{after: 179 * time.Second, addrs: upPeers(upS1, upS2)},
+				{after: 90 * time.Second, addrs: upPeers(upS1, upS2)},
+				{after: 179 * time.Second, addrs: rfservice.SentinelAddrs{Peers: map[string][]string{upForeign: {upS1}}, Masters: map[string][]string{upForeign: {upS1}}}},
 				// 5 minutes after the last check that found the pod.
 				{after: time.Second, addrs: upPeers(upS1, upS2)},
 				{after: 90 * time.Second, addrs: upPeers(upS1, upS2), lines: []string{upPeerStart}, peers: 1},
