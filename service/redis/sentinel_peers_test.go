@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"net"
 	"slices"
 	"strconv"
 	"testing"
@@ -84,4 +85,33 @@ func TestGetSentinelPeersOfRealSentinels(t *testing.T) {
 	})
 	require.True(t, found, "the Sentinels did not find each other: %+v", got)
 	assert.Equal(t, master.IP, got.Master)
+}
+
+// TestGetSentinelPeersOfAFrozenSentinel needs no long timeout or retry,
+// because an error only leaves the Sentinel unread for one check.
+func TestGetSentinelPeersOfAFrozenSentinel(t *testing.T) {
+	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.3", sentinelPort))
+	if err != nil {
+		t.Skipf("cannot listen on 127.0.0.3: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				_, _ = conn.Read(make([]byte, 1024))
+				time.Sleep(3 * time.Second)
+			}()
+		}
+	}()
+
+	start := time.Now()
+	_, err = newTestClient().GetSentinelPeers("127.0.0.3")
+
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), 1500*time.Millisecond)
 }

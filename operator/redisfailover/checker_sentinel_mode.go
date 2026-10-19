@@ -23,6 +23,7 @@ import (
 //     Sentinel config.
 func (r *RedisFailoverHandler) checkAndHealSentinelMode(rf *redisfailoverv1.RedisFailover, allRunning bool) error {
 	if !r.redisQuorumRunning(rf, allRunning) || !r.sentinelQuorumRunning(rf) {
+		r.skipSentinelAddrs(rf)
 		return nil
 	}
 	// Before the count of the masters, because two masters end the reconcile.

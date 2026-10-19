@@ -304,10 +304,10 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 			"Number of commands that the operator sent to Redis and Sentinel, by pod and status.",
 			"kind" /* redis or sentinel */, "namespace", "pod_name", "operation", "status", "err"),
 		unknownPeers: newGaugeVec(namespace, "unknown_sentinel_peers",
-			"Number of peer IPs that the Sentinels of the RedisFailover know and that no Sentinel pod of the RedisFailover has, in two checks at least 10s apart.",
+			"Number of peer IPs that the Sentinels of the RedisFailover know, that no Sentinel pod of the RedisFailover has, and that no pod of it had in the last 5 minutes, in two checks at least 90s apart.",
 			"namespace", "name"),
 		unknownMaster: newGaugeVec(namespace, "sentinel_unknown_master",
-			"1 when a Sentinel of the RedisFailover monitors a master IP that no Redis pod of the RedisFailover has, in two checks at least 10s apart, else 0.",
+			"1 when a Sentinel of the RedisFailover monitors a master IP that no Redis pod of the RedisFailover has and that no pod of it had in the last 5 minutes, in two checks at least 90s apart, else 0.",
 			"namespace", "name"),
 		ControllerRecorder: newControllerRecorder(reg),
 	}

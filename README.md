@@ -166,7 +166,7 @@ In Sentinel mode, these gauges have the labels `namespace` and `name`:
 - `redis_operator_controller_unknown_sentinel_peers`: the number of peer IPs that the Sentinels know and that no Sentinel pod of the RedisFailover has.
 - `redis_operator_controller_sentinel_unknown_master`: `1` when a Sentinel monitors a master IP that no Redis pod of the RedisFailover has, else `0`.
 
-An IP counts when two checks at least 10 seconds apart find it. A value above `0` can show the Sentinels of two RedisFailovers in one group, because all RedisFailovers use the master name `mymaster`. See [Sentinel mode](docs/logic.md#sentinel-mode).
+An IP counts when two checks at least 90 seconds apart find it, and no pod of the RedisFailover had it in the last 5 minutes. A value above `0` can show the Sentinels of two RedisFailovers in one group, because all RedisFailovers use the master name `mymaster`. It can also show an old IP of a deleted pod of this RedisFailover. See [Sentinel mode](docs/logic.md#sentinel-mode).
 
 ### Security notes
 

@@ -64,6 +64,9 @@ func (r *RedisFailoverHandler) checkAndHeal(ctx context.Context, rf *redisfailov
 	// does not hold it.
 	allRunning := r.redisPodsRunning(rf)
 
+	if rf.Bootstrapping() || rf.OperatorManagedFailover() {
+		r.skipSentinelAddrs(rf)
+	}
 	if rf.Bootstrapping() {
 		return r.checkAndHealBootstrapMode(rf, allRunning)
 	}

@@ -24,7 +24,7 @@ func (c *client) GetSentinelPeers(ip string) (SentinelPeers, error) {
 	if ip == "" {
 		return SentinelPeers{}, errNoIP
 	}
-	rClient := rediscli.NewClient(redisOptions(net.JoinHostPort(ip, sentinelPort), ""))
+	rClient := rediscli.NewClient(quickOptions(net.JoinHostPort(ip, sentinelPort), ""))
 	defer closeClient(rClient)
 	var peers []string
 	info, err := c.getSentinelMasterInfo(rClient)
