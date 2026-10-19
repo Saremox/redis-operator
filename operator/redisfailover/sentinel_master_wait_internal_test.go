@@ -13,6 +13,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
@@ -81,15 +82,18 @@ type smResult struct {
 // sentinelMasterTest runs CheckAndHeal in Sentinel mode with three Redis pods
 // and three Sentinels.
 type sentinelMasterTest struct {
-	rf       *redisfailoverv1.RedisFailover
-	pods     []corev1.Pod
-	check    *mRFService.RedisFailoverCheck
-	heal     *mRFService.RedisFailoverHeal
-	k8s      *mK8SService.Services
-	handler  *RedisFailoverHandler
-	clock    time.Time
-	lines    []string
-	requeues []time.Duration
+	rf   *redisfailoverv1.RedisFailover
+	pods []corev1.Pod
+	// sentinelUIDs holds the UID of a Sentinel pod by IP, "uid-<IP>" without
+	// an entry.
+	sentinelUIDs map[string]types.UID
+	check        *mRFService.RedisFailoverCheck
+	heal         *mRFService.RedisFailoverHeal
+	k8s          *mK8SService.Services
+	handler      *RedisFailoverHandler
+	clock        time.Time
+	lines        []string
+	requeues     []time.Duration
 	// viaHandle runs Handle with a successful Ensure, not CheckAndHeal.
 	viaHandle bool
 }
@@ -184,6 +188,18 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	c.On("GetRedisesMasterPod", rf).Maybe().Return("rfr-test-1", nil)
 	c.On("GetRedisRevisionHash", "rfr-test-1", rf).Maybe().Return("1", nil)
 	c.On("GetSentinelsIPs", rf).Maybe().Return(smSentinels, nil)
+	sentinelPods := &corev1.PodList{}
+	for _, sip := range smSentinels {
+		uid, ok := st.sentinelUIDs[sip]
+		if !ok {
+			uid = types.UID("uid-" + sip)
+		}
+		sentinelPods.Items = append(sentinelPods.Items, corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{UID: uid},
+			Status:     corev1.PodStatus{Phase: corev1.PodRunning, PodIP: sip},
+		})
+	}
+	k.On("GetDeploymentPods", rf.Namespace, rfservice.GetSentinelName(rf)).Maybe().Return(sentinelPods, nil)
 	for _, sip := range smSentinels {
 		c.On("CheckSentinelMonitor", sip, s.master, mock.Anything).Maybe().Return(errors.New("sentinel monitoring another master"))
 		reply := smLive{f: live, err: s.liveErr}
@@ -656,8 +672,8 @@ func TestSentinelMasterWaitUsesTheLiveTimeouts(t *testing.T) {
 	})
 	t.Run("no Sentinel list", func(t *testing.T) {
 		st := newSentinelMasterTest()
-		st.check.On("GetSentinelsIPs", st.rf).Return(nil, errors.New("boom"))
-		wait := sentinelMasterWait{downAfter: 5 * time.Second, failoverTimeout: 10 * time.Second, known: map[string]bool{}}
+		st.k8s.On("GetDeploymentPods", st.rf.Namespace, rfservice.GetSentinelName(st.rf)).Return(nil, errors.New("boom"))
+		wait := sentinelMasterWait{downAfter: 5 * time.Second, failoverTimeout: 10 * time.Second, known: map[types.UID]bool{}}
 		st.handler.readSentinelTimeouts(st.rf, &wait, st.handler.logger)
 		assert.Equal(t, 5*time.Second, wait.downAfter)
 		assert.Equal(t, 10*time.Second, wait.failoverTimeout)
@@ -715,6 +731,48 @@ func TestSentinelMasterWaitReadsTheTimeoutsAgain(t *testing.T) {
 		// A late answer does not start the ended wait again.
 		st.clock = st.clock.Add(time.Second)
 		st.assertHeal(t, st.run(t, answers(30*time.Second, 10*time.Second)))
+	})
+}
+
+// TestSentinelMasterWaitKnowsSentinelsByUID covers a Sentinel pod that is
+// replaced in a wait and gets the IP of the old pod. The new pod can have
+// other timeouts.
+func TestSentinelMasterWaitKnowsSentinelsByUID(t *testing.T) {
+	third := smSentinels[2]
+	answers := func(downAfter, failoverTimeout time.Duration) smReconcile {
+		return withLives(orphaned, map[string]smLive{third: {f: redis.SentinelFailover{DownAfter: downAfter, Timeout: failoverTimeout}}})
+	}
+	t.Run("a new pod with the old IP is read again", func(t *testing.T) {
+		st := newSentinelMasterTest()
+		st.assertWait(t, st.run(t, orphaned))
+		st.clock = st.clock.Add(5 * time.Second)
+		st.sentinelUIDs = map[string]types.UID{third: "uid-new"}
+		res := st.run(t, answers(30*time.Second, 10*time.Second))
+		st.assertWait(t, res)
+		assert.Equal(t, 1, res.timeoutReads)
+		st.clock = st.clock.Add(34 * time.Second)
+		st.assertWait(t, st.run(t, orphaned))
+		st.clock = st.clock.Add(time.Second)
+		st.assertHeal(t, st.run(t, orphaned))
+	})
+	t.Run("the same pod is not read again", func(t *testing.T) {
+		st := newSentinelMasterTest()
+		st.assertWait(t, st.run(t, orphaned))
+		st.clock = st.clock.Add(5 * time.Second)
+		res := st.run(t, answers(30*time.Second, 10*time.Second))
+		st.assertWait(t, res)
+		assert.Zero(t, res.timeoutReads)
+		st.clock = st.clock.Add(10 * time.Second)
+		st.assertHeal(t, st.run(t, orphaned))
+	})
+	t.Run("the values of a replaced pod stay", func(t *testing.T) {
+		st := newSentinelMasterTest()
+		st.assertWait(t, st.run(t, answers(30*time.Second, 10*time.Second)))
+		st.clock = st.clock.Add(5 * time.Second)
+		st.sentinelUIDs = map[string]types.UID{third: "uid-new"}
+		st.assertWait(t, st.run(t, answers(time.Second, time.Second)))
+		st.clock = st.clock.Add(34 * time.Second)
+		st.assertWait(t, st.run(t, orphaned))
 	})
 }
 

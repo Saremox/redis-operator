@@ -5,6 +5,9 @@ import (
 	"slices"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
@@ -27,8 +30,9 @@ type sentinelMasterWait struct {
 	// downAfter and failoverTimeout are the largest values of the
 	// customConfig at the start of the wait and of the Sentinels in known.
 	downAfter, failoverTimeout time.Duration
-	// known holds the Sentinels that gave their timeouts in this wait.
-	known map[string]bool
+	// known holds the UIDs of the Sentinel pods that gave their timeouts in
+	// this wait. A new pod can have the IP of an old one.
+	known map[types.UID]bool
 	// ended is true after the log of the end of the wait.
 	ended bool
 	// seen is true after the check of the wait in the current reconcile.
@@ -79,7 +83,7 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
 	if started {
 		downAfter, failoverTimeout := rfservice.SentinelTimeouts(rf)
-		wait = sentinelMasterWait{named: named, master: master, since: now, downAfter: downAfter, failoverTimeout: failoverTimeout, known: map[string]bool{}}
+		wait = sentinelMasterWait{named: named, master: master, since: now, downAfter: downAfter, failoverTimeout: failoverTimeout, known: map[types.UID]bool{}}
 	}
 	wait.seen = true
 	if !wait.ended {
@@ -118,15 +122,17 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 // failover, so the bound is the largest down-after-milliseconds plus the
 // largest failover-timeout. A new value can only make the bound longer. A
 // Sentinel that never answers stays unknown, and the wait ends at the bound
-// of the known values.
+// of the known values. The values of a pod that is gone stay in the bound.
 func (r *RedisFailoverHandler) readSentinelTimeouts(rf *redisfailoverv1.RedisFailover, wait *sentinelMasterWait, logger log.Logger) {
-	sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
+	pods, err := r.k8sservice.GetDeploymentPods(rf.Namespace, rfservice.GetSentinelName(rf))
 	if err != nil {
 		logger.Debugf("The operator did not read the Sentinels, so the wait uses the known timeouts: %v", err)
 		return
 	}
-	for _, sip := range sentinels {
-		if wait.known[sip] {
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		sip := pod.Status.PodIP
+		if pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil || wait.known[pod.UID] {
 			continue
 		}
 		f, err := r.rfChecker.GetSentinelFailover(sip)
@@ -138,7 +144,7 @@ func (r *RedisFailoverHandler) readSentinelTimeouts(rf *redisfailoverv1.RedisFai
 			logger.Debugf("Sentinel %s did not give its timeouts, so the operator reads them again in the next check", sip)
 			continue
 		}
-		wait.known[sip] = true
+		wait.known[pod.UID] = true
 		wait.downAfter = max(wait.downAfter, f.DownAfter)
 		wait.failoverTimeout = max(wait.failoverTimeout, f.Timeout)
 	}
