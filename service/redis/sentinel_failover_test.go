@@ -33,8 +33,8 @@ func TestGetSentinelFailoverReadsTheState(t *testing.T) {
 	}{
 		{
 			name:  "a Sentinel that fails over",
-			reply: sentinelMasterReply("ip", "10.0.0.1", "port", "6379", "flags", "master,failover_in_progress,force_failover", "failover-state", "wait_promotion", "failover-timeout", "10000"),
-			want:  SentinelFailover{InProgress: true, State: "wait_promotion", Timeout: 10 * time.Second, Master: "10.0.0.1:6379"},
+			reply: sentinelMasterReply("ip", "10.0.0.1", "port", "6379", "flags", "master,failover_in_progress,force_failover", "failover-state", "wait_promotion", "failover-timeout", "10000", "down-after-milliseconds", "5000"),
+			want:  SentinelFailover{InProgress: true, State: "wait_promotion", Timeout: 10 * time.Second, DownAfter: 5 * time.Second, Master: "10.0.0.1:6379"},
 		},
 		{
 			name:  "no failover",
@@ -48,7 +48,7 @@ func TestGetSentinelFailoverReadsTheState(t *testing.T) {
 		},
 		{
 			name:  "a negative failover-timeout",
-			reply: sentinelMasterReply("ip", "10.0.0.1", "port", "6379", "flags", "failover_in_progress,master", "failover-timeout", "-1"),
+			reply: sentinelMasterReply("ip", "10.0.0.1", "port", "6379", "flags", "failover_in_progress,master", "failover-timeout", "-1", "down-after-milliseconds", "-1"),
 			want:  SentinelFailover{InProgress: true, Master: "10.0.0.1:6379"},
 		},
 	}
@@ -142,7 +142,8 @@ func TestGetSentinelFailoverOfARealFailover(t *testing.T) {
 	f, err := c.GetSentinelFailover(sentinelIP)
 	require.NoError(t, err)
 	oldMaster := net.JoinHostPort(master.IP, strconv.Itoa(master.Port))
-	assert.Equal(t, SentinelFailover{Timeout: 15 * time.Second, Master: oldMaster}, f)
+	// The Sentinel has the built-in down-after-milliseconds of 30 seconds.
+	assert.Equal(t, SentinelFailover{Timeout: 15 * time.Second, DownAfter: 30 * time.Second, Master: oldMaster}, f)
 
 	rc := rediscli.NewSentinelClient(&rediscli.Options{Addr: net.JoinHostPort(sentinelIP, sentinelPort)})
 	defer func() { _ = rc.Close() }()

@@ -736,6 +736,7 @@ func TestCheckAndHealKeepsNoMasterWithoutAutoscaling(t *testing.T) {
 				at.h.rfHealer = mrfh
 				at.mrfc.On("IsRedisRunning", at.rf).Return(true)
 				at.mrfc.On("GetNumberMasters", at.rf).Return(1, nil)
+				at.mrfc.On("GetSentinelMasterIPs", at.rf).Maybe().Return(nil, nil)
 				at.mrfc.On("CheckAllSlavesFromMaster", autoscaleMaster, at.rf).Return(nil)
 				at.mrfc.On("GetRedisesIPs", at.rf).Return([]string{autoscaleMaster}, nil)
 				at.mrfc.On("GetMasterIP", at.rf).Return(autoscaleMaster, nil)

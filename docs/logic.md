@@ -123,6 +123,22 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
   - Sentinel promotes only a replica that it knows, and it learns the replicas from its master. After a `SENTINEL RESET` while the master stops, the Sentinels know no replica. Then they stay without a master.
   - The operator promotes only when all Sentinels of the spec run and answer, and each Sentinel flags its master as down. A Sentinel must not monitor a Redis pod or know one as replica. The address 127.0.0.1 of a new Sentinel needs no down flag, because no Redis listens there. Otherwise a Sentinel can still fail over, or the old master can still answer, and a promotion gives two masters.
   - Before the promotion, the operator counts the masters and checks for a stopping master again. A new master in that time gives two masters.
+- One master, but the Sentinels give another address as the master: the operator waits. It changes no role label, no replica and no Sentinel. The status is `NotHealthy` while it waits.
+  - A Sentinel leader can promote a replica and stop before it tells the other Sentinels. The other Sentinels then fail over the old master to another replica. That failover discards the writes that the first promoted replica accepted.
+  - The operator reads `SENTINEL get-master-addr-by-name` from each running Sentinel, also from a Sentinel in deletion. A Sentinel in deletion can still vote until it stops.
+  - It waits when a quorum of the Sentinels gives the same address, also when other Sentinels give the Redis master. That quorum can fail over the old master later. A loopback address, for example the 127.0.0.1 of a new Sentinel, and 0.0.0.0 do not count.
+  - The address does not have to be a pod. After a forced delete, or when the pod gets a new IP, the Sentinels can still fail over the old address. Then the wait lasts until the Sentinels switch to the Redis master, or until the bound.
+  - A Sentinel without a readable answer can be one more vote for an address that at least one other Sentinel gives. Sentinels without an answer alone do not cause a wait. When the operator cannot list the Sentinel pods, it does not change the roles in that reconcile.
+  - The wait ends after `down-after-milliseconds` plus `failover-timeout` (default 15s). Then the operator heals as usual.
+  - The bound is the largest `down-after-milliseconds` plus the largest `failover-timeout`, of the Sentinel `customConfig` and of the running Sentinels. The Sentinels get a changed `customConfig` only after the wait, and one Sentinel can flag the master down late while another leads the failover. The operator sets the `customConfig` part of the bound at the start of the wait and keeps it.
+  - In each check of the wait, the operator reads the timeouts of each Sentinel pod that did not give them yet. It knows a pod by its UID, because a new Sentinel pod can get the IP of an old one. A new value can only make the bound longer. A Sentinel that never answers stays unknown, and the wait ends at the bound of the known values.
+  - Another master or another address that the Sentinels give starts a new wait. A reconcile that skips the check, for example after a read error or with the skip annotation, ends the wait. The next check starts a new wait.
+  - In the wait, the master Service can have no endpoint, because the old master pod stops.
+  - After an election in the same reconcile, the operator does not wait. The Sentinels give the old master until the operator monitors the elected master.
+  - Limits of the wait:
+    - A change of `sentinel.replicas` during a wait changes the quorum before the added Sentinels join the others. Then the operator can heal, although the other Sentinels have a quorum for the stale master.
+    - A Sentinel in deletion gives a vote, but the operator does not read its timeouts. When they are longer than the known values, the heal runs at the bound that the operator knows.
+    - The wait compares the IP of the master, not the port. A Sentinel that gives the correct IP with a wrong port agrees, and the next reconcile repairs its monitor.
 - All Redis replicas replicate from the master.
 - Redis has the custom configuration and the managed `maxmemory`.
 - Stale Redis pods get the new statefulset revision. The operator deletes the master pod only when every Sentinel knows a quorum of the replicas. Otherwise, Sentinel has no replica to promote.

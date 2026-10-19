@@ -126,6 +126,7 @@ func (ft *sentinelFailoverTest) run(s sfReconcile) sfResult {
 	c.On("IsSentinelRunningQuorum", rf).Maybe().Return(true)
 	c.On("GetNumberMasters", rf).Maybe().Return(1, nil)
 	c.On("GetMasterIP", rf).Maybe().Return(sfMaster, nil)
+	c.On("GetSentinelMasterIPs", rf).Maybe().Return(nil, nil)
 	c.On("CheckAllSlavesFromMaster", sfMaster, rf).Maybe().Return(nil)
 	c.On("GetRedisesIPs", rf).Maybe().Return([]string{sfMaster}, nil)
 	h.On("SetRedisCustomConfig", sfMaster, rf).Maybe().Return(nil)

@@ -16,9 +16,12 @@ import (
 	"github.com/saremox/redis-operator/metrics"
 )
 
-// errMalformedSentinelMaster does not carry the reply, because the reply is
-// not trusted.
-var errMalformedSentinelMaster = errors.New("malformed SENTINEL MASTER reply")
+// The malformed reply errors do not carry the reply, because the reply is not
+// trusted.
+var (
+	errMalformedSentinelMaster = errors.New("malformed SENTINEL MASTER reply")
+	errMalformedMasterAddr     = errors.New("malformed reply")
+)
 
 var (
 	sentinelNumberRE = regexp.MustCompile(sentinelsNumberREString)
@@ -236,6 +239,27 @@ func (c *client) SentinelMasterDown(ip string) (bool, error) {
 	return flagsDown(info["flags"]), nil
 }
 
+// GetSentinelMasterIP returns the master IP that the Sentinel gives to the
+// clients. In a failover, the leader gives the promoted replica before the end
+// of the failover, and the other Sentinels give the old master.
+func (c *client) GetSentinelMasterIP(ip string) (string, error) {
+	if ip == "" {
+		return "", errNoIP
+	}
+	rClient := rediscli.NewClient(redisOptions(net.JoinHostPort(ip, sentinelPort), ""))
+	defer closeClient(rClient)
+	addr, err := rClient.Do(context.TODO(), "SENTINEL", "get-master-addr-by-name", masterName).StringSlice()
+	if err == nil && len(addr) != 2 {
+		err = errMalformedMasterAddr
+	}
+	if err != nil {
+		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MASTER_ADDR, metrics.FAIL, getRedisError(err))
+		return "", fmt.Errorf("SENTINEL GET-MASTER-ADDR-BY-NAME: %w", err)
+	}
+	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_MASTER_ADDR, metrics.SUCCESS, metrics.NOT_APPLICABLE)
+	return addr[0], nil
+}
+
 // SentinelFailover is the failover state of a Sentinel in SENTINEL MASTER.
 type SentinelFailover struct {
 	// InProgress is the failover_in_progress flag. A Sentinel has it while it
@@ -246,6 +270,9 @@ type SentinelFailover struct {
 	State string
 	// Timeout is the failover-timeout of the Sentinel, or 0 for a missing value.
 	Timeout time.Duration
+	// DownAfter is the down-after-milliseconds of the Sentinel, or 0 for a
+	// missing value.
+	DownAfter time.Duration
 	// Master is the address of the master as ip:port. It stays the old master
 	// until the failover ends.
 	Master string
@@ -282,10 +309,12 @@ func (c *client) GetSentinelFailover(ip string) (SentinelFailover, error) {
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_FAILOVER, metrics.SUCCESS, metrics.NOT_APPLICABLE)
 	// A missing or bad value gives 0, and the caller uses its default.
 	ms, _ := strconv.ParseInt(info["failover-timeout"], 10, 64)
+	downAfter, _ := strconv.ParseInt(info["down-after-milliseconds"], 10, 64)
 	return SentinelFailover{
 		InProgress: slices.Contains(strings.Split(info["flags"], ","), "failover_in_progress"),
 		State:      info["failover-state"],
 		Timeout:    time.Duration(max(ms, 0)) * time.Millisecond,
+		DownAfter:  time.Duration(max(downAfter, 0)) * time.Millisecond,
 		Master:     net.JoinHostPort(info["ip"], info["port"]),
 	}, nil
 }

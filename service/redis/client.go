@@ -26,6 +26,7 @@ type Client interface {
 	GetSentinelReplicas(ip string) ([]string, error)
 	SentinelMasterDown(ip string) (bool, error)
 	GetSentinelFailover(ip string) (SentinelFailover, error)
+	GetSentinelMasterIP(ip string) (string, error)
 	SetCustomSentinelConfig(ip string, configs []string) error
 	SetCustomRedisConfig(ip string, port string, configs []string, password string) error
 	SlaveIsReady(ip, port, password string) (bool, error)

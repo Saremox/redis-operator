@@ -11,7 +11,8 @@ import (
 
 // checkAndHealSentinelMode checks and heals, in this order:
 //   - a quorum of Redis pods and of Sentinel pods,
-//   - exactly one Redis master, and each replica on that master,
+//   - exactly one Redis master, a wait while the Sentinels give another pod
+//     as the master, and each replica on that master,
 //   - the custom Redis config and maxmemory,
 //   - the Redis pod rollout,
 //   - a wait while the master pod stops,
@@ -22,11 +23,14 @@ func (r *RedisFailoverHandler) checkAndHealSentinelMode(rf *redisfailoverv1.Redi
 	if !r.redisQuorumRunning(rf, allRunning) || !r.sentinelQuorumRunning(rf) {
 		return nil
 	}
-	if done, err := r.healSentinelModeMasters(rf); err != nil || done {
+	nMasters, done, err := r.healSentinelModeMasters(rf)
+	if err != nil || done {
 		return err
 	}
-	master, err := r.sentinelModeMaster(rf)
-	if err != nil {
+	// After an election in this reconcile, the Sentinels give the old master
+	// until the operator monitors the elected master below.
+	master, err := r.sentinelModeMaster(rf, nMasters == 1)
+	if err != nil || master == "" {
 		return err
 	}
 	if err := r.applyConfigAndRollout(rf, master, "unable to update redis PODs"); err != nil {
@@ -58,23 +62,24 @@ func (r *RedisFailoverHandler) sentinelQuorumRunning(rf *redisfailoverv1.RedisFa
 }
 
 // healSentinelModeMasters counts the masters and heals a count other than
-// one. It reports whether the reconcile ends.
-func (r *RedisFailoverHandler) healSentinelModeMasters(rf *redisfailoverv1.RedisFailover) (bool, error) {
+// one. It returns the count, and reports whether the reconcile ends.
+func (r *RedisFailoverHandler) healSentinelModeMasters(rf *redisfailoverv1.RedisFailover) (int, bool, error) {
 	nMasters, err := r.rfChecker.GetNumberMasters(rf)
 	if err != nil {
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: "unable to get number of masters",
 		}
-		return true, err
+		return nMasters, true, err
 	}
 
 	switch nMasters {
 	case 0:
-		return r.healNoMasterSentinelMode(rf)
+		done, err := r.healNoMasterSentinelMode(rf)
+		return nMasters, done, err
 	case 1:
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NUMBER_OF_MASTERS, metrics.NOT_APPLICABLE, nil)
-		return false, nil
+		return nMasters, false, nil
 	default:
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NUMBER_OF_MASTERS, metrics.NOT_APPLICABLE, errors.New("multiple masters detected"))
 		errorMsg := "more than one master, fix manually"
@@ -82,7 +87,7 @@ func (r *RedisFailoverHandler) healSentinelModeMasters(rf *redisfailoverv1.Redis
 			State:   redisfailoverv1.NotHealthyState,
 			Message: errorMsg,
 		}
-		return true, errors.New(errorMsg)
+		return nMasters, true, errors.New(errorMsg)
 	}
 }
 
@@ -193,8 +198,9 @@ func (r *RedisFailoverHandler) setOldestAsMaster(rf *redisfailoverv1.RedisFailov
 }
 
 // sentinelModeMaster returns the IP of the master, and makes each replica a
-// replica of it.
-func (r *RedisFailoverHandler) sentinelModeMaster(rf *redisfailoverv1.RedisFailover) (string, error) {
+// replica of it. With checkSentinels, it returns an empty IP while it waits
+// for the Sentinels.
+func (r *RedisFailoverHandler) sentinelModeMaster(rf *redisfailoverv1.RedisFailover, checkSentinels bool) (string, error) {
 	master, err := r.rfChecker.GetMasterIP(rf)
 	if err != nil {
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -202,6 +208,20 @@ func (r *RedisFailoverHandler) sentinelModeMaster(rf *redisfailoverv1.RedisFailo
 			Message: "unable to get master IP",
 		}
 		return "", err
+	}
+	if checkSentinels {
+		// A failed read can hide a quorum for another pod, so the roles stay.
+		wait, err := r.waitForSentinelMaster(rf, master)
+		if err != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: "unable to check the master of the Sentinels",
+			}
+			return "", err
+		}
+		if wait {
+			return "", nil
+		}
 	}
 
 	err = r.rfChecker.CheckAllSlavesFromMaster(master, rf)

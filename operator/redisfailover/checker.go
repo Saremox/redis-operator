@@ -19,6 +19,7 @@ import (
 // CheckAndHeal checks the state of the RedisFailover and heals each check
 // that fails. It writes the status one time, at the end.
 func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) error {
+	defer r.startSentinelMasterRound(failoverKey(rf))()
 	return r.checkAndHeal(context.Background(), rf)
 }
 

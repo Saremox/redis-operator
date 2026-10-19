@@ -138,6 +138,7 @@ func TestSlaveNotAssociatedToMasterLogsThePod(t *testing.T) {
 			mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{}, nil)
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc.On("GetSentinelMasterIPs", mock.Anything).Maybe().Return(nil, nil)
 			mrfc.On("IsRedisRunning", rf).Once().Return(true)
 			mrfc.On("IsSentinelRunningQuorum", rf).Maybe().Return(true)
 			mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
