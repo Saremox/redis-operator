@@ -1,6 +1,7 @@
 package redisfailover
 
 import (
+	"net"
 	"slices"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 )
 
 // sentinelMasterMsg is the status message while the Sentinels give another
-// pod as the master.
+// address as the master.
 const sentinelMasterMsg = "waiting for the Sentinels to agree on the master"
 
 // sentinelMasterRecheck is the interval of the checks in the wait. A Sentinel
@@ -18,7 +19,7 @@ const sentinelMasterMsg = "waiting for the Sentinels to agree on the master"
 const sentinelMasterRecheck = time.Second
 
 // sentinelMasterWait is a wait of the master and replica heal: the Sentinels
-// give the pod at named as the master, and master is the Redis master.
+// give named as the master, and master is the Redis master.
 type sentinelMasterWait struct {
 	named  string
 	master string
@@ -55,7 +56,7 @@ func (r *RedisFailoverHandler) startSentinelMasterRound(key string) func() {
 }
 
 // waitForSentinelMaster reports whether the master and replica heal waits,
-// because a quorum of the Sentinels gives another pod as the master. A
+// because a quorum of the Sentinels gives another address as the master. A
 // Sentinel leader can promote a replica and stop before it tells the other
 // Sentinels. These Sentinels then fail over the old master and select another
 // replica. A master label or replicas on the first promoted replica then give
@@ -63,11 +64,11 @@ func (r *RedisFailoverHandler) startSentinelMasterRound(key string) func() {
 // down-after-milliseconds and the failover-timeout of the Sentinels.
 func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFailover, master string) (bool, error) {
 	key := failoverKey(rf)
-	named, pod, err := r.sentinelsNameOtherPod(rf, master)
+	named, err := r.sentinelsNameOtherMaster(rf, master)
 	if err != nil {
 		return false, err
 	}
-	if pod == "" {
+	if named == "" {
 		r.sentinelMasterWaits.Delete(key)
 		return false, nil
 	}
@@ -75,7 +76,7 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 	v, _ := r.sentinelMasterWaits.Load(key)
 	wait, ok := v.(sentinelMasterWait)
 	started := !ok || wait.named != named || wait.master != master
-	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).WithField("pod", pod)
+	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
 	if started {
 		downAfter, failoverTimeout := rfservice.SentinelTimeouts(rf)
 		wait = sentinelMasterWait{named: named, master: master, since: now, downAfter: downAfter, failoverTimeout: failoverTimeout, known: map[string]bool{}}
@@ -88,7 +89,7 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 	elapsed := now.Sub(wait.since)
 	if elapsed >= limit {
 		if !wait.ended {
-			logger.Warningf("The Sentinels give pod %s (%s) as the master for %s, but the Redis master is %s, so the operator heals the roles and the Sentinels", pod, named, elapsed.Round(time.Second), master)
+			logger.Warningf("The Sentinels give %s as the master for %s, but the Redis master is %s, so the operator heals the roles and the Sentinels", named, elapsed.Round(time.Second), master)
 			wait.ended = true
 		}
 		r.sentinelMasterWaits.Store(key, wait)
@@ -99,7 +100,7 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 	if started {
 		logf = logger.Infof
 	}
-	logf("The Sentinels give pod %s (%s) as the master, but the Redis master is %s, so the operator does not change the roles for up to %s", pod, named, master, limit)
+	logf("The Sentinels give %s as the master, but the Redis master is %s, so the operator does not change the roles for up to %s", named, master, limit)
 	rf.Status = redisfailoverv1.RedisFailoverStatus{
 		State:   redisfailoverv1.NotHealthyState,
 		Message: sentinelMasterMsg,
@@ -143,27 +144,25 @@ func (r *RedisFailoverHandler) readSentinelTimeouts(rf *redisfailoverv1.RedisFai
 	}
 }
 
-// sentinelsNameOtherPod returns the IP and the name of a Redis pod that a
-// quorum of the Sentinels can give as the master, when that IP is not master.
-// Such a quorum can fail over the old master later, also when other Sentinels
-// give the promoted replica. A Sentinel without an answer can be one more vote
-// for an IP that another Sentinel gives. Without a possible quorum for another
-// pod, a wait only delays the heal.
-func (r *RedisFailoverHandler) sentinelsNameOtherPod(rf *redisfailoverv1.RedisFailover, master string) (string, string, error) {
+// sentinelsNameOtherMaster returns an address that a quorum of the Sentinels
+// can give as the master, when it is not master. Such a quorum can fail over
+// the old master later, also when other Sentinels give the promoted replica,
+// and also when the old master pod is gone. A Sentinel without an answer can
+// be one more vote for an address that another Sentinel gives. Without a
+// possible quorum for another address, a wait only delays the heal.
+func (r *RedisFailoverHandler) sentinelsNameOtherMaster(rf *redisfailoverv1.RedisFailover, master string) (string, error) {
 	ips, err := r.rfChecker.GetSentinelMasterIPs(rf)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	votes := map[string]int{}
 	unknown := 0
 	for _, ip := range ips {
-		switch ip {
-		case "":
-			// A pod without an IP must not match it.
+		switch {
+		case ip == "":
 			unknown++
-		case master:
-		default:
-			// The 127.0.0.1 of a new Sentinel is no pod.
+		case ip == master:
+		case credibleMaster(ip):
 			votes[ip]++
 		}
 	}
@@ -176,23 +175,17 @@ func (r *RedisFailoverHandler) sentinelsNameOtherPod(rf *redisfailoverv1.RedisFa
 		}
 	}
 	if len(named) == 0 {
-		return "", "", nil
+		return "", nil
 	}
-	// More Sentinels than the spec run during a rollout, so two IPs can have
-	// a quorum.
-	slices.Sort(named)
-	// A pod in deletion still counts: its Redis can still be the master of
-	// the Sentinels.
-	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
-	if err != nil {
-		return "", "", err
-	}
-	for _, ip := range named {
-		for i := range pods.Items {
-			if pods.Items[i].Status.PodIP == ip {
-				return ip, pods.Items[i].Name, nil
-			}
-		}
-	}
-	return "", "", nil
+	// More Sentinels than the spec run during a rollout, so two addresses can
+	// have a quorum.
+	return slices.Min(named), nil
+}
+
+// credibleMaster reports whether a Sentinel can fail over the master at ip. A
+// new Sentinel gives 127.0.0.1, and no Redis listens on a loopback or an
+// unspecified address.
+func credibleMaster(ip string) bool {
+	addr := net.ParseIP(ip)
+	return addr != nil && !addr.IsLoopback() && !addr.IsUnspecified()
 }

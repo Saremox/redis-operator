@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
+
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/service/redis"
@@ -217,16 +219,20 @@ func (r *RedisFailoverChecker) GetSentinelFailover(sentinel string) (redis.Senti
 }
 
 // GetSentinelMasterIPs returns the master IP that each running Sentinel gives
-// to the clients. A Sentinel that gives an error has an empty entry, because
+// to the clients. A Sentinel in deletion counts, because it can still vote
+// until it stops. A Sentinel that gives an error has an empty entry, because
 // it can still have a master.
 func (r *RedisFailoverChecker) GetSentinelMasterIPs(rf *redisfailoverv1.RedisFailover) ([]string, error) {
-	sentinels, err := r.GetSentinelsIPs(rf)
+	pods, err := r.k8sService.GetDeploymentPods(rf.Namespace, GetSentinelName(rf))
 	if err != nil {
 		return nil, err
 	}
-	ips := make([]string, 0, len(sentinels))
-	for _, sip := range sentinels {
-		ip, err := r.redisClient.GetSentinelMasterIP(sip)
+	ips := make([]string, 0, len(pods.Items))
+	for _, sp := range pods.Items {
+		if sp.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		ip, err := r.redisClient.GetSentinelMasterIP(sp.Status.PodIP)
 		if err != nil {
 			ip = ""
 		}

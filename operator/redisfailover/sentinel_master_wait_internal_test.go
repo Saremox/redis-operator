@@ -270,8 +270,8 @@ func (st *sentinelMasterTest) assertHeal(t *testing.T, res smResult) {
 }
 
 const (
-	smWaitLine = "The Sentinels give pod rfr-test-0 (10.0.0.1) as the master, but the Redis master is 10.0.0.2, so the operator does not change the roles for up to 15s"
-	smEndLine  = "warning: The Sentinels give pod rfr-test-0 (10.0.0.1) as the master for 15s, but the Redis master is 10.0.0.2, so the operator heals the roles and the Sentinels"
+	smWaitLine = "The Sentinels give 10.0.0.1 as the master, but the Redis master is 10.0.0.2, so the operator does not change the roles for up to 15s"
+	smEndLine  = "warning: The Sentinels give 10.0.0.1 as the master for 15s, but the Redis master is 10.0.0.2, so the operator heals the roles and the Sentinels"
 )
 
 // orphaned is the state of the soak events: all the Sentinels give the old
@@ -324,7 +324,7 @@ func TestSentinelMasterWaitEndsAtTheBound(t *testing.T) {
 		res = st.run(t, orphaned)
 		st.assertHeal(t, res)
 		for _, line := range st.lines {
-			assert.NotContains(t, line, "The Sentinels give pod", "one log line for the end")
+			assert.NotContains(t, line, "The Sentinels give", "one log line for the end")
 		}
 	}
 }
@@ -352,6 +352,19 @@ func TestSentinelMasterWaitThroughHandle(t *testing.T) {
 	st.assertHeal(t, st.run(t, orphaned))
 }
 
+// TestSentinelMasterWaitForAGoneAddress covers Sentinels that give the address
+// of a pod that is gone and never fail over it. The wait ends at the bound,
+// and the heal runs as without the wait.
+func TestSentinelMasterWaitForAGoneAddress(t *testing.T) {
+	gone := smReconcile{nMasters: 1, master: smPod1, named: []string{"10.0.0.9", "10.0.0.9", "10.0.0.9"}}
+	st := newSentinelMasterTest()
+	st.assertWait(t, st.run(t, gone))
+	st.clock = st.clock.Add(14 * time.Second)
+	st.assertWait(t, st.run(t, gone))
+	st.clock = st.clock.Add(time.Second)
+	st.assertHeal(t, st.run(t, gone))
+}
+
 // TestSentinelMasterWaitUsesTheSentinelConfig covers the bound from the
 // Sentinel customConfig, after the Sentinels applied it.
 func TestSentinelMasterWaitUsesTheSentinelConfig(t *testing.T) {
@@ -372,7 +385,7 @@ func TestSentinelMasterWaitRestartsForAnotherPair(t *testing.T) {
 	st.clock = st.clock.Add(10 * time.Second)
 	other := smReconcile{nMasters: 1, master: smPod2, named: orphaned.named}
 	st.assertWait(t, st.run(t, other))
-	assert.Equal(t, []string{"info: The Sentinels give pod rfr-test-0 (10.0.0.1) as the master, but the Redis master is 10.0.0.3, so the operator does not change the roles for up to 15s"}, st.lines)
+	assert.Equal(t, []string{"info: The Sentinels give 10.0.0.1 as the master, but the Redis master is 10.0.0.3, so the operator does not change the roles for up to 15s"}, st.lines)
 
 	st.clock = st.clock.Add(10 * time.Second)
 	st.assertWait(t, st.run(t, other))
@@ -396,13 +409,14 @@ func TestSentinelMasterWaitNotNeeded(t *testing.T) {
 		// The leader and one more Sentinel give the promoted replica.
 		"a quorum gives the promoted replica": {named: []string{smPod0, smPod1, smPod1}},
 		"no IP has a quorum":                  {named: []string{smPod0, smPod2, smPod1}},
-		// A forced delete: no pod has the old IP.
-		"the old master is not a pod":    {named: []string{"10.0.0.9", "10.0.0.9", "10.0.0.9"}},
-		"the Sentinels have no master":   {named: []string{"127.0.0.1", "127.0.0.1", "127.0.0.1"}},
-		"new Sentinels":                  {named: []string{smPod0, "127.0.0.1", "127.0.0.1"}},
-		"less than a quorum answers":     {named: []string{smPod0}},
-		"no Sentinel answers":            {},
-		"the Sentinels give an empty IP": {named: []string{"", "", ""}},
+		"the Sentinels have no master":        {named: []string{"127.0.0.1", "127.0.0.1", "127.0.0.1"}},
+		"an IPv6 loopback":                    {named: []string{"::1", "::1", "::1"}},
+		"an unspecified address":              {named: []string{"0.0.0.0", "0.0.0.0", "0.0.0.0"}},
+		"not an IP":                           {named: []string{"redis-0", "redis-0", "redis-0"}},
+		"new Sentinels":                       {named: []string{smPod0, "127.0.0.1", "127.0.0.1"}},
+		"less than a quorum answers":          {named: []string{smPod0}},
+		"no Sentinel answers":                 {},
+		"the Sentinels give an empty IP":      {named: []string{"", "", ""}},
 	}
 	for name, s := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -428,6 +442,12 @@ func TestSentinelMasterWaitForAQuorum(t *testing.T) {
 		// replicas is spec.sentinel.replicas, 3 when it is 0.
 		replicas int32
 	}{
+		// A forced delete, or a new IP of the recreated pod: no pod has X.
+		"[gone X, gone X, M]": {named: []string{"10.0.0.9", "10.0.0.9", m}, wait: true},
+		// A Sentinel in deletion still votes until it stops. Its answer is
+		// in the list, and the quorum of the spec of 3 Sentinels is 2.
+		"[X (in deletion), X, M, M]":       {named: []string{x, x, m, m}, wait: true},
+		"[unknown (in deletion), X, M, M]": {named: []string{"", x, m, m}, wait: true},
 		// A Sentinel without an answer can be one more vote for X.
 		"[X, unknown, M]":             {named: []string{x, "", m}, wait: true},
 		"[unknown, unknown, M]":       {named: []string{"", "", m}},
@@ -473,17 +493,16 @@ func TestSentinelMasterWaitForAQuorum(t *testing.T) {
 	t.Run("two IPs with a quorum, one not a pod", func(t *testing.T) {
 		st := newSentinelMasterTest()
 		st.assertWait(t, st.run(t, smReconcile{nMasters: 1, master: m, named: []string{"10.0.0.0", "10.0.0.0", x, x}}))
-		assert.Equal(t, []string{"info: " + smWaitLine}, st.lines)
+		assert.Equal(t, []string{"info: The Sentinels give 10.0.0.0 as the master, but the Redis master is 10.0.0.2, so the operator does not change the roles for up to 15s"}, st.lines)
 	})
 }
 
 // TestSentinelMasterWaitStopsOnAReadError covers a failed list of the Sentinel
-// pods or of the Redis pods. The failed read can hide a quorum for another
-// pod, so the reconcile ends before it changes the roles.
+// pods. The failed read can hide a quorum for another address, so the
+// reconcile ends before it changes the roles.
 func TestSentinelMasterWaitStopsOnAReadError(t *testing.T) {
 	for name, s := range map[string]smReconcile{
 		"the Sentinel pods": {nMasters: 1, master: smPod1, namedErr: errors.New("boom")},
-		"the Redis pods":    {nMasters: 1, master: smPod1, named: orphaned.named, podsErr: errors.New("boom")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			st := newSentinelMasterTest()
@@ -551,7 +570,6 @@ func TestSentinelMasterWaitStartsAgainAfterAnInterruption(t *testing.T) {
 		"the count of the masters fails":  interrupted(smReconcile{nMasters: 1, master: smPod1, named: orphaned.named, nMastersErr: boom}),
 		"the read of the master fails":    interrupted(smReconcile{nMasters: 1, master: smPod1, named: orphaned.named, masterErr: boom}),
 		"the read of the Sentinels fails": interrupted(smReconcile{nMasters: 1, master: smPod1, namedErr: boom}),
-		"the pod list fails":              interrupted(smReconcile{nMasters: 1, master: smPod1, named: orphaned.named, podsErr: boom}),
 		"the password fails":              interrupted(smReconcile{nMasters: 1, master: smPod1, named: orphaned.named, passwordErr: boom}),
 		"bootstrap mode":                  interrupted(smReconcile{nMasters: 1, master: smPod1, named: orphaned.named, mode: "bootstrap"}),
 		"operator-managed mode":           interrupted(smReconcile{nMasters: 1, master: smPod1, named: orphaned.named, mode: "operator"}),
