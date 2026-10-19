@@ -10,13 +10,20 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	kubefake "k8s.io/client-go/kubernetes/fake"
+	kubetesting "k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
 
+	"github.com/saremox/redis-operator/log"
+	"github.com/saremox/redis-operator/metrics"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
+	"github.com/saremox/redis-operator/service/k8s"
 )
 
 // rolledOutSentinels returns a Sentinel Deployment of three pods that has
@@ -257,6 +264,108 @@ func TestUpdateRedisesPodsRestartsTheSentinelRolloutWaitForANewGeneration(t *tes
 	st.expectMasterDelete()
 	assert.Contains(t, st.update(""), "so the master pod replacement continues")
 	st.heal.AssertExpectations(t)
+}
+
+// apiServerDeployments makes cs act as the API server for a Deployment. It
+// sets the probe defaults that generateSentinelDeployment leaves out, so each
+// reconcile sends an update. It increments the generation when the spec or the
+// annotations change, as PrepareForUpdate of the Deployment registry does.
+func apiServerDeployments(cs *kubefake.Clientset) {
+	gvr := appsv1.SchemeGroupVersion.WithResource("deployments")
+	defaults := func(d *appsv1.Deployment) {
+		for i := range d.Spec.Template.Spec.Containers {
+			c := &d.Spec.Template.Spec.Containers[i]
+			for _, p := range []*corev1.Probe{c.LivenessProbe, c.ReadinessProbe, c.StartupProbe} {
+				if p != nil {
+					p.PeriodSeconds, p.SuccessThreshold, p.FailureThreshold = 10, 1, 3
+				}
+			}
+		}
+	}
+	cs.PrependReactor("create", "deployments", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		d := action.(kubetesting.CreateAction).GetObject().(*appsv1.Deployment).DeepCopy()
+		defaults(d)
+		d.UID, d.Generation = "sentinels", 1
+		return true, d, cs.Tracker().Create(gvr, d, d.Namespace)
+	})
+	cs.PrependReactor("update", "deployments", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		d := action.(kubetesting.UpdateAction).GetObject().(*appsv1.Deployment).DeepCopy()
+		obj, err := cs.Tracker().Get(gvr, d.Namespace, d.Name)
+		if err != nil {
+			return true, nil, err
+		}
+		old := obj.(*appsv1.Deployment)
+		defaults(d)
+		d.UID, d.Generation, d.Status = old.UID, old.Generation, old.Status
+		if !equality.Semantic.DeepEqual(d.Spec, old.Spec) || !equality.Semantic.DeepEqual(d.Annotations, old.Annotations) {
+			d.Generation++
+		}
+		return true, d, cs.Tracker().Update(gvr, d, d.Namespace)
+	})
+}
+
+// Each reconcile updates the Sentinel Deployment before the checks, and the
+// Deployment controller then sets its revision and its status. The update must
+// not start a new generation, or the wait for the Sentinel rollout starts
+// again in each reconcile and never ends.
+func TestUpdateRedisesPodsBoundsTheSentinelRolloutWaitOverReconciles(t *testing.T) {
+	st := newSentinelRolloutTest(t)
+	st.rf.Spec.Sentinel.Replicas = 3
+	st.rf.Spec.Sentinel.Image = "redis:7"
+	cs := kubefake.NewClientset()
+	apiServerDeployments(cs)
+	client := rfservice.NewRedisFailoverKubeClient(k8s.New(cs, nil, log.Dummy, metrics.Dummy), log.Dummy, metrics.Dummy)
+	gvr := appsv1.SchemeGroupVersion.WithResource("deployments")
+	reason := "Deployment rfs-test has 4 pods, 3 updated, 3 ready and 3 available, of 3"
+	reconcile := func() string {
+		t.Helper()
+		require.NoError(t, client.EnsureSentinelDeployment(st.rf, map[string]string{}, nil))
+		obj, err := cs.Tracker().Get(gvr, "testns", "rfs-test")
+		require.NoError(t, err)
+		d := obj.(*appsv1.Deployment).DeepCopy()
+		d.Annotations = map[string]string{"deployment.kubernetes.io/revision": "2"}
+		d.Status = appsv1.DeploymentStatus{ObservedGeneration: d.Generation, Replicas: 4, UpdatedReplicas: 3, ReadyReplicas: 3, AvailableReplicas: 3}
+		require.NoError(t, cs.Tracker().Update(gvr, d, "testns"))
+		st.sentinels = d
+		return st.update("")
+	}
+	start := st.clock
+
+	assert.Equal(t, sentinelRolloutMsg, reconcile())
+	generation := st.sentinels.Generation
+	for range 3 {
+		st.clock = st.clock.Add(sentinelRolloutRecheck)
+		assert.Equal(t, sentinelRolloutMsg, reconcile())
+	}
+	st.assertMasterKept(t)
+	updates := 0
+	for _, a := range cs.Actions() {
+		if a.GetVerb() == "update" && a.GetResource().Resource == "deployments" {
+			updates++
+		}
+	}
+	assert.Equal(t, 3, updates)
+	assert.Equal(t, generation, st.sentinels.Generation)
+	assert.Equal(t, []string{sentinelRolloutMsg + ": " + reason}, st.logger.infos)
+	continued := 0
+	for _, msg := range st.logger.debugs {
+		if msg == sentinelRolloutMsg+": "+reason {
+			continued++
+		}
+	}
+	assert.Equal(t, 3, continued)
+	v, _ := st.handler.rolloutWaits.Load(passwordKey(st.rf))
+	last, ok := v.(rolloutWait)
+	require.True(t, ok)
+	assert.Equal(t, start, last.since)
+
+	st.clock = start.Add(rolloutStallTimeout)
+	st.expectMasterDelete()
+	stall := "rollout waiting for more than 10m: " + reason + ", so the master pod replacement continues before the end of the Sentinel rollout"
+	assert.Equal(t, stall, reconcile())
+	assert.Equal(t, []string{stall}, st.logger.warnings)
+	st.heal.AssertExpectations(t)
+	st.check.AssertExpectations(t)
 }
 
 // Without Sentinel, the master hands its role over, and no Sentinel

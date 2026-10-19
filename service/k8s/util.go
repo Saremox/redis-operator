@@ -55,13 +55,15 @@ func CheckSameController(kind string, stored, desired metav1.Object) error {
 }
 
 // objectCalls are the calls of createOrUpdate for one kind. skipped logs an
-// object that is up to date.
+// object that is up to date. keep, when set, copies to desired what an update
+// must keep from stored.
 type objectCalls[T metav1.Object] struct {
 	kind     string
 	get      func(namespace, name string) (T, error)
 	create   func(namespace string, object T) error
 	update   func(namespace string, object T) error
 	upToDate func(stored, desired T) bool
+	keep     func(stored, desired T)
 	skipped  func()
 }
 
@@ -84,6 +86,9 @@ func createOrUpdate[T metav1.Object](namespace string, desired T, calls objectCa
 	// With the stored resource version, the update fails when the object
 	// changed after the read.
 	desired.SetResourceVersion(stored.GetResourceVersion())
+	if calls.keep != nil {
+		calls.keep(stored, desired)
+	}
 
 	if calls.upToDate(stored, desired) {
 		calls.skipped()

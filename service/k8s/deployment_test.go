@@ -322,6 +322,24 @@ func TestDeploymentServiceObjectUpToDate(t *testing.T) {
 	}
 }
 
+// The API server increments the generation of a Deployment when its
+// annotations change. An update must keep the annotations of the stored
+// Deployment, or each update starts a new generation.
+func TestDeploymentServiceUpdateKeepsTheStoredAnnotations(t *testing.T) {
+	stored := realisticDeployment(3)
+	stored.ResourceVersion = "1"
+	stored.Annotations = map[string]string{"deployment.kubernetes.io/revision": "3", "example.com/owner": "team"}
+	mcli := kubernetes.NewClientset(stored)
+
+	service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
+	require.NoError(t, service.CreateOrUpdateDeployment("testns", realisticDeployment(5)))
+
+	got, err := service.GetDeployment("testns", "rfs-test")
+	require.NoError(t, err)
+	assert.Equal(t, int32(5), *got.Spec.Replicas)
+	assert.Equal(t, stored.Annotations, got.Annotations)
+}
+
 func TestDeploymentServiceUpdate(t *testing.T) {
 	testDeployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
