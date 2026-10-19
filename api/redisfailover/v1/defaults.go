@@ -35,6 +35,10 @@ const (
 	DefaultSentinelFailoverTimeoutMilliseconds = 10000
 )
 
+// DefaultSentinelMasterName is the name of the master that the Sentinels
+// monitor. The clients, the probes and the shutdown script use it too.
+const DefaultSentinelMasterName = "mymaster"
+
 var (
 	// DefaultSentinelEnabled is the value of sentinel.enabled when it is not
 	// set. Without Sentinel, the operator does the failover.

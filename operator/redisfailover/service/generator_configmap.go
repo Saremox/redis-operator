@@ -20,10 +20,10 @@ import (
 // timeouts, and then applies customConfig. Thus the timeouts here apply only to
 // the placeholder. They are the customConfig defaults, so that each timeout has
 // one value in the code.
-var sentinelConfigTemplate = fmt.Sprintf(`sentinel monitor mymaster 127.0.0.1 {{.Spec.Redis.Port}} 2
-sentinel down-after-milliseconds mymaster %d
-sentinel failover-timeout mymaster %d
-sentinel parallel-syncs mymaster 2`, redisfailoverv1.DefaultSentinelDownAfterMilliseconds, redisfailoverv1.DefaultSentinelFailoverTimeoutMilliseconds)
+var sentinelConfigTemplate = fmt.Sprintf(`sentinel monitor {{masterName .}} 127.0.0.1 {{.Spec.Redis.Port}} 2
+sentinel down-after-milliseconds {{masterName .}} %d
+sentinel failover-timeout {{masterName .}} %d
+sentinel parallel-syncs {{masterName .}} 2`, redisfailoverv1.DefaultSentinelDownAfterMilliseconds, redisfailoverv1.DefaultSentinelFailoverTimeoutMilliseconds)
 
 func generateSentinelConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.ConfigMap {
 	name := GetSentinelName(rf)
@@ -31,7 +31,7 @@ func generateSentinelConfigMap(rf *redisfailoverv1.RedisFailover, labels map[str
 
 	labels = util.MergeLabels(labels, generateSelectorLabels(sentinelRoleName, rf.Name))
 
-	tmpl, err := template.New("sentinel").Parse(sentinelConfigTemplate)
+	tmpl, err := template.New("sentinel").Funcs(template.FuncMap{"masterName": SentinelMasterName}).Parse(sentinelConfigTemplate)
 	if err != nil {
 		panic(err)
 	}
@@ -164,7 +164,7 @@ master=""
 retries=0
 while [ -z "$master" ] && [ "$retries" -lt 3 ]; do
 	retries=$((retries + 1))
-	master=$($t redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+	master=$($t redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name %[3]v | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
 	if [ -z "$master" ]; then
 		sleep 1
 	fi
@@ -191,7 +191,7 @@ if [ "$master" = "$self" ]; then
   	retries=0
   	while [ "$failover" != "OK" ] && [ "$retries" -lt 3 ] && [ "$(date +%%s)" -lt "$((deadline - 3))" ]; do
   		retries=$((retries + 1))
-  		failover=$($t redis-cli -h %[1]v -p 26379 SENTINEL failover mymaster)
+  		failover=$($t redis-cli -h %[1]v -p 26379 SENTINEL failover %[3]v)
   		if [ "$failover" != "OK" ]; then
   			sleep 1
   		fi
@@ -201,7 +201,7 @@ if [ "$master" = "$self" ]; then
   	else
   		while { [ -z "$master" ] || [ "$master" = "$self" ]; } && [ "$(date +%%s)" -lt "$deadline" ]; do
   			sleep 1
-  			master=$($t redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+  			master=$($t redis-cli -h %[1]v -p 26379 --csv SENTINEL get-master-addr-by-name %[3]v | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
   		done
   		if [ -z "$master" ] || [ "$master" = "$self" ]; then
   			echo "shutdown.sh: sentinel did not report a new master before the deadline" >&2
@@ -222,7 +222,7 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
 	shutdownContent := ""
 	if rf.SentinelsAllowed() {
-		shutdownContent = fmt.Sprintf(redisShutdownFailoverScript, GetSentinelName(rf), port)
+		shutdownContent = fmt.Sprintf(redisShutdownFailoverScript, GetSentinelName(rf), port, SentinelMasterName(rf))
 	}
 	shutdownContent += fmt.Sprintf(`cmd="redis-cli -p %v"
 if [ ! -z "${REDIS_PASSWORD}" ]; then
