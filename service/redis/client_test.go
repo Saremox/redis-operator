@@ -872,7 +872,7 @@ func TestSentinelReplicaIPs(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := sentinelReplicaIPs(test.res)
+			got, err := sentinelReplicaIPs("SENTINEL REPLICAS", test.res)
 			if test.wantErr {
 				assert.Error(t, err)
 				return

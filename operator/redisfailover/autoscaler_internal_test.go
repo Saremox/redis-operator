@@ -59,7 +59,7 @@ func newAutoscaleTest(t *testing.T, mode string) *autoscaleTest {
 	at := &autoscaleTest{
 		rf:     rf,
 		mk:     &mK8SService.Services{},
-		mrfc:   &mRFService.RedisFailoverCheck{},
+		mrfc:   noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{}),
 		mrec:   &mMetrics.Recorder{},
 		logger: &warnLogger{},
 		now:    autoscaleT0,

@@ -361,6 +361,34 @@ func (_m *Client) GetSentinelMonitor(ip string) (string, string, error) {
 	return r0, r1, r2
 }
 
+// GetSentinelPeers provides a mock function with given fields: ip
+func (_m *Client) GetSentinelPeers(ip string) (redis.SentinelPeers, error) {
+	ret := _m.Called(ip)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetSentinelPeers")
+	}
+
+	var r0 redis.SentinelPeers
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string) (redis.SentinelPeers, error)); ok {
+		return rf(ip)
+	}
+	if rf, ok := ret.Get(0).(func(string) redis.SentinelPeers); ok {
+		r0 = rf(ip)
+	} else {
+		r0 = ret.Get(0).(redis.SentinelPeers)
+	}
+
+	if rf, ok := ret.Get(1).(func(string) error); ok {
+		r1 = rf(ip)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetSentinelReplicas provides a mock function with given fields: ip
 func (_m *Client) GetSentinelReplicas(ip string) ([]string, error) {
 	ret := _m.Called(ip)

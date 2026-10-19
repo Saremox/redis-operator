@@ -312,7 +312,23 @@ func TestDummyRecorder(t *testing.T) {
 		Dummy.SetAutoscalerPhase("ns", "name", 1)
 		Dummy.CountAutoscalerStep("ns", "name", AutoscalerStepDone)
 		Dummy.DeleteAutoscaler("ns", "name")
+		Dummy.SetSentinelUnknownAddrs("ns", "name", 1, true)
 	})
+}
+
+func TestSentinelUnknownAddrsMetrics(t *testing.T) {
+	rec := NewRecorder("unknown_test", prometheus.NewRegistry()).(recorder)
+	rec.SetSentinelUnknownAddrs("ns", "a", 2, true)
+	rec.SetSentinelUnknownAddrs("ns", "b", 0, false)
+
+	assert.InDelta(t, 2.0, testutil.ToFloat64(rec.unknownPeers.WithLabelValues("ns", "a")), 0)
+	assert.InDelta(t, 1.0, testutil.ToFloat64(rec.unknownMaster.WithLabelValues("ns", "a")), 0)
+	assert.InDelta(t, 0.0, testutil.ToFloat64(rec.unknownPeers.WithLabelValues("ns", "b")), 0)
+	assert.InDelta(t, 0.0, testutil.ToFloat64(rec.unknownMaster.WithLabelValues("ns", "b")), 0)
+
+	rec.DeleteCluster("ns", "a")
+	assert.Equal(t, 1, testutil.CollectAndCount(rec.unknownPeers))
+	assert.Equal(t, 1, testutil.CollectAndCount(rec.unknownMaster))
 }
 
 func TestAutoscalerMetrics(t *testing.T) {

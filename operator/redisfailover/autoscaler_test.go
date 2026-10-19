@@ -87,7 +87,7 @@ func TestCheckAndHealAutoscaling(t *testing.T) {
 				mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
 					patched = args.Get(2).(*v1.RedisFailover).Status
 				}).Return()
-				mrfc := &mRFService.RedisFailoverCheck{}
+				mrfc := noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{})
 				mrfc.On("GetSentinelMasterIPs", mock.Anything).Maybe().Return(nil, nil)
 				mrfh := &mRFService.RedisFailoverHeal{}
 				mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
@@ -165,7 +165,7 @@ func TestHandleAutoscalingAPICalls(t *testing.T) {
 			for _, ensure := range []string{"EnsureRedisMasterService", "EnsureRedisSlaveService", "EnsureRedisShutdownConfigMap", "EnsureRedisReadinessConfigMap", "EnsureRedisConfigMap", "EnsureRedisStatefulset"} {
 				mrfs.On(ensure, rf, mock.Anything, mock.Anything).Once().Return(nil)
 			}
-			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc := noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{})
 			mrfc.On("GetSentinelMasterIPs", mock.Anything).Maybe().Return(nil, nil)
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)

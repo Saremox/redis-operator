@@ -118,6 +118,12 @@ The best replica is a synced replica first, then the replica with the highest re
 This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The operator repairs what Sentinel cannot. It checks:
 
 - A quorum of Redis pods and a quorum of Sentinel pods run.
+- The operator reports the Sentinel peers and the masters that are not pods of the RedisFailover. It changes nothing for them. All RedisFailovers use the master name `mymaster`, and a Sentinel accepts each peer that sends this name. Thus a Sentinel of another RedisFailover at an old IP of an own Sentinel merges the two groups, and they exchange their masters.
+  - The operator reads `SENTINEL MASTER` and `SENTINEL SENTINELS` from each running Sentinel, also from a Sentinel in deletion. It reads them before the count of the masters, so two masters do not stop the check.
+  - A peer IP that is no Sentinel pod is an unknown peer. A master IP that is no Redis pod is an unknown master address. A pod in each phase counts, also in deletion. A loopback or unspecified master address is not unknown.
+  - The operator lists only the pods of the RedisFailover. Thus the old IP of a deleted pod is also unknown. Examples are a Sentinel rollout before the reset of the other Sentinels, and the forced delete of the master pod.
+  - An IP counts when two checks at least 10 seconds apart find it. The operator then logs a Warning with the IPs and the Sentinels that know them, and an Info when the IP is gone. A Sentinel without an answer ends nothing in that check.
+  - The gauges are in [Operator metrics](../README.md#operator-metrics).
 - Only one Redis works as a master.
 - No master: if the old master pod is still stopping, the operator waits. That master can still take writes. Its shutdown script asks Sentinel for a failover only when it can pause the writes (Redis 6.2 or later). Otherwise Sentinel fails over after `down-after-milliseconds`. Then the operator sets the oldest pod as master in these cases: one Redis, no Sentinel quorum, or all Redis replicate from localhost (first boot). When no Sentinel can fail over, the operator promotes the best replica, as in operator-managed mode. Otherwise it waits for the Sentinel failover. The status is `NotHealthy` while it waits.
   - Sentinel promotes only a replica that it knows, and it learns the replicas from its master. After a `SENTINEL RESET` while the master stops, the Sentinels know no replica. Then they stay without a master.

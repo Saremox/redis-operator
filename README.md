@@ -161,6 +161,13 @@ With the Helm chart, set the flags in `image.cli_args`. The chart sets `--listen
 
 The operator serves Prometheus metrics on `--listen-address` (default `:9710`) at `--metrics-path` (default `/metrics`). The flag `--enable-pprof` (default `false`) serves the Go profiler at `/debug/pprof/` on the same address. The profiler has no authentication. Allow only trusted users to reach this address.
 
+In Sentinel mode, these gauges have the labels `namespace` and `name`:
+
+- `redis_operator_controller_unknown_sentinel_peers`: the number of peer IPs that the Sentinels know and that no Sentinel pod of the RedisFailover has.
+- `redis_operator_controller_sentinel_unknown_master`: `1` when a Sentinel monitors a master IP that no Redis pod of the RedisFailover has, else `0`.
+
+An IP counts when two checks at least 10 seconds apart find it. A value above `0` can show the Sentinels of two RedisFailovers in one group, because all RedisFailovers use the master name `mymaster`. See [Sentinel mode](docs/logic.md#sentinel-mode).
+
 ### Security notes
 
 The author of a RedisFailover controls the pods that the operator creates: containers, volumes, `hostPath`, `hostNetwork` and service account. Enforce the Pod Security Admission level `restricted`, or an admission policy, in each namespace where users create a RedisFailover.
