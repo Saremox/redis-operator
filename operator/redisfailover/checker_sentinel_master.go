@@ -37,6 +37,26 @@ type sentinelMasterWait struct {
 	ended bool
 	// seen is true after the check of the wait in the current reconcile.
 	seen bool
+	// elected is true when the operator promoted master at since. The
+	// election needs Sentinels that know no replica pod and monitor no pod,
+	// so they cannot fail over the address that they give.
+	elected bool
+}
+
+// newSentinelMasterWait fixes the customConfig part of the bound at the
+// start. A later customConfig reaches the running Sentinels only after the
+// wait.
+func newSentinelMasterWait(rf *redisfailoverv1.RedisFailover, named, master string, now time.Time) sentinelMasterWait {
+	downAfter, failoverTimeout := rfservice.SentinelTimeouts(rf)
+	return sentinelMasterWait{named: named, master: master, since: now, downAfter: downAfter, failoverTimeout: failoverTimeout, known: map[types.UID]bool{}, seen: true}
+}
+
+// recordElection keeps the promoted master, so that the checks until the
+// bound do not wait for the Sentinels that give the old address.
+func (r *RedisFailoverHandler) recordElection(rf *redisfailoverv1.RedisFailover, master string) {
+	wait := newSentinelMasterWait(rf, "", master, r.now())
+	wait.elected = true
+	r.sentinelMasterWaits.Store(failoverKey(rf), wait)
 }
 
 // startSentinelMasterRound marks the wait of key as not seen, and returns the
@@ -65,7 +85,9 @@ func (r *RedisFailoverHandler) startSentinelMasterRound(key string) func() {
 // Sentinels. These Sentinels then fail over the old master and select another
 // replica. A master label or replicas on the first promoted replica then give
 // it writes that the second failover loses. The wait ends after the
-// down-after-milliseconds and the failover-timeout of the Sentinels.
+// down-after-milliseconds and the failover-timeout of the Sentinels. Until
+// that bound after an election by the operator, the elected master gets no
+// wait.
 func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFailover, master string) (bool, error) {
 	key := failoverKey(rf)
 	named, err := r.sentinelsNameOtherMaster(rf, master)
@@ -79,11 +101,21 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 	now := r.now()
 	v, _ := r.sentinelMasterWaits.Load(key)
 	wait, ok := v.(sentinelMasterWait)
-	started := !ok || wait.named != named || wait.master != master
 	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
+	if ok && wait.elected && wait.master == master {
+		wait.seen = true
+		r.readSentinelTimeouts(rf, &wait, logger)
+		if now.Sub(wait.since) < wait.downAfter+wait.failoverTimeout {
+			r.sentinelMasterWaits.Store(key, wait)
+			logger.Debugf("The operator elected the master %s, so it does not wait for the Sentinels that give %s", master, named)
+			return false, nil
+		}
+		// The bound counts from the election, so the wait ends at once.
+		wait.named, wait.elected = named, false
+	}
+	started := !ok || wait.named != named || wait.master != master
 	if started {
-		downAfter, failoverTimeout := rfservice.SentinelTimeouts(rf)
-		wait = sentinelMasterWait{named: named, master: master, since: now, downAfter: downAfter, failoverTimeout: failoverTimeout, known: map[types.UID]bool{}}
+		wait = newSentinelMasterWait(rf, named, master, now)
 	}
 	wait.seen = true
 	if !wait.ended {

@@ -7,6 +7,7 @@ import (
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
+	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
 // checkAndHealSentinelMode checks and heals, in this order:
@@ -371,9 +372,15 @@ func (r *RedisFailoverHandler) electMasterForSentinel(rf *redisfailoverv1.RedisF
 	err = r.rfHealer.PromoteBestReplica(best.IP, rf)
 	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err)
 	if err != nil {
+		// The promoted master works when only its label or a replica change
+		// failed.
+		if errors.Is(err, rfservice.ErrPartialReconciliation) || errors.Is(err, rfservice.ErrMasterLabel) {
+			r.recordElection(rf, best.IP)
+		}
 		setPromotionFailedStatus(rf, err, "Sentinel cannot fail over and the promotion of a replica failed")
 		return false, err
 	}
+	r.recordElection(rf, best.IP)
 	// The checks below make the Sentinels monitor the new master. The status
 	// stays NotHealthy until the next check finds them healthy.
 	rf.Status = redisfailoverv1.RedisFailoverStatus{
