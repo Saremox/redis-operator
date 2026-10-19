@@ -911,23 +911,31 @@ func TestSentinelMasterWaitSkipUsesTheLiveTimeouts(t *testing.T) {
 }
 
 // TestSentinelMasterWaitSkipAfterAPartialPromotion covers a promotion that
-// fails to change a replica. The elected master works, so the next reconcile
-// changes that replica without a wait.
+// fails after MakeMaster: on the master label or on a replica. The elected
+// master works, so the next reconcile heals without a wait.
 func TestSentinelMasterWaitSkipAfterAPartialPromotion(t *testing.T) {
-	st := newSentinelMasterTest()
-	partial := smElection
-	partial.promoteErr = fmt.Errorf("%w: boom", rfservice.ErrPartialReconciliation)
-	res := st.run(t, partial)
-	require.ErrorIs(t, res.err, rfservice.ErrPartialReconciliation)
-	assert.Equal(t, 1, res.elected)
+	for name, cause := range map[string]error{
+		"a replica":        rfservice.ErrPartialReconciliation,
+		"the master label": rfservice.ErrMasterLabel,
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := newSentinelMasterTest()
+			partial := smElection
+			partial.promoteErr = fmt.Errorf("%w: boom", cause)
+			res := st.run(t, partial)
+			require.ErrorIs(t, res.err, cause)
+			assert.Equal(t, 1, res.elected)
 
-	st.clock = st.clock.Add(time.Second)
-	st.assertHeal(t, st.run(t, smElected))
-	assert.Contains(t, st.lines, smSkipLine)
+			st.clock = st.clock.Add(time.Second)
+			st.assertHeal(t, st.run(t, smElected))
+			assert.Contains(t, st.lines, smSkipLine)
+		})
+	}
 }
 
 // TestSentinelMasterWaitAfterAFailedPromotion covers a promotion that fails
-// before the master works. The operator then records no election.
+// before the master works, for example on MakeMaster. The operator then
+// records no election.
 func TestSentinelMasterWaitAfterAFailedPromotion(t *testing.T) {
 	st := newSentinelMasterTest()
 	failed := smElection

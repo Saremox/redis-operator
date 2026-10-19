@@ -19,6 +19,10 @@ import (
 // The failover is then incomplete, but the new master works.
 var ErrPartialReconciliation = errors.New("promotion succeeded but replica reconciliation incomplete")
 
+// ErrMasterLabel is the error of PromoteBestReplica when the new master is
+// promoted, but its master label failed. The new master works.
+var ErrMasterLabel = errors.New("promotion succeeded but master label failed")
+
 // RedisFailoverHeal defines the interface able to fix the problems on the redis failovers.
 type RedisFailoverHeal interface {
 	MakeMaster(ip string, rFailover *redisfailoverv1.RedisFailover) error
@@ -433,7 +437,7 @@ func (r *RedisFailoverHealer) PromoteBestReplica(newMasterIP string, rf *redisfa
 
 	// Step 2: Update pod labels for the new master
 	if err := r.labelPromotedMaster(logger, rf, rps, newMasterIP); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrMasterLabel, err)
 	}
 
 	// Step 3: Reconfigure all other replicas to point to the new master

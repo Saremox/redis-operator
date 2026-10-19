@@ -895,6 +895,7 @@ func TestPromoteBestReplicaMakeMasterFails(t *testing.T) {
 	err := healer.PromoteBestReplica(newMasterIP, rf)
 	require.Error(t, err, "MakeMaster failure should return an error")
 	require.NotErrorIs(t, err, rfservice.ErrPartialReconciliation, "full promotion failure should not be wrapped as ErrPartialReconciliation")
+	require.NotErrorIs(t, err, rfservice.ErrMasterLabel)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
@@ -1417,6 +1418,7 @@ func TestPromoteBestReplicaMasterLabelFails(t *testing.T) {
 
 	err := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{}).PromoteBestReplica("1.1.1.1", rf)
 	require.ErrorIs(t, err, labelErr)
+	require.ErrorIs(t, err, rfservice.ErrMasterLabel)
 	require.NotErrorIs(t, err, rfservice.ErrPartialReconciliation)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t) // no MakeSlaveOfWithPort call

@@ -367,8 +367,9 @@ func (r *RedisFailoverHandler) electMasterForSentinel(rf *redisfailoverv1.RedisF
 	err = r.rfHealer.PromoteBestReplica(best.IP, rf)
 	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err)
 	if err != nil {
-		// The promoted master works when only a replica change failed.
-		if errors.Is(err, rfservice.ErrPartialReconciliation) {
+		// The promoted master works when only its label or a replica change
+		// failed.
+		if errors.Is(err, rfservice.ErrPartialReconciliation) || errors.Is(err, rfservice.ErrMasterLabel) {
 			r.recordElection(rf, best.IP)
 		}
 		setPromotionFailedStatus(rf, err, "Sentinel cannot fail over and the promotion of a replica failed")
