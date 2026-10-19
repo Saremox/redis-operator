@@ -57,7 +57,7 @@ func TestNoMasterWithLocalhostMastersLogsAtInfo(t *testing.T) {
 	mk := noAppliedSecret(&mK8SService.Services{})
 	mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{}, nil)
 	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
-	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfc := noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{})
 	mrfc.On("IsRedisRunning", rf).Once().Return(true)
 	mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
 	mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
@@ -86,7 +86,7 @@ func TestNoMasterWithoutSentinelQuorumLogsTheError(t *testing.T) {
 	mk := noAppliedSecret(&mK8SService.Services{})
 	mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{}, nil)
 	mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
-	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfc := noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{})
 	mrfc.On("IsRedisRunning", rf).Once().Return(true)
 	mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
 	mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
@@ -137,7 +137,7 @@ func TestSlaveNotAssociatedToMasterLogsThePod(t *testing.T) {
 			mk := noAppliedSecret(&mK8SService.Services{})
 			mk.On("GetStatefulSetPods", mock.Anything, mock.Anything).Return(&corev1.PodList{}, nil)
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
-			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc := noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{})
 			mrfc.On("GetSentinelMasterIPs", mock.Anything).Maybe().Return(nil, nil)
 			mrfc.On("IsRedisRunning", rf).Once().Return(true)
 			mrfc.On("IsSentinelRunningQuorum", rf).Maybe().Return(true)
@@ -163,7 +163,7 @@ func TestGetLabelsLogsTheRedisFailover(t *testing.T) {
 	rf := newCustomConfigTestRF()
 	rf.Spec.LabelWhitelist = []string{"("}
 	logs := &recordedLogs{}
-	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, &mRFService.RedisFailoverCheck{}, &mRFService.RedisFailoverHeal{}, &mK8SService.Services{}, metrics.Dummy, recordingLogger{logs: logs})
+	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{}), &mRFService.RedisFailoverHeal{}, &mK8SService.Services{}, metrics.Dummy, recordingLogger{logs: logs})
 
 	handler.getLabels(rf)
 

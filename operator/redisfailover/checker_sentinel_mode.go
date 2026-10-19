@@ -11,6 +11,8 @@ import (
 
 // checkAndHealSentinelMode checks and heals, in this order:
 //   - a quorum of Redis pods and of Sentinel pods,
+//   - a report of the Sentinel peers and masters that are no pods of the
+//     RedisFailover,
 //   - exactly one Redis master, a wait while the Sentinels give another pod
 //     as the master, and each replica on that master,
 //   - the custom Redis config and maxmemory,
@@ -21,8 +23,11 @@ import (
 //     Sentinel config.
 func (r *RedisFailoverHandler) checkAndHealSentinelMode(rf *redisfailoverv1.RedisFailover, allRunning bool) error {
 	if !r.redisQuorumRunning(rf, allRunning) || !r.sentinelQuorumRunning(rf) {
+		r.skipSentinelAddrs(rf)
 		return nil
 	}
+	// Before the count of the masters, because two masters end the reconcile.
+	r.observeSentinelAddrs(rf)
 	nMasters, done, err := r.healSentinelModeMasters(rf)
 	if err != nil || done {
 		return err

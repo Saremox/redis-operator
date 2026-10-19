@@ -867,12 +867,17 @@ func TestSentinelReplicaIPs(t *testing.T) {
 			},
 			want: []string{"10.0.0.2", "10.0.0.3"},
 		},
+		{
+			name: "a peer that is down",
+			res:  []any{[]any{"name", "10.0.1.2:26379", "ip", "10.0.1.2", "port", "26379", "flags", "s_down,o_down,sentinel,disconnected"}},
+			want: []string{"10.0.1.2"},
+		},
 		{name: "an entry is not an array", res: []any{"10.0.0.2"}, wantErr: true},
 		{name: "the ip is not a string", res: []any{[]any{"ip", int64(1)}}, wantErr: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := sentinelReplicaIPs(test.res)
+			got, err := sentinelReplicaIPs("SENTINEL REPLICAS", test.res)
 			if test.wantErr {
 				assert.Error(t, err)
 				return

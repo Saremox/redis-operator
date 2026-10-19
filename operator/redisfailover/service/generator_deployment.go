@@ -179,7 +179,7 @@ func sentinelReadinessProbe(rf *redisfailoverv1.RedisFailover) *corev1.Probe {
 				Command: []string{
 					"sh",
 					"-c",
-					"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1 | grep -vq '127.0.0.1' && $t redis-cli -h $(hostname) -p 26379 sentinel ckquorum mymaster | grep -q '^OK'",
+					fmt.Sprintf("t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 26379 sentinel get-master-addr-by-name %[1]s | head -n 1 | grep -vq '127.0.0.1' && $t redis-cli -h $(hostname) -p 26379 sentinel ckquorum %[1]s | grep -q '^OK'", SentinelMasterName(rf)),
 				},
 			},
 		},

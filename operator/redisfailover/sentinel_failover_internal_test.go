@@ -118,7 +118,7 @@ func (ft *sentinelFailoverTest) run(s sfReconcile) sfResult {
 	ft.check.ExpectedCalls, ft.check.Calls = nil, nil
 	ft.heal.ExpectedCalls, ft.heal.Calls = nil, nil
 	ft.lines, ft.requeues = nil, nil
-	c, h, rf := ft.check, ft.heal, ft.rf
+	c, h, rf := noUnknownSentinelAddrs(ft.check), ft.heal, ft.rf
 	h.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
 	h.On("ApplySentinelPassword", mock.Anything, mock.Anything).Maybe().Return(true, nil)
 	c.On("IsRedisRunning", rf).Maybe().Return(true)

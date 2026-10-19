@@ -44,6 +44,12 @@ func GetRedisAuthAppliedName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(redisAuthAppliedName, rf.Name)
 }
 
+// SentinelMasterName returns the name of the master that the Sentinels of rf
+// monitor.
+func SentinelMasterName(_ *redisfailoverv1.RedisFailover) string {
+	return redisfailoverv1.DefaultSentinelMasterName
+}
+
 // GetSentinelName returns the name for sentinel resources.
 func GetSentinelName(rf *redisfailoverv1.RedisFailover) string {
 	return generateName(sentinelName, rf.Name)

@@ -212,7 +212,7 @@ func (c *client) GetSentinelReplicas(ip string) ([]string, error) {
 	var replicas []string
 	err := rClient.Process(context.TODO(), cmd)
 	if err == nil {
-		replicas, err = sentinelReplicaIPs(cmd.Val())
+		replicas, err = sentinelReplicaIPs("SENTINEL REPLICAS", cmd.Val())
 	}
 	if err != nil {
 		c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_REPLICAS, metrics.FAIL, getRedisError(err))
@@ -329,20 +329,21 @@ func flagsDown(flags string) bool {
 	return false
 }
 
-// sentinelReplicaIPs reads the "ip" field of each replica in a SENTINEL
-// REPLICAS reply. Each replica is a flat array of field names and values.
-func sentinelReplicaIPs(res []any) ([]string, error) {
+// sentinelReplicaIPs reads the "ip" field of each entry in the reply of
+// command, SENTINEL REPLICAS or SENTINEL SENTINELS. Each entry is a flat array
+// of field names and values.
+func sentinelReplicaIPs(command string, res []any) ([]string, error) {
 	ips := make([]string, 0, len(res))
 	for _, entry := range res {
 		fields, ok := entry.([]any)
 		if !ok {
-			return nil, fmt.Errorf("unexpected SENTINEL REPLICAS entry %v", entry)
+			return nil, fmt.Errorf("unexpected %s entry %v", command, entry)
 		}
 		for i := 0; i+1 < len(fields); i += 2 {
 			if fields[i] == "ip" {
 				ip, ok := fields[i+1].(string)
 				if !ok {
-					return nil, fmt.Errorf("unexpected SENTINEL REPLICAS ip %v", fields[i+1])
+					return nil, fmt.Errorf("unexpected %s ip %v", command, fields[i+1])
 				}
 				ips = append(ips, ip)
 			}

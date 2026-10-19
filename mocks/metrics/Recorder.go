@@ -113,6 +113,11 @@ func (_m *Recorder) SetPodIP(kind string, namespace string, name string, ip stri
 	_m.Called(kind, namespace, name, ip)
 }
 
+// SetSentinelUnknownAddrs provides a mock function with given fields: namespace, name, peers, master
+func (_m *Recorder) SetSentinelUnknownAddrs(namespace string, name string, peers int, master bool) {
+	_m.Called(namespace, name, peers, master)
+}
+
 // NewRecorder creates a new instance of Recorder. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
 func NewRecorder(t interface {

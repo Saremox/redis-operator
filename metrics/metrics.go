@@ -138,6 +138,9 @@ const (
 	// GET_SENTINEL_MASTER_ADDR reads the master that a Sentinel gives to the
 	// clients.
 	GET_SENTINEL_MASTER_ADDR = "SENTINEL_GET_MASTER_ADDR_BY_NAME"
+	// GET_SENTINEL_PEERS reads the master and the other Sentinels that a
+	// Sentinel knows.
+	GET_SENTINEL_PEERS = "SENTINEL_GET_PEERS"
 	// CHECK_SENTINEL_QUORUM runs SENTINEL CKQUORUM.
 	CHECK_SENTINEL_QUORUM = "SENTINEL_CKQUORUM"
 	// SLAVE_IS_READY checks if a replica is in sync with its master.
@@ -220,6 +223,10 @@ type Recorder interface {
 	// Off.
 	DeleteAutoscaler(namespace string, name string)
 
+	// SetSentinelUnknownAddrs sets the count of the unknown peer IPs and the
+	// unknown master flag of the Sentinels of a RedisFailover.
+	SetSentinelUnknownAddrs(namespace string, name string, peers int, master bool)
+
 	RecordEnsureOperation(objectNamespace string, objectName string, objectKind string, resourceName string, status string)
 
 	// SetPodIP tells which pod of the kind KIND_REDIS or KIND_SENTINEL has
@@ -252,6 +259,8 @@ type recorder struct {
 	sentinelCheck        *prometheus.CounterVec
 	k8sServiceOperations *prometheus.CounterVec
 	redisOperations      *prometheus.CounterVec
+	unknownPeers         *prometheus.GaugeVec
+	unknownMaster        *prometheus.GaugeVec
 	ControllerRecorder
 }
 
@@ -294,6 +303,12 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		redisOperations: newCounterVec(namespace, "redis_operations_total",
 			"Number of commands that the operator sent to Redis and Sentinel, by pod and status.",
 			"kind" /* redis or sentinel */, "namespace", "pod_name", "operation", "status", "err"),
+		unknownPeers: newGaugeVec(namespace, "unknown_sentinel_peers",
+			"Number of peer IPs that the Sentinels of the RedisFailover know, that no Sentinel pod of the RedisFailover has, and that no pod of it had in the last 5 minutes, in two checks at least 90s apart.",
+			"namespace", "name"),
+		unknownMaster: newGaugeVec(namespace, "sentinel_unknown_master",
+			"1 when a Sentinel of the RedisFailover monitors a master IP that no Redis pod of the RedisFailover has and that no pod of it had in the last 5 minutes, in two checks at least 90s apart, else 0.",
+			"namespace", "name"),
 		ControllerRecorder: newControllerRecorder(reg),
 	}
 
@@ -311,6 +326,8 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		r.sentinelCheck,
 		r.k8sServiceOperations,
 		r.redisOperations,
+		r.unknownPeers,
+		r.unknownMaster,
 	)
 	mutex.Lock()
 	recorders = append(recorders, r)
@@ -353,6 +370,8 @@ func (r recorder) SetClusterError(namespace, name string) {
 func (r recorder) DeleteCluster(namespace, name string) {
 	r.clusterOK.DeleteLabelValues(namespace, name)
 	r.DeleteAutoscaler(namespace, name)
+	r.unknownPeers.DeleteLabelValues(namespace, name)
+	r.unknownMaster.DeleteLabelValues(namespace, name)
 }
 
 func (r recorder) SetAutoscaler(namespace, name string, recommendedBytes int64, usedRatio float64, highWindows int32, effectiveBytes int64) {
@@ -382,6 +401,16 @@ func (r recorder) DeleteAutoscaler(namespace, name string) {
 	for _, result := range []string{AutoscalerStepDone, AutoscalerStepReverted, AutoscalerStepHeld} {
 		r.steps.DeleteLabelValues(namespace, name, result)
 	}
+}
+
+func (r recorder) SetSentinelUnknownAddrs(namespace, name string, peers int, master bool) {
+	r.unknownPeers.WithLabelValues(namespace, name).Set(float64(peers))
+	unknownMaster := HEALTHY
+	if master {
+		unknownMaster = UNHEALTHY
+	}
+	r.unknownMaster.WithLabelValues(namespace, name).Set(unknownMaster)
+	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", name)
 }
 
 func (r recorder) RecordEnsureOperation(objectNamespace, objectName, objectKind, resourceName, status string) {
@@ -511,6 +540,8 @@ func (r recorder) deleteStale(kubernetesResourceBasedLabels, customResourceBased
 		metricsDeletedCount += r.effectiveMemory.DeletePartialMatch(labelWithName)
 		metricsDeletedCount += r.stepPhase.DeletePartialMatch(labelWithName)
 		metricsDeletedCount += r.steps.DeletePartialMatch(labelWithName)
+		metricsDeletedCount += r.unknownPeers.DeletePartialMatch(labelWithName)
+		metricsDeletedCount += r.unknownMaster.DeletePartialMatch(labelWithName)
 	}
 	for _, label := range podBasedLabels {
 		metricsDeletedCount += r.redisOperations.DeletePartialMatch(label)

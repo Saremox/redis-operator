@@ -18,6 +18,8 @@ func (d *dummy) SetAutoscaler(_, _ string, _ int64, _ float64, _ int32, _ int64)
 func (d *dummy) SetAutoscalerPhase(_, _ string, _ int) {}
 func (d *dummy) CountAutoscalerStep(_, _, _ string)    {}
 func (d *dummy) DeleteAutoscaler(_, _ string)          {}
+func (d *dummy) SetSentinelUnknownAddrs(_, _ string, _ int, _ bool) {
+}
 func (d *dummy) RecordEnsureOperation(_, _, _, _, _ string) {
 }
 func (d *dummy) RecordRedisCheck(_, _, _, _, _ string) {

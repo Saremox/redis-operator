@@ -146,7 +146,7 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 		m.ExpectedCalls, m.Calls = nil, nil
 	}
 	st.lines, st.requeues = nil, nil
-	c, h, k, rf := st.check, st.heal, st.k8s, st.rf
+	c, h, k, rf := noUnknownSentinelAddrs(st.check), st.heal, st.k8s, st.rf
 	switch s.mode {
 	case "bootstrap":
 		rf.Spec.BootstrapNode = &redisfailoverv1.BootstrapSettings{Host: "10.0.9.9", Port: "6379", AllowSentinels: true}

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	rediscli "github.com/go-redis/redis/v8"
+	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
 )
@@ -27,6 +28,7 @@ type Client interface {
 	SentinelMasterDown(ip string) (bool, error)
 	GetSentinelFailover(ip string) (SentinelFailover, error)
 	GetSentinelMasterIP(ip string) (string, error)
+	GetSentinelPeers(ip string) (SentinelPeers, error)
 	SetCustomSentinelConfig(ip string, configs []string) error
 	SetCustomRedisConfig(ip string, port string, configs []string, password string) error
 	SlaveIsReady(ip, port, password string) (bool, error)
@@ -63,7 +65,7 @@ const (
 	redisLinkUp             = "master_link_status:up"
 	redisPort               = "6379"
 	sentinelPort            = "26379"
-	masterName              = "mymaster"
+	masterName              = redisfailoverv1.DefaultSentinelMasterName
 )
 
 // Redis answers the operator in milliseconds. The go-redis defaults (3s read
