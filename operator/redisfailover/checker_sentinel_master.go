@@ -43,16 +43,16 @@ type sentinelMasterWait struct {
 	elected bool
 }
 
-// newSentinelMasterWait returns a wait that starts at now, with the timeouts
-// of the customConfig.
+// newSentinelMasterWait fixes the customConfig part of the bound at the
+// start. A later customConfig reaches the running Sentinels only after the
+// wait.
 func newSentinelMasterWait(rf *redisfailoverv1.RedisFailover, named, master string, now time.Time) sentinelMasterWait {
 	downAfter, failoverTimeout := rfservice.SentinelTimeouts(rf)
 	return sentinelMasterWait{named: named, master: master, since: now, downAfter: downAfter, failoverTimeout: failoverTimeout, known: map[types.UID]bool{}, seen: true}
 }
 
-// recordElection keeps the master that the operator promoted, so that the
-// checks until the bound do not wait for the Sentinels that give the old
-// address.
+// recordElection keeps the promoted master, so that the checks until the
+// bound do not wait for the Sentinels that give the old address.
 func (r *RedisFailoverHandler) recordElection(rf *redisfailoverv1.RedisFailover, master string) {
 	wait := newSentinelMasterWait(rf, "", master, r.now())
 	wait.elected = true
@@ -110,6 +110,8 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 			logger.Debugf("The operator elected the master %s, so it does not wait for the Sentinels that give %s", master, named)
 			return false, nil
 		}
+		// The bound counts from the election, so the wait ends at once.
+		wait.named, wait.elected = named, false
 	}
 	started := !ok || wait.named != named || wait.master != master
 	if started {

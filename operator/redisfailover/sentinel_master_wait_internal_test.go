@@ -3,6 +3,8 @@ package redisfailover
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +42,8 @@ type smReconcile struct {
 	nMasters int
 	// promote: no Sentinel can fail over, so the election promotes master.
 	promote bool
+	// promoteErr is the error of PromoteBestReplica.
+	promoteErr error
 	// master is the Redis master.
 	master string
 	// named holds the IPs that GetSentinelMasterIPs returns.
@@ -182,7 +186,7 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 		c.On("CheckIfMasterLocalhost", rf).Maybe().Return(false, nil)
 		c.On("CheckSentinelsCannotFailover", rf).Maybe().Return(true, nil)
 		c.On("GetBestReplicaForPromotion", rf).Maybe().Return(&rfservice.ReplicaInfo{PodName: "rfr-test-1", IP: s.master}, nil)
-		h.On("PromoteBestReplica", s.master, rf).Maybe().Return(nil)
+		h.On("PromoteBestReplica", s.master, rf).Maybe().Return(s.promoteErr)
 	}
 	c.On("CheckSentinelQuorum", rf).Maybe().Return(2, errors.New("no quorum"))
 	h.On("SetOldestAsMaster", rf).Maybe().Return(nil)
@@ -229,7 +233,7 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	}
 	// The heal reads the pods again after the wait, and two masters are an
 	// error.
-	if s.podsErr == nil && s.namedErr == nil && s.nMasters < 2 && s.nMastersErr == nil && s.masterErr == nil && s.passwordErr == nil && s.liveErr == nil {
+	if s.podsErr == nil && s.namedErr == nil && s.nMasters < 2 && s.nMastersErr == nil && s.masterErr == nil && s.passwordErr == nil && s.liveErr == nil && s.promoteErr == nil {
 		require.NoError(t, err)
 	}
 	res := smResult{err: err}
@@ -820,9 +824,10 @@ func TestSentinelMasterWaitForget(t *testing.T) {
 // The election of the soak event: a SENTINEL RESET removed the replicas from
 // the Sentinels, and the old master pod with the address smGone is gone.
 const (
-	smGone       = "10.0.0.9"
-	smSkipLine   = "debug: The operator elected the master 10.0.0.2, so it does not wait for the Sentinels that give 10.0.0.9"
-	smGoneWaitOn = "info: The Sentinels give 10.0.0.9 as the master, but the Redis master is 10.0.0.2, so the operator does not change the roles for up to 15s"
+	smGone        = "10.0.0.9"
+	smSkipLine    = "debug: The operator elected the master 10.0.0.2, so it does not wait for the Sentinels that give 10.0.0.9"
+	smGoneWaitOn  = "info: The Sentinels give 10.0.0.9 as the master, but the Redis master is 10.0.0.2, so the operator does not change the roles for up to 15s"
+	smGoneEndLine = "warning: The Sentinels give 10.0.0.9 as the master for 15s, but the Redis master is 10.0.0.2, so the operator heals the roles and the Sentinels"
 )
 
 var (
@@ -853,20 +858,42 @@ func TestSentinelMasterWaitSkipsTheElectedMaster(t *testing.T) {
 }
 
 // TestSentinelMasterWaitSkipEndsAtTheBound covers Sentinels that give the
-// old address after the bound. The wait then applies as for any other master.
+// old address after the bound. The bound counts from the election, so the
+// wait ends at once, and the heal holds the roles for at most one bound.
 func TestSentinelMasterWaitSkipEndsAtTheBound(t *testing.T) {
 	st := newSentinelMasterTest()
+	elected := st.clock
 	st.elect(t)
 	st.clock = st.clock.Add(14900 * time.Millisecond)
 	st.assertHeal(t, st.run(t, smElected))
+	assert.Equal(t, []string{smSkipLine}, debugLines(st.lines))
 
 	st.clock = st.clock.Add(100 * time.Millisecond)
-	st.assertWait(t, st.run(t, smElected))
-	assert.Equal(t, []string{smGoneWaitOn}, st.lines)
+	st.assertHeal(t, st.run(t, smElected))
+	assert.Contains(t, st.lines, smGoneEndLine)
+	assert.Empty(t, debugLines(st.lines))
 	v, ok := st.handler.sentinelMasterWaits.Load("testns/test")
 	require.True(t, ok)
 	wait, _ := v.(sentinelMasterWait)
-	assert.Equal(t, st.clock, wait.since)
+	assert.Equal(t, elected, wait.since)
+
+	// The ended wait stays, and logs no more lines.
+	st.clock = st.clock.Add(time.Second)
+	st.assertHeal(t, st.run(t, smElected))
+	for _, line := range st.lines {
+		assert.NotContains(t, line, "The Sentinels give")
+	}
+}
+
+// debugLines returns the lines of the skip and of the wait at debug level.
+func debugLines(lines []string) []string {
+	var debug []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "debug: The operator elected") || strings.HasPrefix(line, "debug: The Sentinels give") {
+			debug = append(debug, line)
+		}
+	}
+	return debug
 }
 
 // TestSentinelMasterWaitSkipUsesTheLiveTimeouts covers the bound of the skip.
@@ -877,8 +904,38 @@ func TestSentinelMasterWaitSkipUsesTheLiveTimeouts(t *testing.T) {
 	long := withLive(smElected, &redis.SentinelFailover{DownAfter: 20 * time.Second, Timeout: 20 * time.Second}, nil)
 	st.clock = st.clock.Add(39 * time.Second)
 	st.assertHeal(t, st.run(t, long))
+	assert.Equal(t, []string{smSkipLine}, debugLines(st.lines))
 	st.clock = st.clock.Add(time.Second)
-	st.assertWait(t, st.run(t, long))
+	st.assertHeal(t, st.run(t, long))
+	assert.Contains(t, st.lines, "warning: The Sentinels give 10.0.0.9 as the master for 40s, but the Redis master is 10.0.0.2, so the operator heals the roles and the Sentinels")
+}
+
+// TestSentinelMasterWaitSkipAfterAPartialPromotion covers a promotion that
+// fails to change a replica. The elected master works, so the next reconcile
+// changes that replica without a wait.
+func TestSentinelMasterWaitSkipAfterAPartialPromotion(t *testing.T) {
+	st := newSentinelMasterTest()
+	partial := smElection
+	partial.promoteErr = fmt.Errorf("%w: boom", rfservice.ErrPartialReconciliation)
+	res := st.run(t, partial)
+	require.ErrorIs(t, res.err, rfservice.ErrPartialReconciliation)
+	assert.Equal(t, 1, res.elected)
+
+	st.clock = st.clock.Add(time.Second)
+	st.assertHeal(t, st.run(t, smElected))
+	assert.Contains(t, st.lines, smSkipLine)
+}
+
+// TestSentinelMasterWaitAfterAFailedPromotion covers a promotion that fails
+// before the master works. The operator then records no election.
+func TestSentinelMasterWaitAfterAFailedPromotion(t *testing.T) {
+	st := newSentinelMasterTest()
+	failed := smElection
+	failed.promoteErr = errors.New("boom")
+	require.EqualError(t, st.run(t, failed).err, "boom")
+
+	st.clock = st.clock.Add(time.Second)
+	st.assertWait(t, st.run(t, smElected))
 }
 
 // TestSentinelMasterWaitSkipEnds covers the events that end the skip before
