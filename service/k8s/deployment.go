@@ -12,6 +12,7 @@ import (
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
+	"github.com/saremox/redis-operator/operator/redisfailover/util"
 )
 
 // Deployment the Deployment service that knows how to interact with k8s to manage them.
@@ -100,6 +101,15 @@ func (d *DeploymentService) UpdateDeployment(namespace string, deployment *appsv
 func (d *DeploymentService) CreateOrUpdateDeployment(namespace string, deployment *appsv1.Deployment) error {
 	return createOrUpdate(namespace, deployment, objectCalls[*appsv1.Deployment]{
 		kind: "Deployment", get: d.GetDeployment, create: d.CreateDeployment, update: d.UpdateDeployment, upToDate: deploymentUpToDate,
+		// The API server increments the generation also when the annotations
+		// change. An update without the stored annotations removes
+		// deployment.kubernetes.io/revision, and a further generation restarts
+		// the wait of the master replacement for the Sentinel rollout.
+		keep: func(stored, desired *appsv1.Deployment) {
+			if len(stored.Annotations) != 0 {
+				desired.Annotations = util.MergeAnnotations(stored.Annotations, desired.Annotations)
+			}
+		},
 		skipped: func() {
 			d.logger.WithField("namespace", namespace).WithField("deployment", deployment.Name).Debugf("deployment already up to date, skipping update")
 		},
