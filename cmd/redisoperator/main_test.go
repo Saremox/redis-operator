@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -132,7 +133,8 @@ current-context: c
 func TestRunStopsOnSIGTERM(t *testing.T) {
 	prevRegisterer := prometheus.DefaultRegisterer
 	t.Cleanup(func() { prometheus.DefaultRegisterer = prevRegisterer })
-	prometheus.DefaultRegisterer = prometheus.NewRegistry()
+	reg := prometheus.NewRegistry()
+	prometheus.DefaultRegisterer = reg
 	t.Setenv("POD_NAMESPACE", "default")
 
 	// This channel keeps SIGTERM from stopping the test binary before Run
@@ -159,6 +161,14 @@ func TestRunStopsOnSIGTERM(t *testing.T) {
 
 	errC := make(chan error, 1)
 	go func() { errC <- m.Run() }()
+
+	// The metrics handler reads prometheus.DefaultRegisterer in a goroutine
+	// that Run does not wait for. The cleanup writes it, so the test waits
+	// until the handler registers its metrics.
+	require.Eventually(t, func() bool {
+		n, err := testutil.GatherAndCount(reg, "promhttp_metric_handler_requests_in_flight")
+		return err == nil && n == 1
+	}, 15*time.Second, 10*time.Millisecond)
 
 	// Run registers for SIGTERM after it creates the operator, so send it
 	// until Run returns.
