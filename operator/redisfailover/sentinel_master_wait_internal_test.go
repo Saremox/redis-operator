@@ -38,6 +38,8 @@ var smSentinels = []string{"10.0.1.1", "10.0.1.2", "10.0.1.3"}
 type smReconcile struct {
 	// nMasters is the first count of the masters. 0 runs the election.
 	nMasters int
+	// promote: no Sentinel can fail over, so the election promotes master.
+	promote bool
 	// master is the Redis master.
 	master string
 	// named holds the IPs that GetSentinelMasterIPs returns.
@@ -175,6 +177,13 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	c.On("GetNumberMasters", rf).Maybe().Return(s.nMasters, s.nMastersErr)
 	// The election of a master when the Sentinels have no quorum.
 	c.On("GetMaxRedisPodTime", rf).Maybe().Return(time.Hour, nil)
+	if s.promote {
+		c.On("CheckSentinelQuorum", rf).Maybe().Return(0, nil)
+		c.On("CheckIfMasterLocalhost", rf).Maybe().Return(false, nil)
+		c.On("CheckSentinelsCannotFailover", rf).Maybe().Return(true, nil)
+		c.On("GetBestReplicaForPromotion", rf).Maybe().Return(&rfservice.ReplicaInfo{PodName: "rfr-test-1", IP: s.master}, nil)
+		h.On("PromoteBestReplica", s.master, rf).Maybe().Return(nil)
+	}
 	c.On("CheckSentinelQuorum", rf).Maybe().Return(2, errors.New("no quorum"))
 	h.On("SetOldestAsMaster", rf).Maybe().Return(nil)
 	c.On("GetMasterIP", rf).Maybe().Return(s.master, s.masterErr)
@@ -238,7 +247,7 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 			res.replicaOf++
 		case "NewSentinelMonitor":
 			res.monitored = append(res.monitored, call.Arguments.String(0))
-		case "SetOldestAsMaster":
+		case "SetOldestAsMaster", "PromoteBestReplica":
 			res.elected++
 		}
 	}
@@ -806,4 +815,101 @@ func TestSentinelMasterWaitForget(t *testing.T) {
 	st.handler.Forget("testns/test")
 	_, waiting = st.handler.sentinelMasterWaits.Load("testns/test")
 	assert.False(t, waiting)
+}
+
+// The election of the soak event: a SENTINEL RESET removed the replicas from
+// the Sentinels, and the old master pod with the address smGone is gone.
+const (
+	smGone       = "10.0.0.9"
+	smSkipLine   = "debug: The operator elected the master 10.0.0.2, so it does not wait for the Sentinels that give 10.0.0.9"
+	smGoneWaitOn = "info: The Sentinels give 10.0.0.9 as the master, but the Redis master is 10.0.0.2, so the operator does not change the roles for up to 15s"
+)
+
+var (
+	smElection = smReconcile{promote: true, master: smPod1, named: []string{smGone, smGone, smGone}}
+	smElected  = smReconcile{nMasters: 1, master: smPod1, named: smElection.named}
+)
+
+// elect runs the reconcile of the election.
+func (st *sentinelMasterTest) elect(t *testing.T) {
+	t.Helper()
+	require.Equal(t, 1, st.run(t, smElection).elected)
+}
+
+// TestSentinelMasterWaitSkipsTheElectedMaster covers the reconcile after an
+// election. The Sentinels know no replica, so they cannot fail over the
+// address that they give, and the roles, the replicas and the Sentinels heal.
+func TestSentinelMasterWaitSkipsTheElectedMaster(t *testing.T) {
+	st := newSentinelMasterTest()
+	st.elect(t)
+	for range 2 {
+		st.clock = st.clock.Add(time.Second)
+		res := st.run(t, smElected)
+		st.assertHeal(t, res)
+		assert.Contains(t, st.lines, smSkipLine)
+		assert.NotContains(t, st.lines, smGoneWaitOn)
+		assert.Empty(t, st.requeues)
+	}
+}
+
+// TestSentinelMasterWaitSkipEndsAtTheBound covers Sentinels that give the
+// old address after the bound. The wait then applies as for any other master.
+func TestSentinelMasterWaitSkipEndsAtTheBound(t *testing.T) {
+	st := newSentinelMasterTest()
+	st.elect(t)
+	st.clock = st.clock.Add(14900 * time.Millisecond)
+	st.assertHeal(t, st.run(t, smElected))
+
+	st.clock = st.clock.Add(100 * time.Millisecond)
+	st.assertWait(t, st.run(t, smElected))
+	assert.Equal(t, []string{smGoneWaitOn}, st.lines)
+	v, ok := st.handler.sentinelMasterWaits.Load("testns/test")
+	require.True(t, ok)
+	wait, _ := v.(sentinelMasterWait)
+	assert.Equal(t, st.clock, wait.since)
+}
+
+// TestSentinelMasterWaitSkipUsesTheLiveTimeouts covers the bound of the skip.
+// It is the bound of the wait.
+func TestSentinelMasterWaitSkipUsesTheLiveTimeouts(t *testing.T) {
+	st := newSentinelMasterTest()
+	st.elect(t)
+	long := withLive(smElected, &redis.SentinelFailover{DownAfter: 20 * time.Second, Timeout: 20 * time.Second}, nil)
+	st.clock = st.clock.Add(39 * time.Second)
+	st.assertHeal(t, st.run(t, long))
+	st.clock = st.clock.Add(time.Second)
+	st.assertWait(t, st.run(t, long))
+}
+
+// TestSentinelMasterWaitSkipEnds covers the events that end the skip before
+// the bound. After each, the wait applies to the elected master again.
+func TestSentinelMasterWaitSkipEnds(t *testing.T) {
+	for name, end := range map[string]func(*testing.T, *sentinelMasterTest){
+		// Sentinels that know a replica of the other master can fail over.
+		"another master": func(t *testing.T, st *sentinelMasterTest) {
+			st.assertWait(t, st.run(t, smReconcile{nMasters: 1, master: smPod2, named: smElection.named}))
+		},
+		"the Sentinels give the elected master": func(t *testing.T, st *sentinelMasterTest) {
+			st.assertHeal(t, st.run(t, smReconcile{nMasters: 1, master: smPod1, named: []string{smPod1, smPod1, smPod1}}))
+			_, ok := st.handler.sentinelMasterWaits.Load("testns/test")
+			assert.False(t, ok)
+		},
+		"a reconcile without the check": func(t *testing.T, st *sentinelMasterTest) {
+			st.run(t, smReconcile{nMasters: 1, master: smPod1, named: smElection.named, noSentinelQuorum: true})
+		},
+		"Forget": func(_ *testing.T, st *sentinelMasterTest) {
+			st.handler.mClient = metrics.Dummy
+			st.handler.Forget("testns/test")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := newSentinelMasterTest()
+			st.elect(t)
+			st.clock = st.clock.Add(time.Second)
+			end(t, st)
+			st.clock = st.clock.Add(time.Second)
+			st.assertWait(t, st.run(t, smElected))
+			assert.Equal(t, []string{smGoneWaitOn}, st.lines)
+		})
+	}
 }

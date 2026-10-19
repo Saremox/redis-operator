@@ -111,7 +111,7 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 			return false, nil
 		}
 	}
-	started := !ok || wait.elected || wait.named != named || wait.master != master
+	started := !ok || wait.named != named || wait.master != master
 	if started {
 		wait = newSentinelMasterWait(rf, named, master, now)
 	}
