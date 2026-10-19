@@ -106,7 +106,9 @@ func (d *DeploymentService) CreateOrUpdateDeployment(namespace string, deploymen
 		// deployment.kubernetes.io/revision, and the new generation restarts
 		// the wait of the master replacement for the Sentinel rollout.
 		keep: func(stored, desired *appsv1.Deployment) {
-			desired.Annotations = util.MergeAnnotations(stored.Annotations, desired.Annotations)
+			if len(stored.Annotations) != 0 {
+				desired.Annotations = util.MergeAnnotations(stored.Annotations, desired.Annotations)
+			}
 		},
 		skipped: func() {
 			d.logger.WithField("namespace", namespace).WithField("deployment", deployment.Name).Debugf("deployment already up to date, skipping update")
