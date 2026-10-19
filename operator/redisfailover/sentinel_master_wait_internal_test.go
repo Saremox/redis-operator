@@ -69,6 +69,7 @@ type smLive struct {
 
 // smResult is what a reconcile did.
 type smResult struct {
+	err error
 	// timeoutReads counts the reads of the Sentinel timeouts.
 	timeoutReads int
 	labels       int
@@ -203,10 +204,10 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	}
 	// The heal reads the pods again after the wait, and two masters are an
 	// error.
-	if s.podsErr == nil && s.nMasters < 2 && s.nMastersErr == nil && s.masterErr == nil && s.passwordErr == nil && s.liveErr == nil {
+	if s.podsErr == nil && s.namedErr == nil && s.nMasters < 2 && s.nMastersErr == nil && s.masterErr == nil && s.passwordErr == nil && s.liveErr == nil {
 		require.NoError(t, err)
 	}
-	var res smResult
+	res := smResult{err: err}
 	for _, call := range c.Calls {
 		switch call.Method {
 		case "CheckAllSlavesFromMaster":
@@ -402,8 +403,6 @@ func TestSentinelMasterWaitNotNeeded(t *testing.T) {
 		"less than a quorum answers":     {named: []string{smPod0}},
 		"no Sentinel answers":            {},
 		"the Sentinels give an empty IP": {named: []string{"", "", ""}},
-		"the Sentinels cannot be read":   {namedErr: errors.New("boom")},
-		"the pods cannot be read":        {named: orphaned.named, podsErr: errors.New("boom")},
 	}
 	for name, s := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -411,12 +410,7 @@ func TestSentinelMasterWaitNotNeeded(t *testing.T) {
 			// A pod without an IP must not match an empty IP.
 			st.pods = append(st.pods, smPod("rfr-test-3", "", false, false))
 			s.nMasters, s.master = 1, smPod1
-			res := st.run(t, s)
-			if s.podsErr == nil {
-				st.assertHeal(t, res)
-			} else {
-				assert.Equal(t, 1, res.labels)
-			}
+			st.assertHeal(t, st.run(t, s))
 			assert.NotEqual(t, sentinelMasterMsg, st.rf.Status.Message)
 			assert.Empty(t, st.requeues)
 		})
@@ -431,23 +425,34 @@ func TestSentinelMasterWaitForAQuorum(t *testing.T) {
 	tests := map[string]struct {
 		named []string
 		wait  bool
+		// replicas is spec.sentinel.replicas, 3 when it is 0.
+		replicas int32
 	}{
-		"[X, X, X]":                 {named: []string{x, x, x}, wait: true},
-		"[X, X, M]":                 {named: []string{x, x, m}, wait: true},
-		"[X, M, X]":                 {named: []string{x, m, x}, wait: true},
-		"[X, X, 127.0.0.1]":         {named: []string{x, x, "127.0.0.1"}, wait: true},
-		"[X, X, empty]":             {named: []string{x, x, ""}, wait: true},
-		"[X, X] of three":           {named: []string{x, x}, wait: true},
-		"[X, X, M, M] of four":      {named: []string{x, x, m, m}, wait: true},
-		"[X, M, M]":                 {named: []string{x, m, m}},
-		"[X, Y, M]":                 {named: []string{x, y, m}},
-		"[M, M, M]":                 {named: []string{m, m, m}},
-		"[X, 127.0.0.1, 127.0.0.1]": {named: []string{x, "127.0.0.1", "127.0.0.1"}},
-		"[X] of three":              {named: []string{x}},
+		// A Sentinel without an answer can be one more vote for X.
+		"[X, unknown, M]":             {named: []string{x, "", m}, wait: true},
+		"[unknown, unknown, M]":       {named: []string{"", "", m}},
+		"[M, unknown, M]":             {named: []string{m, "", m}},
+		"[X, unknown, M, M, unknown]": {named: []string{x, "", m, m, ""}, replicas: 5, wait: true},
+		"[X, unknown, M, M, M]":       {named: []string{x, "", m, m, m}, replicas: 5},
+		"[X, X, X]":                   {named: []string{x, x, x}, wait: true},
+		"[X, X, M]":                   {named: []string{x, x, m}, wait: true},
+		"[X, M, X]":                   {named: []string{x, m, x}, wait: true},
+		"[X, X, 127.0.0.1]":           {named: []string{x, x, "127.0.0.1"}, wait: true},
+		"[X, X, empty]":               {named: []string{x, x, ""}, wait: true},
+		"[X, X] of three":             {named: []string{x, x}, wait: true},
+		"[X, X, M, M] of four":        {named: []string{x, x, m, m}, wait: true},
+		"[X, M, M]":                   {named: []string{x, m, m}},
+		"[X, Y, M]":                   {named: []string{x, y, m}},
+		"[M, M, M]":                   {named: []string{m, m, m}},
+		"[X, 127.0.0.1, 127.0.0.1]":   {named: []string{x, "127.0.0.1", "127.0.0.1"}},
+		"[X] of three":                {named: []string{x}},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			st := newSentinelMasterTest()
+			if test.replicas != 0 {
+				st.rf.Spec.Sentinel.Replicas = test.replicas
+			}
 			res := st.run(t, smReconcile{nMasters: 1, master: m, named: test.named})
 			if test.wait {
 				st.assertWait(t, res)
@@ -470,6 +475,32 @@ func TestSentinelMasterWaitForAQuorum(t *testing.T) {
 		st.assertWait(t, st.run(t, smReconcile{nMasters: 1, master: m, named: []string{"10.0.0.0", "10.0.0.0", x, x}}))
 		assert.Equal(t, []string{"info: " + smWaitLine}, st.lines)
 	})
+}
+
+// TestSentinelMasterWaitStopsOnAReadError covers a failed list of the Sentinel
+// pods or of the Redis pods. The failed read can hide a quorum for another
+// pod, so the reconcile ends before it changes the roles.
+func TestSentinelMasterWaitStopsOnAReadError(t *testing.T) {
+	for name, s := range map[string]smReconcile{
+		"the Sentinel pods": {nMasters: 1, master: smPod1, namedErr: errors.New("boom")},
+		"the Redis pods":    {nMasters: 1, master: smPod1, named: orphaned.named, podsErr: errors.New("boom")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := newSentinelMasterTest()
+			st.assertWait(t, st.run(t, orphaned))
+			st.clock = st.clock.Add(time.Second)
+			res := st.run(t, s)
+			require.EqualError(t, res.err, "boom")
+			assert.Zero(t, res.labels, "no label change")
+			assert.Zero(t, res.replicaOf, "no REPLICAOF")
+			assert.Empty(t, res.monitored, "no SENTINEL MONITOR")
+			assert.Equal(t, redisfailoverv1.NotHealthyState, st.rf.Status.State)
+			assert.Equal(t, "unable to check the master of the Sentinels", st.rf.Status.Message)
+			// A reconcile without the check ends the wait.
+			_, waiting := st.handler.sentinelMasterWaits.Load("testns/test")
+			assert.False(t, waiting)
+		})
+	}
 }
 
 // TestSentinelMasterWaitWithAQuorumOfAnswers covers a node drain: one of the

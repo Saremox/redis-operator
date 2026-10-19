@@ -16,9 +16,9 @@ import (
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
-// TestGetSentinelMasterIPsSkipsASentinelWithAnError covers the running
-// Sentinels only. A Sentinel that gives an error has no entry.
-func TestGetSentinelMasterIPsSkipsASentinelWithAnError(t *testing.T) {
+// TestGetSentinelMasterIPsKeepsASentinelWithAnError covers the running
+// Sentinels only. A Sentinel that gives an error has an empty entry.
+func TestGetSentinelMasterIPsKeepsASentinelWithAnError(t *testing.T) {
 	rf := generateRF()
 	pods := &corev1.PodList{Items: []corev1.Pod{
 		{Status: corev1.PodStatus{PodIP: "1.1.1.1", Phase: corev1.PodRunning}},
@@ -37,7 +37,7 @@ func TestGetSentinelMasterIPsSkipsASentinelWithAnError(t *testing.T) {
 	ips, err := checker.GetSentinelMasterIPs(rf)
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"10.0.0.1", "127.0.0.1"}, ips)
+	assert.Equal(t, []string{"10.0.0.1", "", "127.0.0.1"}, ips)
 	mr.AssertExpectations(t)
 }
 

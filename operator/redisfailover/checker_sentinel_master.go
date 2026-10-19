@@ -61,12 +61,15 @@ func (r *RedisFailoverHandler) startSentinelMasterRound(key string) func() {
 // replica. A master label or replicas on the first promoted replica then give
 // it writes that the second failover loses. The wait ends after the
 // down-after-milliseconds and the failover-timeout of the Sentinels.
-func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFailover, master string) bool {
+func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFailover, master string) (bool, error) {
 	key := failoverKey(rf)
-	named, pod := r.sentinelsNameOtherPod(rf, master)
+	named, pod, err := r.sentinelsNameOtherPod(rf, master)
+	if err != nil {
+		return false, err
+	}
 	if pod == "" {
 		r.sentinelMasterWaits.Delete(key)
-		return false
+		return false, nil
 	}
 	now := r.now()
 	v, _ := r.sentinelMasterWaits.Load(key)
@@ -89,7 +92,7 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 			wait.ended = true
 		}
 		r.sentinelMasterWaits.Store(key, wait)
-		return false
+		return false, nil
 	}
 	r.sentinelMasterWaits.Store(key, wait)
 	logf := logger.Debugf
@@ -104,7 +107,7 @@ func (r *RedisFailoverHandler) waitForSentinelMaster(rf *redisfailoverv1.RedisFa
 	if r.requeue != nil {
 		r.requeue(key, min(sentinelMasterRecheck, limit-elapsed))
 	}
-	return true
+	return true, nil
 }
 
 // readSentinelTimeouts adds the timeouts of each running Sentinel that did
@@ -141,20 +144,26 @@ func (r *RedisFailoverHandler) readSentinelTimeouts(rf *redisfailoverv1.RedisFai
 }
 
 // sentinelsNameOtherPod returns the IP and the name of a Redis pod that a
-// quorum of the Sentinels gives as the master, when that IP is not master.
+// quorum of the Sentinels can give as the master, when that IP is not master.
 // Such a quorum can fail over the old master later, also when other Sentinels
-// give the promoted replica. Without a quorum for another pod, a wait only
-// delays the heal.
-func (r *RedisFailoverHandler) sentinelsNameOtherPod(rf *redisfailoverv1.RedisFailover, master string) (string, string) {
+// give the promoted replica. A Sentinel without an answer can be one more vote
+// for an IP that another Sentinel gives. Without a possible quorum for another
+// pod, a wait only delays the heal.
+func (r *RedisFailoverHandler) sentinelsNameOtherPod(rf *redisfailoverv1.RedisFailover, master string) (string, string, error) {
 	ips, err := r.rfChecker.GetSentinelMasterIPs(rf)
 	if err != nil {
-		return "", ""
+		return "", "", err
 	}
 	votes := map[string]int{}
+	unknown := 0
 	for _, ip := range ips {
-		// A pod without an IP must not match an empty answer. The 127.0.0.1
-		// of a new Sentinel is no pod.
-		if ip != "" && ip != master {
+		switch ip {
+		case "":
+			// A pod without an IP must not match it.
+			unknown++
+		case master:
+		default:
+			// The 127.0.0.1 of a new Sentinel is no pod.
 			votes[ip]++
 		}
 	}
@@ -162,12 +171,12 @@ func (r *RedisFailoverHandler) sentinelsNameOtherPod(rf *redisfailoverv1.RedisFa
 	quorum := int(rf.Spec.Sentinel.Replicas/2 + 1)
 	var named []string
 	for ip, n := range votes {
-		if n >= quorum {
+		if n+unknown >= quorum {
 			named = append(named, ip)
 		}
 	}
 	if len(named) == 0 {
-		return "", ""
+		return "", "", nil
 	}
 	// More Sentinels than the spec run during a rollout, so two IPs can have
 	// a quorum.
@@ -176,14 +185,14 @@ func (r *RedisFailoverHandler) sentinelsNameOtherPod(rf *redisfailoverv1.RedisFa
 	// the Sentinels.
 	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
 	if err != nil {
-		return "", ""
+		return "", "", err
 	}
 	for _, ip := range named {
 		for i := range pods.Items {
 			if pods.Items[i].Status.PodIP == ip {
-				return ip, pods.Items[i].Name
+				return ip, pods.Items[i].Name, nil
 			}
 		}
 	}
-	return "", ""
+	return "", "", nil
 }

@@ -209,8 +209,19 @@ func (r *RedisFailoverHandler) sentinelModeMaster(rf *redisfailoverv1.RedisFailo
 		}
 		return "", err
 	}
-	if checkSentinels && r.waitForSentinelMaster(rf, master) {
-		return "", nil
+	if checkSentinels {
+		// A failed read can hide a quorum for another pod, so the roles stay.
+		wait, err := r.waitForSentinelMaster(rf, master)
+		if err != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: "unable to check the master of the Sentinels",
+			}
+			return "", err
+		}
+		if wait {
+			return "", nil
+		}
 	}
 
 	err = r.rfChecker.CheckAllSlavesFromMaster(master, rf)
