@@ -340,6 +340,23 @@ func TestDeploymentServiceUpdateKeepsTheStoredAnnotations(t *testing.T) {
 	assert.Equal(t, stored.Annotations, got.Annotations)
 }
 
+// A desired annotation replaces a stored annotation with the same key.
+func TestDeploymentServiceUpdateWritesTheDesiredAnnotations(t *testing.T) {
+	stored := realisticDeployment(3)
+	stored.ResourceVersion = "1"
+	stored.Annotations = map[string]string{"deployment.kubernetes.io/revision": "3", "example.com/owner": "team"}
+	mcli := kubernetes.NewClientset(stored)
+	desired := realisticDeployment(5)
+	desired.Annotations = map[string]string{"example.com/owner": "operator"}
+
+	service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
+	require.NoError(t, service.CreateOrUpdateDeployment("testns", desired))
+
+	got, err := service.GetDeployment("testns", "rfs-test")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"deployment.kubernetes.io/revision": "3", "example.com/owner": "operator"}, got.Annotations)
+}
+
 func TestDeploymentServiceUpdate(t *testing.T) {
 	testDeployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{

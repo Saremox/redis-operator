@@ -344,6 +344,7 @@ func TestUpdateRedisesPodsBoundsTheSentinelRolloutWaitOverReconciles(t *testing.
 			updates++
 		}
 	}
+	// The update path runs. The count changes when deploymentUpToDate sets the probe defaults.
 	assert.Equal(t, 3, updates)
 	assert.Equal(t, generation, st.sentinels.Generation)
 	assert.Equal(t, []string{sentinelRolloutMsg + ": " + reason}, st.logger.infos)

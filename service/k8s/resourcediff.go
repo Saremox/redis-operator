@@ -53,7 +53,9 @@ func statefulSetUpToDate(stored, desired *appsv1.StatefulSet) bool {
 // It does not compare the annotations of the Deployment. The Deployment
 // controller sets deployment.kubernetes.io/revision, and
 // generateSentinelDeployment sets no annotations. When generator.go sets
-// Deployment annotations, this function must compare them.
+// Deployment annotations, this function must compare them. A comparison is
+// safe, because CreateOrUpdateDeployment merges the stored annotations into
+// desired.
 func deploymentUpToDate(stored, desired *appsv1.Deployment) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false

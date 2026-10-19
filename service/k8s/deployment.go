@@ -103,7 +103,7 @@ func (d *DeploymentService) CreateOrUpdateDeployment(namespace string, deploymen
 		kind: "Deployment", get: d.GetDeployment, create: d.CreateDeployment, update: d.UpdateDeployment, upToDate: deploymentUpToDate,
 		// The API server increments the generation also when the annotations
 		// change. An update without the stored annotations removes
-		// deployment.kubernetes.io/revision, and the new generation restarts
+		// deployment.kubernetes.io/revision, and a further generation restarts
 		// the wait of the master replacement for the Sentinel rollout.
 		keep: func(stored, desired *appsv1.Deployment) {
 			if len(stored.Annotations) != 0 {
