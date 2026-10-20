@@ -122,7 +122,7 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
   - The operator reads `SENTINEL MASTER` and `SENTINEL SENTINELS` from each running Sentinel, also from a Sentinel in deletion. It reads them before the count of the masters, so two masters do not stop the check.
   - A peer IP that is no Sentinel pod is an unknown peer. A master IP that is no Redis pod is an unknown master address. A pod in each phase counts, also in deletion. A loopback or unspecified master address is not unknown.
   - The other Sentinels keep a deleted Sentinel as a peer until their reset. Thus the operator keeps each pod IP for 5 minutes after the last check that found the pod. In that time, the old IP of a deleted pod is not unknown.
-  - The operator lists only the pods of the RedisFailover. Thus an unknown IP is a pod of another RedisFailover, or an old IP of a deleted pod of this RedisFailover, for example after an operator restart.
+  - The operator lists only the pods of the RedisFailover. An unknown IP is a pod of another RedisFailover. It can also be an old IP of a deleted pod of this RedisFailover, for example after an operator restart.
   - An IP counts when two checks at least 90 seconds apart find it. A reset can come 55 seconds after the deletion of a peer: the hold-off of 25 seconds and a resync of 30 seconds.
   - The operator then logs a Warning with the IPs and the Sentinels that know them, and an Info when the IP is gone.
   - A Sentinel without an answer ends nothing in that check. A Sentinel in deletion is an exception, because on a lost node it never answers.
