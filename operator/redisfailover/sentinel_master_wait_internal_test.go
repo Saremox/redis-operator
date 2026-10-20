@@ -44,6 +44,8 @@ type smReconcile struct {
 	promote bool
 	// promoteErr is the error of PromoteBestReplica.
 	promoteErr error
+	// localhost: each Redis pod has 127.0.0.1 as master.
+	localhost bool
 	// master is the Redis master.
 	master string
 	// named holds the IPs that GetSentinelMasterIPs returns.
@@ -188,8 +190,12 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 		c.On("GetBestReplicaForPromotion", rf).Maybe().Return(&rfservice.ReplicaInfo{PodName: "rfr-test-1", IP: s.master}, nil)
 		h.On("PromoteBestReplica", s.master, rf).Maybe().Return(s.promoteErr)
 	}
+	if s.localhost {
+		c.On("CheckSentinelQuorum", rf).Maybe().Return(0, nil)
+		c.On("CheckIfMasterLocalhost", rf).Maybe().Return(true, nil)
+	}
 	c.On("CheckSentinelQuorum", rf).Maybe().Return(2, errors.New("no quorum"))
-	h.On("SetOldestAsMaster", rf).Maybe().Return(nil)
+	h.On("SetOldestAsMaster", rf).Maybe().Return(s.master, nil)
 	c.On("GetMasterIP", rf).Maybe().Return(s.master, s.masterErr)
 	c.On("GetSentinelMasterIPs", rf).Maybe().Return(s.named, s.namedErr)
 	c.On("CheckAllSlavesFromMaster", s.master, rf).Maybe().Return(&rfservice.WrongMasterError{Pod: "rfr-test-2", IP: smPod2, Master: s.master, Has: smPod0})
@@ -972,6 +978,102 @@ func TestSentinelMasterWaitSkipEnds(t *testing.T) {
 			st.elect(t)
 			st.clock = st.clock.Add(time.Second)
 			end(t, st)
+			st.clock = st.clock.Add(time.Second)
+			st.assertWait(t, st.run(t, smElected))
+			assert.Equal(t, []string{smGoneWaitOn}, st.lines)
+		})
+	}
+}
+
+// smSingle is the soak event with one Redis pod: the master pod restarts
+// with another IP, and the Sentinels give its old address.
+var smSingle = smReconcile{master: smPod1, named: smElection.named}
+
+// newSinglePodTest returns a test with one Redis pod, after the operator made
+// that pod the master.
+func newSinglePodTest(t *testing.T) *sentinelMasterTest {
+	t.Helper()
+	st := newSentinelMasterTest()
+	st.rf.Spec.Redis.Replicas = 1
+	require.Equal(t, 1, st.run(t, smSingle).elected)
+	v, _ := st.handler.sentinelMasterWaits.Load("testns/test")
+	wait, _ := v.(sentinelMasterWait)
+	require.True(t, wait.elected)
+	return st
+}
+
+// TestSentinelMasterWaitSkipsTheSinglePodMaster covers the reconcile after
+// the operator made the only Redis pod the master. The Sentinels have no
+// other pod to promote, so the roles and the Sentinels heal without a wait.
+func TestSentinelMasterWaitSkipsTheSinglePodMaster(t *testing.T) {
+	st := newSinglePodTest(t)
+	st.clock = st.clock.Add(time.Second)
+	st.assertHeal(t, st.run(t, smElected))
+	assert.Contains(t, st.lines, smSkipLine)
+	assert.NotContains(t, st.lines, smGoneWaitOn)
+	assert.Empty(t, st.requeues)
+}
+
+// TestSentinelMasterWaitSinglePodSkipEnds covers the end of the skip after
+// the election of the only Redis pod. Then the wait applies as for any other
+// master.
+func TestSentinelMasterWaitSinglePodSkipEnds(t *testing.T) {
+	t.Run("the bound", func(t *testing.T) {
+		st := newSinglePodTest(t)
+		st.clock = st.clock.Add(14900 * time.Millisecond)
+		st.assertHeal(t, st.run(t, smElected))
+		assert.Equal(t, []string{smSkipLine}, debugLines(st.lines))
+		st.clock = st.clock.Add(100 * time.Millisecond)
+		st.assertHeal(t, st.run(t, smElected))
+		assert.Contains(t, st.lines, smGoneEndLine)
+		assert.Empty(t, debugLines(st.lines))
+	})
+	for name, end := range map[string]smReconcile{
+		"another master":                        {nMasters: 1, master: smPod2, named: smElection.named},
+		"the Sentinels give the elected master": {nMasters: 1, master: smPod1, named: []string{smPod1, smPod1, smPod1}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := newSinglePodTest(t)
+			st.clock = st.clock.Add(time.Second)
+			st.run(t, end)
+			st.clock = st.clock.Add(time.Second)
+			st.assertWait(t, st.run(t, smElected))
+			assert.Equal(t, []string{smGoneWaitOn}, st.lines)
+		})
+	}
+}
+
+// TestSentinelMasterWaitWithoutASinglePodMaster covers a reconcile with one
+// Redis pod in which SetOldestAsMaster sets no master, for example while the
+// master pod stops. The operator records no election, and the reconcile
+// drops the wait that it did not check.
+func TestSentinelMasterWaitWithoutASinglePodMaster(t *testing.T) {
+	st := newSentinelMasterTest()
+	st.assertWait(t, st.run(t, orphaned))
+	_, ok := st.handler.sentinelMasterWaits.Load("testns/test")
+	require.True(t, ok)
+
+	st.rf.Spec.Redis.Replicas = 1
+	st.clock = st.clock.Add(time.Second)
+	require.Equal(t, 1, st.run(t, smReconcile{named: orphaned.named}).elected)
+	_, ok = st.handler.sentinelMasterWaits.Load("testns/test")
+	assert.False(t, ok)
+}
+
+// TestSentinelMasterWaitAfterAnElectionOfTheOldestPod covers the other
+// elections of the oldest pod. A Sentinel can still fail over to a replica
+// pod, so the operator records no election and waits.
+func TestSentinelMasterWaitAfterAnElectionOfTheOldestPod(t *testing.T) {
+	for name, election := range map[string]smReconcile{
+		// The Sentinel quorum can come back.
+		"no Sentinel quorum": smSingle,
+		// A container restart keeps the pod IP, so the Sentinels can know
+		// the pods as replicas.
+		"127.0.0.1": {localhost: true, master: smPod1, named: smElection.named},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := newSentinelMasterTest()
+			require.Equal(t, 1, st.run(t, election).elected)
 			st.clock = st.clock.Add(time.Second)
 			st.assertWait(t, st.run(t, smElected))
 			assert.Equal(t, []string{smGoneWaitOn}, st.lines)

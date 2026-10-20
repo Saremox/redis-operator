@@ -39,8 +39,9 @@ func TestSetOldestAsMasterNewMasterError(t *testing.T) {
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
-	err := healer.SetOldestAsMaster(rf)
+	master, err := healer.SetOldestAsMaster(rf)
 	require.Error(t, err)
+	assert.Empty(t, master)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
@@ -67,8 +68,9 @@ func TestSetOldestAsMaster(t *testing.T) {
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
-	err := healer.SetOldestAsMaster(rf)
+	master, err := healer.SetOldestAsMaster(rf)
 	require.NoError(t, err)
+	assert.Equal(t, "0.0.0.0", master)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
@@ -103,8 +105,9 @@ func TestSetOldestAsMasterMultiplePodsMakeSlaveOfError(t *testing.T) {
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
-	err := healer.SetOldestAsMaster(rf)
+	master, err := healer.SetOldestAsMaster(rf)
 	require.NoError(t, err)
+	assert.Equal(t, "0.0.0.0", master)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
@@ -139,8 +142,9 @@ func TestSetOldestAsMasterMultiplePods(t *testing.T) {
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
-	err := healer.SetOldestAsMaster(rf)
+	master, err := healer.SetOldestAsMaster(rf)
 	require.NoError(t, err)
+	assert.Equal(t, "0.0.0.0", master)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
@@ -185,8 +189,9 @@ func TestSetOldestAsMasterOrdering(t *testing.T) {
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
 
-	err := healer.SetOldestAsMaster(rf)
+	master, err := healer.SetOldestAsMaster(rf)
 	require.NoError(t, err)
+	assert.Equal(t, "1.1.1.1", master)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 }
@@ -309,7 +314,8 @@ func TestSetOldestAsMasterCandidates(t *testing.T) {
 			mr.On("MakeSlaveOfWithPort", mock.Anything, "0", mock.Anything, "0", "").Return(nil)
 
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
-			err := healer.SetOldestAsMaster(rf)
+			master, err := healer.SetOldestAsMaster(rf)
+			assert.Equal(test.wantMaster, master)
 
 			if test.wantMaster == "" {
 				assert.Equal(test.wantErr, err != nil)
@@ -382,7 +388,9 @@ func TestSetOldestAsMasterErrors(t *testing.T) {
 			mr.On("MakeSlaveOfWithPort", "1.1.1.1", "0", "0.0.0.0", "0", "").Return(nil)
 
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, log.DummyLogger{})
-			require.Error(t, healer.SetOldestAsMaster(rf))
+			master, err := healer.SetOldestAsMaster(rf)
+			require.Error(t, err)
+			assert.Empty(t, master)
 			ms.AssertExpectations(t)
 		})
 	}
@@ -1373,7 +1381,8 @@ func TestHealerReadErrors(t *testing.T) {
 			return h.SetExternalMasterOnAll("5.5.5.5", "6379", rf)
 		}},
 		{"SetOldestAsMaster, no password", true, false, func(h *rfservice.RedisFailoverHealer, rf *redisfailoverv1.RedisFailover) error {
-			return h.SetOldestAsMaster(rf)
+			_, err := h.SetOldestAsMaster(rf)
+			return err
 		}},
 	}
 	for _, test := range tests {

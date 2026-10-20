@@ -400,7 +400,8 @@ func TestSetOldestAsMasterLogLevels(t *testing.T) {
 			logger, logs := newRecordingLogger()
 
 			healer := rfservice.NewRedisFailoverHealer(ms, mr, logger)
-			require.NoError(t, healer.SetOldestAsMaster(rf))
+			_, err := healer.SetOldestAsMaster(rf)
+			require.NoError(t, err)
 
 			entries := logs.all()
 			assertRFFields(t, entries)

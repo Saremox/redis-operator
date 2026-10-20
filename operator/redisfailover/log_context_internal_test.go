@@ -67,7 +67,7 @@ func TestNoMasterWithLocalhostMastersLogsAtInfo(t *testing.T) {
 	mrfc.On("GetMasterIP", rf).Once().Return("", errors.New("stop here"))
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
-	mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
+	mrfh.On("SetOldestAsMaster", rf).Once().Return("", nil)
 	var lines []string
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, podFieldLogger{lines: &lines})
 
@@ -94,7 +94,7 @@ func TestNoMasterWithoutSentinelQuorumLogsTheError(t *testing.T) {
 	mrfc.On("CheckSentinelQuorum", rf).Once().Return(2, errors.New("insufficient sentinels to reach the quorum"))
 	mrfh := &mRFService.RedisFailoverHeal{}
 	mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, false, nil)
-	mrfh.On("SetOldestAsMaster", rf).Once().Return(errors.New("stop here"))
+	mrfh.On("SetOldestAsMaster", rf).Once().Return("", errors.New("stop here"))
 	logger := &warnLogger{}
 	handler := NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, mrfh, mk, metrics.Dummy, logger)
 

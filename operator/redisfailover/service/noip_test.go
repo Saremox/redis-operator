@@ -145,7 +145,9 @@ func TestSetOldestAsMasterSkipsAPodWithoutIP(t *testing.T) {
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, logger)
 
-	require.NoError(t, healer.SetOldestAsMaster(rf))
+	master, err := healer.SetOldestAsMaster(rf)
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.2", master)
 	ms.AssertExpectations(t)
 	mr.AssertExpectations(t)
 	mr.AssertNotCalled(t, "MakeMaster", "", mock.Anything, mock.Anything)
@@ -165,6 +167,7 @@ func TestSetOldestAsMasterFailsWhenNoPodHasAnIP(t *testing.T) {
 
 	healer := rfservice.NewRedisFailoverHealer(ms, mr, log.Dummy)
 
-	require.Error(t, healer.SetOldestAsMaster(rf))
+	_, err := healer.SetOldestAsMaster(rf)
+	require.Error(t, err)
 	mr.AssertNotCalled(t, "MakeMaster", mock.Anything, mock.Anything, mock.Anything)
 }

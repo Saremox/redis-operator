@@ -351,21 +351,31 @@ func (_m *RedisFailoverHeal) SetMasterOnAll(masterIP string, rFailover *v1.Redis
 }
 
 // SetOldestAsMaster provides a mock function with given fields: rFailover
-func (_m *RedisFailoverHeal) SetOldestAsMaster(rFailover *v1.RedisFailover) error {
+func (_m *RedisFailoverHeal) SetOldestAsMaster(rFailover *v1.RedisFailover) (string, error) {
 	ret := _m.Called(rFailover)
 
 	if len(ret) == 0 {
 		panic("no return value specified for SetOldestAsMaster")
 	}
 
-	var r0 error
-	if rf, ok := ret.Get(0).(func(*v1.RedisFailover) error); ok {
+	var r0 string
+	var r1 error
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover) (string, error)); ok {
+		return rf(rFailover)
+	}
+	if rf, ok := ret.Get(0).(func(*v1.RedisFailover) string); ok {
 		r0 = rf(rFailover)
 	} else {
-		r0 = ret.Error(0)
+		r0 = ret.Get(0).(string)
 	}
 
-	return r0
+	if rf, ok := ret.Get(1).(func(*v1.RedisFailover) error); ok {
+		r1 = rf(rFailover)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
 }
 
 // SetRedisCustomConfig provides a mock function with given fields: ip, rFailover
