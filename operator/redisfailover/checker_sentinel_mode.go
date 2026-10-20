@@ -112,7 +112,13 @@ func (r *RedisFailoverHandler) healNoMasterSentinelMode(rf *redisfailoverv1.Redi
 	// operator makes that pod the master.
 	if rf.Spec.Redis.Replicas == 1 {
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("Resource spec with standalone master - operator will set the master")
-		return true, r.setOldestAsMaster(rf)
+		master, err := r.setOldestAsMaster(rf)
+		// The StatefulSet keeps no other pod, so a Sentinel failover can
+		// promote only master or a pod in deletion.
+		if master != "" {
+			r.recordElection(rf, master)
+		}
+		return true, err
 	}
 	r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Number of Masters running is 0")
 	maxUptime, err := r.rfChecker.GetMaxRedisPodTime(rf)
@@ -141,7 +147,7 @@ func (r *RedisFailoverHandler) electMasterWhenSentinelCannot(rf *redisfailoverv1
 	noqrmCnt, err := r.rfChecker.CheckSentinelQuorum(rf)
 	if err != nil {
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Quorum not available for sentinel to choose master, estimated unhealthy sentinels: %d, operator to step in: %v", noqrmCnt, err)
-		if err := r.setOldestAsMaster(rf); err != nil {
+		if _, err := r.setOldestAsMaster(rf); err != nil {
 			return true, err
 		}
 		return false, nil
@@ -156,7 +162,7 @@ func (r *RedisFailoverHandler) electMasterWhenSentinelCannot(rf *redisfailoverv1
 	}
 	if status {
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("each available redis has 127.0.0.1 as master, the operator elects a master")
-		if err := r.setOldestAsMaster(rf); err != nil {
+		if _, err := r.setOldestAsMaster(rf); err != nil {
 			return true, err
 		}
 		return false, nil
@@ -187,9 +193,9 @@ func (r *RedisFailoverHandler) electMasterWhenSentinelCannot(rf *redisfailoverv1
 	return true, nil
 }
 
-// setOldestAsMaster makes the oldest Redis pod the master.
-func (r *RedisFailoverHandler) setOldestAsMaster(rf *redisfailoverv1.RedisFailover) error {
-	err := r.rfHealer.SetOldestAsMaster(rf)
+// setOldestAsMaster makes the oldest Redis pod the master, and returns its IP.
+func (r *RedisFailoverHandler) setOldestAsMaster(rf *redisfailoverv1.RedisFailover) (string, error) {
+	master, err := r.rfHealer.SetOldestAsMaster(rf)
 	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err)
 	if err != nil {
 		errorMsg := "Error in Setting oldest Pod as master"
@@ -198,9 +204,9 @@ func (r *RedisFailoverHandler) setOldestAsMaster(rf *redisfailoverv1.RedisFailov
 			Message: errorMsg,
 		}
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Error(errorMsg)
-		return err
+		return "", err
 	}
-	return nil
+	return master, nil
 }
 
 // sentinelModeMaster returns the IP of the master, and makes each replica a

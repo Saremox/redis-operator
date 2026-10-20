@@ -26,7 +26,7 @@ var ErrMasterLabel = errors.New("promotion succeeded but master label failed")
 // RedisFailoverHeal defines the interface able to fix the problems on the redis failovers.
 type RedisFailoverHeal interface {
 	MakeMaster(ip string, rFailover *redisfailoverv1.RedisFailover) error
-	SetOldestAsMaster(rFailover *redisfailoverv1.RedisFailover) error
+	SetOldestAsMaster(rFailover *redisfailoverv1.RedisFailover) (string, error)
 	SetMasterOnAll(masterIP string, rFailover *redisfailoverv1.RedisFailover) error
 	SetExternalMasterOnAll(masterIP string, masterPort string, rFailover *redisfailoverv1.RedisFailover) error
 	NewSentinelMonitor(ip string, monitor string, rFailover *redisfailoverv1.RedisFailover) error
@@ -107,26 +107,26 @@ func (r *RedisFailoverHealer) MakeMaster(ip string, rf *redisfailoverv1.RedisFai
 }
 
 // SetOldestAsMaster makes the first pod from masterCandidates the master of
-// all the Redis pods. While a Ready master pod is in deletion, it returns nil
-// and elects no master.
-func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailover) error {
+// all the Redis pods, and returns its IP. While a Ready master pod is in
+// deletion, it returns "" and elects no master.
+func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailover) (string, error) {
 	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
 	ssp, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {
-		return err
+		return "", err
 	}
 	if pod := stoppingReadyMaster(ssp.Items); pod != nil {
 		logger.WithField("pod", pod.Name).Infof("Master pod %s is stopping, waiting for it to exit before electing a master", pod.Name)
-		return nil
+		return "", nil
 	}
 	pods := masterCandidates(ssp.Items)
 	if len(pods) < 1 {
-		return errors.New("number of redis pods are 0")
+		return "", errors.New("number of redis pods are 0")
 	}
 
 	password, err := k8s.GetRedisPassword(r.k8sService, rf)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	port := getRedisPort(rf.Spec.Redis.Port)
@@ -135,18 +135,18 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 		podLogger := logger.WithField("pod", pod.Name)
 		if newMasterIP != "" {
 			if err := r.makeReplicaOf(podLogger, rf, pod, newMasterIP, port, password); err != nil {
-				return err
+				return "", err
 			}
 			continue
 		}
 		if newMasterIP, err = r.electMaster(podLogger, rf, pod, port, password); err != nil {
-			return err
+			return "", err
 		}
 	}
 	if newMasterIP == "" {
-		return errors.New("SetOldestAsMaster- unable to set master")
+		return "", errors.New("SetOldestAsMaster- unable to set master")
 	}
-	return nil
+	return newMasterIP, nil
 }
 
 // stoppingReadyMaster returns a terminating Ready master pod, or nil. Such a

@@ -100,7 +100,7 @@ func (r *RedisFailoverHandler) healNoMasterOperatorMode(rf *redisfailoverv1.Redi
 	if err != nil {
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
 			Warnf("Could not determine best replica: %v, falling back to oldest", err)
-		err = r.rfHealer.SetOldestAsMaster(rf)
+		_, err = r.rfHealer.SetOldestAsMaster(rf)
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err)
 		if err != nil {
 			rf.Status = redisfailoverv1.RedisFailoverStatus{

@@ -387,7 +387,7 @@ func TestCheckAndHeal(t *testing.T) {
 				switch test.nMasters {
 				case 0:
 					if rf.Spec.Redis.Replicas == 1 {
-						mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
+						mrfh.On("SetOldestAsMaster", rf).Once().Return("", nil)
 						continueTests = false
 						break
 					}
@@ -395,11 +395,11 @@ func TestCheckAndHeal(t *testing.T) {
 					switch {
 					case test.forceNewMasterNoQrm:
 						mrfc.On("CheckSentinelQuorum", rf).Once().Return(1, errors.New(""))
-						mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
+						mrfh.On("SetOldestAsMaster", rf).Once().Return("", nil)
 					case test.forceNewMasterFirstBoot:
 						mrfc.On("CheckSentinelQuorum", rf).Once().Return(3, nil)
 						mrfc.On("CheckIfMasterLocalhost", rf).Once().Return(true, nil)
-						mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
+						mrfh.On("SetOldestAsMaster", rf).Once().Return("", nil)
 					default:
 						mrfc.On("CheckSentinelQuorum", rf).Once().Return(3, nil)
 						mrfc.On("CheckIfMasterLocalhost", rf).Once().Return(false, nil)
@@ -619,7 +619,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 				mrfc.On("IsRedisRunning", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(nil, errors.New("no replica info"))
-				mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
+				mrfh.On("SetOldestAsMaster", rf).Once().Return("", nil)
 				// Same as above: success here returns nil immediately, no shared
 				// config apply/pod update calls in this reconcile pass.
 			},
@@ -632,7 +632,7 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 				mrfc.On("IsRedisRunning", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
 				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(nil, errors.New("no replica info"))
-				mrfh.On("SetOldestAsMaster", rf).Once().Return(errors.New("elect fail"))
+				mrfh.On("SetOldestAsMaster", rf).Once().Return("", errors.New("elect fail"))
 			},
 			wantErr:     true,
 			wantState:   v1.NotHealthyState,
@@ -1131,7 +1131,7 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				mrfc.On("IsRedisRunning", rf).Once().Return(true)
 				mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
 				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
-				mrfh.On("SetOldestAsMaster", rf).Once().Return(errors.New("oldest err"))
+				mrfh.On("SetOldestAsMaster", rf).Once().Return("", errors.New("oldest err"))
 			},
 			wantErr:     true,
 			wantState:   v1.NotHealthyState,
@@ -1157,7 +1157,7 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
 				mrfc.On("GetMaxRedisPodTime", rf).Once().Return(1*time.Hour, nil)
 				mrfc.On("CheckSentinelQuorum", rf).Once().Return(1, errors.New("no quorum"))
-				mrfh.On("SetOldestAsMaster", rf).Once().Return(errors.New("oldest err2"))
+				mrfh.On("SetOldestAsMaster", rf).Once().Return("", errors.New("oldest err2"))
 			},
 			wantErr:     true,
 			wantState:   v1.NotHealthyState,
@@ -1186,7 +1186,7 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 				mrfc.On("GetMaxRedisPodTime", rf).Once().Return(1*time.Hour, nil)
 				mrfc.On("CheckSentinelQuorum", rf).Once().Return(3, nil)
 				mrfc.On("CheckIfMasterLocalhost", rf).Once().Return(true, nil)
-				mrfh.On("SetOldestAsMaster", rf).Once().Return(errors.New("oldest err3"))
+				mrfh.On("SetOldestAsMaster", rf).Once().Return("", errors.New("oldest err3"))
 			},
 			wantErr:     true,
 			wantState:   v1.NotHealthyState,
@@ -3364,7 +3364,7 @@ func TestSentinelModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) {
 						mrfc.On("CheckSentinelQuorum", rf).Once().Return(3, errors.New("no quorum"))
 					}
 				}
-				mrfh.On("SetOldestAsMaster", rf).Once().Return(nil)
+				mrfh.On("SetOldestAsMaster", rf).Once().Return("", nil)
 				if test.replicas > 1 {
 					// An error after the election ends CheckAndHeal, so the later checks need no mocks.
 					mrfc.On("GetMasterIP", rf).Once().Return("", errors.New("stop here"))

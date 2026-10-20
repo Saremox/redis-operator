@@ -145,6 +145,7 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
   - Another master or another address that the Sentinels give starts a new wait. A reconcile that skips the check, for example after a read error or with the skip annotation, ends the wait. The next check starts a new wait.
   - In the wait, the master Service can have no endpoint, because the old master pod stops.
   - After the operator elects a master, it does not wait for that master, also in later reconciles. At the bound from the election, the operator logs the end of the wait and heals. The election needs Sentinels that know no replica pod and monitor no pod, so they cannot fail over the old address. They give the old address until the operator monitors the elected master. Another Redis master, Sentinels that give the elected master, a reconcile that skips the check and a restart of the operator end this rule. Then the operator waits as for any other master.
+    - With `redis.replicas: 1`, the same applies after the operator sets the only pod as master, because no other pod stays for a Sentinel failover.
   - Limits of the wait:
     - A change of `sentinel.replicas` during a wait changes the quorum before the added Sentinels join the others. Then the operator can heal, although the other Sentinels have a quorum for the stale master.
     - A Sentinel in deletion gives a vote, but the operator does not read its timeouts. When they are longer than the known values, the heal runs at the bound that the operator knows.
