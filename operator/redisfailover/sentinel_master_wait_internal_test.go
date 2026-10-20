@@ -1043,6 +1043,23 @@ func TestSentinelMasterWaitSinglePodSkipEnds(t *testing.T) {
 	}
 }
 
+// TestSentinelMasterWaitWithoutASinglePodMaster covers a reconcile with one
+// Redis pod in which SetOldestAsMaster sets no master, for example while the
+// master pod stops. The operator records no election, and the reconcile
+// drops the wait that it did not check.
+func TestSentinelMasterWaitWithoutASinglePodMaster(t *testing.T) {
+	st := newSentinelMasterTest()
+	st.assertWait(t, st.run(t, orphaned))
+	_, ok := st.handler.sentinelMasterWaits.Load("testns/test")
+	require.True(t, ok)
+
+	st.rf.Spec.Redis.Replicas = 1
+	st.clock = st.clock.Add(time.Second)
+	require.Equal(t, 1, st.run(t, smReconcile{named: orphaned.named}).elected)
+	_, ok = st.handler.sentinelMasterWaits.Load("testns/test")
+	assert.False(t, ok)
+}
+
 // TestSentinelMasterWaitAfterAnElectionOfTheOldestPod covers the other
 // elections of the oldest pod. A Sentinel can still fail over to a replica
 // pod, so the operator records no election and waits.

@@ -113,8 +113,9 @@ func (r *RedisFailoverHandler) healNoMasterSentinelMode(rf *redisfailoverv1.Redi
 	if rf.Spec.Redis.Replicas == 1 {
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("Resource spec with standalone master - operator will set the master")
 		master, err := r.setOldestAsMaster(rf)
-		// The StatefulSet keeps no other pod, so a Sentinel failover can
-		// promote only master or a pod in deletion.
+		// Other pods stay only while the StatefulSet removes them. The
+		// election already gives master the master label, so a wait does
+		// not protect its writes.
 		if master != "" {
 			r.recordElection(rf, master)
 		}
