@@ -996,6 +996,9 @@ func newSinglePodTest(t *testing.T) *sentinelMasterTest {
 	st := newSentinelMasterTest()
 	st.rf.Spec.Redis.Replicas = 1
 	require.Equal(t, 1, st.run(t, smSingle).elected)
+	v, _ := st.handler.sentinelMasterWaits.Load("testns/test")
+	wait, _ := v.(sentinelMasterWait)
+	require.True(t, wait.elected)
 	return st
 }
 
