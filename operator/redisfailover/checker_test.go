@@ -17,6 +17,7 @@ import (
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
+	mmetrics "github.com/saremox/redis-operator/mocks/metrics"
 	mRFService "github.com/saremox/redis-operator/mocks/operator/redisfailover/service"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
@@ -3635,5 +3636,29 @@ func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
 			mrfc.AssertExpectations(t)
 			mrfh.AssertExpectations(t)
 		})
+	}
+}
+
+func TestCheckAndHealMarksTheClusterFailedWhenAReconcilePanics(t *testing.T) {
+	rf := generateRF(false, false)
+	ms := &mK8SService.Services{}
+	var written []v1.RedisFailoverStatus
+	ms.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			written = append(written, args.Get(2).(*v1.RedisFailover).Status)
+		}).Return()
+	mrfc := &mRFService.RedisFailoverCheck{}
+	mrfc.On("IsRedisRunningQuorum", rf).Return(true).
+		Run(func(mock.Arguments) { panic("boom") })
+	rec := &mmetrics.Recorder{}
+	rec.On("SetClusterError", rf.Namespace, rf.Name).Once()
+	handler := rfOperator.NewRedisFailoverHandler(rfOperator.Config{}, &mRFService.RedisFailoverClient{}, mrfc, &mRFService.RedisFailoverHeal{}, ms, rec, log.Dummy)
+
+	assert.PanicsWithValue(t, "boom", func() { _ = handler.CheckAndHeal(rf) })
+	rec.AssertExpectations(t)
+
+	if assert.Len(t, written, 1) {
+		assert.Equal(t, v1.NotHealthyState, written[0].State)
+		assert.Equal(t, "internal error, see the operator log", written[0].Message)
 	}
 }

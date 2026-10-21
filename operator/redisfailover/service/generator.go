@@ -299,8 +299,7 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	//
 	// Without the pause, a failover loses writes, so the script asks for none.
 	// Then Redis 7 and later pause the writes on SIGTERM and wait for the replicas, and
-	// Sentinel fails over after down-after-milliseconds. The pause also fails
-	// after a password change in place: the env keeps the old password.
+	// Sentinel fails over after down-after-milliseconds.
 	// Sentinel has no password, so only the local calls send REDIS_PASSWORD.
 	shutdownContent := ""
 	if rf.SentinelsAllowed() {
@@ -348,7 +347,7 @@ fi
 if [ "$master" = "$self" ]; then
   paused=$(local_cli CLIENT PAUSE $(((deadline + 6 - $(date +%%s)) * 1000)) WRITE)
   if [ "$paused" != "OK" ]; then
-  	echo "shutdown.sh: could not pause the writes, so no failover is requested (stale REDIS_PASSWORD, or Redis before 6.2): $paused" >&2
+  	echo "shutdown.sh: could not pause the writes, so no failover is requested (Redis before 6.2?): $paused" >&2
   else
   	behind=""
   	while [ "$behind" != 0 ] && [ "$(date +%%s)" -lt "$((deadline - 8))" ]; do

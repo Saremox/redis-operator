@@ -52,10 +52,6 @@ func (l *warnLogger) Debugf(format string, args ...interface{}) {
 	l.debugs = append(l.debugs, fmt.Sprintf(format, args...))
 }
 
-func (l *warnLogger) reset() {
-	l.warnings, l.debugs = nil, nil
-}
-
 func (r *sentinelCheckRecorder) RecordSentinelCheck(_, _, indicator, instance, status string) {
 	r.status[indicator+" "+instance] = status
 }

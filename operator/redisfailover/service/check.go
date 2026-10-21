@@ -263,8 +263,9 @@ func (r *RedisFailoverChecker) CheckIfMasterLocalhost(rFailover *redisfailoverv1
 }
 
 // CheckSentinelsCannotFailover reports whether no Sentinel can fail over, so
-// that a promotion by the operator cannot give two masters. docs/logic.md
-// gives the conditions.
+// that a promotion by the operator cannot give two masters. This is true when
+// all Sentinels of the spec run and answer, none monitors a pod or knows a
+// replica pod, and each flags its master as down or monitors 127.0.0.1.
 func (r *RedisFailoverChecker) CheckSentinelsCannotFailover(rf *redisfailoverv1.RedisFailover) (bool, error) {
 	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
 	if err != nil {

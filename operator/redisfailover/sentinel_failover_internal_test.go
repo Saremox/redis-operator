@@ -200,10 +200,10 @@ const (
 	sfWaitLine = "Sentinel 10.0.1.3 fails over, so the operator sends no SENTINEL MONITOR or RESET until the failover ends"
 )
 
-// TestSentinelFailoverInProgressHoldsTheNewMonitor covers the evidence of the
-// soak test: SENTINEL REMOVE and MONITOR during the failover made the
-// Sentinels return to the old master. Only the Sentinel that fails over has
-// the flag, so the two Sentinels before it in the list get no new monitor too.
+// TestSentinelFailoverInProgressHoldsTheNewMonitor covers this case: SENTINEL
+// REMOVE and MONITOR during the failover made the Sentinels return to the old
+// master. Only the Sentinel that fails over has the flag, so the two
+// Sentinels before it in the list get no new monitor too.
 func TestSentinelFailoverInProgressHoldsTheNewMonitor(t *testing.T) {
 	for _, bootstrap := range []bool{false, true} {
 		t.Run(fmt.Sprintf("bootstrap=%v", bootstrap), func(t *testing.T) {

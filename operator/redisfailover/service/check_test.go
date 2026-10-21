@@ -2659,8 +2659,8 @@ func TestGetSentinelsIPsFiltersNonRunningAndTerminating(t *testing.T) {
 	assert.Equal([]string{"1.1.1.1"}, ips)
 }
 
-// TestCheckSentinelsCannotFailover covers the state of the soak test: every
-// Sentinel monitors the IP of a pod that is gone and knows no replica.
+// TestCheckSentinelsCannotFailover covers this state: every Sentinel monitors
+// the IP of a pod that is gone and knows no replica.
 func TestCheckSentinelsCannotFailover(t *testing.T) {
 	const gone = "10.0.0.9"
 	podWithIP := func(name, ip string, phase corev1.PodPhase) corev1.Pod {

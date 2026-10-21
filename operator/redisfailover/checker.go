@@ -421,9 +421,11 @@ func (r *RedisFailoverHandler) masterUnreachableSince(rf *redisfailoverv1.RedisF
 	return now, r.k8sservice.UpdatePodAnnotations(rf.Namespace, pod.Name, map[string]string{masterUnreachableAnnotation: now.UTC().Format(time.RFC3339)})
 }
 
-// clearMasterUnreachable removes the unreachable-since annotation from all
-// redis pods, because an old annotation shortens the wait of the next stall.
-// A failure is only logged, because the master answers again or was replaced.
+// clearMasterUnreachable sets the unreachable-since annotation of all redis
+// pods to an empty value, because an old annotation shortens the wait of the
+// next stall. The key stays on the pod, and an empty value counts as no
+// annotation. A failure is only logged, because the master answers again or
+// was replaced.
 func (r *RedisFailoverHandler) clearMasterUnreachable(rf *redisfailoverv1.RedisFailover) {
 	key := failoverKey(rf)
 	if _, cleared := r.unreachableCleared.Load(key); cleared {
@@ -1282,7 +1284,7 @@ func (r *RedisFailoverHandler) applyRedisCustomConfig(rf *redisfailoverv1.RedisF
 }
 
 // defaultSentinelFailoverTimeout is the failover-timeout that Validate gives
-// the Sentinels when customConfig does not set one ("failover-timeout 10000").
+// the Sentinels when sentinel.customConfig is empty ("failover-timeout 10000").
 const defaultSentinelFailoverTimeout = 10000 * time.Millisecond
 
 // errSentinelSkipped marks the later checks of a Sentinel that did not answer

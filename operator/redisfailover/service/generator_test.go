@@ -3543,8 +3543,8 @@ esac
 			maxTime: 5 * time.Second,
 		},
 		{
-			// The operator changed the password in place, and the env of the
-			// pod still has the old one: no pause, so no failover.
+			// Redis refuses the password in the env of the pod: no pause, so
+			// no failover.
 			name: "stale password",
 			env:  []string{"REDIS_PASSWORD=old", "FAKE_REQUIREPASS=new"},
 			wantCalls: []string{
@@ -3555,8 +3555,8 @@ esac
 			maxTime: 5 * time.Second,
 		},
 		{
-			// The operator removed the password in place. redis-cli warns on
-			// stderr, but the commands work: the failover stays fast.
+			// Redis has no password, but the env of the pod has one. redis-cli
+			// warns on stderr, but the commands work: the failover stays fast.
 			name: "password removed",
 			env:  []string{"REDIS_PASSWORD=old", "FAKE_NOPASS=1"},
 			wantCalls: []string{

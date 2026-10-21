@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -437,6 +438,14 @@ func TestFailoverTimeoutForgottenOnDeletion(t *testing.T) {
 	assert.Error(t, ft.healthyMaster(0))
 	_, cleared := ft.handler.unreachableCleared.Load(failoverKey(ft.rf))
 	assert.True(t, cleared)
+	sentinelMaps := map[string]*sync.Map{
+		"sentinelResets":     &ft.handler.sentinelResets,
+		"sentinelFailovers":  &ft.handler.sentinelFailovers,
+		"sentinelReadErrors": &ft.handler.sentinelReadErrors,
+	}
+	for _, m := range sentinelMaps {
+		m.Store(failoverKey(ft.rf), struct{}{})
+	}
 
 	now := metav1.Now()
 	ft.rf.DeletionTimestamp = &now
@@ -445,4 +454,8 @@ func TestFailoverTimeoutForgottenOnDeletion(t *testing.T) {
 	assert.NoError(t, ft.handler.Handle(context.Background(), ft.rf))
 	_, cleared = ft.handler.unreachableCleared.Load(failoverKey(ft.rf))
 	assert.False(t, cleared)
+	for name, m := range sentinelMaps {
+		_, ok := m.Load(failoverKey(ft.rf))
+		assert.False(t, ok, name)
+	}
 }
