@@ -6,7 +6,9 @@ metadata:
 data:
   startup.sh: |
     #!/bin/bash
-    redis-cli -h 127.0.0.1 -p ${REDIS_PORT} --user pinger --pass pingpass --no-auth-warning ping | grep PONG
+    # A Redis that loads its dataset answers LOADING. The kubelet restarts the
+    # container when this probe fails, and the restart starts the load again.
+    redis-cli -h 127.0.0.1 -p ${REDIS_PORT} --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'
 ---
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover

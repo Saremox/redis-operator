@@ -16,6 +16,7 @@ import (
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
+	mmetrics "github.com/saremox/redis-operator/mocks/metrics"
 	"github.com/saremox/redis-operator/service/k8s"
 )
 
@@ -347,4 +348,22 @@ func TestConfigMapServiceList(t *testing.T) {
 		assertTest.Empty(list.Items)
 		assertTest.Equal([]kubetesting.Action{newConfigMapListAction(testns)}, mcli.Actions())
 	})
+}
+
+func TestConfigMapServiceGetMetricLabel(t *testing.T) {
+	for _, name := range []string{"shutdown", "team/shutdown-config-with-a-long-name"} {
+		t.Run(name, func(t *testing.T) {
+			cli := kubernetes.NewSimpleClientset()
+			cli.PrependReactor("get", "configmaps", func(action kubetesting.Action) (bool, runtime.Object, error) {
+				return true, &corev1.ConfigMap{}, nil
+			})
+			rec := &mmetrics.Recorder{}
+			rec.On("RecordK8sOperation", "ns", "ConfigMap", metrics.NOT_APPLICABLE, "GET", metrics.SUCCESS, metrics.NOT_APPLICABLE).Once()
+
+			_, err := k8s.NewConfigMapService(cli, log.Dummy, rec).GetConfigMap("ns", name)
+
+			assert.NoError(t, err)
+			rec.AssertExpectations(t)
+		})
+	}
 }

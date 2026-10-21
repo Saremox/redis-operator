@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"sync"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,6 +36,9 @@ const (
 	// only exists outside the object itself, i.e. the cluster_ok metrics
 	// series (see the DeletionTimestamp branch in Handle).
 	redisFailoverFinalizer = "redisfailovers.databases.spotahome.com/finalizer"
+	// masterUnreachableAnnotation holds, on the master pod, the RFC3339 time
+	// of the first check that the master missed. failoverTimeout counts from it.
+	masterUnreachableAnnotation = "redisfailovers.databases.spotahome.com/unreachable-since"
 )
 
 var (
@@ -56,6 +60,21 @@ type RedisFailoverHandler struct {
 	// rolloutWaits holds, per namespace/name, the rolloutWait the redis pod
 	// rollout waits on and since when.
 	rolloutWaits sync.Map
+	// unreachableCleared records, per namespace/name, that no pod has the
+	// unreachable-since annotation, so a healthy reconcile does not list pods.
+	unreachableCleared sync.Map
+	// sentinelResets holds, per namespace/name, the time of the last SENTINEL
+	// RESET or SENTINEL MONITOR of each Sentinel IP.
+	sentinelResets sync.Map
+	// sentinelFailovers holds, per namespace/name, the sentinelFailover that
+	// the Sentinel heal waits for.
+	sentinelFailovers sync.Map
+	// sentinelReadErrors holds, per namespace/name, the time of the first read
+	// error of the failover state of each Sentinel IP.
+	sentinelReadErrors sync.Map
+	now                func() time.Time
+	// requeue is nil until New connects the controller.
+	requeue func(key string, after time.Duration)
 }
 
 // NewRedisFailoverHandler returns a new RF handler
@@ -68,6 +87,7 @@ func NewRedisFailoverHandler(config Config, rfService rfservice.RedisFailoverCli
 		mClient:    mClient,
 		k8sservice: k8sservice,
 		logger:     logger,
+		now:        time.Now,
 	}
 }
 
@@ -89,6 +109,10 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 		}
 		r.mClient.DeleteCluster(rf.Namespace, rf.Name)
 		r.rolloutWaits.Delete(passwordKey(rf))
+		r.unreachableCleared.Delete(failoverKey(rf))
+		r.sentinelResets.Delete(failoverKey(rf))
+		r.sentinelFailovers.Delete(failoverKey(rf))
+		r.sentinelReadErrors.Delete(failoverKey(rf))
 		remaining := slices.DeleteFunc(slices.Clone(rf.Finalizers), func(f string) bool {
 			return f == redisFailoverFinalizer
 		})

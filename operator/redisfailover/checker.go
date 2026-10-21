@@ -1,19 +1,24 @@
 package redisfailover
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/saremox/redis-operator/service/k8s"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 	"github.com/saremox/redis-operator/operator/redisfailover/util"
@@ -329,25 +334,184 @@ func (r *RedisFailoverHandler) masterPodStopping(rf *redisfailoverv1.RedisFailov
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if pod.DeletionTimestamp != nil && rfservice.IsMasterPod(pod) && util.PodIsReady(pod) {
-			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("pod", pod.Name).Info("waiting for the stopping master pod to exit before electing a master")
+			r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("pod", pod.Name).Info("waiting for the stopping master pod to exit")
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
+// findRedisPod ignores a pod in deletion, because that pod does not come back.
+func (r *RedisFailoverHandler) findRedisPod(rf *redisfailoverv1.RedisFailover, match func(*corev1.Pod) bool) (*corev1.Pod, error) {
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return nil, err
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Status.Phase == corev1.PodRunning && pod.DeletionTimestamp == nil && match(pod) {
+			return pod, nil
+		}
+	}
+	return nil, nil
+}
+
+// unreachableMasterPod returns the pod labelled master only when it is not
+// ready. A ready master pod answered as a replica, or GetNumberMasters
+// returned ErrRedisNotAnswering.
+func (r *RedisFailoverHandler) unreachableMasterPod(rf *redisfailoverv1.RedisFailover) (*corev1.Pod, error) {
+	return r.findRedisPod(rf, func(pod *corev1.Pod) bool {
+		return rfservice.IsMasterPod(pod) && !util.PodIsReady(pod)
+	})
+}
+
+// recordMasterNotAnswering starts the wait of a ready master pod that does not
+// answer at its first missed check. Errors are ignored, because the reconcile
+// fails already.
+func (r *RedisFailoverHandler) recordMasterNotAnswering(rf *redisfailoverv1.RedisFailover, err error) {
+	if !errors.Is(err, rfservice.ErrRedisNotAnswering) {
+		return
+	}
+	if pod, _ := r.findRedisPod(rf, rfservice.IsMasterPod); pod != nil {
+		_, _ = r.masterUnreachableSince(rf, pod)
+	}
+}
+
+// labelledMasterPod returns the pod labelled master only when exactly one
+// pod has the label. With more than one, the label does not show which master
+// the operator elected.
+func (r *RedisFailoverHandler) labelledMasterPod(rf *redisfailoverv1.RedisFailover) (*corev1.Pod, error) {
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return nil, err
+	}
+	var master *corev1.Pod
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil || !rfservice.IsMasterPod(pod) {
+			continue
+		}
+		if master != nil {
+			return nil, nil
+		}
+		master = pod
+	}
+	return master, nil
+}
+
+const (
+	masterPodLookupFailed = "unable to look up the master pod"
+	masterStoppingMsg     = "no master, waiting for the stopping master pod to exit"
+	masterPodStoppingMsg  = "waiting for the stopping master pod to exit"
+)
+
+func failoverKey(rf *redisfailoverv1.RedisFailover) string {
+	return rf.Namespace + "/" + rf.Name
+}
+
+// masterUnreachableSince returns the time of the first check that the master
+// pod missed. It stores that time on the pod, so an operator restart or a new
+// leader keeps the deadline.
+func (r *RedisFailoverHandler) masterUnreachableSince(rf *redisfailoverv1.RedisFailover, pod *corev1.Pod) (time.Time, error) {
+	if since, err := time.Parse(time.RFC3339, pod.Annotations[masterUnreachableAnnotation]); err == nil {
+		return since, nil
+	}
+	now := r.now().Truncate(time.Second)
+	r.unreachableCleared.Delete(failoverKey(rf))
+	return now, r.k8sservice.UpdatePodAnnotations(rf.Namespace, pod.Name, map[string]string{masterUnreachableAnnotation: now.UTC().Format(time.RFC3339)})
+}
+
+// clearMasterUnreachable removes the unreachable-since annotation from all
+// redis pods, because an old annotation shortens the wait of the next stall.
+// A failure is only logged, because the master answers again or was replaced.
+func (r *RedisFailoverHandler) clearMasterUnreachable(rf *redisfailoverv1.RedisFailover) {
+	key := failoverKey(rf)
+	if _, cleared := r.unreachableCleared.Load(key); cleared {
+		return
+	}
+	if err := r.clearUnreachableAnnotations(rf); err != nil {
+		r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).Warningf("unable to clear the unreachable-since annotation, retrying on the next reconcile: %v", err)
+		return
+	}
+	r.unreachableCleared.Store(key, true)
+}
+
+func (r *RedisFailoverHandler) clearUnreachableAnnotations(rf *redisfailoverv1.RedisFailover) error {
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return err
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Annotations[masterUnreachableAnnotation] == "" {
+			continue
+		}
+		if err := r.k8sservice.UpdatePodAnnotations(rf.Namespace, pod.Name, map[string]string{masterUnreachableAnnotation: ""}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// waitForFailover reports whether the master pod still has time to answer
+// before failoverTimeout ends.
+func (r *RedisFailoverHandler) waitForFailover(rf *redisfailoverv1.RedisFailover, pod *corev1.Pod) (bool, error) {
+	timeout := rf.GetFailoverTimeoutDuration()
+	// Without a wait there is no deadline to keep, so a failed annotation
+	// write must not stop the failover.
+	if timeout <= 0 {
+		return false, nil
+	}
+	since, err := r.masterUnreachableSince(rf, pod)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to record when the master became unreachable",
+		}
+		return false, err
+	}
+	unreachable := r.now().Sub(since)
+	if unreachable >= timeout {
+		return false, nil
+	}
+	// The message holds no elapsed time. Each status change queues a
+	// reconcile at once, and the requeue below must set the next check.
+	msg := fmt.Sprintf("master unreachable since %s, failing over after %s", since.UTC().Format(time.RFC3339), timeout)
+	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).Info(msg)
+	rf.Status = redisfailoverv1.RedisFailoverStatus{
+		State:   redisfailoverv1.NotHealthyState,
+		Message: msg,
+	}
+	// The deadline can pass without a pod event, so queue a reconcile for it.
+	if r.requeue != nil {
+		r.requeue(failoverKey(rf), timeout-unreachable)
+	}
+	return true, nil
+}
+
 // CheckAndHeal runs verifcation checks to ensure the RedisFailover is in an expected and healthy state.
 // If the checks do not match up to expectations, an attempt will be made to "heal" the RedisFailover into a healthy state.
 func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) error {
 
-	oldState := rf.Status.State
-	oldLastChanged := rf.Status.LastChanged
+	observed := rf.Status
 
 	rf.Status = redisfailoverv1.RedisFailoverStatus{
 		State: redisfailoverv1.HealthyState,
 	}
 
-	defer updateStatus(r.k8sservice, rf, oldState, oldLastChanged)
+	// A panic ends the reconcile with an error, so the status and cluster_ok must not stay healthy.
+	defer func() {
+		if p := recover(); p != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: "internal error, see the operator log",
+			}
+			updateStatus(r.k8sservice, rf, observed)
+			r.mClient.SetClusterError(rf.Namespace, rf.Name)
+			panic(p)
+		}
+		updateStatus(r.k8sservice, rf, observed)
+	}()
 
 	if rf.Bootstrapping() {
 		return r.checkAndHealBootstrapMode(rf)
@@ -401,8 +565,10 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 
 	switch nMasters {
 	case 0:
-		// A stopping master is not counted but can still accept writes, and its
-		// shutdown script asks Sentinel to fail over. An election now can lose writes.
+		// A master pod in deletion is not counted, but it can still accept
+		// writes. When CLIENT PAUSE WRITE returns OK, its shutdown script waits for
+		// the replicas and asks Sentinel to fail over. An election at this time
+		// can lose writes.
 		stopping, err := r.masterPodStopping(rf)
 		if err != nil {
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -412,6 +578,10 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 			return err
 		}
 		if stopping {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: masterStoppingMsg,
+			}
 			return nil
 		}
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no masters detected"))
@@ -490,10 +660,29 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 				}
 
 			} else {
+				cannot, err3 := r.rfChecker.CheckSentinelsCannotFailover(rf)
+				if err3 != nil {
+					rf.Status = redisfailoverv1.RedisFailoverStatus{
+						State:   redisfailoverv1.NotHealthyState,
+						Message: "unable to check whether Sentinel can fail over",
+					}
+					return err3
+				}
+				if cannot {
+					elected, err3 := r.electMasterForSentinel(rf)
+					if err3 != nil || !elected {
+						return err3
+					}
+					break
+				}
 
 				// We'll wait until failover is done
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("no master found, wait until failover or fix manually")
 				setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no master not fixed, wait until failover or fix manually"))
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: "no master, waiting for the Sentinel failover",
+				}
 				return nil
 			}
 
@@ -563,6 +752,25 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		return err
 	}
 
+	// A SENTINEL RESET makes Sentinel forget the replicas until the master
+	// tells it again. A stopping master may not do that before it exits, and
+	// then the failover finds no replica to promote (NOGOODSLAVE).
+	stopping, err := r.masterPodStopping(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to check whether the master is stopping",
+		}
+		return err
+	}
+	if stopping {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: masterPodStoppingMsg,
+		}
+		return nil
+	}
+
 	sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
 	if err != nil {
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
@@ -572,6 +780,9 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		return err
 	}
 
+	heal := r.startSentinelHeal(rf)
+	defer r.saveSentinelResets(heal, sentinels)
+
 	port := getRedisPort(rf.Spec.Redis.Port)
 	// `master` may be stale by now (resolved above, before applyRedisCustomConfig
 	// and UpdateRedisesPods ran). Re-resolve it lazily, once, only if a sentinel
@@ -579,8 +790,11 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	sentinelMonitorMaster := master
 	masterRefreshed := false
 	for _, sip := range sentinels {
-		err = r.rfChecker.CheckSentinelMonitor(sip, master, port)
+		err = r.rfChecker.CheckSentinelMonitor(sip, sentinelMonitorMaster, port)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
+		if heal.skip(sip, err) {
+			continue
+		}
 		if err != nil {
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Fixing sentinel not monitoring expected master: %s", err.Error())
 			if !masterRefreshed {
@@ -592,18 +806,103 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 					}
 					return ferr
 				}
-				sentinelMonitorMaster = freshMaster
 				masterRefreshed = true
+				if freshMaster != sentinelMonitorMaster {
+					sentinelMonitorMaster = freshMaster
+					// The Sentinel can already monitor the new master. A new
+					// monitor then only resets its state.
+					err = r.rfChecker.CheckSentinelMonitor(sip, sentinelMonitorMaster, port)
+					setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
+					if err == nil || heal.skip(sip, err) {
+						continue
+					}
+				}
+			}
+			if !r.sentinelChangeAllowed(rf, sentinels, heal, sip) {
+				continue
 			}
 			if err := r.rfHealer.NewSentinelMonitor(sip, sentinelMonitorMaster, rf); err != nil {
+				if heal.skip(sip, err) {
+					continue
+				}
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State: redisfailoverv1.NotHealthyState,
 				}
 				return err
 			}
+			heal.resets[sip] = r.now()
 		}
 	}
-	return r.checkAndHealSentinels(rf, sentinels)
+	return r.checkAndHealSentinels(rf, sentinels, heal)
+}
+
+// electMasterForSentinel promotes the best replica when no Sentinel can fail
+// over. It first counts the masters and checks for a stopping master again,
+// because a change since the first checks gives two masters. It reports
+// whether it elected a master.
+func (r *RedisFailoverHandler) electMasterForSentinel(rf *redisfailoverv1.RedisFailover) (bool, error) {
+	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
+	nMasters, err := r.rfChecker.GetNumberMasters(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to get number of masters",
+		}
+		return false, err
+	}
+	if nMasters != 0 {
+		logger.Infof("A master appeared before the election, the operator does not elect a master")
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "a master appeared before the election, checking again",
+		}
+		return false, nil
+	}
+	// GetNumberMasters does not count a pod in deletion.
+	stopping, err := r.masterPodStopping(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "unable to check whether the master is stopping",
+		}
+		return false, err
+	}
+	if stopping {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: masterStoppingMsg,
+		}
+		return false, nil
+	}
+	best, err := r.rfChecker.GetBestReplicaForPromotion(rf)
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: "Sentinel cannot fail over and no replica is available for promotion",
+		}
+		return false, err
+	}
+	logger.Warningf("No Sentinel knows a replica pod or monitors a pod, so Sentinel cannot fail over. The operator promotes %s (%s)", best.PodName, best.IP)
+	err = r.rfHealer.PromoteBestReplica(best.IP, rf)
+	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, err)
+	if err != nil {
+		msg := "Sentinel cannot fail over and the promotion of a replica failed"
+		if errors.Is(err, rfservice.ErrPartialReconciliation) {
+			msg = "failover incomplete: replica reconfiguration failed"
+		}
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: msg,
+		}
+		return false, err
+	}
+	// The checks below make the Sentinels monitor the new master. The status
+	// stays NotHealthy until the next check finds them healthy.
+	rf.Status = redisfailoverv1.RedisFailoverStatus{
+		State:   redisfailoverv1.NotHealthyState,
+		Message: fmt.Sprintf("Sentinel knew no replica to fail over to, the operator promoted %s", best.PodName),
+	}
+	return true, nil
 }
 
 // checkAndHealOperatorManagedMode handles failover when Sentinel is disabled.
@@ -626,6 +925,7 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 
 	nMasters, err := r.rfChecker.GetNumberMasters(rf)
 	if err != nil {
+		r.recordMasterNotAnswering(rf, err)
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
 			Message: "unable to get number of masters",
@@ -647,7 +947,26 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 			return err
 		}
 		if stopping {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: masterStoppingMsg,
+			}
 			return nil
+		}
+		// A master pod that does not answer gets failoverTimeout to recover.
+		// Without a master pod, a wait only makes the outage longer.
+		pod, err := r.unreachableMasterPod(rf)
+		if err != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: masterPodLookupFailed,
+			}
+			return err
+		}
+		if pod != nil {
+			if wait, err := r.waitForFailover(rf, pod); err != nil || wait {
+				return err
+			}
 		}
 		// No master available - elect one
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no masters detected"))
@@ -684,6 +1003,7 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 				return err
 			}
 		}
+		r.clearMasterUnreachable(rf)
 		return nil
 
 	case 1:
@@ -692,6 +1012,7 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 
 		healthy, masterIP, err := r.rfChecker.CheckMasterHealth(rf)
 		if err != nil {
+			r.recordMasterNotAnswering(rf, err)
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
 				State:   redisfailoverv1.NotHealthyState,
 				Message: "unable to check master health",
@@ -700,10 +1021,12 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		}
 
 		if !healthy {
-			// The master counted above may have started stopping since; then
-			// it is no longer found but may still take writes, as in case 0.
+			var pod *corev1.Pod
 			if masterIP == "" {
-				stopping, err := r.masterPodStopping(rf)
+				// The master counted above may have started stopping since; then
+				// it is no longer found but may still take writes, as in case 0.
+				var stopping bool
+				stopping, err = r.masterPodStopping(rf)
 				if err != nil {
 					rf.Status = redisfailoverv1.RedisFailoverStatus{
 						State:   redisfailoverv1.NotHealthyState,
@@ -712,7 +1035,28 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 					return err
 				}
 				if stopping {
+					rf.Status = redisfailoverv1.RedisFailoverStatus{
+						State:   redisfailoverv1.NotHealthyState,
+						Message: masterStoppingMsg,
+					}
 					return nil
+				}
+				// The second count does not count a master pod that is not
+				// ready. As in case 0, that pod gets failoverTimeout to recover.
+				pod, err = r.unreachableMasterPod(rf)
+			} else {
+				pod, err = r.findRedisPod(rf, func(pod *corev1.Pod) bool { return pod.Status.PodIP == masterIP })
+			}
+			if err != nil {
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: masterPodLookupFailed,
+				}
+				return err
+			}
+			if pod != nil {
+				if wait, err := r.waitForFailover(rf, pod); err != nil || wait {
+					return err
 				}
 			}
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
@@ -740,8 +1084,10 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 				}
 				return err
 			}
+			r.clearMasterUnreachable(rf)
 			return nil
 		}
+		r.clearMasterUnreachable(rf)
 
 		// Master is healthy - ensure all slaves are connected to it
 		err = r.rfChecker.CheckAllSlavesFromMaster(masterIP, rf)
@@ -759,8 +1105,36 @@ func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailover
 		}
 
 	default:
-		// Multiple masters - error state
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NUMBER_OF_MASTERS, metrics.NOT_APPLICABLE, errors.New("multiple masters detected"))
+		// An old master that did not answer during a failover can come back
+		// as a master. The pod labelled master is the master that the
+		// operator elected, so the other masters become its replicas.
+		labelled, err := r.labelledMasterPod(rf)
+		if err != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: masterPodLookupFailed,
+			}
+			return err
+		}
+		if labelled != nil {
+			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).
+				Warningf("Multiple masters detected, making all pods replicas of the labelled master %s", labelled.Name)
+			if err := r.rfHealer.SetMasterOnAll(labelled.Status.PodIP, rf); err != nil {
+				rf.Status = redisfailoverv1.RedisFailoverStatus{
+					State:   redisfailoverv1.NotHealthyState,
+					Message: "unable to make the other masters replicas of the labelled master",
+				}
+				return err
+			}
+			// A master that refused REPLICAOF is skipped, so the next
+			// reconcile counts the masters again before the status is Healthy.
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: fmt.Sprintf("multiple masters detected, made the other masters replicas of %s", labelled.Name),
+			}
+			return nil
+		}
 		errorMsg := "multiple masters detected, fix manually"
 		rf.Status = redisfailoverv1.RedisFailoverStatus{
 			State:   redisfailoverv1.NotHealthyState,
@@ -801,7 +1175,6 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 			State:   redisfailoverv1.NotHealthyState,
 			Message: errorMsg,
 		}
-		r.k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.REDIS_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of redis mismatch, waiting for redis statefulset reconcile")
 		return nil
@@ -843,12 +1216,9 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 				State:   redisfailoverv1.NotHealthyState,
 				Message: errorMsg,
 			}
-			r.k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 			setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of sentinel mismatch, waiting for sentinel deployment reconcile")
 			return nil
-		} else {
-			r.k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 		}
 
 		sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
@@ -859,21 +1229,33 @@ func (r *RedisFailoverHandler) checkAndHealBootstrapMode(rf *redisfailoverv1.Red
 			}
 			return err
 		}
+		heal := r.startSentinelHeal(rf)
+		defer r.saveSentinelResets(heal, sentinels)
 		for _, sip := range sentinels {
 			err = r.rfChecker.CheckSentinelMonitor(sip, bootstrapSettings.Host, bootstrapSettings.Port)
 			setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
+			if heal.skip(sip, err) {
+				continue
+			}
 			if err != nil {
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Fixing sentinel not monitoring expected master: %s", err.Error())
+				if !r.sentinelChangeAllowed(rf, sentinels, heal, sip) {
+					continue
+				}
 				if err := r.rfHealer.NewSentinelMonitorWithPort(sip, bootstrapSettings.Host, bootstrapSettings.Port, rf); err != nil {
+					if heal.skip(sip, err) {
+						continue
+					}
 					rf.Status = redisfailoverv1.RedisFailoverStatus{
 						State:   redisfailoverv1.NotHealthyState,
 						Message: "unable to check sentinel monitor",
 					}
 					return err
 				}
+				heal.resets[sip] = r.now()
 			}
 		}
-		return r.checkAndHealSentinels(rf, sentinels)
+		return r.checkAndHealSentinels(rf, sentinels, heal)
 	}
 	return nil
 }
@@ -899,13 +1281,123 @@ func (r *RedisFailoverHandler) applyRedisCustomConfig(rf *redisfailoverv1.RedisF
 	return nil
 }
 
-func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFailover, sentinels []string) error {
+// defaultSentinelFailoverTimeout is the failover-timeout that Validate gives
+// the Sentinels when customConfig does not set one ("failover-timeout 10000").
+const defaultSentinelFailoverTimeout = 10000 * time.Millisecond
+
+// errSentinelSkipped marks the later checks of a Sentinel that did not answer
+// earlier in the reconcile.
+var errSentinelSkipped = errors.New("sentinel unreachable, check skipped")
+
+// sentinelHeal is the state of the Sentinel heal steps in one reconcile.
+type sentinelHeal struct {
+	key    string
+	logger log.Logger
+	// resets holds the last SENTINEL RESET or SENTINEL MONITOR of each
+	// Sentinel in the hold-off.
+	resets      map[string]time.Time
+	unreachable map[string]bool
+	// failoverRead is true after the first read of the failover state of
+	// the Sentinels in this reconcile.
+	failoverRead bool
+	// failoverHold is true while a Sentinel fails over.
+	failoverHold bool
+	// readErrors holds the time of the first read error of the failover
+	// state of each Sentinel.
+	readErrors map[string]time.Time
+	// held holds the Sentinels that get no change in this reconcile: after a
+	// read error, or in a failover that the stored wait does not cover.
+	held map[string]bool
+}
+
+// startSentinelHeal loads the reset times that are still in the hold-off.
+func (r *RedisFailoverHandler) startSentinelHeal(rf *redisfailoverv1.RedisFailover) *sentinelHeal {
+	heal := &sentinelHeal{
+		key:         failoverKey(rf),
+		logger:      r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace),
+		resets:      map[string]time.Time{},
+		unreachable: map[string]bool{},
+		readErrors:  map[string]time.Time{},
+		held:        map[string]bool{},
+	}
+	if v, ok := r.sentinelReadErrors.Load(heal.key); ok {
+		if last, ok := v.(map[string]time.Time); ok {
+			maps.Copy(heal.readErrors, last)
+		}
+	}
+	if last, ok := r.sentinelResets.Load(heal.key); ok {
+		now := r.now()
+		for sip, at := range last.(map[string]time.Time) {
+			if now.Sub(at) < sentinelResetHoldOff {
+				heal.resets[sip] = at
+			}
+		}
+	}
+	return heal
+}
+
+// saveSentinelResets keeps the reset times of the listed Sentinels only, so
+// the entry of the old IP of a recreated pod does not stay.
+func (r *RedisFailoverHandler) saveSentinelResets(heal *sentinelHeal, sentinels []string) {
+	// Without a read, no Sentinel needed a change, so a failover that a
+	// later reconcile finds is a new one.
+	if !heal.failoverRead {
+		r.sentinelFailovers.Delete(heal.key)
+		clear(heal.readErrors)
+	}
+	maps.DeleteFunc(heal.readErrors, func(sip string, _ time.Time) bool {
+		return !slices.Contains(sentinels, sip)
+	})
+	if len(heal.readErrors) == 0 {
+		r.sentinelReadErrors.Delete(heal.key)
+	} else {
+		r.sentinelReadErrors.Store(heal.key, heal.readErrors)
+	}
+	maps.DeleteFunc(heal.resets, func(sip string, _ time.Time) bool {
+		return !slices.Contains(sentinels, sip)
+	})
+	if len(heal.resets) == 0 {
+		r.sentinelResets.Delete(heal.key)
+		return
+	}
+	r.sentinelResets.Store(heal.key, heal.resets)
+}
+
+// skip reports whether err shows that the Sentinel does not answer, and
+// records it. A Sentinel pod can stop after GetSentinelsIPs listed it.
+func (h *sentinelHeal) skip(sip string, err error) bool {
+	if !redis.IsUnreachableError(err) {
+		return false
+	}
+	h.logger.Warningf("Skipping unreachable sentinel %s: %s", sip, err.Error())
+	h.unreachable[sip] = true
+	return true
+}
+
+// skipped reports whether the Sentinel did not answer earlier in the
+// reconcile. It records the check as unhealthy, as a failed check does.
+func (r *RedisFailoverHandler) skipped(rf *redisfailoverv1.RedisFailover, heal *sentinelHeal, sip, property string) bool {
+	if !heal.unreachable[sip] {
+		return false
+	}
+	setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, property, sip, errSentinelSkipped)
+	return true
+}
+
+// checkAndHealSentinels heals each Sentinel that answers. An unreachable
+// Sentinel makes the RedisFailover NotHealthy after the heal of the others.
+func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFailover, sentinels []string, heal *sentinelHeal) error {
 	for _, sip := range sentinels {
+		if r.skipped(rf, heal, sip, metrics.SENTINEL_NUMBER_IN_MEMORY_MISMATCH) {
+			continue
+		}
 		err := r.rfChecker.CheckSentinelNumberInMemory(sip, rf)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_NUMBER_IN_MEMORY_MISMATCH, sip, err)
+		if heal.skip(sip, err) {
+			continue
+		}
 		if err != nil {
-			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Sentinel %s mismatch number of sentinels in memory. resetting", sip)
-			if err := r.rfHealer.RestoreSentinel(sip); err != nil {
+			if err := r.restoreSentinel(rf, sentinels, sip, "sentinels", heal); err != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
 					Message: "unable to restore sentinel",
@@ -913,14 +1405,18 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 				return err
 			}
 		}
-
 	}
 	for _, sip := range sentinels {
+		if r.skipped(rf, heal, sip, metrics.REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH) {
+			continue
+		}
 		err := r.rfChecker.CheckSentinelSlavesNumberInMemory(sip, rf)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.REDIS_SLAVES_NUMBER_IN_MEMORY_MISMATCH, sip, err)
+		if heal.skip(sip, err) {
+			continue
+		}
 		if err != nil {
-			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Sentinel %s mismatch number of expected slaves in memory. resetting", sip)
-			if err := r.rfHealer.RestoreSentinel(sip); err != nil {
+			if err := r.restoreSentinel(rf, sentinels, sip, "expected slaves", heal); err != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
 					Message: "unable to restore sentinel",
@@ -930,9 +1426,15 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 		}
 	}
 	for _, sip := range sentinels {
+		if r.skipped(rf, heal, sip, metrics.APPLY_SENTINEL_CONFIG) {
+			continue
+		}
 		err := r.rfHealer.SetSentinelCustomConfig(sip, rf)
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.APPLY_SENTINEL_CONFIG, sip, err)
 		if err != nil {
+			if heal.skip(sip, err) {
+				continue
+			}
 			rf.Status = redisfailoverv1.RedisFailoverStatus{
 				State:   redisfailoverv1.NotHealthyState,
 				Message: "unable to set sentinel custom config",
@@ -940,6 +1442,208 @@ func (r *RedisFailoverHandler) checkAndHealSentinels(rf *redisfailoverv1.RedisFa
 			return err
 		}
 	}
+	var unreachable []string
+	for _, sip := range sentinels {
+		if heal.unreachable[sip] {
+			unreachable = append(unreachable, cmp.Or(sip, "(no IP)"))
+		}
+	}
+	if len(unreachable) > 0 {
+		// A Sentinel that does not answer cannot vote in a failover.
+		msg := fmt.Sprintf("sentinel(s) %s unreachable", strings.Join(unreachable, ", "))
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: msg,
+		}
+		return errors.New(msg)
+	}
+	return nil
+}
+
+// sentinelFailoverMsg is the status message while a Sentinel fails over.
+const sentinelFailoverMsg = "waiting for the Sentinel failover"
+
+// sentinelFailoverStates are the values of failover-state in the order of a
+// failover.
+var sentinelFailoverStates = []string{"wait_start", "select_slave", "send_slaveof_noone", "wait_promotion", "reconf_slaves", "update_config"}
+
+// sentinelFailover is the failover that the operator waits for.
+type sentinelFailover struct {
+	sentinel string
+	master   string
+	// state is the index in sentinelFailoverStates, or -1.
+	state int
+	since time.Time
+}
+
+// sentinelChangeAllowed reports whether the operator can send SENTINEL
+// MONITOR or RESET to the Sentinel sip. These commands end a failover in that
+// Sentinel. The Sentinels can then return to the old master and fail over a
+// second time, and the promoted replica loses its writes. The first call in a
+// reconcile reads all the Sentinels, because only a Sentinel that fails over
+// has the flag. Each call then reads sip again just before the change, because
+// a failover can start after an earlier read.
+func (r *RedisFailoverHandler) sentinelChangeAllowed(rf *redisfailoverv1.RedisFailover, sentinels []string, heal *sentinelHeal, sip string) bool {
+	if !heal.failoverRead {
+		heal.failoverRead = true
+		r.readSentinelFailovers(rf, sentinels, true, heal)
+	}
+	if !heal.failoverHold && !heal.unreachable[sip] && !heal.held[sip] {
+		r.readSentinelFailovers(rf, []string{sip}, false, heal)
+	}
+	return !heal.failoverHold && !heal.unreachable[sip] && !heal.held[sip]
+}
+
+// readSentinelFailovers reads the failover state of the Sentinels and sets
+// failoverHold. all is true when sentinels holds each Sentinel. The hold ends
+// after the failover-timeout of the Sentinel.
+func (r *RedisFailoverHandler) readSentinelFailovers(rf *redisfailoverv1.RedisFailover, sentinels []string, all bool, heal *sentinelHeal) {
+	var found *sentinelFailover
+	var timeout time.Duration
+	for _, sip := range sentinels {
+		if heal.unreachable[sip] {
+			continue
+		}
+		// skip records a Sentinel that does not answer, so it gets no change.
+		f, err := r.rfChecker.GetSentinelFailover(sip)
+		if heal.skip(sip, err) {
+			continue
+		}
+		if err != nil && !redis.IsNoSuchMasterError(err) {
+			r.holdOnReadError(rf, heal, sip, err)
+			continue
+		}
+		delete(heal.readErrors, sip)
+		// A Sentinel without the master has no failover.
+		if err != nil || !f.InProgress {
+			continue
+		}
+		timeout = max(timeout, f.Timeout)
+		// Each candidate of the election has the flag. The leader has the
+		// highest state.
+		state := slices.Index(sentinelFailoverStates, f.State)
+		if found == nil || state > found.state {
+			found = &sentinelFailover{sentinel: sip, master: f.Master, state: state}
+		}
+	}
+	if found == nil {
+		if all {
+			r.sentinelFailovers.Delete(heal.key)
+		}
+		return
+	}
+	if timeout == 0 {
+		timeout = defaultSentinelFailoverTimeout
+	}
+	now := r.now()
+	// A failover of another Sentinel or of another master, or an earlier
+	// failover-state, is a new failover with its own wait. The master of a
+	// Sentinel changes only at the end of a failover.
+	v, ok := r.sentinelFailovers.Load(heal.key)
+	last, _ := v.(sentinelFailover)
+	newFailover := !ok || last.sentinel != found.sentinel || last.master != found.master || found.state < last.state
+	if newFailover && !all {
+		// Only a read of all the Sentinels finds the leader and starts a
+		// wait. Until then, the target alone gets no change, so a candidate
+		// cannot make the wait of a leader longer.
+		heal.logger.Infof("Sentinel %s fails over, so the operator does not change it in this reconcile", found.sentinel)
+		heal.held[found.sentinel] = true
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: sentinelFailoverMsg,
+		}
+		if r.requeue != nil {
+			r.requeue(heal.key, timeout)
+		}
+		return
+	}
+	switch {
+	case newFailover:
+		found.since = now
+	case all:
+		found.since = last.since
+	default:
+		*found = last
+	}
+	r.sentinelFailovers.Store(heal.key, *found)
+	elapsed := now.Sub(found.since)
+	if elapsed >= timeout {
+		heal.logger.Warningf("Sentinel %s fails over for %s, longer than its failover-timeout %s, so the operator heals the Sentinels", found.sentinel, elapsed.Round(time.Second), timeout)
+		return
+	}
+	logf := heal.logger.Debugf
+	if newFailover {
+		logf = heal.logger.Infof
+	}
+	logf("Sentinel %s fails over, so the operator sends no SENTINEL MONITOR or RESET until the failover ends", found.sentinel)
+	heal.failoverHold = true
+	rf.Status = redisfailoverv1.RedisFailoverStatus{
+		State:   redisfailoverv1.NotHealthyState,
+		Message: sentinelFailoverMsg,
+	}
+	if r.requeue != nil {
+		r.requeue(heal.key, timeout-elapsed)
+	}
+}
+
+// holdOnReadError holds the changes of a Sentinel that gives an error other
+// than a missing master, for example an ACL error. That Sentinel can fail
+// over. The hold ends after the default failover-timeout from the first error,
+// so it is never permanent.
+func (r *RedisFailoverHandler) holdOnReadError(rf *redisfailoverv1.RedisFailover, heal *sentinelHeal, sip string, err error) {
+	now := r.now()
+	first, ok := heal.readErrors[sip]
+	if !ok {
+		first = now
+		heal.readErrors[sip] = now
+	}
+	timeout := defaultSentinelFailoverTimeout
+	if elapsed := now.Sub(first); elapsed < timeout {
+		if !ok {
+			heal.logger.Warningf("Sentinel %s did not give its failover state, so the operator does not change it for %s: %s", sip, timeout, err.Error())
+		}
+		heal.held[sip] = true
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: fmt.Sprintf("waiting to read the failover state of sentinel %s", sip),
+		}
+		if r.requeue != nil {
+			r.requeue(heal.key, timeout-elapsed)
+		}
+		return
+	}
+	heal.logger.Warningf("Sentinel %s did not give its failover state for %s, so the operator heals it: %s", sip, timeout, err.Error())
+}
+
+// sentinelResetHoldOff is shorter than the default resync interval of 30
+// seconds, so a mismatch that stays gets a reset at the next resync.
+const sentinelResetHoldOff = 25 * time.Second
+
+// restoreSentinel resets a Sentinel with a mismatch, unless it had a reset or
+// a new monitor in the hold-off. After a reset, the Sentinel needs some seconds
+// to find the other Sentinels and the replicas, and a new reset makes this
+// time longer.
+func (r *RedisFailoverHandler) restoreSentinel(rf *redisfailoverv1.RedisFailover, sentinels []string, sip, mismatch string, heal *sentinelHeal) error {
+	now := r.now()
+	if at, ok := heal.resets[sip]; ok {
+		heal.logger.Debugf("Sentinel %s mismatch number of %s in memory. last reset %s ago, waiting", sip, mismatch, now.Sub(at).Round(time.Second))
+		// Without a pod event, the next resync can come long after the hold-off.
+		if r.requeue != nil {
+			r.requeue(heal.key, sentinelResetHoldOff-now.Sub(at))
+		}
+		return nil
+	}
+	if !r.sentinelChangeAllowed(rf, sentinels, heal, sip) {
+		return nil
+	}
+	heal.logger.Warningf("Sentinel %s mismatch number of %s in memory. resetting", sip, mismatch)
+	if err := r.rfHealer.RestoreSentinel(sip); err != nil {
+		if heal.skip(sip, err) {
+			return nil
+		}
+		return err
+	}
+	heal.resets[sip] = now
 	return nil
 }
 
@@ -964,18 +1668,18 @@ func setRedisCheckerMetrics(metricsClient metrics.Recorder, mode /* redis or sen
 	}
 }
 
-// updateStatus patches rf's status to the API server, stamping LastChanged
-// with the current time only when the health state actually transitioned.
-// The branches leading up to this (checkAndHeal*) each rebuild rf.Status
-// from scratch (State/Message only) without carrying LastChanged forward,
-// so oldLastChanged - captured before any of those run - is what restores
-// it on a non-transition; otherwise every steady-state reconcile would
-// patch LastChanged back to empty, erasing the last recorded transition.
-func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, oldState string, oldLastChanged string) {
-	if oldState != rf.Status.State {
+// updateStatus is the only status write of a reconcile. The checks set only
+// State and Message, so LastChanged comes from the observed status unless the
+// state changed. An unchanged status is not written, which saves one API call
+// on each resync and pod event.
+func updateStatus(k8sservice k8s.Services, rf *redisfailoverv1.RedisFailover, observed redisfailoverv1.RedisFailoverStatus) {
+	if observed.State != rf.Status.State {
 		rf.Status.LastChanged = time.Now().Format(time.RFC3339)
 	} else {
-		rf.Status.LastChanged = oldLastChanged
+		rf.Status.LastChanged = observed.LastChanged
+	}
+	if rf.Status == observed {
+		return
 	}
 	k8sservice.UpdateRedisFailoverStatus(context.Background(), rf.Namespace, rf, metav1.PatchOptions{})
 }

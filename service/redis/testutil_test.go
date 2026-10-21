@@ -187,7 +187,9 @@ func newSentinelProcessOnPort(port int, extraConfLines ...string) (*redisProc, e
 		return nil, fmt.Errorf("mkdir temp dir: %w", err)
 	}
 	confPath := filepath.Join(dir, "sentinel.conf")
-	conf := fmt.Sprintf("port %d\ndir %s\nsentinel resolve-hostnames no\n", port, dir)
+	// The bind leaves <sentinelPort> on the other loopback addresses free for
+	// startFakeSentinel.
+	conf := fmt.Sprintf("port %d\nbind %s\ndir %s\nsentinel resolve-hostnames no\n", port, testLoopbackIP, dir)
 	for _, line := range extraConfLines {
 		conf += line + "\n"
 	}

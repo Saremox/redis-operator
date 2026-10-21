@@ -18,11 +18,14 @@ package redis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -97,6 +100,25 @@ func TestGetSlaveOf(t *testing.T) {
 	masterOf, err = c.GetSlaveOf(env.replica.IP, strconv.Itoa(env.replica.Port), "")
 	require.NoError(t, err)
 	assert.Equal(t, env.master.IP, masterOf)
+}
+
+// A replica on an IPv6 cluster, or a replica of a hostname, must report its
+// full master_host. An empty or cut value hides a replica of the wrong master.
+func TestGetSlaveOf_NonIPv4MasterHost(t *testing.T) {
+	requireRedisServer(t)
+	c := newTestClient()
+	for _, masterHost := range []string{"fd00:10:244::5", "2001:db8::5", "rfr-test-0.rfr-test.ns.svc.cluster.local"} {
+		t.Run(masterHost, func(t *testing.T) {
+			replica := startRedisProcess(t)
+			rc := rediscli.NewClient(&rediscli.Options{Addr: replica.Addr()})
+			defer func() { _ = rc.Close() }()
+			require.NoError(t, rc.SlaveOf(bgCtx(), masterHost, "6379").Err())
+
+			masterOf, err := c.GetSlaveOf(replica.IP, strconv.Itoa(replica.Port), "")
+			require.NoError(t, err)
+			assert.Equal(t, masterHost, masterOf)
+		})
+	}
 }
 
 // TestSlaveIsReady_LoopbackMasterHostNeverReady documents a real quirk found
@@ -780,6 +802,75 @@ func TestGetNumberSentinelSlavesInMemory(t *testing.T) {
 	assert.EqualValues(t, 1, n)
 }
 
+// TestGetSentinelReplicas checks that the Sentinel gives the replica that it
+// learned from the master.
+func TestGetSentinelReplicas(t *testing.T) {
+	env := getSharedEnv(t)
+	c := newTestClient()
+
+	var replicas []string
+	ok := waitForCondition(t, 20*time.Second, func() bool {
+		var err error
+		replicas, err = c.GetSentinelReplicas(env.sentinel.IP)
+		return err == nil && len(replicas) >= 1
+	})
+	require.True(t, ok, "sentinel should eventually discover the replica")
+	assert.Equal(t, []string{env.replica.IP}, replicas)
+}
+
+// TestSentinelMasterDown checks that a Sentinel does not flag a master that
+// answers as down.
+func TestSentinelMasterDown(t *testing.T) {
+	env := getSharedEnv(t)
+	down, err := newTestClient().SentinelMasterDown(env.sentinel.IP)
+	require.NoError(t, err)
+	assert.False(t, down)
+}
+
+func TestFlagsDown(t *testing.T) {
+	for flags, want := range map[string]bool{
+		"master":                      false,
+		"s_down,master":               true,
+		"s_down,o_down,master":        true,
+		"master,failover_in_progress": false,
+		"":                            false,
+	} {
+		assert.Equal(t, want, flagsDown(flags), flags)
+	}
+}
+
+func TestSentinelReplicaIPs(t *testing.T) {
+	tests := []struct {
+		name    string
+		res     []interface{}
+		want    []string
+		wantErr bool
+	}{
+		{name: "no replica", res: []interface{}{}, want: []string{}},
+		{
+			name: "two replicas",
+			res: []interface{}{
+				[]interface{}{"name", "10.0.0.2:6379", "ip", "10.0.0.2", "port", "6379"},
+				[]interface{}{"name", "10.0.0.3:6379", "ip", "10.0.0.3", "port", "6379"},
+			},
+			want: []string{"10.0.0.2", "10.0.0.3"},
+		},
+		{name: "an entry is not an array", res: []interface{}{"10.0.0.2"}, wantErr: true},
+		{name: "the ip is not a string", res: []interface{}{[]interface{}{"ip", int64(1)}}, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := sentinelReplicaIPs(test.res)
+			if test.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, test.want, got)
+		})
+	}
+}
+
 // TestGetNumberSentinelsInMemory_NotMonitoringAnything temporarily strips
 // the shared sentinel's only monitored master (SENTINEL REMOVE) rather than
 // starting a second sentinel process - see newSentinelProcessOnPort's doc
@@ -805,6 +896,60 @@ func TestGetNumberSentinelsInMemory_NotMonitoringAnything(t *testing.T) {
 	// GetNumberSentinelSlavesInMemory shares the same isSentinelReady gate.
 	_, err = c.GetNumberSentinelSlavesInMemory(env.sentinel.IP)
 	assert.Error(t, err)
+}
+
+// startFakeSentinel listens on ip:sentinelPort and answers each command with
+// info as a bulk string. A real Sentinel cannot report more than 65536
+// sentinels or replicas.
+func startFakeSentinel(t *testing.T, ip, info string) {
+	t.Helper()
+	startRawSentinel(t, ip, "$"+strconv.Itoa(len(info))+"\r\n"+info+"\r\n")
+}
+
+// startRawSentinel listens on ip:sentinelPort and answers each command with
+// the raw bytes of reply.
+func startRawSentinel(t *testing.T, ip, reply string) {
+	t.Helper()
+	l, err := net.Listen("tcp", net.JoinHostPort(ip, sentinelPort))
+	if err != nil {
+		t.Skipf("cannot listen on %s: %v", net.JoinHostPort(ip, sentinelPort), err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				buf := make([]byte, 4096)
+				for {
+					if _, err := conn.Read(buf); err != nil {
+						return
+					}
+					if _, err := conn.Write([]byte(reply)); err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+}
+
+func TestGetNumberSentinelsInMemory_TooMany(t *testing.T) {
+	const target = "127.0.0.2"
+	startFakeSentinel(t, target, "# Sentinel\r\nsentinel_masters:1\r\n"+
+		"master0:name=mymaster,status=ok,address=10.0.0.1:6379,slaves=70000,sentinels=70000\r\n")
+	c := newTestClient()
+
+	n, err := c.GetNumberSentinelsInMemory(target)
+	assert.Error(t, err)
+	assert.Zero(t, n)
+
+	n, err = c.GetNumberSentinelSlavesInMemory(target)
+	assert.Error(t, err)
+	assert.Zero(t, n)
 }
 
 // ---------------------------------------------------------------------
@@ -1010,6 +1155,57 @@ func TestSetCustomSentinelConfigMalformedConfig(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestSetCustomSentinelConfigUnreachableSendsNoSet covers a Sentinel that
+// resets or closes the connection. The read of the current values fails, and
+// no SENTINEL SET follows.
+func TestSetCustomSentinelConfigUnreachableSendsNoSet(t *testing.T) {
+	const target = "127.0.0.4"
+	for _, reset := range []bool{true, false} {
+		t.Run(fmt.Sprintf("reset %t", reset), func(t *testing.T) {
+			l, err := net.Listen("tcp", net.JoinHostPort(target, sentinelPort))
+			if err != nil {
+				t.Skipf("cannot listen on %s: %v", net.JoinHostPort(target, sentinelPort), err)
+			}
+			defer func() { _ = l.Close() }()
+			var mu sync.Mutex
+			var received []string
+			go func() {
+				for {
+					conn, err := l.Accept()
+					if err != nil {
+						return
+					}
+					buf := make([]byte, 4096)
+					n, _ := conn.Read(buf)
+					mu.Lock()
+					received = append(received, strings.ToLower(string(buf[:n])))
+					mu.Unlock()
+					if reset {
+						_ = conn.(*net.TCPConn).SetLinger(0)
+					}
+					_ = conn.Close()
+				}
+			}()
+			recorder := &countingRecorder{Recorder: metrics.Dummy}
+
+			err = New(recorder).SetCustomSentinelConfig(target, []string{"down-after-milliseconds 1000"})
+
+			require.Error(t, err)
+			assert.True(t, IsUnreachableError(err), err.Error())
+			if !reset {
+				assert.ErrorIs(t, err, io.EOF)
+			}
+			assert.Equal(t, 1, recorder.calls)
+			mu.Lock()
+			defer mu.Unlock()
+			require.NotEmpty(t, received)
+			for _, cmd := range received {
+				assert.NotContains(t, cmd, "down-after-milliseconds")
+			}
+		})
+	}
+}
+
 func TestSentinelConfigsToApplyMalformedConfig(t *testing.T) {
 	c := newTestClientStruct()
 	_, err := c.sentinelConfigsToApply(nil, []string{"not-a-valid-config"})
@@ -1136,6 +1332,12 @@ func TestSentinelFunctions_SentinelUnreachable(t *testing.T) {
 	_, _, err = c.GetSentinelMonitor(env.sentinel.IP)
 	assert.Error(t, err, "GetSentinelMonitor should fail once nothing is listening on the sentinel port")
 
+	_, err = c.GetSentinelReplicas(env.sentinel.IP)
+	assert.Error(t, err, "GetSentinelReplicas should fail once nothing is listening on the sentinel port")
+
+	_, err = c.SentinelMasterDown(env.sentinel.IP)
+	assert.Error(t, err, "SentinelMasterDown should fail once nothing is listening on the sentinel port")
+
 	err = c.SetCustomSentinelConfig(env.sentinel.IP, []string{"down-after-milliseconds 1000"})
 	assert.Error(t, err, "SetCustomSentinelConfig should fail once nothing is listening on the sentinel port")
 
@@ -1197,6 +1399,21 @@ func TestIsUnreachableError(t *testing.T) {
 			name:     "net.OpError is unreachable",
 			err:      &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: host is down")},
 			expected: true,
+		},
+		{
+			name:     "EOF from a closed connection is unreachable",
+			err:      io.EOF,
+			expected: true,
+		},
+		{
+			name:     "unexpected EOF is unreachable",
+			err:      fmt.Errorf("read reply: %w", io.ErrUnexpectedEOF),
+			expected: true,
+		},
+		{
+			name:     "a failed Kubernetes API call is not unreachable",
+			err:      fmt.Errorf("getting the pods: %w", &url.Error{Op: "Get", URL: "https://10.96.0.1:443/api", Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("i/o timeout")}}),
+			expected: false,
 		},
 		{
 			name:     "redis rejecting the command is not unreachable",

@@ -75,6 +75,34 @@ func (_m *Client) GetNumberSentinelsInMemory(ip string) (int32, error) {
 	return r0, r1
 }
 
+// GetSentinelFailover provides a mock function with given fields: ip
+func (_m *Client) GetSentinelFailover(ip string) (redis.SentinelFailover, error) {
+	ret := _m.Called(ip)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetSentinelFailover")
+	}
+
+	var r0 redis.SentinelFailover
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string) (redis.SentinelFailover, error)); ok {
+		return rf(ip)
+	}
+	if rf, ok := ret.Get(0).(func(string) redis.SentinelFailover); ok {
+		r0 = rf(ip)
+	} else {
+		r0 = ret.Get(0).(redis.SentinelFailover)
+	}
+
+	if rf, ok := ret.Get(1).(func(string) error); ok {
+		r1 = rf(ip)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetSentinelMonitor provides a mock function with given fields: ip
 func (_m *Client) GetSentinelMonitor(ip string) (string, string, error) {
 	ret := _m.Called(ip)
@@ -323,6 +351,56 @@ func (_m *Client) GetReplicationInfo(ip string, port string, password string) (*
 
 	if rf, ok := ret.Get(1).(func(string, string, string) error); ok {
 		r1 = rf(ip, port, password)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// GetSentinelReplicas provides a mock function with given fields: ip
+func (_m *Client) GetSentinelReplicas(ip string) ([]string, error) {
+	ret := _m.Called(ip)
+
+	var r0 []string
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string) ([]string, error)); ok {
+		return rf(ip)
+	}
+	if rf, ok := ret.Get(0).(func(string) []string); ok {
+		r0 = rf(ip)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]string)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(string) error); ok {
+		r1 = rf(ip)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// SentinelMasterDown provides a mock function with given fields: ip
+func (_m *Client) SentinelMasterDown(ip string) (bool, error) {
+	ret := _m.Called(ip)
+
+	var r0 bool
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string) (bool, error)); ok {
+		return rf(ip)
+	}
+	if rf, ok := ret.Get(0).(func(string) bool); ok {
+		r0 = rf(ip)
+	} else {
+		r0 = ret.Get(0).(bool)
+	}
+
+	if rf, ok := ret.Get(1).(func(string) error); ok {
+		r1 = rf(ip)
 	} else {
 		r1 = ret.Error(1)
 	}

@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
@@ -72,7 +74,11 @@ type endpointAwareDisconnector struct {
 	logger      log.Logger
 	timeout     time.Duration
 	grace       time.Duration
-	pending     sync.Map
+	mu          sync.Mutex
+	// runs holds the pods with a disconnect in progress. The value is true
+	// when the pod was demoted again during the run. A failed run then runs
+	// again, because the pod can answer only after the first attempt.
+	runs map[string]bool
 }
 
 // NewClientDisconnector returns a ClientDisconnector that works in the
@@ -86,21 +92,51 @@ func NewClientDisconnector(kubeClient kubernetes.Interface, redisClient redis.Cl
 		logger:      logger,
 		timeout:     timeout,
 		grace:       grace,
+		runs:        map[string]bool{},
 	}
 }
 
 func (d *endpointAwareDisconnector) DisconnectDemoted(rf *redisfailoverv1.RedisFailover, pod corev1.Pod, port, password string) {
 	key := rf.Namespace + "/" + pod.Name
-	if _, busy := d.pending.LoadOrStore(key, struct{}{}); busy {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, busy := d.runs[key]; busy {
+		d.runs[key] = true
 		return
 	}
+	d.runs[key] = false
 	go func() {
-		defer d.pending.Delete(key)
-		d.disconnect(rf, pod, port, password)
+		for {
+			failed := d.disconnectRecovered(rf, pod, port, password) != nil
+			d.mu.Lock()
+			again := failed && d.runs[key]
+			if again {
+				d.runs[key] = false
+			} else {
+				delete(d.runs, key)
+			}
+			d.mu.Unlock()
+			if !again {
+				return
+			}
+		}
 	}()
 }
 
-func (d *endpointAwareDisconnector) disconnect(rf *redisfailoverv1.RedisFailover, pod corev1.Pod, port, password string) {
+// disconnectRecovered turns a panic of the Redis client into an error. A Redis
+// pod can send a reply that the client cannot read, and a panic in this
+// goroutine would stop the operator for all tenants.
+func (d *endpointAwareDisconnector) disconnectRecovered(rf *redisfailoverv1.RedisFailover, pod corev1.Pod, port, password string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			d.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Errorf("panic on the disconnect of pod %s: %v\n%s", pod.Name, r, debug.Stack())
+			err = errors.New("panic on the disconnect")
+		}
+	}()
+	return d.disconnect(rf, pod, port, password)
+}
+
+func (d *endpointAwareDisconnector) disconnect(rf *redisfailoverv1.RedisFailover, pod corev1.Pod, port, password string) error {
 	logger := d.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
 	service := GetRedisMasterName(rf)
 	if err := d.waitForEndpointRemoval(rf.Namespace, service, pod.Status.PodIP); err != nil {
@@ -109,9 +145,11 @@ func (d *endpointAwareDisconnector) disconnect(rf *redisfailoverv1.RedisFailover
 	time.Sleep(d.grace)
 
 	logger.Infof("Pod %s is no longer the master, disconnecting its clients", pod.Name)
-	if err := d.redisClient.DisconnectClients(pod.Status.PodIP, port, password); err != nil {
+	err := d.redisClient.DisconnectClients(pod.Status.PodIP, port, password)
+	if err != nil {
 		logger.Warningf("Could not disconnect clients of demoted pod %s: %v", pod.Name, err)
 	}
+	return err
 }
 
 func (d *endpointAwareDisconnector) waitForEndpointRemoval(namespace, service, ip string) error {
