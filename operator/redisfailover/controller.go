@@ -3,6 +3,7 @@ package redisfailover
 import (
 	"context"
 	"errors"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -164,6 +165,11 @@ func (c *rfController) enqueue(key string) {
 	c.queue.Add(key)
 }
 
+// enqueueAfter uses a timer, because the queue has no delay.
+func (c *rfController) enqueueAfter(key string, d time.Duration) {
+	time.AfterFunc(d, func() { c.enqueue(key) })
+}
+
 // Run satisfies Controller.
 func (c *rfController) Run(ctx context.Context) error {
 	if c.leRunner == nil {
@@ -228,12 +234,22 @@ func (c *rfController) processNext(ctx context.Context) bool {
 	return true
 }
 
-func (c *rfController) process(ctx context.Context, key string) error {
+// process turns a panic of one reconcile into an error. Replies from Redis
+// and Sentinel come from tenant images, and one bad reply must not stop the
+// operator for all tenants. The next resync reconciles the object again.
+func (c *rfController) process(ctx context.Context, key string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.WithField("object-key", key).Errorf("panic on object processing: %v\n%s", r, debug.Stack())
+			err = errors.New("panic on object processing")
+		}
+	}()
 	obj, exists, err := c.rfInformer.GetIndexer().GetByKey(key)
 	if err != nil || !exists {
 		return err
 	}
-	return c.handler.Handle(ctx, obj.(runtime.Object))
+	// The handler changes the object, and the informer cache shares it.
+	return c.handler.Handle(ctx, obj.(runtime.Object).DeepCopyObject())
 }
 
 // newPodListWatch lists and watches the pods of every RedisFailover.

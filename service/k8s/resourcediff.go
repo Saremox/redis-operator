@@ -16,6 +16,13 @@ import (
 // nothing meaningful changed. Only ever normalize a copy of stored, never
 // desired: desired already leaves these fields unset, and clearing them
 // there too would silently accept a real change to one of them.
+//
+// Each function compares OwnerReferences. A child that lost its owner, for
+// example after `kubectl delete --cascade=orphan`, must get the owner of the
+// new RedisFailover, or the garbage collector does not delete it later.
+// Known limit: the volume claim templates of a StatefulSet cannot change, so
+// a PVC that the StatefulSet creates later still gets the owner reference of
+// the old RedisFailover from the template.
 
 // statefulSetUpToDate reports whether desired would change anything about
 // stored if applied, so the caller can skip a no-op Update call.
@@ -34,6 +41,9 @@ import (
 // surfaces normally.
 func statefulSetUpToDate(stored, desired *appsv1.StatefulSet) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
+		return false
+	}
+	if !equality.Semantic.DeepEqual(stored.OwnerReferences, desired.OwnerReferences) {
 		return false
 	}
 	// Annotations are compared as-is (not normalized) because
@@ -66,6 +76,9 @@ func deploymentUpToDate(stored, desired *appsv1.Deployment) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
 	}
+	if !equality.Semantic.DeepEqual(stored.OwnerReferences, desired.OwnerReferences) {
+		return false
+	}
 
 	normalized := stored.Spec.DeepCopy()
 	normalized.RevisionHistoryLimit = nil
@@ -93,6 +106,9 @@ func serviceUpToDate(stored, desired *corev1.Service) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
 	}
+	if !equality.Semantic.DeepEqual(stored.OwnerReferences, desired.OwnerReferences) {
+		return false
+	}
 	if !equality.Semantic.DeepEqual(stored.Annotations, desired.Annotations) {
 		return false
 	}
@@ -113,6 +129,9 @@ func configMapUpToDate(stored, desired *corev1.ConfigMap) bool {
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
 	}
+	if !equality.Semantic.DeepEqual(stored.OwnerReferences, desired.OwnerReferences) {
+		return false
+	}
 	if !equality.Semantic.DeepEqual(stored.Annotations, desired.Annotations) {
 		return false
 	}
@@ -130,15 +149,19 @@ func podDisruptionBudgetUpToDate(stored, desired *policyv1.PodDisruptionBudget) 
 	if !equality.Semantic.DeepEqual(stored.Labels, desired.Labels) {
 		return false
 	}
+	if !equality.Semantic.DeepEqual(stored.OwnerReferences, desired.OwnerReferences) {
+		return false
+	}
 	return equality.Semantic.DeepEqual(&stored.Spec, &desired.Spec)
 }
 
 // serviceAccountUpToDate is statefulSetUpToDate's counterpart for
 // ServiceAccount. See its doc comment for the general comparison strategy.
 // generateSentinelServiceAccount sets nothing beyond ObjectMeta, so this only
-// needs to compare Labels.
+// needs to compare Labels and OwnerReferences.
 func serviceAccountUpToDate(stored, desired *corev1.ServiceAccount) bool {
-	return equality.Semantic.DeepEqual(stored.Labels, desired.Labels)
+	return equality.Semantic.DeepEqual(stored.Labels, desired.Labels) &&
+		equality.Semantic.DeepEqual(stored.OwnerReferences, desired.OwnerReferences)
 }
 
 // normalizePodSpecForComparison clears, in place, the PodSpec and container

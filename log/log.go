@@ -142,8 +142,10 @@ func (l *logger) Set(level Level) error {
 	return nil
 }
 
+// sourced adds the call site as the src field. Caller(2) skips sourced and
+// the logger function.
 func (l logger) sourced() *logrus.Entry {
-	_, file, line, ok := runtime.Caller(3)
+	_, file, line, ok := runtime.Caller(2)
 	if !ok {
 		file = "<???>"
 		line = 1
@@ -257,15 +259,15 @@ func Set(level Level) error {
 
 // Panic logs panic message
 func Panic(args ...interface{}) {
-	baseLogger.Panic(args...)
+	baseLogger.sourced().Panic(args...)
 }
 
 // Panicln logs panicln message
 func Panicln(args ...interface{}) {
-	baseLogger.Panicln(args...)
+	baseLogger.sourced().Panicln(args...)
 }
 
 // Panicf logs panicln message
 func Panicf(format string, args ...interface{}) {
-	baseLogger.Panicf(format, args...)
+	baseLogger.sourced().Panicf(format, args...)
 }

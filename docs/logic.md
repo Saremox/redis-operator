@@ -24,4 +24,4 @@ The Redis-Operator creates Redis Failovers, with all the needed pieces. So, when
   - Ensure Redis has the custom configuration set
   - Ensure Sentinel has the custom configuration set
 
-Most of the problems that may occur will be treated and tried to fix by the controller, except the case that there are a [split-brain](<https://en.wikipedia.org/wiki/Split-brain_(computing)>). **If happens to be a split-brain, an error will be logged waiting for manual fix**.
+The controller tries to repair most problems. A [split-brain](<https://en.wikipedia.org/wiki/Split-brain_(computing)>) needs a manual fix, except in operator-managed mode when exactly one pod that runs has the master label. Then the controller makes the other masters replicas of that pod. **For a split-brain that it cannot repair, the controller logs an error and waits for a manual fix**.
