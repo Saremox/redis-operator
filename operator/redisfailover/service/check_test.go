@@ -1619,6 +1619,43 @@ func TestIsRedisRunningQuorum(t *testing.T) {
 	})
 }
 
+// TestIsAnyRedisRunning covers RedisFailoverChecker.IsAnyRedisRunning, the
+// gate operator-managed mode uses in place of the quorum. Same shape as
+// TestIsRedisRunningQuorum so the two read side by side.
+func TestIsAnyRedisRunning(t *testing.T) {
+	assert := assert.New(t)
+	rf := generateRF()
+
+	// The incident shape: a two-replica failover lost one pod to an
+	// untolerated taint, and its node-local volume kept it from moving.
+	// Below quorum, but one pod is still electable.
+	t.Run("one of two pods running", func(_ *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
+			Return(podsWithPhases(corev1.PodRunning, corev1.PodPending), nil)
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.True(checker.IsAnyRedisRunning(rf))
+	})
+
+	t.Run("no pod running", func(_ *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
+			Return(podsWithPhases(corev1.PodPending, corev1.PodFailed), nil)
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.False(checker.IsAnyRedisRunning(rf))
+	})
+
+	// An unreachable API server must not read as "a pod is running", or the
+	// operator would try to promote against a list it never received.
+	t.Run("GetStatefulSetPods errors", func(_ *testing.T) {
+		ms := &mK8SService.Services{}
+		ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().
+			Return(nil, errors.New("statefulset pods unavailable"))
+		checker := rfservice.NewRedisFailoverChecker(ms, &mRedisService.Client{}, log.DummyLogger{}, metrics.Dummy)
+		assert.False(checker.IsAnyRedisRunning(rf))
+	})
+}
+
 // TestIsSentinelRunningQuorum is the sentinel-side counterpart to
 // TestIsRedisRunningQuorum, covering RedisFailoverChecker.IsSentinelRunningQuorum.
 func TestIsSentinelRunningQuorum(t *testing.T) {
@@ -2859,4 +2896,48 @@ func TestCheckSentinelsCannotFailover(t *testing.T) {
 			ms.AssertExpectations(t)
 		})
 	}
+}
+
+// AreAnyRunning backs the operator-managed election gate. A quorum of two
+// replicas is two, so AreQuorumRunning reports false as soon as a two-replica
+// failover loses a pod, which blocked the election for good. The operator is
+// the only arbiter of the master role in that mode and needs one reachable
+// replica, not a majority that agrees.
+func TestAreAnyRunning(t *testing.T) {
+	run, pend, fail, succ := corev1.PodRunning, corev1.PodPending, corev1.PodFailed, corev1.PodSucceeded
+
+	tests := []struct {
+		name     string
+		phases   []corev1.PodPhase
+		expected bool
+	}{
+		{"no pods at all", nil, false},
+		{"one running", []corev1.PodPhase{run}, true},
+		{"one pending", []corev1.PodPhase{pend}, false},
+
+		// The case from the incident: two replicas, one unschedulable.
+		{"two replicas, one running one pending", []corev1.PodPhase{run, pend}, true},
+		{"two replicas, both pending", []corev1.PodPhase{pend, pend}, false},
+		{"two replicas, both running", []corev1.PodPhase{run, run}, true},
+
+		{"terminal pods do not count", []corev1.PodPhase{fail, succ}, false},
+		{"one running beside terminal pods", []corev1.PodPhase{fail, run, succ}, true},
+		{"three replicas, one running", []corev1.PodPhase{run, pend, pend}, true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := rfservice.AreAnyRunning(podsWithPhases(test.phases...))
+			assert.Equal(t, test.expected, got)
+		})
+	}
+}
+
+// The two gates must disagree for exactly the shape that caused the incident:
+// a two-replica failover with one Pending pod is not a quorum, but is electable.
+func TestAnyRunningUnblocksWhatQuorumBlocks(t *testing.T) {
+	pods := podsWithPhases(corev1.PodRunning, corev1.PodPending)
+
+	assert.False(t, rfservice.AreQuorumRunning(pods, 2), "a quorum of two replicas is two, so one Running pod is not a quorum")
+	assert.True(t, rfservice.AreAnyRunning(pods), "one Running pod is enough to promote a master")
 }

@@ -42,10 +42,11 @@ func (r *RedisFailoverHandler) abortOrphanedFailover(rf *redisfailoverv1.RedisFa
 // checkAndHealOperatorManagedMode handles failover when Sentinel is disabled.
 // The operator directly manages master election and failover.
 func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailoverv1.RedisFailover, allRunning bool) error {
-	// A quorum (majority) of Running pods is sufficient to heal, as in
-	// CheckAndHeal. One Pending pod must not block the master election in
-	// this mode, which is the default.
-	if !r.redisQuorumRunning(rf, allRunning) {
+	// One Running pod is sufficient to elect a master here, not a quorum. The
+	// operator is the only arbiter of the role in this mode. A quorum of two
+	// replicas is two, so a quorum gate blocked the election of every
+	// two-replica failover that lost a pod.
+	if !r.redisElectable(rf, allRunning) {
 		return nil
 	}
 

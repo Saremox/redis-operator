@@ -97,6 +97,28 @@ func (r *RedisFailoverHandler) redisQuorumRunning(rf *redisfailoverv1.RedisFailo
 	return false
 }
 
+// redisElectable reports whether at least one Redis pod runs, which is what
+// the operator-managed mode needs to elect a master. It is the only arbiter of
+// the role in that mode, so it needs one reachable replica to promote, not a
+// majority that agrees. A quorum of two replicas is two, so a quorum gate
+// blocks the election of every two-replica failover that loses a pod.
+func (r *RedisFailoverHandler) redisElectable(rf *redisfailoverv1.RedisFailover, allRunning bool) bool {
+	if allRunning || r.rfChecker.IsAnyRedisRunning(rf) {
+		return true
+	}
+	errorMsg := "no redis pod running"
+	rf.Status = redisfailoverv1.RedisFailoverStatus{
+		State:   redisfailoverv1.NotHealthyState,
+		Message: errorMsg,
+	}
+	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.REDIS_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
+	// Warning, not Debug: the operator is declining to heal a failover that may
+	// have no master, and a debug-level decision is invisible in a default
+	// deployment.
+	r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("No Redis pod running, cannot elect a master")
+	return false
+}
+
 // applyConfigAndRollout applies the custom Redis config and maxmemory, and
 // then the Redis pod rollout. rolloutMsg is the status message after an
 // error of the rollout.

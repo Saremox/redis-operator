@@ -43,6 +43,7 @@ type RedisFailoverCheck interface {
 	CheckRedisSlavesReady(slaveIP string, rFailover *redisfailoverv1.RedisFailover) (bool, error)
 	IsRedisRunning(rFailover *redisfailoverv1.RedisFailover) bool
 	IsRedisRunningQuorum(rFailover *redisfailoverv1.RedisFailover) bool
+	IsAnyRedisRunning(rFailover *redisfailoverv1.RedisFailover) bool
 	IsSentinelRunning(rFailover *redisfailoverv1.RedisFailover) bool
 	IsSentinelRunningQuorum(rFailover *redisfailoverv1.RedisFailover) bool
 	IsClusterRunning(rFailover *redisfailoverv1.RedisFailover) bool
@@ -227,6 +228,15 @@ func (r *RedisFailoverChecker) IsRedisRunningQuorum(rFailover *redisfailoverv1.R
 	return err == nil && AreQuorumRunning(dp, int(rFailover.Spec.Redis.Replicas))
 }
 
+// IsAnyRedisRunning returns true when at least one Redis pod runs. The
+// operator-managed mode needs this rather than a quorum: the operator is the
+// only arbiter of the master role, so one reachable replica is enough to
+// promote.
+func (r *RedisFailoverChecker) IsAnyRedisRunning(rFailover *redisfailoverv1.RedisFailover) bool {
+	dp, err := r.k8sService.GetStatefulSetPods(rFailover.Namespace, GetRedisName(rFailover))
+	return err == nil && AreAnyRunning(dp)
+}
+
 // IsSentinelRunning returns true if all the pods are Running.
 func (r *RedisFailoverChecker) IsSentinelRunning(rFailover *redisfailoverv1.RedisFailover) bool {
 	dp, err := r.k8sService.GetDeploymentPods(rFailover.Namespace, GetSentinelName(rFailover))
@@ -264,6 +274,20 @@ func AreAllRunning(pods *corev1.PodList, expectedRunningPods int) bool {
 		runningPods++
 	}
 	return runningPods >= expectedRunningPods
+}
+
+// AreAnyRunning reports whether at least one pod runs. It does not count
+// scheduling and terminal pods. It carries no expectation of a replica count,
+// so a two-replica failover that lost one pod still reports true.
+func AreAnyRunning(pods *corev1.PodList) bool {
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if util.PodIsScheduling(pod) || util.PodIsTerminal(pod) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // AreQuorumRunning reports whether a quorum (majority) of the expected pods
