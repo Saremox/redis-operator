@@ -583,6 +583,20 @@ command:
   - exec redis-server /redis/redis.conf --requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD"
 ```
 
+### Instance manager
+
+The operator image holds a second binary, `redis-instance`. It runs as PID 1 and starts `redis-server` as a child process. To use it, set `redis.instanceManagerImage` to the operator image:
+
+```yaml
+spec:
+  redis:
+    instanceManagerImage: ghcr.io/saremox/redis-operator:4.2.0
+```
+
+Each Redis pod then gets an init container that copies the binary out of that image onto a shared `emptyDir` volume, and the Redis container runs the copy. The manager removes the RDB tempfiles before Redis starts, so the pod needs no `rdb-tempfile-cleanup` init container. It also serves `/healthz` and `/readyz` on port 8080, so the liveness and the readiness probes become HTTP probes and start no process in the Redis container. On a node that is short of memory, an exec probe can fail to fork while Redis is healthy; an HTTP probe cannot.
+
+Without the field the Redis pods are unchanged. A custom `redis.command`, `redis.customLivenessProbe` or `redis.customReadinessProbe` still wins.
+
 ### Custom environment variables
 
 Use `redis.env` and `sentinel.env` to add environment variables (standard Kubernetes `EnvVar` entries) to the main Redis and Sentinel containers.
