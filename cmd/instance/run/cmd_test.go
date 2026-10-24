@@ -473,8 +473,8 @@ func TestPerformStartupCleanupSkipsEntriesThatFail(t *testing.T) {
 	setCleanupFlags(t, dir, "dump.rdb")
 	readDir = func(string) ([]fs.DirEntry, error) {
 		return []fs.DirEntry{
-			fakeDirEntry{name: "no-info.rdb", infoErr: errors.New("injected info error")},
-			fakeDirEntry{name: "gone.rdb", info: staleInfo},
+			fakeDirEntry{name: "temp-no-info.rdb", infoErr: errors.New("injected info error")},
+			fakeDirEntry{name: "temp-gone.rdb", info: staleInfo},
 			fakeDirEntry{name: "temp-1.rdb", info: staleInfo},
 		}, nil
 	}
@@ -482,6 +482,21 @@ func TestPerformStartupCleanupSkipsEntriesThatFail(t *testing.T) {
 	require.NoError(t, performStartupCleanup())
 
 	assert.NoFileExists(t, stale)
+}
+
+// --db-filename can name a file that looks like a tempfile. The cleanup must
+// keep the live RDB whatever it is called.
+func TestPerformStartupCleanupKeepsTheMainRDB(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"temp-main.rdb", "temp-1.rdb"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("data"), 0o600))
+	}
+	setCleanupFlags(t, dir, "temp-main.rdb")
+
+	require.NoError(t, performStartupCleanup())
+
+	assert.FileExists(t, filepath.Join(dir, "temp-main.rdb"))
+	assert.NoFileExists(t, filepath.Join(dir, "temp-1.rdb"))
 }
 
 func TestNewCmdRegistersFlagsWithDefaults(t *testing.T) {
