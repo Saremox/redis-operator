@@ -119,8 +119,7 @@ func startSentinelOnAddr(t *testing.T, ip string, master *redisProc, extraConf .
 	require.NoError(t, os.WriteFile(confPath, []byte(conf), 0o600))
 	cmd := exec.Command("redis-server", confPath, "--sentinel", "--daemonize", "no", "--logfile", filepath.Join(dir, "log.txt"))
 	require.NoError(t, cmd.Start())
-	proc := &redisProc{IP: ip, Port: 26379, dir: dir, cmd: cmd}
-	go func() { _ = cmd.Wait() }()
+	proc := newRedisProc(ip, 26379, dir, cmd)
 	t.Cleanup(func() { killProc(proc) })
 	require.NoError(t, waitForPingErr(proc, 5*time.Second))
 }
