@@ -518,13 +518,17 @@ An operator version without mode `Auto` rejects such a RedisFailover in validati
 
 ### Custom shutdown script
 
-By default, the operator gives each Redis pod a shutdown script. The script makes Redis `SAVE` its data before it stops. When Sentinel runs and the pod is the master, the script first pauses the writes, waits for the replicas, and asks Sentinel to fail over. Thus Sentinel moves the master immediately and does not wait for `down-after-milliseconds`. The Redis pods have no service links, so the script finds Sentinel through the Service name `rfs-<NAME>` on port 26379.
+The operator gives the Redis container a preStop hook in two cases: with Sentinel, and with a custom `redis.shutdownConfigMap`. The hook runs the shutdown script, and the script makes Redis `SAVE` its data before it stops. When Sentinel runs and the pod is the master, the script first pauses the writes, waits for the replicas, and asks Sentinel to fail over. Thus Sentinel moves the master immediately and does not wait for `down-after-milliseconds`. The Redis pods have no service links, so the script finds Sentinel through the Service name `rfs-<NAME>` on port 26379.
 
 After the failover, the script makes the old master a replica of the new master. The pause prevents the loss of writes that the old master acknowledged, because the clients get `READONLY` instead. If the pause fails, the script does not ask for a failover. Redis 7 and later then pause the writes when they stop and wait for their replicas, and Sentinel fails over after `down-after-milliseconds`. The pause fails on Redis before 6.2 and after a password change. After a password change, the `REDIS_PASSWORD` variable of a pod keeps the old password until the pod restarts.
 
 The script waits a maximum of 12 seconds for the new master. Thus the script ends inside the default 30-second grace period, and the `SAVE` can run. After a password change, the `SAVE` of the script also fails. Then Redis saves its data when it stops only if `save` points are set. The default `redis.conf` sets `save 900 1` and `save 300 10`.
 
-To replace the default script, create a ConfigMap with a `shutdown.sh` key in the namespace of the RedisFailover. Set its name in `redis.shutdownConfigMap`. See the [shutdown example file](example/redisfailover/custom-shutdown.yaml). A custom script replaces all of the default script, also the write pause. Without the pause, a failover can lose writes, see [Sentinel failover and write loss](#sentinel-failover-and-write-loss).
+Without Sentinel and without a custom `redis.shutdownConfigMap`, the container has no preStop hook. The script would only send `SAVE`, and that save is not needed. `redis-server` is PID 1, and the default `redis.conf` sets save points. Redis thus saves its data itself when it gets SIGTERM. The ConfigMap and its mount at `/redis-shutdown` stay in both modes, so that a user who runs the script by hand still finds it.
+
+If `redis.customConfig` sets `save ""`, Redis writes no RDB when it stops. The preStop `SAVE` was the only save at stop time. A pod replacement then loses every write since the last RDB, unless `appendonly yes` is set. To keep a save at stop, add `shutdown-on-sigterm save` to `customConfig` on Redis 7 or later, or keep a save point.
+
+To replace the default script, create a ConfigMap with a `shutdown.sh` key in the namespace of the RedisFailover. Set its name in `redis.shutdownConfigMap`. See the [shutdown example file](example/redisfailover/custom-shutdown.yaml). A custom script replaces all of the default script, also the write pause. The container keeps the preStop hook with a custom script, also without Sentinel. Without the pause, a failover can lose writes, see [Sentinel failover and write loss](#sentinel-failover-and-write-loss).
 
 ### Sentinel failover and write loss
 
