@@ -96,7 +96,7 @@ func TestGetAutoscalerInfo(t *testing.T) {
 	r := startRedisProcess(t)
 	rc := rediscli.NewClient(&rediscli.Options{Addr: r.Addr()})
 	defer func() { _ = rc.Close() }()
-	fillRedis(t, rc, 100)
+	fillRedis(t, rc, 1000)
 	c := newTestClient()
 	port := strconv.Itoa(r.Port)
 
@@ -112,12 +112,16 @@ func TestGetAutoscalerInfo(t *testing.T) {
 	assert.Zero(t, before.OOMErrors)
 
 	// A write above maxmemory without a key to evict counts in errorstat_OOM.
-	require.NoError(t, c.SetCustomRedisConfig(r.IP, port, []string{"maxmemory 1048576", "maxmemory-policy volatile-lru"}, ""))
+	// The limit is 256 KiB below the measured memory, because the base memory
+	// differs between Redis builds. The 1000 keys hold about 1 MiB, so the
+	// allkeys-lru step below can evict enough to get under the limit.
+	maxMemory := before.UsedMemory - 256*1024
+	require.NoError(t, c.SetCustomRedisConfig(r.IP, port, []string{fmt.Sprintf("maxmemory %d", maxMemory), "maxmemory-policy volatile-lru"}, ""))
 	require.ErrorContains(t, rc.Set(bgCtx(), "k", "v", 0).Err(), "OOM")
 	after, err := c.GetAutoscalerInfo(r.IP, port, "")
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), after.OOMErrors)
-	assert.Equal(t, int64(1048576), after.MaxMemory)
+	assert.Equal(t, maxMemory, after.MaxMemory)
 	assert.Equal(t, "volatile-lru", after.MaxMemoryPolicy)
 	assert.Equal(t, before.RunID, after.RunID)
 	assert.Zero(t, after.EvictedKeys)

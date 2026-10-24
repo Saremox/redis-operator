@@ -64,10 +64,23 @@ func hasRedisServer() bool {
 // redisProc represents a running redis-server (plain or --sentinel) test
 // subprocess, bound to an isolated temp working directory.
 type redisProc struct {
-	IP   string
-	Port int
-	dir  string
-	cmd  *exec.Cmd
+	IP     string
+	Port   int
+	dir    string
+	cmd    *exec.Cmd
+	exited chan struct{}
+}
+
+// newRedisProc starts the only goroutine that calls cmd.Wait. Other
+// goroutines read the exit from exited because cmd.Wait writes
+// cmd.ProcessState without a lock.
+func newRedisProc(ip string, port int, dir string, cmd *exec.Cmd) *redisProc {
+	proc := &redisProc{IP: ip, Port: port, dir: dir, cmd: cmd, exited: make(chan struct{})}
+	go func() {
+		_ = cmd.Wait()
+		close(proc.exited)
+	}()
+	return proc
 }
 
 func (p *redisProc) Addr() string {
@@ -96,8 +109,10 @@ func waitForPingErr(proc *redisProc, timeout time.Duration) error {
 	rc := rediscli.NewClient(&rediscli.Options{Addr: proc.Addr(), DialTimeout: 200 * time.Millisecond})
 	defer func() { _ = rc.Close() }()
 	for time.Now().Before(deadline) {
-		if proc.cmd.ProcessState != nil {
+		select {
+		case <-proc.exited:
 			return fmt.Errorf("redis-server exited early (dir=%s)", proc.dir)
+		default:
 		}
 		if err := rc.Ping(bgCtx()).Err(); err == nil {
 			return nil
@@ -112,7 +127,7 @@ func killProc(proc *redisProc) {
 		return
 	}
 	_ = proc.cmd.Process.Kill()
-	_, _ = proc.cmd.Process.Wait()
+	<-proc.exited
 }
 
 // newRedisProcess starts a plain (non-sentinel) redis-server in its own temp
@@ -148,8 +163,7 @@ func newRedisProcess(extraArgs ...string) (*redisProc, error) {
 			_ = os.RemoveAll(dir)
 			return nil, fmt.Errorf("start redis-server: %w", err)
 		}
-		proc := &redisProc{IP: testLoopbackIP, Port: port, dir: dir, cmd: cmd}
-		go func() { _ = cmd.Wait() }()
+		proc := newRedisProc(testLoopbackIP, port, dir, cmd)
 		if err := waitForPingErr(proc, 5*time.Second); err != nil {
 			lastErr = err
 			killProc(proc)
@@ -206,8 +220,7 @@ func newSentinelProcessOnPort(port int, extraConfLines ...string) (*redisProc, e
 		_ = os.RemoveAll(dir)
 		return nil, fmt.Errorf("start redis-server --sentinel: %w", err)
 	}
-	proc := &redisProc{IP: testLoopbackIP, Port: port, dir: dir, cmd: cmd}
-	go func() { _ = cmd.Wait() }()
+	proc := newRedisProc(testLoopbackIP, port, dir, cmd)
 	if err := waitForPingErr(proc, 5*time.Second); err != nil {
 		killProc(proc)
 		_ = os.RemoveAll(dir)
@@ -255,8 +268,7 @@ func startRedisProcessOnAddr(t *testing.T, ip string, port int, extraArgs ...str
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("failed to start redis-server on %s:%d: %v", ip, port, err)
 	}
-	proc := &redisProc{IP: ip, Port: port, dir: dir, cmd: cmd}
-	go func() { _ = cmd.Wait() }()
+	proc := newRedisProc(ip, port, dir, cmd)
 	if err := waitForPingErr(proc, 5*time.Second); err != nil {
 		killProc(proc)
 		t.Fatalf("redis-server did not come up on %s:%d: %v", ip, port, err)
