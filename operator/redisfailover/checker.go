@@ -113,7 +113,7 @@ func (r *RedisFailoverHandler) redisElectable(rf *redisfailoverv1.RedisFailover,
 		Message: errorMsg,
 	}
 	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.REDIS_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
-	logger := r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace)
+	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
 	// A failover that had a master has lost it, and a Debug line is invisible
 	// in a default deployment. A failover that starts has no master yet, and
 	// every reconcile until the first pod runs would log the same Warning.
