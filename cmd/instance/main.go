@@ -1,7 +1,8 @@
 // Package main provides the redis-instance binary, an instance manager that
-// runs as PID 1 and starts redis-server as a child process. The operator image
-// contains the binary, but the operator does not use it: the Redis pods run
-// redis-server from the Redis image.
+// runs as PID 1 and starts redis-server as a child process. The operator
+// image contains the binary. A Redis pod runs it only when the RedisFailover
+// opts in: an init container then copies the binary onto a shared volume.
+// Otherwise the pod runs redis-server from the Redis image.
 package main
 
 import (
@@ -24,8 +25,8 @@ redis-server as a child process. It removes old RDB tempfiles before Redis
 starts, serves health endpoints, forwards the stop signals and reaps zombie
 processes.
 
-The operator does not use this binary. The Redis pods that the operator
-creates run redis-server from the Redis image.`,
+A Redis pod runs this binary only when the RedisFailover opts in. Otherwise
+the pod runs redis-server from the Redis image.`,
 	SilenceUsage: true,
 }
 

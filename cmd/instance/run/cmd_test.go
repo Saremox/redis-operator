@@ -375,21 +375,45 @@ func setCleanupFlags(t *testing.T, dir, db string) {
 	dataDir, dbFilename = dir, db
 }
 
-func TestPerformStartupCleanupRemovesOnlyStaleFiles(t *testing.T) {
+// Only a Redis tempfile goes. The rdb-tempfile-cleanup init container of the
+// operator removes temp-*.rdb and nothing else, and a user can keep another
+// .rdb file in the data directory.
+func TestPerformStartupCleanupRemovesOnlyTempfiles(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"dump.rdb", "temp-1.rdb", "old.rdb", "appendonly.aof"} {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("data"), 0o600))
 	}
-	require.NoError(t, os.Mkdir(filepath.Join(dir, "backup.rdb"), 0o700))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "temp-dir.rdb"), 0o700))
 	setCleanupFlags(t, dir, "dump.rdb")
 
 	require.NoError(t, performStartupCleanup())
 
 	assert.FileExists(t, filepath.Join(dir, "dump.rdb"))
 	assert.FileExists(t, filepath.Join(dir, "appendonly.aof"))
-	assert.DirExists(t, filepath.Join(dir, "backup.rdb"))
+	assert.FileExists(t, filepath.Join(dir, "old.rdb"), "a user .rdb file must stay")
+	assert.DirExists(t, filepath.Join(dir, "temp-dir.rdb"))
 	assert.NoFileExists(t, filepath.Join(dir, "temp-1.rdb"))
-	assert.NoFileExists(t, filepath.Join(dir, "old.rdb"))
+}
+
+// Without a timeout the manager sends no SIGKILL. The kubelet ends the pod
+// at terminationGracePeriodSeconds, so a long save keeps its whole window.
+// The stand-in takes 300ms to stop, which a SIGKILL would cut short.
+func TestShutdownRedisWaitsWhenTheKubeletOwnsTheTimeout(t *testing.T) {
+	setShutdownTimeouts(t, 0, 10*time.Second)
+	pidFile := filepath.Join(t.TempDir(), "redis.pid")
+	script := writeScript(t, "trap '' TERM\necho $$ > "+pidFile+"\nsleep 0.5\nexit 0\n")
+	reaper := startReaper(t)
+
+	cmd := exec.Command("sh", script)
+	done, err := reaper.start(cmd)
+	require.NoError(t, err)
+	defer func() { _ = cmd.Process.Release() }()
+	waitForPID(t, pidFile)
+
+	start := time.Now()
+	require.NoError(t, shutdownRedis(cmd, done))
+
+	assert.Greater(t, time.Since(start), 150*time.Millisecond, "the manager cut the shutdown short")
 }
 
 func TestPerformStartupCleanupWithNoStaleFiles(t *testing.T) {
@@ -469,6 +493,8 @@ func TestNewCmdRegistersFlagsWithDefaults(t *testing.T) {
 	assert.Equal(t, defaultRedisConf, cmd.Flags().Lookup("redis-conf").DefValue)
 	assert.Equal(t, strconv.Itoa(defaultHealthPort), cmd.Flags().Lookup("health-port").DefValue)
 	assert.Equal(t, "6379", cmd.Flags().Lookup("redis-port").DefValue)
+	assert.Equal(t, "0s", cmd.Flags().Lookup("shutdown-timeout").DefValue)
+	assert.Equal(t, defaultMaxLinkDown.String(), cmd.Flags().Lookup("max-link-down").DefValue)
 }
 
 // setRunFlags runs runInstance with a stand-in script, a random health port
