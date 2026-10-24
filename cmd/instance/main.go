@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/saremox/redis-operator/cmd/instance/bootstrap"
 	"github.com/saremox/redis-operator/cmd/instance/cleanup"
 	"github.com/saremox/redis-operator/cmd/instance/run"
 	"github.com/saremox/redis-operator/version"
@@ -30,6 +31,7 @@ creates run redis-server from the Redis image.`,
 }
 
 func init() {
+	rootCmd.AddCommand(bootstrap.NewCmd())
 	rootCmd.AddCommand(cleanup.NewCmd())
 	rootCmd.AddCommand(run.NewCmd())
 }
