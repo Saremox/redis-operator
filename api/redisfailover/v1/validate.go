@@ -41,6 +41,10 @@ func (r *RedisFailover) Validate() error {
 		return err
 	}
 
+	if err := r.validateInstanceManager(); err != nil {
+		return err
+	}
+
 	if err := r.validateMaxMemory(); err != nil {
 		return err
 	}
@@ -89,6 +93,35 @@ func (r *RedisFailover) validateExporterPorts() error {
 	for name, port := range map[string]int32{"redis": r.Spec.Redis.Exporter.Port, "sentinel": r.Spec.Sentinel.Exporter.Port} {
 		if port < 0 || port > 65535 {
 			return fmt.Errorf("%s.exporter.port %d must be between 1 and 65535, or 0 for the default", name, port)
+		}
+	}
+	return nil
+}
+
+// validateInstanceManager rejects a manager that cannot work.
+//
+// A custom redis.command replaces the manager in the Redis container, but the
+// probes still ask the health server of the manager, and nothing then listens
+// on its port. The pod would never become ready.
+//
+// The health server also needs a port of its own in the pod.
+func (r *RedisFailover) validateInstanceManager() error {
+	if !r.Spec.Redis.InstanceManager.Enabled {
+		return nil
+	}
+	if len(r.Spec.Redis.Command) > 0 {
+		return errors.New("redis.instanceManager.enabled does not work with redis.command, because the custom command does not serve the health endpoints of the probes")
+	}
+	port := r.Spec.Redis.InstanceManager.Port
+	if port < 0 || port > 65535 {
+		return fmt.Errorf("redis.instanceManager.port %d must be between 1 and 65535, or 0 for the default", port)
+	}
+	if port == 0 {
+		port = DefaultInstanceManagerPort
+	}
+	for name, used := range map[string]int32{"redis.port": r.Spec.Redis.Port, "redis.exporter.port": r.Spec.Redis.Exporter.Port} {
+		if used != 0 && used == port {
+			return fmt.Errorf("redis.instanceManager.port %d is also %s", port, name)
 		}
 	}
 	return nil

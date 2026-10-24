@@ -583,6 +583,27 @@ command:
   - exec redis-server /redis/redis.conf --requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD"
 ```
 
+### Instance manager
+
+The operator image holds a second binary, `redis-instance`. It runs as PID 1 and starts `redis-server` as a child process. To use it, turn it on:
+
+```yaml
+spec:
+  redis:
+    instanceManager:
+      enabled: true
+```
+
+Each Redis pod then gets a second init container. It copies the binary out of the operator image onto a shared `emptyDir` volume, and the Redis container runs the copy. The field names no image. The operator writes the flags of the binary, so it also chooses the build that reads them. It takes its own image from the `OPERATOR_IMAGE_NAME` variable on its Deployment. The Helm chart, `manifests/kustomize` and `example/operator` set that variable. Without it the RedisFailover reports `NotHealthy` and the pods do not change.
+
+The manager serves `/healthz` and `/readyz`, so the liveness and the readiness probes become HTTP probes and start no process in the Redis container. On a node that is short of memory, an exec probe can fail to fork while Redis is healthy; an HTTP probe cannot. The endpoints answer like the scripts they replace: `/healthz` accepts a Redis that loads its dataset, and `/readyz` keeps a replica ready for the failover window and ignores a refused password.
+
+The health server listens on port 8080. Set `redis.instanceManager.port` for another one, for example with `redis.hostNetwork`. The port must differ from `redis.port` and from `redis.exporter.port`.
+
+The manager sends no `SIGKILL` of its own. The kubelet ends the pod at the end of `terminationGracePeriodSeconds`, so a save at stop keeps its whole window.
+
+Without the field the Redis pods are unchanged. A custom `redis.customLivenessProbe` or `redis.customReadinessProbe` still wins. Validation rejects `redis.command` with the manager, because a custom command serves no health endpoint and the probes would never pass.
+
 ### Custom environment variables
 
 Use `redis.env` and `sentinel.env` to add environment variables (standard Kubernetes `EnvVar` entries) to the main Redis and Sentinel containers.

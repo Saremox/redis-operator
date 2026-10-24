@@ -7749,6 +7749,24 @@ spec:
                       - name
                       type: object
                     type: array
+                  instanceManager:
+                    description: |-
+                      InstanceManager runs redis-server as the child of a manager process.
+                      It is off by default, and then the Redis pods are unchanged.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled runs the manager in each Redis pod. The operator Deployment
+                          must have the OPERATOR_IMAGE_NAME variable, because the operator image
+                          holds the binary. Defaults to false.
+                        type: boolean
+                      port:
+                        description: |-
+                          Port is the port of the health server of the manager. It must differ
+                          from redis.port and from the exporter ports. Defaults to 8080.
+                        format: int32
+                        type: integer
+                    type: object
                   maxMemory:
                     description: |-
                       MaxMemory lets the operator set maxmemory and maxmemory-policy from the

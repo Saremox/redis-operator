@@ -28,13 +28,17 @@ const (
 	defaultDBFilename   = "dump.rdb"
 	defaultRedisConf    = "/redis/redis.conf"
 	defaultRedisCommand = "redis-server"
+	// rdbTempfilePrefix is the prefix that Redis gives the tempfile of a save.
+	rdbTempfilePrefix = "temp-"
 )
 
-// The shutdown sends SIGKILL after gracefulShutdownTimeout. maxShutdownTimeout
-// is the default Kubernetes grace period of 30s. They are variables so that
-// tests can make them short.
+// The shutdown sends SIGKILL after gracefulShutdownTimeout, and gives up
+// after maxShutdownTimeout. A gracefulShutdownTimeout of 0 sends no SIGKILL:
+// the kubelet ends the pod at terminationGracePeriodSeconds, and a save that
+// the manager cuts short loses the writes since the last save. They are
+// variables so that tests can make them short.
 var (
-	gracefulShutdownTimeout = 25 * time.Second
+	gracefulShutdownTimeout time.Duration
 	maxShutdownTimeout      = 30 * time.Second
 )
 
@@ -45,11 +49,12 @@ var redisCommand = defaultRedisCommand
 var readDir = os.ReadDir
 
 var (
-	dataDir    string
-	dbFilename string
-	redisConf  string
-	healthPort int
-	redisPort  string
+	dataDir     string
+	dbFilename  string
+	redisConf   string
+	healthPort  int
+	redisPort   string
+	maxLinkDown time.Duration
 )
 
 // NewCmd creates the run command.
@@ -60,14 +65,16 @@ func NewCmd() *cobra.Command {
 		Long: `Run redis-server as a child process of this manager, which runs as PID 1.
 
 At start, the command:
-  1. Removes the .rdb files other than --db-filename, so that old
-     tempfiles do not fill the disk.
+  1. Removes the temp-*.rdb files, so that the tempfile of a save that
+     crashed does not fill the disk.
   2. Starts the health server.
   3. Starts redis-server as a child process.
 
 The manager reaps zombie processes, because it is PID 1. On SIGTERM, SIGINT
-or SIGQUIT, it sends SIGTERM to Redis, and SIGKILL after 25s. The manager
-does not restart Redis: when Redis exits, the manager exits too.`,
+or SIGQUIT, it sends SIGTERM to Redis. With --shutdown-timeout it also sends
+SIGKILL after that time. Without it, the kubelet ends the pod at the end of
+terminationGracePeriodSeconds, so a long save keeps its whole window. The
+manager does not restart Redis: when Redis exits, the manager exits too.`,
 		RunE: runInstance,
 	}
 
@@ -76,6 +83,8 @@ does not restart Redis: when Redis exits, the manager exits too.`,
 	cmd.Flags().StringVar(&redisConf, "redis-conf", defaultRedisConf, "Path to redis.conf")
 	cmd.Flags().IntVar(&healthPort, "health-port", defaultHealthPort, "Port for health check endpoints")
 	cmd.Flags().StringVar(&redisPort, "redis-port", "6379", "Redis port for health checks")
+	cmd.Flags().DurationVar(&gracefulShutdownTimeout, "shutdown-timeout", 0, "Time after SIGTERM before SIGKILL, 0 leaves the timeout to the kubelet")
+	cmd.Flags().DurationVar(&maxLinkDown, "max-link-down", defaultMaxLinkDown, "How long a replica stays ready after its link to the master dropped")
 
 	return cmd
 }
@@ -103,6 +112,7 @@ func runInstance(_ *cobra.Command, _ []string) error {
 	// The health server serves /healthz, /readyz and /status.
 	redisPassword := os.Getenv("REDIS_PASSWORD")
 	healthServer = NewHealthServer(healthPort, redisPort, redisPassword)
+	healthServer.maxLinkDown = maxLinkDown
 	healthServer.SetCleanupDone(cleanupErr == nil)
 	if err := healthServer.Start(ctx); err != nil {
 		// Without the health endpoints the probes fail for ever, so stop here.
@@ -200,8 +210,14 @@ func shutdownRedis(cmd *exec.Cmd, doneChan <-chan error) error {
 		fmt.Printf("redis-instance: warning: failed to send SIGTERM: %v\n", err)
 	}
 
-	gracefulTimer := time.NewTimer(gracefulShutdownTimeout)
-	defer gracefulTimer.Stop()
+	// A zero timeout leaves the deadline to the kubelet, so the manager
+	// waits for Redis and never cuts its save short.
+	var gracefulTimeout <-chan time.Time
+	if gracefulShutdownTimeout > 0 {
+		gracefulTimer := time.NewTimer(gracefulShutdownTimeout)
+		defer gracefulTimer.Stop()
+		gracefulTimeout = gracefulTimer.C
+	}
 
 	select {
 	case err := <-doneChan:
@@ -212,7 +228,7 @@ func shutdownRedis(cmd *exec.Cmd, doneChan <-chan error) error {
 		}
 		return nil
 
-	case <-gracefulTimer.C:
+	case <-gracefulTimeout:
 		fmt.Printf("redis-instance: graceful shutdown timeout (%v), sending SIGKILL\n", gracefulShutdownTimeout)
 		if err := cmd.Process.Kill(); err != nil {
 			fmt.Printf("redis-instance: warning: failed to send SIGKILL: %v\n", err)
@@ -320,9 +336,10 @@ func waitStatusError(status syscall.WaitStatus) error {
 	}
 }
 
-// performStartupCleanup removes the .rdb files other than dbFilename before
-// Redis starts. A BGSAVE writes temp-<pid>.rdb, and after each crash during a
-// save, one more such file stays until the disk is full.
+// performStartupCleanup removes the temp-*.rdb files before Redis starts. A
+// BGSAVE writes temp-<pid>.rdb, and after each crash during a save, one more
+// such file stays until the disk is full. The scope is that of the
+// rdb-tempfile-cleanup init container, so a user .rdb file stays.
 func performStartupCleanup() error {
 	fmt.Printf("redis-instance: performing startup cleanup in %s\n", dataDir)
 
@@ -353,7 +370,7 @@ func performStartupCleanup() error {
 
 		name := entry.Name()
 
-		if !strings.HasSuffix(name, ".rdb") {
+		if !strings.HasPrefix(name, rdbTempfilePrefix) || !strings.HasSuffix(name, ".rdb") {
 			continue
 		}
 
