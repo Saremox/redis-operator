@@ -52,7 +52,7 @@ type RedisFailoverSpec struct {
 // It must not rename a command that the operator, the pod scripts or the replicas send:
 // AUTH, CLIENT, CONFIG, INFO, PING, PSYNC, REPLCONF, REPLICAOF or SLAVEOF. With Sentinels,
 // it must not rename EXEC, MULTI, PUBLISH or SUBSCRIBE. With an aclfile, it must not rename ACL.
-// The shutdown script also sends SAVE. Validation allows a rename of SAVE, but then that SAVE fails.
+// With Sentinel, the shutdown script also sends SAVE. Validation allows a rename of SAVE, but then that SAVE fails.
 type RedisCommandRename struct {
 	// From is the command to rename. It can contain only letters and
 	// underscores.
