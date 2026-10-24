@@ -23,8 +23,8 @@ func NewCmd() *cobra.Command {
 		Short: "Copy this binary to a destination path",
 		Long: `Copy the running redis-instance binary to a destination path.
 
-This lets an init container put the binary on a volume that another container
-shares, so that container can run it without the binary being in its own image.
+An init container puts the binary on a shared volume. Another container then
+runs it, although the binary is not in that container's own image.
 
 The binary copies itself, so the image that holds it needs no shell and no cp
 and can stay distroless.`,
@@ -35,9 +35,9 @@ and can stay distroless.`,
 	}
 }
 
-// bootstrap copies the running binary to dest. It writes a temporary file in
-// the directory of dest and renames it, so that dest never holds a partial
-// copy that the Redis container could try to run.
+// bootstrap copies the running binary to dest. It writes a temporary file
+// beside dest and renames it. Thus dest never holds a partial copy that the
+// Redis container could try to run.
 func bootstrap(dest string) error {
 	src, err := executable()
 	if err != nil {
@@ -57,11 +57,15 @@ func bootstrap(dest string) error {
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
 
-	// Keep the first of the three failures and close the file in every case,
-	// so that a failed copy leaks no descriptor.
+	// Keep the first failure and close the file in every case, so that a
+	// failed copy leaks no descriptor. Sync before the rename, so a node
+	// crash cannot leave dest pointing at unwritten data.
 	written, err := io.Copy(tmp, in)
 	if err == nil {
 		err = tmp.Chmod(destMode)
+	}
+	if err == nil {
+		err = tmp.Sync()
 	}
 	if closeErr := tmp.Close(); err == nil {
 		err = closeErr

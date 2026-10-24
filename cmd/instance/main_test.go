@@ -37,6 +37,7 @@ func TestRootCmdRegistersSubcommands(t *testing.T) {
 
 	assert.Contains(t, names, "cleanup")
 	assert.Contains(t, names, "run")
+	assert.Contains(t, names, "bootstrap")
 }
 
 func TestMainRunsSubcommand(t *testing.T) {
