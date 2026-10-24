@@ -6,6 +6,7 @@ import (
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
+	mmetrics "github.com/saremox/redis-operator/mocks/metrics"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 
@@ -57,4 +58,22 @@ func TestSecretServiceGet(t *testing.T) {
 		assertTest.Error(err)
 		assertTest.True(errors.IsNotFound(err))
 	})
+}
+
+func TestSecretServiceGetMetricLabel(t *testing.T) {
+	for _, name := range []string{"auth", "team/auth-secret-with-a-long-name"} {
+		t.Run(name, func(t *testing.T) {
+			cli := kubernetes.NewSimpleClientset()
+			cli.PrependReactor("get", "secrets", func(action kubetesting.Action) (bool, runtime.Object, error) {
+				return true, &corev1.Secret{}, nil
+			})
+			rec := &mmetrics.Recorder{}
+			rec.On("RecordK8sOperation", "ns", "Secret", metrics.NOT_APPLICABLE, "GET", metrics.SUCCESS, metrics.NOT_APPLICABLE).Once()
+
+			_, err := NewSecretService(cli, log.Dummy, rec).GetSecret("ns", name)
+
+			assert.NoError(t, err)
+			rec.AssertExpectations(t)
+		})
+	}
 }

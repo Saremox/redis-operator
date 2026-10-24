@@ -41,7 +41,8 @@ func NewConfigMapService(kubeClient kubernetes.Interface, logger log.Logger, met
 
 func (p *ConfigMapService) GetConfigMap(namespace string, name string) (*corev1.ConfigMap, error) {
 	configMap, err := p.kubeClient.CoreV1().ConfigMaps(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-	recordMetrics(namespace, "ConfigMap", name, "GET", err, p.metricsRecorder)
+	// The name can come from the RedisFailover spec, so it is not a metric label.
+	recordMetrics(namespace, "ConfigMap", metrics.NOT_APPLICABLE, "GET", err, p.metricsRecorder)
 	if err != nil {
 		return nil, err
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
+	mMetrics "github.com/saremox/redis-operator/mocks/metrics"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
@@ -129,4 +130,36 @@ func TestGetSentinelServiceAccountNameFollowsNamingConvention(t *testing.T) {
 	assert.Equal("rfs-sa-test", got)
 	assert.NotEqual(rf.Name, got, "must not collide with the RedisFailover CR's own name")
 	assert.NotEqual(rfservice.GetSentinelName(rf), got, "must not collide with the Sentinel Deployment/Service/ConfigMap name")
+}
+
+// ensure_resource_total is a counter. A failed ensure must count only as
+// FAIL, or a success-rate alert never fires.
+func TestEnsureRecordsOneStatusPerOperation(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		expStatus string
+	}{
+		{name: "a successful ensure is recorded as SUCCESS", expStatus: metrics.SUCCESS},
+		{name: "a failed ensure is recorded as FAIL", err: errors.New("boom"), expStatus: metrics.FAIL},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			rf := generateRF()
+
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdateService", namespace, mock.Anything).Once().Return(test.err)
+			mrec := &mMetrics.Recorder{}
+			mrec.On("RecordEnsureOperation", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, mrec)
+			err := client.EnsureRedisMasterService(rf, nil, nil)
+
+			assert.Equal(test.err, err)
+			mrec.AssertCalled(t, "RecordEnsureOperation", namespace, "rfrm-"+name, "Service", name, test.expStatus)
+			mrec.AssertNumberOfCalls(t, "RecordEnsureOperation", 1)
+		})
+	}
 }

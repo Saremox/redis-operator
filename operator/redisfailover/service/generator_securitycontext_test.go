@@ -27,6 +27,14 @@ func TestGetSecurityContextMerge(t *testing.T) {
 		assert.Equal(t, int64(1000), *got.RunAsGroup)
 		assert.True(t, *got.RunAsNonRoot)
 		assert.Equal(t, int64(1000), *got.FSGroup)
+		assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, got.SeccompProfile.Type)
+	})
+
+	t.Run("user seccomp profile wins", func(t *testing.T) {
+		got := getSecurityContext(&corev1.PodSecurityContext{
+			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined},
+		})
+		assert.Equal(t, corev1.SeccompProfileTypeUnconfined, got.SeccompProfile.Type)
 	})
 
 	t.Run("user context does not mutate the input", func(t *testing.T) {

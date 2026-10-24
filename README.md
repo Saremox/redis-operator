@@ -83,6 +83,8 @@ To install the operator with default settings and every necessary resource (incl
 kustomize build github.com/Saremox/redis-operator/manifests/kustomize/overlays/default
 ```
 
+The overlays install the operator in the `default` namespace, because the ClusterRoleBinding must name the namespace of the ServiceAccount. To use a different namespace, set `namespace:` in your own `kustomization.yaml` as in the example below, not `kubectl apply -n <namespace>`.
+
 If you would like to customize RBAC or the service account used, you can install the `minimal` overlay.
 
 Finally, you can install the `full` overlay if you want everything this operator has to offer, including Prometheus ServiceMonitor resources.
@@ -120,6 +122,10 @@ resources:
 
 Take a look at the manifests inside [manifests/kustomize](manifests/kustomize) for more details.
 
+### Operator metrics
+
+The operator serves Prometheus metrics on `--listen-address` (default `:9710`) at `--metrics-path` (default `/metrics`). The flag `--enable-pprof` (default `false`) serves the Go profiler at `/debug/pprof/` on the same address. The profiler has no authentication. Allow only trusted users to reach this address.
+
 ## Usage
 
 Once the operator is deployed inside a Kubernetes cluster, a new API will be accessible, so you'll be able to create, update and delete redisfailovers.
@@ -132,6 +138,14 @@ kubectl create -f https://raw.githubusercontent.com/Saremox/redis-operator/${RED
 ```
 
 Starting with `4.0.0`, Sentinel is disabled by default and failover is managed by the operator. Set `spec.sentinel.enabled: true` to deploy Sentinel resources, or use `spec.sentinel.failoverTimeout` to tune operator-managed failover.
+
+`spec.sentinel.failoverTimeout` (default `10s`, `0s` disables it) is the time that the operator waits for a master that does not answer while its pod runs. The wait prevents a failover after a short stall, for example a GC pause, because a failover makes all replicas resync and can lose writes.
+
+The wait starts at the first missed check. The operator records this time on the master pod in the `redisfailovers.databases.spotahome.com/unreachable-since` annotation, so an operator restart or a new leader keeps the deadline. `status.message` shows the wait.
+
+The operator does not replace a master that answers no check while its pod is ready, because a promotion can then give two masters. When the pod becomes not ready, the operator promotes a replica after the timeout. When the operator finds no master, for example because its pod is gone, it elects a master immediately. A master pod in deletion gets a wait while it is ready, because it can still accept writes.
+
+An old master that did not answer during a failover can come back as a second master. The operator then makes it a replica of the pod labelled master, because that label shows the master that the operator elected. If the elected master also does not answer when the old master comes back, the operator can move the label back to the old master. Then the writes since the failover are lost. The operator also closes the client connections of the old master, because after `REPLICAOF` their writes fail with `READONLY` until the clients connect again. The flag `--disconnect-clients-on-demotion=false` keeps them open. When the label does not identify one master, the status shows `multiple masters detected, fix manually`.
 
 This redis-failover will be managed by the operator, resulting in the following elements created inside Kubernetes:
 
@@ -153,7 +167,13 @@ The operator can add persistence to Redis data. By default, an `emptyDir` will b
 
 To have persistence, a `PersistentVolumeClaim` usage is allowed. The full [PVC definition has to be added](example/redisfailover/persistent-storage.yaml) to the Redis Failover Spec under the `Storage` section.
 
-**IMPORTANT**: By default, the persistent volume claims will be deleted when the Redis Failover is. If this is not the expected usage, a `keepAfterDeletion` flag can be added under the `storage` section of Redis. [An example is given](example/redisfailover/persistent-storage-no-pvc-deletion.yaml).
+**IMPORTANT**: By default, the persistent volume claims will be deleted when the Redis Failover is. If this is not the expected usage, a `keepAfterDeletion` flag can be added under the `storage` section of Redis. [An example is given](example/redisfailover/persistent-storage-no-pvc-deletion.yaml). When you add the flag to an existing Redis Failover, the operator removes the owner reference of the Redis Failover from its PVCs. When you remove the flag again, the operator does not add the owner reference back, so these PVCs stay after the Redis Failover is deleted.
+
+The operator removes the owner reference in its next reconcile. Before you delete the Redis Failover, check that no PVC shows the owner `RedisFailover`. Replace `<NAME>` with the name of the Redis Failover:
+
+```bash
+kubectl get pvc -l app.kubernetes.io/component=redis,app.kubernetes.io/name=<NAME> -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.ownerReferences[*].kind}{"\n"}{end}'
+```
 
 ### NodeAffinity and Tolerations
 
@@ -182,9 +202,11 @@ A changed spec replaces the redis pods one at a time, replicas first and the mas
 
 ### Custom shutdown script
 
-By default, the operator gives each redis pod a shutdown script. The script makes redis `SAVE` its data before it stops. When Sentinel runs and the pod is the master, the script first asks Sentinel to fail over. Thus Sentinel moves the master immediately and does not wait for `down-after-milliseconds`. The redis pods have no service links, so the script finds Sentinel through the Service name `rfs-<NAME>` on port 26379.
+By default, the operator gives each redis pod a shutdown script. The script makes redis `SAVE` its data before it stops. When Sentinel runs and the pod is the master, the script first pauses the writes, waits for the replicas, and asks Sentinel to fail over. Thus Sentinel moves the master immediately and does not wait for `down-after-milliseconds`. The redis pods have no service links, so the script finds Sentinel through the Service name `rfs-<NAME>` on port 26379.
 
-During the failover, the script pauses the writes on the old master, and then makes it a replica of the new master. This prevents the loss of writes that the old master acknowledged, because the clients get `READONLY` instead. The pause needs Redis 6.2 or later. On an earlier version, the script continues without the pause. The script waits a maximum of 12 seconds for the new master. Thus the script ends inside the default 30-second grace period, and the `SAVE` can run.
+After the failover, the script makes the old master a replica of the new master. The pause prevents the loss of writes that the old master acknowledged, because the clients get `READONLY` instead. If the pause fails, the script does not ask for a failover. Redis 7 and later then pause the writes when they stop and wait for their replicas, and Sentinel fails over after `down-after-milliseconds`. The pause fails on Redis before 6.2.
+
+The script waits a maximum of 12 seconds for the new master. Thus the script ends inside the default 30-second grace period, and the `SAVE` can run.
 
 This behavior is configurable, creating a configmap and indicating to use it. An example about how to use this option can be found in the [shutdown example file](example/redisfailover/custom-shutdown.yaml).
 
@@ -194,7 +216,11 @@ This behavior is configurable, creating a configmap and indicating to use it. An
 
 Sentinel does not stop writes on the old master in a failover. If the old master still runs, it accepts writes until Sentinel makes it a replica. With the default timings, this occurs about 10 seconds after the promotion. The old master then copies the data of the new master, and the writes that it acknowledged in that interval are lost. The interval ends earlier if the operator moves the master label or makes the old master a replica first. In a test on kind, a `SENTINEL FAILOVER` lost 11 seconds of writes through `rfrm-<NAME>`.
 
-The default shutdown script prevents this loss when the master pod is deleted. Before it requests the failover, it pauses the writes on the master (`CLIENT PAUSE ... WRITE`). After the promotion, it makes the old master a replica of the new master. Thus clients get an error, not an acknowledgement that is lost. In 3 deletions on kind, no acknowledged write was lost, and the new master was ready after about 1 second. The pause needs Redis 6.2 or later. On an older Redis, the script requests the failover without the pause.
+The default shutdown script reduces this loss when the master pod is deleted. Before it requests the failover, it pauses the writes on the master (`CLIENT PAUSE ... WRITE`). After the promotion, it makes the old master a replica of the new master. Thus clients get an error, not an acknowledgement that is lost. In 3 deletions on kind without the wait below, no acknowledged write was lost, and the new master was ready after about 1 second. Without the pause, the script requests no failover.
+
+Sentinel promotes the replica with the highest replication offset that it knows. This offset can be 10 seconds old, and Sentinel does not wait until the replica has all writes of the master. Thus, before the failover request, the script waits until each online replica confirms the `master_repl_offset` of the master. Sentinel can still promote a replica that is not online, for example a replica in a full sync.
+
+The replicas confirm once per second, so with healthy replicas the wait adds about 1 second to the write pause. The wait ends at the latest 4 seconds after the start of the script, or 6 seconds when `INFO` does not answer. Then the script requests the failover also when a replica is behind. The script sends the last failover request at most 9 seconds after its start. Thus it has time to make the old master a replica of the new master.
 
 A custom shutdown script that requests a failover without this pause causes the loss. In a test without the pause, 2 deletions lost 8 seconds and 0.1 seconds of writes through `rfrm-<NAME>`.
 
