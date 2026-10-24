@@ -12,6 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// oomTestMargin is how far TestGetAutoscalerInfo puts maxmemory below the
+// memory in use, so that the next write is over the limit.
+const oomTestMargin = 256 * 1024
+
 // fillRedis writes n 1KiB keys.
 func fillRedis(t *testing.T, rc *rediscli.Client, n int) {
 	t.Helper()
@@ -96,7 +100,7 @@ func TestGetAutoscalerInfo(t *testing.T) {
 	r := startRedisProcess(t)
 	rc := rediscli.NewClient(&rediscli.Options{Addr: r.Addr()})
 	defer func() { _ = rc.Close() }()
-	fillRedis(t, rc, 100)
+	fillRedis(t, rc, 1000)
 	c := newTestClient()
 	port := strconv.Itoa(r.Port)
 
@@ -112,12 +116,21 @@ func TestGetAutoscalerInfo(t *testing.T) {
 	assert.Zero(t, before.OOMErrors)
 
 	// A write above maxmemory without a key to evict counts in errorstat_OOM.
-	require.NoError(t, c.SetCustomRedisConfig(r.IP, port, []string{"maxmemory 1048576", "maxmemory-policy volatile-lru"}, ""))
+	//
+	// The limit comes from the memory in use, not from a constant. Most of
+	// the memory of a small server is its own baseline, and that differs
+	// between the builds. A constant that one build passes, another build
+	// stays under, and then the write below gets no OOM.
+	//
+	// The margin is smaller than the dataset, so the eviction below frees
+	// enough, and larger than the jitter between two INFO calls.
+	maxMemory := before.UsedMemory - oomTestMargin
+	require.NoError(t, c.SetCustomRedisConfig(r.IP, port, []string{fmt.Sprintf("maxmemory %d", maxMemory), "maxmemory-policy volatile-lru"}, ""))
 	require.ErrorContains(t, rc.Set(bgCtx(), "k", "v", 0).Err(), "OOM")
 	after, err := c.GetAutoscalerInfo(r.IP, port, "")
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), after.OOMErrors)
-	assert.Equal(t, int64(1048576), after.MaxMemory)
+	assert.Equal(t, maxMemory, after.MaxMemory)
 	assert.Equal(t, "volatile-lru", after.MaxMemoryPolicy)
 	assert.Equal(t, before.RunID, after.RunID)
 	assert.Zero(t, after.EvictedKeys)
