@@ -98,10 +98,11 @@ func (r *RedisFailoverHandler) redisQuorumRunning(rf *redisfailoverv1.RedisFailo
 }
 
 // redisElectable reports whether at least one Redis pod runs, which is what
-// the operator-managed mode needs to elect a master. It is the only arbiter of
-// the role in that mode, so it needs one reachable replica to promote, not a
-// majority that agrees. A quorum of two replicas is two, so a quorum gate
-// blocks the election of every two-replica failover that loses a pod.
+// the operator-managed mode needs to elect a master. The operator is the only
+// arbiter of the role in that mode, so one reachable replica is enough to
+// promote, and a majority that agrees is not needed. A majority of two
+// replicas is two, so a quorum gate also stops the election of a two-replica
+// failover that loses one pod.
 func (r *RedisFailoverHandler) redisElectable(rf *redisfailoverv1.RedisFailover, allRunning bool) bool {
 	if allRunning || r.rfChecker.IsAnyRedisRunning(rf) {
 		return true
@@ -112,10 +113,31 @@ func (r *RedisFailoverHandler) redisElectable(rf *redisfailoverv1.RedisFailover,
 		Message: errorMsg,
 	}
 	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.REDIS_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
-	// Warning, not Debug: the operator is declining to heal a failover that may
-	// have no master, and a debug-level decision is invisible in a default
-	// deployment.
-	r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("No Redis pod running, cannot elect a master")
+	logger := r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace)
+	// A failover that had a master has lost it, and a Debug line is invisible
+	// in a default deployment. A failover that starts has no master yet, and
+	// every reconcile until the first pod runs would log the same Warning.
+	if r.hadMaster(rf) {
+		logger.Warningf("No Redis pod running, cannot elect a master")
+	} else {
+		logger.Debugf("No Redis pod running yet, cannot elect a master")
+	}
+	return false
+}
+
+// hadMaster reports whether a Redis pod carries the master label, in each
+// phase. A RedisFailover that starts for the first time has none. A failed
+// list reports true, so that a lookup failure hides no Warning.
+func (r *RedisFailoverHandler) hadMaster(rf *redisfailoverv1.RedisFailover) bool {
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		return true
+	}
+	for i := range pods.Items {
+		if rfservice.IsMasterPod(&pods.Items[i]) {
+			return true
+		}
+	}
 	return false
 }
 

@@ -228,10 +228,7 @@ func (r *RedisFailoverChecker) IsRedisRunningQuorum(rFailover *redisfailoverv1.R
 	return err == nil && AreQuorumRunning(dp, int(rFailover.Spec.Redis.Replicas))
 }
 
-// IsAnyRedisRunning returns true when at least one Redis pod runs. The
-// operator-managed mode needs this rather than a quorum: the operator is the
-// only arbiter of the master role, so one reachable replica is enough to
-// promote.
+// IsAnyRedisRunning returns true when at least one Redis pod runs.
 func (r *RedisFailoverChecker) IsAnyRedisRunning(rFailover *redisfailoverv1.RedisFailover) bool {
 	dp, err := r.k8sService.GetStatefulSetPods(rFailover.Namespace, GetRedisName(rFailover))
 	return err == nil && AreAnyRunning(dp)
@@ -277,8 +274,7 @@ func AreAllRunning(pods *corev1.PodList, expectedRunningPods int) bool {
 }
 
 // AreAnyRunning reports whether at least one pod runs. It does not count
-// scheduling and terminal pods. It carries no expectation of a replica count,
-// so a two-replica failover that lost one pod still reports true.
+// scheduling and terminal pods, and it expects no replica count.
 func AreAnyRunning(pods *corev1.PodList) bool {
 	for i := range pods.Items {
 		pod := &pods.Items[i]

@@ -42,10 +42,6 @@ func (r *RedisFailoverHandler) abortOrphanedFailover(rf *redisfailoverv1.RedisFa
 // checkAndHealOperatorManagedMode handles failover when Sentinel is disabled.
 // The operator directly manages master election and failover.
 func (r *RedisFailoverHandler) checkAndHealOperatorManagedMode(rf *redisfailoverv1.RedisFailover, allRunning bool) error {
-	// One Running pod is sufficient to elect a master here, not a quorum. The
-	// operator is the only arbiter of the role in this mode. A quorum of two
-	// replicas is two, so a quorum gate blocked the election of every
-	// two-replica failover that lost a pod.
 	if !r.redisElectable(rf, allRunning) {
 		return nil
 	}
@@ -92,6 +88,12 @@ func (r *RedisFailoverHandler) healNoMasterOperatorMode(rf *redisfailoverv1.Redi
 	// Without a master pod, a wait only makes the outage longer.
 	pod, err := r.unreachableMasterPod(rf)
 	if wait, err := r.waitForMasterPod(rf, pod, err); err != nil || wait {
+		return err
+	}
+	// Below a quorum, a pod that is not ready can hold newer data on its
+	// volume. GetBestReplicaForPromotion ranks only the pods that answer, so
+	// the election first gives the other pods time to start.
+	if wait, err := r.waitForStartingPods(rf); err != nil || wait {
 		return err
 	}
 	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.NO_MASTER, metrics.NOT_APPLICABLE, errors.New("no masters detected"))

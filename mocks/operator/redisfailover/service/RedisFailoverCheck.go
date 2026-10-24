@@ -731,7 +731,7 @@ func (_m *RedisFailoverCheck) GetUnknownSentinelAddrs(rFailover *v1.RedisFailove
 	return r0, r1
 }
 
-// IsClusterRunning provides a mock function with given fields: rFailover
+// IsAnyRedisRunning provides a mock function with given fields: rFailover
 func (_m *RedisFailoverCheck) IsAnyRedisRunning(rFailover *v1.RedisFailover) bool {
 	ret := _m.Called(rFailover)
 
@@ -749,6 +749,7 @@ func (_m *RedisFailoverCheck) IsAnyRedisRunning(rFailover *v1.RedisFailover) boo
 	return r0
 }
 
+// IsClusterRunning provides a mock function with given fields: rFailover
 func (_m *RedisFailoverCheck) IsClusterRunning(rFailover *v1.RedisFailover) bool {
 	ret := _m.Called(rFailover)
 
