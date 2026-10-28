@@ -296,6 +296,8 @@ func (s *sentinelUnknownAddrs) pendingPeer(addrs rfservice.SentinelAddrs) bool {
 // monitor ends the state. The master can be down: with another Redis
 // password, the Sentinel flags it s_down. The entry of a deleted own pod is
 // alive for some seconds and has a run ID of that pod, so it does not count.
+// A peer that ownSoon hides can be a starting own pod, so it does not count
+// either.
 func (r *RedisFailoverHandler) checkSentinelMerge(logger log.Logger, rf *redisfailoverv1.RedisFailover, state *sentinelUnknownAddrs, addrs rfservice.SentinelAddrs, complete bool) {
 	foreign := state.foreignPeers(addrs)
 	masters := map[string][]string{}
@@ -307,7 +309,7 @@ func (r *RedisFailoverHandler) checkSentinelMerge(logger log.Logger, rf *redisfa
 				continue
 			}
 			aliveHere = aliveHere || alivePeer(peer)
-			other = other || (alivePeer(peer) && !state.runIDs[peer.IP][peer.RunID])
+			other = other || (alivePeer(peer) && !state.runIDs[peer.IP][peer.RunID] && !state.ownSoon(addrs, peer.IP))
 			_, reset := state.resets[peer.IP][sip]
 			back = back || (reset && alivePeer(peer))
 			if !slices.Contains(state.stale[sip], peer.IP) {

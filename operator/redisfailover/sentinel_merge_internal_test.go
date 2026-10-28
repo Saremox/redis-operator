@@ -481,6 +481,17 @@ func TestForeignMasterNeedsAnAlivePeer(t *testing.T) {
 		assert.Equal(t, []string{mgS2}, got.monitored)
 		assert.Equal(t, redisfailoverv1.HealthyState, got.status.State)
 	})
+	t.Run("a starting own pod at the IP of a deleted pod", func(t *testing.T) {
+		mt := newMergeTest()
+		mt.reconcile(t, mgHealthy(0))
+		round := mgDeleted(30*time.Second, mgAlive(mgS3, "r3new"))
+		round.pendingIP = true
+		round.groups[mgS2] = redis.SentinelPeers{Master: mgForeignMaster, Peers: []redis.SentinelPeer{mgAlive(mgS1, "r1"), mgAlive(mgS3, "r3new")}}
+		round.monitor = map[string]error{mgS2: errMgWrongMaster}
+		got := mt.reconcile(t, round)
+		assert.Equal(t, []string{mgS2}, got.monitored)
+		assert.NotEqual(t, redisfailoverv1.NotHealthyState, got.status.State, got.status.Message)
+	})
 	t.Run("the entry of a deleted own pod", func(t *testing.T) {
 		mt := newMergeTest()
 		mt.reconcile(t, mgHealthy(0))
