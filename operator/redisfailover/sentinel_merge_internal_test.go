@@ -823,3 +823,109 @@ func TestAlivePeerWithoutTheHelloAge(t *testing.T) {
 	assert.True(t, alivePeer(redis.SentinelPeer{LastHello: sentinelPeerHelloFresh - time.Millisecond, Down: true}))
 	assert.False(t, alivePeer(redis.SentinelPeer{LastHello: sentinelPeerHelloFresh}))
 }
+
+// TestForeignPeerStaysOverFiveMinutes keeps the guard while the Sentinel of
+// the other group sends hellos, also after the memory of the reset ends.
+// Each check moves mgS2 to the master of the other group.
+func TestForeignPeerStaysOverFiveMinutes(t *testing.T) {
+	mt := newMergeTest()
+	var warnings []string
+	for i := range 20 {
+		round := mgForeignRound(30 * time.Second)
+		if i == 0 {
+			round.after = 0
+		}
+		round.monitor = map[string]error{mgS2: errMgWrongMaster}
+		got := mt.reconcile(t, round)
+		if i == 0 {
+			continue
+		}
+		assert.Empty(t, got.reset, "check %d", i)
+		assert.Empty(t, got.monitored, "check %d", i)
+		assert.Equal(t, mgMergeStatus, got.status.Message, "check %d", i)
+		for _, line := range got.warnings() {
+			if strings.Contains(line, "another group") {
+				warnings = append(warnings, line)
+			}
+		}
+	}
+	assert.Equal(t, []string{mgMergeStart}, warnings)
+}
+
+// TestForeignPeerStaysWhenTheSentinelFollowsIt covers the Sentinel that knows
+// the peer and follows the master of the other group. A MONITOR would put it
+// in the hold-off, so no reset would mark the peer again.
+func TestForeignPeerStaysWhenTheSentinelFollowsIt(t *testing.T) {
+	mt := newMergeTest()
+	for i := range 16 {
+		round := mgForeignRound(30 * time.Second)
+		if i == 0 {
+			round.after = 0
+		} else {
+			group := round.groups[mgS1]
+			group.Master, group.MasterDown = mgForeignMaster, true
+			round.groups[mgS1] = group
+			round.monitor = map[string]error{mgS1: errMgWrongMaster}
+		}
+		got := mt.reconcile(t, round)
+		if i > 0 {
+			assert.Empty(t, got.monitored, "check %d", i)
+			assert.Empty(t, got.reset, "check %d", i)
+		}
+	}
+}
+
+// TestOwnSentinelAfterAForcedDeletion covers a Sentinel pod that Kubernetes
+// deleted while its process still runs, for example on a lost node. Its peer
+// comes back after the reset with the run ID of the pod. It is no other
+// group, and the Sentinels get no more resets for it while it sends hellos.
+func TestOwnSentinelAfterAForcedDeletion(t *testing.T) {
+	mt := newMergeTest()
+	mt.reconcile(t, mgHealthy(0))
+	got := mt.reconcile(t, mgDeleted(30*time.Second, mgAlive(mgS3, "r3")))
+	assert.Equal(t, []string{mgS1, mgS2}, got.reset)
+	for i := range 3 {
+		got = mt.reconcile(t, mgDeleted(30*time.Second, mgAlive(mgS3, "r3")))
+		mgNoReport(t, got)
+		assert.Empty(t, got.reset, "check %d", i)
+	}
+
+	// The process stops, and the reset removes it.
+	got = mt.reconcile(t, mgDeleted(30*time.Second, mgDead(mgS3, "r3")))
+	assert.Equal(t, []string{mgS1, mgS2}, got.reset)
+}
+
+// TestForeignPeerEndsPerSentinel removes the mark of a Sentinel that no
+// longer knows the peer alive, and keeps the mark of a Sentinel that does
+// not answer.
+func TestForeignPeerEndsPerSentinel(t *testing.T) {
+	mt := newMergeTest()
+	round := mgForeignRound(0)
+	round.groups[mgS2] = mgGroup(mgAlive(mgS1, "r1"), mgAlive(mgS3, "r3"), mgAlive(mgForeign, "rf"))
+	mt.reconcile(t, round)
+	round.after = 30 * time.Second
+	mt.reconcile(t, round)
+	key := failoverKey(mt.rf)
+	require.Equal(t, map[string]bool{mgS1: true, mgS2: true}, mt.handler.loadSentinelUnknown(key).foreign[mgForeign])
+
+	round = mgForeignRound(30 * time.Second)
+	delete(round.groups, mgS2)
+	round.unread = []string{mgS2}
+	round.groups[mgS1] = mgGroup(mgAlive(mgS2, "r2"), mgAlive(mgS3, "r3"), mgDead(mgForeign, "rf"))
+	mt.reconcile(t, round)
+	assert.Equal(t, map[string]bool{mgS2: true}, mt.handler.loadSentinelUnknown(key).foreign[mgForeign])
+	// The mark of a Sentinel without a pod goes.
+	state := mt.handler.loadSentinelUnknown(key)
+	state.foreign[mgForeign][mgS4] = true
+	mt.handler.sentinelUnknown.Store(key, state)
+	mt.reconcile(t, round)
+	assert.Equal(t, map[string]bool{mgS2: true}, mt.handler.loadSentinelUnknown(key).foreign[mgForeign])
+
+	// A pod gets the IP, also while mgS2 does not answer.
+	round = mgHealthy(30 * time.Second)
+	round.pods = append(round.pods, mgForeign)
+	delete(round.groups, mgS2)
+	round.unread = []string{mgS2}
+	mt.reconcile(t, round)
+	assert.NotContains(t, mt.handler.loadSentinelUnknown(key).foreign, mgForeign)
+}
