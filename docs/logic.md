@@ -118,7 +118,7 @@ The best replica is a synced replica first, then the replica with the highest re
 This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The operator repairs what Sentinel cannot. It checks:
 
 - A quorum of Redis pods and a quorum of Sentinel pods run.
-- The operator reports the Sentinel peers and the masters that are not pods of the RedisFailover. All RedisFailovers use the master name `mymaster`, and a Sentinel accepts each peer that sends this name. Thus a Sentinel of another RedisFailover at an old IP of an own Sentinel merges the two groups, and they exchange their masters. The same check gives the stale peers and the addresses of another group to the Sentinel heal below.
+- The operator reports the Sentinel peers and the masters that are not pods of the RedisFailover. All RedisFailovers use the master name `mymaster`, and a Sentinel accepts each peer that sends this name. Thus a Sentinel of another RedisFailover at an old IP of an own Sentinel merges the two groups, and they exchange their masters. See [Isolation with a NetworkPolicy](#isolation-with-a-networkpolicy). The same check gives the stale peers and the addresses of another group to the Sentinel heal below.
   - The operator reads `SENTINEL MASTER` and `SENTINEL SENTINELS` from each running Sentinel, also from a Sentinel in deletion. It reads them before the count of the masters, so two masters do not stop the check.
   - A peer IP that is no Sentinel pod is an unknown peer. A master IP that is no Redis pod is an unknown master address. A pod in each phase counts, also in deletion. A loopback or unspecified master address is not unknown.
   - A peer is alive when it sent a hello in the last 10 seconds. Only a hello can merge two groups. Without the age of the hello in the reply, a peer without the flags `s_down` and `disconnected` is alive.
@@ -181,11 +181,17 @@ This mode is on when `sentinel.enabled: true`. Sentinel does the failover. The o
   - A Sentinel that monitors `127.0.0.1`, or no master, and knows no alive unknown peer still gets its `SENTINEL MONITOR`. Without it, that Sentinel gives `127.0.0.1` to the clients.
   - The operator still sends `SENTINEL SET`, for the custom configuration and the password. It still heals the Redis pods: the role labels, the replicas and the master, because the clients use the Redis data path.
   - The operator logs a Warning with the addresses at the start, and an Info at the end. The status is `NotHealthy` and names the IPs. The state ends when a check of all the Sentinels finds no such address. Then the operator resets the Sentinels that still know a stale peer.
-  - This check does not repair a merge. It stops the changes of the operator that keep the merge. The other group can still promote the wrong pods.
+  - This check does not repair a merge. It stops the changes of the operator that keep the merge. The other group can still promote the wrong pods. To end a merge, isolate the two groups with a NetworkPolicy. Then the hellos stop, this state ends at the next check after 10 seconds, and the heal resets the peers of the other group.
 - Each Sentinel knows the correct number of Sentinels and replicas. If not, the operator resets that Sentinel. A pod that does not run, for example a Pending pod, is no reason for a reset, because a reset does not add it.
 - After a reset or a new monitor, the Sentinel needs some seconds to find the other Sentinels and the replicas again. A failover cannot start in that time, so the operator does not reset it again in the next 25 seconds. The operator keeps this time in memory only, so a restart of the operator ends the wait.
 - Sentinel has the custom configuration.
 - A Sentinel that does not answer does not stop the heal of the other Sentinels. The status is then `NotHealthy`.
+
+#### Isolation with a NetworkPolicy
+
+The Sentinel port has no password, and all RedisFailovers use the master name `mymaster`. Thus the Sentinels of two RedisFailovers can merge when a pod gets an IP that the Sentinels of the other RedisFailover still know. A merged group can promote the wrong pods, and the pods can lose acknowledged writes. With equal Redis passwords, a Redis pod can replicate from the other RedisFailover and lose all its data.
+
+The checks above make the time for a merge shorter and find a merge. They do not remove the hazard. A master name for each RedisFailover is the planned complete fix. Until then, isolate each RedisFailover with NetworkPolicy rules for ingress and egress. Such rules block the hello messages between the groups. See [NetworkPolicy](../README.md#networkpolicy) for the rules and an example.
 
 ### Bootstrap mode
 
