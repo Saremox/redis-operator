@@ -45,6 +45,9 @@ type unknownAddr struct {
 type sentinelUnknownAddrs struct {
 	peers, masters map[string]unknownAddr
 	own            map[string]time.Time
+	// runIDs holds the run IDs of the alive peers at each IP of a Sentinel
+	// pod, for as long as own keeps the IP.
+	runIDs map[string]map[string]bool
 	// resets holds, by peer IP and then by Sentinel IP, the time of the reset
 	// that removed the peer from that Sentinel.
 	resets map[string]map[string]time.Time
@@ -114,7 +117,12 @@ func (r *RedisFailoverHandler) observeSentinelAddrs(rf *redisfailoverv1.RedisFai
 	maps.DeleteFunc(state.own, func(_ string, at time.Time) bool { return now.Sub(at) >= sentinelOwnIPMemory })
 	state.learnPeers(addrs, now)
 	r.checkSentinelMerge(logger, rf, &state, addrs, complete)
-	recent := func(ip string, _ []string) bool { _, ok := state.own[ip]; return ok }
+
+	// A peer at the IP of a deleted pod that sends hellos with a run ID that
+	// the pod did not have is a new Sentinel, so the memory of the IP does
+	// not hide it.
+	newPeer := state.newPeers(addrs)
+	recent := func(ip string, _ []string) bool { _, ok := state.own[ip]; return ok && !newPeer[ip] }
 	maps.DeleteFunc(addrs.Peers, recent)
 	maps.DeleteFunc(addrs.Masters, recent)
 	peers := trackUnknownAddrs(logger, unknownPeerLog, state.peers, addrs.Peers, complete, now)
@@ -135,8 +143,21 @@ func alivePeer(peer redis.SentinelPeer) bool {
 	return peer.LastHello < sentinelPeerHelloFresh
 }
 
-// learnPeers keeps the recent resets of the peers that are no pod.
+// learnPeers keeps the run IDs at the IPs of the Sentinel pods, and the
+// recent resets of the peers that are no pod.
 func (s *sentinelUnknownAddrs) learnPeers(addrs rfservice.SentinelAddrs, now time.Time) {
+	for _, group := range addrs.Groups {
+		for _, peer := range group.Peers {
+			if _, unknown := addrs.Peers[peer.IP]; unknown || !alivePeer(peer) || peer.RunID == "" {
+				continue
+			}
+			if s.runIDs[peer.IP] == nil {
+				s.runIDs[peer.IP] = map[string]bool{}
+			}
+			s.runIDs[peer.IP][peer.RunID] = true
+		}
+	}
+	maps.DeleteFunc(s.runIDs, func(ip string, _ map[string]bool) bool { _, ok := s.own[ip]; return !ok })
 	// A reset peer that a check does not find stays, because a Sentinel of
 	// another group can come back after this check.
 	maps.DeleteFunc(s.resets, func(ip string, bySentinel map[string]time.Time) bool {
@@ -145,10 +166,26 @@ func (s *sentinelUnknownAddrs) learnPeers(addrs rfservice.SentinelAddrs, now tim
 	})
 }
 
+// newPeers returns the IPs of the unknown peers that are alive and have a
+// run ID that no Sentinel pod had at that IP. Without a known run ID, each
+// alive peer counts.
+func (s *sentinelUnknownAddrs) newPeers(addrs rfservice.SentinelAddrs) map[string]bool {
+	ips := map[string]bool{}
+	for _, group := range addrs.Groups {
+		for _, peer := range group.Peers {
+			if _, unknown := addrs.Peers[peer.IP]; unknown && alivePeer(peer) && !s.runIDs[peer.IP][peer.RunID] {
+				ips[peer.IP] = true
+			}
+		}
+	}
+	return ips
+}
+
 // foreignPeers returns the alive unknown peers that are a Sentinel of another
 // group, with the Sentinels that know them. Such a peer came back after a
-// reset. After a reset, only a Sentinel that sends hellos with this master
-// name comes back.
+// reset, or it has a run ID that the Sentinel pod at its IP did not have.
+// After a reset, only a Sentinel that sends hellos with this master name
+// comes back.
 func (s *sentinelUnknownAddrs) foreignPeers(addrs rfservice.SentinelAddrs) map[string][]string {
 	foreign := map[string][]string{}
 	// A new Sentinel pod can get the IP of a deleted one and join the
@@ -161,7 +198,9 @@ func (s *sentinelUnknownAddrs) foreignPeers(addrs rfservice.SentinelAddrs) map[s
 			if _, unknown := addrs.Peers[peer.IP]; !unknown || !alivePeer(peer) || slices.Contains(foreign[peer.IP], sip) {
 				continue
 			}
-			if _, reset := s.resets[peer.IP][sip]; reset {
+			_, reset := s.resets[peer.IP][sip]
+			runIDs := s.runIDs[peer.IP]
+			if reset || (len(runIDs) > 0 && !runIDs[peer.RunID]) {
 				foreign[peer.IP] = append(foreign[peer.IP], sip)
 			}
 		}
@@ -256,7 +295,7 @@ func (r *RedisFailoverHandler) loadSentinelUnknown(key string) sentinelUnknownAd
 	}
 	return sentinelUnknownAddrs{
 		peers: map[string]unknownAddr{}, masters: map[string]unknownAddr{}, own: map[string]time.Time{},
-		resets: map[string]map[string]time.Time{},
+		runIDs: map[string]map[string]bool{}, resets: map[string]map[string]time.Time{},
 	}
 }
 

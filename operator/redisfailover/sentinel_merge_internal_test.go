@@ -484,6 +484,71 @@ func TestForeignMasterNeedsAnAlivePeer(t *testing.T) {
 	})
 }
 
+// mgReport is the #335 report of mgS3 as an unknown peer.
+const mgReport = "warning: Sentinels know the unknown peers 10.0.1.3 (Sentinels 10.0.1.1 10.0.1.2). No Sentinel pod of this RedisFailover has these IPs. Each IP is a Sentinel of another RedisFailover, which can merge with this group, or an old IP of a deleted pod of this RedisFailover"
+
+// TestNewSentinelAtTheIPOfADeletedPod covers a Sentinel of another group that
+// gets the IP of a deleted Sentinel pod. Its run ID differs from the run ID
+// of the pod, so the operator stops the Sentinel changes at once and reports
+// the peer 90 seconds later, without the memory of 5 minutes.
+func TestNewSentinelAtTheIPOfADeletedPod(t *testing.T) {
+	mt := newMergeTest()
+	mt.reconcile(t, mgHealthy(0))
+
+	// Redis 6.2 keeps the old entry beside the entry of the new run ID.
+	round := mgDeleted(30*time.Second, mgAlive(mgS3, "rB"))
+	round.groups[mgS1] = mgGroup(mgAlive(mgS2, "r2"), mgDead(mgS3, "r3"), mgAlive(mgS3, "rB"))
+	got := mt.reconcile(t, round)
+	merge := "warning: Sentinels of this RedisFailover know addresses of another group: peer 10.0.1.3 (Sentinels 10.0.1.1 10.0.1.2). The operator sends no SENTINEL MONITOR, REMOVE or RESET to the Sentinels until these addresses are gone, because the other group undoes each change in seconds"
+	assert.Equal(t, []string{merge}, got.warnings())
+	assert.Empty(t, got.reset)
+	assert.Zero(t, mt.rec.peers)
+
+	got = mt.reconcile(t, mgDeleted(sentinelUnknownPersist, mgAlive(mgS3, "rB")))
+	assert.Equal(t, []string{mgReport}, got.warnings())
+	assert.Equal(t, 1, mt.rec.peers)
+	assert.Empty(t, got.reset)
+}
+
+// TestOldPeerAtTheIPOfADeletedPodKeepsTheMemory covers the entry of the
+// deleted pod itself: alive just after the deletion, and dead later. The
+// memory of 5 minutes hides it, and only the reset removes it. A pod that
+// never joined the others, for example in a crash loop, gives no run ID.
+func TestOldPeerAtTheIPOfADeletedPodKeepsTheMemory(t *testing.T) {
+	dead := mgHealthy(0)
+	dead.groups[mgS1] = mgGroup(mgAlive(mgS2, "r2"), mgDead(mgS3, "r3"))
+	dead.groups[mgS2] = mgGroup(mgAlive(mgS1, "r1"), mgDead(mgS3, "r3"))
+	for name, test := range map[string]struct {
+		before mgRound
+		entry  redis.SentinelPeer
+	}{
+		"alive":                 {before: mgHealthy(0), entry: mgAlive(mgS3, "r3")},
+		"dead":                  {before: mgHealthy(0), entry: mgDead(mgS3, "r3")},
+		"dead without a run ID": {before: dead, entry: mgDead(mgS3, "r3")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			entry := test.entry
+			mt := newMergeTest()
+			mt.reconcile(t, test.before)
+			// A failover holds the reset in the first check, so the second
+			// check, 90 seconds later, finds the entry again.
+			for i, after := range []time.Duration{30 * time.Second, sentinelUnknownPersist} {
+				round := mgDeleted(after, entry)
+				round.failover = mgS1
+				got := mt.reconcile(t, round)
+				if i == 0 {
+					assert.Empty(t, got.reset)
+				}
+				for _, line := range got.warnings() {
+					assert.NotContains(t, line, "another group")
+					assert.NotContains(t, line, "unknown peers")
+				}
+			}
+			assert.Zero(t, mt.rec.peers)
+		})
+	}
+}
+
 // mgNoReport fails the test for a log line of a merge or an unknown peer.
 func mgNoReport(t *testing.T, got mgResult) {
 	t.Helper()
@@ -668,12 +733,14 @@ func TestStalePeerResetErrors(t *testing.T) {
 	})
 }
 
-// TestSentinelPeerMemoryIsBounded drops a reset peer after
-// sentinelPeerResetMemory or when a pod gets its IP.
+// TestSentinelPeerMemoryIsBounded drops the run IDs with the memory of the
+// pod IPs, and a reset peer after sentinelPeerResetMemory or when a pod gets
+// its IP.
 func TestSentinelPeerMemoryIsBounded(t *testing.T) {
 	mt := newMergeTest()
 	mt.reconcile(t, mgHealthy(0))
 	key := failoverKey(mt.rf)
+	assert.Equal(t, map[string]bool{"r3": true}, mt.handler.loadSentinelUnknown(key).runIDs[mgS3])
 
 	mt.reconcile(t, mgForeignRound(0))
 	require.Contains(t, mt.handler.loadSentinelUnknown(key).resets, mgForeign)
@@ -682,9 +749,11 @@ func TestSentinelPeerMemoryIsBounded(t *testing.T) {
 	mt.reconcile(t, mgDeleted(sentinelPeerResetMemory-time.Second, mgDead(mgS3, "r3")))
 	state := mt.handler.loadSentinelUnknown(key)
 	assert.Contains(t, state.resets, mgForeign)
+	assert.Contains(t, state.runIDs, mgS3)
 	mt.reconcile(t, mgDeleted(time.Second, mgDead(mgS3, "r3")))
 	state = mt.handler.loadSentinelUnknown(key)
 	assert.NotContains(t, state.resets, mgForeign)
+	assert.NotContains(t, state.runIDs, mgS3, "the memory of the pod IP ended")
 	assert.Contains(t, state.resets, mgS3)
 
 	// A pod gets the reset IP.
@@ -712,6 +781,20 @@ func TestSentinelMergeKeepsTheRedisHeal(t *testing.T) {
 	assert.Empty(t, res.monitored)
 	assert.Equal(t, redisfailoverv1.NotHealthyState, st.rf.Status.State)
 	assert.Equal(t, mgMergeStatus, st.rf.Status.Message)
+}
+
+// TestDeadPeerGivesNoRunID learns only the run IDs of alive peers. Redis 6.2
+// keeps an old entry at the IP of a pod, which can hold the run ID of a
+// Sentinel of another group.
+func TestDeadPeerGivesNoRunID(t *testing.T) {
+	mt := newMergeTest()
+	round := mgHealthy(0)
+	round.groups[mgS1] = mgGroup(mgAlive(mgS2, "r2"), mgAlive(mgS3, "r3"), mgDead(mgS3, "rB"))
+	mt.reconcile(t, round)
+
+	got := mt.reconcile(t, mgDeleted(30*time.Second, mgAlive(mgS3, "rB")))
+
+	assert.Contains(t, got.warnings()[0], "know addresses of another group: peer 10.0.1.3")
 }
 
 // TestAlivePeerSendsHellos decides by the age of the last hello, not by the
