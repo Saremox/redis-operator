@@ -181,6 +181,8 @@ func TestGetUnknownSentinelAddrsFindsAPodWithoutAnIP(t *testing.T) {
 	rf := generateRF()
 	onNode := peersPod("", corev1.PodPending, false)
 	onNode.Spec.NodeName = "node-a"
+	onNodeWithPodIPs := onNode
+	onNodeWithPodIPs.Status.PodIPs = []corev1.PodIP{{IP: "fd00::1:2"}}
 	withIP := peersPod("10.0.1.1", corev1.PodRunning, false)
 	withIP.Spec.NodeName = "node-a"
 	tests := []struct {
@@ -191,6 +193,7 @@ func TestGetUnknownSentinelAddrsFindsAPodWithoutAnIP(t *testing.T) {
 		{name: "pods with an IP", pods: []corev1.Pod{withIP}},
 		{name: "a pod without a node", pods: []corev1.Pod{withIP, peersPod("", corev1.PodPending, false)}},
 		{name: "a pod on a node without an IP", pods: []corev1.Pod{withIP, onNode}, pending: true},
+		{name: "a pod with an IP only in PodIPs", pods: []corev1.Pod{withIP, onNodeWithPodIPs}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

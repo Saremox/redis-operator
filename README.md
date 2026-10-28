@@ -190,16 +190,19 @@ Allow only this traffic. `<NAME>` is the name of the RedisFailover.
 | --- | --- | --- |
 | Sentinel | `26379` | The Sentinel and the Redis pods of the same RedisFailover, the operator pods, and the clients that use Sentinel. |
 | Redis | `redis.port` (default `6379`) | The Redis and the Sentinel pods of the same RedisFailover, the operator pods, and the clients. |
-| Redis exporter | `9121` | Only the system that collects the metrics. |
-| Sentinel exporter | `9355` | Only the system that collects the metrics. |
+| Redis exporter | the exporter port (default `9121`) | Only the system that collects the metrics. |
+| Sentinel exporter | the exporter port (default `9355`) | Only the system that collects the metrics. |
 
 - Egress of the Redis and the Sentinel pods: only to the Redis and Sentinel ports of the same RedisFailover, and to DNS. In bootstrap mode, also to the bootstrap node.
+- The DNS rule depends on the cluster. The example allows the pods `k8s-app: kube-dns` in `kube-system` on port 53. With NodeLocal DNSCache, the pods use a node-local address. On OpenShift, the DNS pods are in `openshift-dns` and listen on port 5353. Make sure that the rule allows your DNS. Without DNS, the shutdown script cannot find the Sentinels and asks for no failover. Then each deletion of the master pod gives a failover after `down-after-milliseconds`.
 - The operator connects from its pod to the Redis port and the Sentinel port of each pod. When the operator namespace has egress rules, also allow this traffic and the Kubernetes API.
 - The Redis and the Sentinel pods do not use the Kubernetes API. Without `serviceAccountName`, the operator sets `automountServiceAccountToken: false`.
 - The shutdown script of Redis asks the Sentinel Service for the failover. A NetworkPolicy applies to the pod IPs behind the Service, so the rule for the Sentinel pods allows it. The DNS rule allows the lookup of the Service name.
 - The liveness probe of Redis and the probes of Sentinel connect to the IP of their own pod. The rule for the pods of the same RedisFailover allows this. The readiness probe of Redis connects to `localhost`.
 - Select the pods with the labels that the operator sets: `app.kubernetes.io/part-of: redis-failover`, `app.kubernetes.io/name: <NAME>` and `app.kubernetes.io/component: redis` or `sentinel`. A selector without `app.kubernetes.io/component` selects both.
 - The rules need a CNI plugin that enforces NetworkPolicy. Without such a plugin, Kubernetes accepts the rules and enforces nothing.
+- A pod selector does not select pods with `hostNetwork: true`, so the rules do not isolate such pods.
+- A CNI plugin that tracks connections can keep the connections that were open before you applied the rules. To end a merge of two groups, restart the Sentinel pods of one group after you apply the rules.
 
 See the [NetworkPolicy example file](example/redisfailover/networkpolicy.yaml).
 

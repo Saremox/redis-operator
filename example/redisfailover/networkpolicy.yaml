@@ -13,6 +13,10 @@
 # - The clients: the pods with the label "redis-client: redisfailover" in
 #   this namespace.
 # - The metrics scraper: Prometheus in the namespace "monitoring".
+# - DNS: the pods "k8s-app: kube-dns" in "kube-system" on port 53. This rule
+#   depends on the cluster. NodeLocal DNSCache uses a node-local address, and
+#   OpenShift has its DNS pods in "openshift-dns" on port 5353. The shutdown
+#   script of Redis needs DNS to find the Sentinel Service.
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover
 metadata:
@@ -94,7 +98,8 @@ spec:
             matchLabels:
               app.kubernetes.io/part-of: redis-failover
               app.kubernetes.io/name: redisfailover
-    # DNS. Sentinel needs it only for host names in its configuration.
+    # DNS, a placeholder that depends on the cluster. Sentinel needs it only
+    # for host names in its configuration.
     - ports:
         - protocol: UDP
           port: 53
@@ -164,7 +169,8 @@ spec:
             matchLabels:
               app.kubernetes.io/part-of: redis-failover
               app.kubernetes.io/name: redisfailover
-    # The shutdown script resolves the name of the Sentinel Service.
+    # DNS, a placeholder that depends on the cluster. The shutdown script
+    # resolves the name of the Sentinel Service.
     - ports:
         - protocol: UDP
           port: 53
