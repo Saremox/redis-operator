@@ -910,17 +910,26 @@ func TestForeignPeerStaysWhenTheSentinelFollowsIt(t *testing.T) {
 // TestOwnSentinelAfterAForcedDeletion covers a Sentinel pod that Kubernetes
 // deleted while its process still runs, for example on a lost node. Its peer
 // comes back after the reset with the run ID of the pod. It is no other
-// group, and the Sentinels get no more resets for it while it sends hellos.
+// group, also after the 5 minutes of the memory of the pod IP. While it sends
+// hellos, its Sentinels get one reset for it in each sentinelPeerResetMemory.
 func TestOwnSentinelAfterAForcedDeletion(t *testing.T) {
 	mt := newMergeTest()
 	mt.reconcile(t, mgHealthy(0))
 	got := mt.reconcile(t, mgDeleted(30*time.Second, mgAlive(mgS3, "r3")))
 	assert.Equal(t, []string{mgS1, mgS2}, got.reset)
-	for i := range 3 {
+	var resets []string
+	for i := range 12 {
 		got = mt.reconcile(t, mgDeleted(30*time.Second, mgAlive(mgS3, "r3")))
-		mgNoReport(t, got)
-		assert.Empty(t, got.reset, "check %d", i)
+		for _, line := range got.warnings() {
+			assert.NotContains(t, line, "another group", "check %d", i)
+		}
+		assert.NotEqual(t, redisfailoverv1.NotHealthyState, got.status.State, "check %d", i)
+		if i < 9 {
+			assert.Empty(t, got.reset, "check %d", i)
+		}
+		resets = append(resets, got.reset...)
 	}
+	assert.Equal(t, []string{mgS1, mgS2}, resets, "one reset after sentinelPeerResetMemory")
 
 	// The process stops, and the reset removes it.
 	got = mt.reconcile(t, mgDeleted(30*time.Second, mgDead(mgS3, "r3")))

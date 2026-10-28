@@ -170,13 +170,31 @@ func (s *sentinelUnknownAddrs) learnPeers(addrs rfservice.SentinelAddrs, now tim
 			s.runIDs[peer.IP][peer.RunID] = true
 		}
 	}
-	maps.DeleteFunc(s.runIDs, func(ip string, _ map[string]bool) bool { _, ok := s.own[ip]; return !ok })
+	// An own Sentinel that still runs after a forced deletion of its pod
+	// keeps its run IDs, so it does not become another group.
+	maps.DeleteFunc(s.runIDs, func(ip string, known map[string]bool) bool {
+		_, ok := s.own[ip]
+		return !ok && !aliveRunID(addrs, ip, known)
+	})
 	// A reset peer that a check does not find stays, because a Sentinel of
 	// another group can come back after this check.
 	maps.DeleteFunc(s.resets, func(ip string, bySentinel map[string]time.Time) bool {
 		maps.DeleteFunc(bySentinel, func(_ string, at time.Time) bool { return now.Sub(at) >= sentinelPeerResetMemory })
 		return addrs.Own[ip] || len(bySentinel) == 0
 	})
+}
+
+// aliveRunID reports whether a Sentinel knows an alive peer at ip with a run
+// ID in known.
+func aliveRunID(addrs rfservice.SentinelAddrs, ip string, known map[string]bool) bool {
+	for _, group := range addrs.Groups {
+		for _, peer := range group.Peers {
+			if peer.IP == ip && alivePeer(peer) && known[peer.RunID] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // newPeers returns the IPs of the unknown peers that are alive and have a
