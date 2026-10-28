@@ -961,3 +961,80 @@ func TestForeignPeerEndsPerSentinel(t *testing.T) {
 	mt.reconcile(t, round)
 	assert.NotContains(t, mt.handler.loadSentinelUnknown(key).foreign, mgForeign)
 }
+
+// TestForeignPeerGuardDuringAPodStart keeps the guard while a Sentinel pod is
+// on a node without an IP in its status, also for longer than
+// sentinelMergeHold. That pod can take only the IP of a deleted own pod, so a
+// peer at another IP still counts.
+func TestForeignPeerGuardDuringAPodStart(t *testing.T) {
+	mt := newMergeTest()
+	for i := range 8 {
+		round := mgForeignRound(30 * time.Second)
+		round.monitor = map[string]error{mgS2: errMgWrongMaster}
+		round.pendingIP = i >= 2 && i <= 6
+		got := mt.reconcile(t, round)
+		if i == 0 {
+			continue
+		}
+		assert.Empty(t, got.reset, "check %d", i)
+		assert.Empty(t, got.monitored, "check %d", i)
+		assert.Equal(t, mgMergeStatus, got.status.Message, "check %d", i)
+		if i > 1 {
+			for _, line := range got.warnings() {
+				assert.NotContains(t, line, "another group", "check %d", i)
+			}
+		}
+	}
+}
+
+// TestForeignPeerGuardHoldIsBounded ends the hold of a Sentinel that does not
+// answer, for example in a crash loop, sentinelMergeHold after the last check
+// that found the addresses. The Sentinels that answer then get their heal.
+func TestForeignPeerGuardHoldIsBounded(t *testing.T) {
+	mt := newMergeTest()
+	mt.reconcile(t, mgForeignRound(0))
+	// Each check finds the peer again, so the hold counts from the last one.
+	for range 4 {
+		mt.reconcile(t, mgForeignRound(30*time.Second))
+	}
+	unread := func() mgRound {
+		round := mgHealthy(30 * time.Second)
+		delete(round.groups, mgS3)
+		round.unread = []string{mgS3}
+		round.monitor = map[string]error{mgS2: errMgWrongMaster}
+		return round
+	}
+
+	got := mt.reconcile(t, unread())
+	assert.Empty(t, got.monitored, "30 seconds after the last check that found the peer")
+	assert.Equal(t, mgMergeStatus, got.status.Message)
+
+	got = mt.reconcile(t, unread())
+	assert.Equal(t, []string{mgS2}, got.monitored, "after sentinelMergeHold")
+	assert.Equal(t, mgMergeEnd, got.warnings()[0])
+	assert.NotEqual(t, mgMergeStatus, got.status.Message)
+}
+
+// TestForeignPeerMarkStaysDuringAPodStart covers a Sentinel of another group
+// at the IP of a deleted own pod while a Sentinel pod starts. The check
+// cannot tell that peer from the starting pod, so the guard and the mark stay
+// for sentinelMergeHold.
+func TestForeignPeerMarkStaysDuringAPodStart(t *testing.T) {
+	mt := newMergeTest()
+	mt.reconcile(t, mgHealthy(0))
+	mt.reconcile(t, mgDeleted(30*time.Second, mgAlive(mgS3, "rB")))
+	key := failoverKey(mt.rf)
+	require.NotEmpty(t, mt.handler.loadSentinelUnknown(key).merged)
+
+	round := mgDeleted(30*time.Second, mgAlive(mgS3, "rB"))
+	round.pendingIP = true
+	round.monitor = map[string]error{mgS2: errMgWrongMaster}
+	got := mt.reconcile(t, round)
+	assert.Empty(t, got.monitored)
+	assert.Empty(t, got.reset)
+	assert.Equal(t, map[string]bool{mgS1: true, mgS2: true}, mt.handler.loadSentinelUnknown(key).foreign[mgS3])
+
+	round.after = sentinelMergeHold
+	got = mt.reconcile(t, round)
+	assert.Equal(t, []string{mgS2}, got.monitored, "after sentinelMergeHold")
+}

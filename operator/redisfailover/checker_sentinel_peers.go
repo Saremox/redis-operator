@@ -32,6 +32,12 @@ const sentinelPeerHelloFresh = 10 * time.Second
 // return of that peer shows a Sentinel of another group.
 const sentinelPeerResetMemory = 5 * time.Minute
 
+// sentinelMergeHold is the longest time that a Sentinel without an answer
+// keeps a merge after the last check that found it. Two resyncs of 30
+// seconds fit, so one failed read does not end the merge. A Sentinel in a
+// crash loop does not hold the heal of the others for all time.
+const sentinelMergeHold = 60 * time.Second
+
 // unknownAddr is an address that the Sentinels know and that no pod of the
 // RedisFailover has.
 type unknownAddr struct {
@@ -67,6 +73,8 @@ type sentinelUnknownAddrs struct {
 	// such addresses. mergedIPs holds the IPs of these addresses.
 	merged    string
 	mergedIPs []string
+	// mergedAt is the time of the last check that found these addresses.
+	mergedAt time.Time
 }
 
 // unknownAddrLog holds the log messages of a kind of unknown address. Each
@@ -194,14 +202,9 @@ func (s *sentinelUnknownAddrs) newPeers(addrs rfservice.SentinelAddrs) map[strin
 // an own Sentinel that still runs after a forced deletion.
 func (s *sentinelUnknownAddrs) foreignPeers(addrs rfservice.SentinelAddrs) map[string][]string {
 	foreign := map[string][]string{}
-	// A new Sentinel pod can get the IP of a deleted one and join the
-	// Sentinels before its pod status has the IP.
-	if addrs.PendingIP {
-		return foreign
-	}
 	for sip, group := range addrs.Groups {
 		for _, peer := range group.Peers {
-			if _, unknown := addrs.Peers[peer.IP]; !unknown || !alivePeer(peer) || slices.Contains(foreign[peer.IP], sip) {
+			if _, unknown := addrs.Peers[peer.IP]; !unknown || !alivePeer(peer) || slices.Contains(foreign[peer.IP], sip) || s.ownSoon(addrs, peer.IP) {
 				continue
 			}
 			_, reset := s.resets[peer.IP][sip]
@@ -221,6 +224,9 @@ func (s *sentinelUnknownAddrs) foreignPeers(addrs rfservice.SentinelAddrs) map[s
 // entries.
 func (s *sentinelUnknownAddrs) keepForeign(addrs rfservice.SentinelAddrs, foreign map[string][]string) {
 	for ip, bySentinel := range s.foreign {
+		if s.ownSoon(addrs, ip) {
+			continue
+		}
 		maps.DeleteFunc(bySentinel, func(sip string, _ bool) bool {
 			if _, read := addrs.Groups[sip]; read {
 				return !slices.Contains(foreign[ip], sip)
@@ -239,6 +245,28 @@ func (s *sentinelUnknownAddrs) keepForeign(addrs rfservice.SentinelAddrs, foreig
 			s.foreign[ip][sip] = true
 		}
 	}
+}
+
+// ownSoon reports whether ip can be the IP of a Sentinel pod that has no IP in
+// its status yet. Such a pod can get the IP of a deleted pod, and its Sentinel
+// can join the others before the pod status has the IP. Other IPs still
+// count, so a pod start does not end a merge.
+func (s *sentinelUnknownAddrs) ownSoon(addrs rfservice.SentinelAddrs, ip string) bool {
+	_, recent := s.own[ip]
+	return addrs.PendingIP && recent
+}
+
+// pendingPeer reports whether a Sentinel knows an alive unknown peer that
+// ownSoon hides in this check.
+func (s *sentinelUnknownAddrs) pendingPeer(addrs rfservice.SentinelAddrs) bool {
+	for _, group := range addrs.Groups {
+		for _, peer := range group.Peers {
+			if _, unknown := addrs.Peers[peer.IP]; unknown && alivePeer(peer) && s.ownSoon(addrs, peer.IP) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // checkSentinelMerge finds the addresses of another group in the Sentinels,
@@ -293,13 +321,17 @@ func (r *RedisFailoverHandler) checkSentinelMerge(logger log.Logger, rf *redisfa
 	slices.Sort(ips)
 	ips = slices.Compact(ips)
 	merged := strings.Join(found, ", ")
+	now := r.now()
 	switch {
 	case merged != "" && state.merged == "":
 		logger.Warningf(mergeLog.start, merged)
+		state.mergedAt = now
 	case merged != "":
 		logger.Debugf(mergeLog.last, merged)
-	case state.merged != "" && !complete:
-		// A Sentinel without an answer can still know the addresses.
+		state.mergedAt = now
+	case state.merged != "" && (!complete || state.pendingPeer(addrs)) && now.Sub(state.mergedAt) < sentinelMergeHold:
+		// A Sentinel without an answer can still know the addresses, and a
+		// peer at the IP of a deleted pod can still be the other group.
 		merged, ips = state.merged, state.mergedIPs
 	case state.merged != "":
 		logger.Infof(mergeLog.end, state.merged)
