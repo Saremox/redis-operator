@@ -245,20 +245,23 @@ func (s *sentinelUnknownAddrs) keepForeign(addrs rfservice.SentinelAddrs, foreig
 // and the peers that a reset removes. The operator sends no SENTINEL MONITOR
 // or RESET to a merged group: the other group returns each Sentinel to its
 // master in about 2 seconds, so each change only moves the master of the
-// Sentinels again. A master of another group counts only together with an
-// alive unknown peer. Without such a peer, a new monitor ends the state.
+// Sentinels again. A master of another group counts only when the same
+// Sentinel knows an alive unknown peer, because without such a peer a new
+// monitor ends the state. The master can be down: with another Redis
+// password, the Sentinel flags it s_down. The entry of a deleted own pod is
+// alive for some seconds and has a run ID of that pod, so it does not count.
 func (r *RedisFailoverHandler) checkSentinelMerge(logger log.Logger, rf *redisfailoverv1.RedisFailover, state *sentinelUnknownAddrs, addrs rfservice.SentinelAddrs, complete bool) {
 	foreign := state.foreignPeers(addrs)
 	masters := map[string][]string{}
-	alive := false
 	state.stale, state.unset = map[string][]string{}, map[string]bool{}
 	for sip, group := range addrs.Groups {
-		aliveHere, back := false, false
+		aliveHere, back, other := false, false, false
 		for _, peer := range group.Peers {
 			if _, unknown := addrs.Peers[peer.IP]; !unknown {
 				continue
 			}
 			aliveHere = aliveHere || alivePeer(peer)
+			other = other || (alivePeer(peer) && !state.runIDs[peer.IP][peer.RunID])
 			_, reset := state.resets[peer.IP][sip]
 			back = back || (reset && alivePeer(peer))
 			if !slices.Contains(state.stale[sip], peer.IP) {
@@ -270,8 +273,7 @@ func (r *RedisFailoverHandler) checkSentinelMerge(logger log.Logger, rf *redisfa
 		if back {
 			delete(state.stale, sip)
 		}
-		alive = alive || aliveHere
-		if _, unknown := addrs.Masters[group.Master]; unknown && !group.MasterDown {
+		if _, unknown := addrs.Masters[group.Master]; unknown && other {
 			masters[group.Master] = append(masters[group.Master], sip)
 		}
 		if !credibleMaster(group.Master) && !aliveHere {
@@ -283,11 +285,9 @@ func (r *RedisFailoverHandler) checkSentinelMerge(logger log.Logger, rf *redisfa
 		found = append(found, "peer "+describeUnknownAddr(ip, sentinels))
 		ips = append(ips, ip)
 	}
-	if alive {
-		for ip, sentinels := range masters {
-			found = append(found, "master "+describeUnknownAddr(ip, sentinels))
-			ips = append(ips, ip)
-		}
+	for ip, sentinels := range masters {
+		found = append(found, "master "+describeUnknownAddr(ip, sentinels))
+		ips = append(ips, ip)
 	}
 	slices.Sort(found)
 	slices.Sort(ips)

@@ -17,9 +17,6 @@ import (
 type SentinelPeers struct {
 	// Master is the IP of the master in SENTINEL MASTER.
 	Master string
-	// MasterDown is true when the Sentinel flags its master as s_down, o_down
-	// or disconnected, so nothing answers at that address.
-	MasterDown bool
 	// Peers holds the other Sentinels in SENTINEL SENTINELS.
 	Peers []SentinelPeer
 }
@@ -62,11 +59,7 @@ func (c *client) GetSentinelPeers(ip string) (SentinelPeers, error) {
 		return SentinelPeers{}, err
 	}
 	c.metricsRecorder.RecordRedisOperation(metrics.KIND_SENTINEL, ip, metrics.GET_SENTINEL_PEERS, metrics.SUCCESS, metrics.NOT_APPLICABLE)
-	return SentinelPeers{
-		Master:     info["ip"],
-		MasterDown: flagsDown(info["flags"]) || slices.Contains(strings.Split(info["flags"], ","), "disconnected"),
-		Peers:      peers,
-	}, nil
+	return SentinelPeers{Master: info["ip"], Peers: peers}, nil
 }
 
 // sentinelPeerEntries reads the entries of a SENTINEL SENTINELS reply. Each

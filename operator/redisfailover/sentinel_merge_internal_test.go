@@ -473,15 +473,47 @@ func TestForeignMasterNeedsAnAlivePeer(t *testing.T) {
 		assert.Equal(t, []string{"warning: Sentinels of this RedisFailover know addresses of another group: master 10.0.9.8 (Sentinels 10.0.1.2). The operator sends no SENTINEL MONITOR, REMOVE or RESET to the Sentinels until these addresses are gone, because the other group undoes each change in seconds"}, got.warnings())
 		assert.Equal(t, "Sentinels know the addresses 10.0.9.8 of another group, so the operator sends them no SENTINEL MONITOR or RESET", got.status.Message)
 	})
-	t.Run("a master that does not answer", func(t *testing.T) {
+	t.Run("an alive unknown peer on another Sentinel", func(t *testing.T) {
 		mt := newMergeTest()
-		round := foreignMaster(mgAlive(mgForeign, "rf"))
-		group := round.groups[mgS2]
-		group.MasterDown = true
-		round.groups[mgS2] = group
+		round := foreignMaster()
+		round.groups[mgS1] = mgGroup(mgAlive(mgS2, "r2"), mgAlive(mgS3, "r3"), mgAlive(mgForeign, "rf"))
 		got := mt.reconcile(t, round)
 		assert.Equal(t, []string{mgS2}, got.monitored)
+		assert.Equal(t, redisfailoverv1.HealthyState, got.status.State)
 	})
+	t.Run("the entry of a deleted own pod", func(t *testing.T) {
+		mt := newMergeTest()
+		mt.reconcile(t, mgHealthy(0))
+		round := mgDeleted(30*time.Second, mgAlive(mgS3, "r3"))
+		round.groups[mgS2] = redis.SentinelPeers{Master: mgForeignMaster, Peers: []redis.SentinelPeer{mgAlive(mgS1, "r1"), mgAlive(mgS3, "r3")}}
+		round.monitor = map[string]error{mgS2: errMgWrongMaster}
+		got := mt.reconcile(t, round)
+		assert.Equal(t, []string{mgS2}, got.monitored)
+		mgNoReport(t, got)
+	})
+}
+
+// TestMergeWithAMasterOfAnotherPassword covers the Sentinels that follow the
+// master of another group with another Redis password. They cannot
+// authenticate, so they flag that master s_down. The peers of the other
+// group were never own IPs, so no reset record or run ID marks them. The
+// operator sends no SENTINEL MONITOR from the first check.
+func TestMergeWithAMasterOfAnotherPassword(t *testing.T) {
+	mt := newMergeTest()
+	for i := range 6 {
+		round := mgHealthy(30 * time.Second)
+		for _, sip := range []string{mgS1, mgS2, mgS3} {
+			group := round.groups[sip]
+			group.Master = mgForeignMaster
+			group.Peers = append(slices.Clone(group.Peers), mgAlive(mgForeign, "rf"))
+			round.groups[sip] = group
+		}
+		round.monitor = map[string]error{mgS1: errMgWrongMaster, mgS2: errMgWrongMaster, mgS3: errMgWrongMaster}
+		got := mt.reconcile(t, round)
+		assert.Empty(t, got.monitored, "check %d", i)
+		assert.Empty(t, got.reset, "check %d", i)
+		assert.Equal(t, "Sentinels know the addresses 10.0.9.8 of another group, so the operator sends them no SENTINEL MONITOR or RESET", got.status.Message, "check %d", i)
+	}
 }
 
 // mgReport is the #335 report of mgS3 as an unknown peer.
@@ -863,7 +895,7 @@ func TestForeignPeerStaysWhenTheSentinelFollowsIt(t *testing.T) {
 			round.after = 0
 		} else {
 			group := round.groups[mgS1]
-			group.Master, group.MasterDown = mgForeignMaster, true
+			group.Master = mgForeignMaster
 			round.groups[mgS1] = group
 			round.monitor = map[string]error{mgS1: errMgWrongMaster}
 		}

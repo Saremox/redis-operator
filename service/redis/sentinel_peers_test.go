@@ -45,31 +45,18 @@ func TestGetSentinelPeersReadsTheEntries(t *testing.T) {
 		"*4\r\n$2\r\nip\r\n$8\r\n10.0.1.5\r\n$18\r\nlast-hello-message\r\n:7\r\n" +
 		// An entry without an ip field is skipped.
 		sentinelMasterReply("runid", "r6", "flags", "sentinel")
-	tests := []struct {
-		flags string
-		down  bool
-	}{
-		{flags: "master"},
-		{flags: "master,s_down", down: true},
-		{flags: "master,s_down,o_down", down: true},
-		{flags: "master,disconnected", down: true},
-	}
-	for _, test := range tests {
-		t.Run(test.flags, func(t *testing.T) {
-			startRawSentinel(t, "127.0.0.3", sentinelMasterReply("name", masterName, "ip", "10.0.0.1", "port", "6379", "flags", test.flags), peers)
+	startRawSentinel(t, "127.0.0.3", sentinelMasterReply("name", masterName, "ip", "10.0.0.1", "port", "6379", "flags", "master"), peers)
 
-			got, err := newTestClient().GetSentinelPeers("127.0.0.3")
+	got, err := newTestClient().GetSentinelPeers("127.0.0.3")
 
-			require.NoError(t, err)
-			assert.Equal(t, SentinelPeers{Master: "10.0.0.1", MasterDown: test.down, Peers: []SentinelPeer{
-				{IP: "10.0.1.1", RunID: "r1", LastHello: 1500 * time.Millisecond},
-				{IP: "10.0.1.2", RunID: "r2", Down: true, LastHello: 30 * time.Second},
-				{IP: "10.0.1.3", RunID: "r3", Down: true, LastHello: -1},
-				{IP: "10.0.1.4", RunID: "r4", Down: true, LastHello: -1},
-				{IP: "10.0.1.5", LastHello: -1},
-			}}, got)
-		})
-	}
+	require.NoError(t, err)
+	assert.Equal(t, SentinelPeers{Master: "10.0.0.1", Peers: []SentinelPeer{
+		{IP: "10.0.1.1", RunID: "r1", LastHello: 1500 * time.Millisecond},
+		{IP: "10.0.1.2", RunID: "r2", Down: true, LastHello: 30 * time.Second},
+		{IP: "10.0.1.3", RunID: "r3", Down: true, LastHello: -1},
+		{IP: "10.0.1.4", RunID: "r4", Down: true, LastHello: -1},
+		{IP: "10.0.1.5", LastHello: -1},
+	}}, got)
 }
 
 func TestGetSentinelPeersErrors(t *testing.T) {
