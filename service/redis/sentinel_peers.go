@@ -72,7 +72,8 @@ func (c *client) GetSentinelPeers(ip string) (SentinelPeers, error) {
 // sentinelPeerEntries reads the entries of a SENTINEL SENTINELS reply. Each
 // entry is a flat array of field names and values. Only the ip field must be
 // valid. A bad value of another field gives its zero value, because the
-// Sentinel image can come from a tenant.
+// Sentinel image can come from a tenant. An entry without an ip field is no
+// peer that a reset can remove, so it is skipped.
 func sentinelPeerEntries(res []any) ([]SentinelPeer, error) {
 	peers := make([]SentinelPeer, 0, len(res))
 	for _, entry := range res {
@@ -81,6 +82,7 @@ func sentinelPeerEntries(res []any) ([]SentinelPeer, error) {
 			return nil, fmt.Errorf("unexpected SENTINEL SENTINELS entry %v", entry)
 		}
 		peer := SentinelPeer{LastHello: -1}
+		hasIP := false
 		for i := 0; i+1 < len(fields); i += 2 {
 			value, ok := fields[i+1].(string)
 			switch fields[i] {
@@ -88,7 +90,7 @@ func sentinelPeerEntries(res []any) ([]SentinelPeer, error) {
 				if !ok {
 					return nil, fmt.Errorf("unexpected SENTINEL SENTINELS ip %v", fields[i+1])
 				}
-				peer.IP = value
+				peer.IP, hasIP = value, true
 			case "runid":
 				peer.RunID = value
 			case "flags":
@@ -100,7 +102,9 @@ func sentinelPeerEntries(res []any) ([]SentinelPeer, error) {
 				}
 			}
 		}
-		peers = append(peers, peer)
+		if hasIP {
+			peers = append(peers, peer)
+		}
 	}
 	return peers, nil
 }

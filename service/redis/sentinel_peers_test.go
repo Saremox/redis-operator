@@ -31,18 +31,20 @@ func TestGetSentinelPeersReadsTheGroup(t *testing.T) {
 
 // TestGetSentinelPeersReadsTheEntries reads the run ID, the down flags and the
 // age of the last hello of each peer. A value that is not valid gives the zero
-// value, or -1 for the age.
+// value, or -1 for the age. An entry without an ip field gives no peer.
 func TestGetSentinelPeersReadsTheEntries(t *testing.T) {
 	entry := func(ip, runID, flags, hello string) string {
 		return sentinelMasterReply("name", ip+":26379", "ip", ip, "port", "26379", "runid", runID, "flags", flags, "last-hello-message", hello)
 	}
-	peers := "*5\r\n" +
+	peers := "*6\r\n" +
 		entry("10.0.1.1", "r1", "sentinel", "1500") +
 		entry("10.0.1.2", "r2", "s_down,sentinel,disconnected", "30000") +
 		entry("10.0.1.3", "r3", "sentinel,disconnected", "x") +
 		entry("10.0.1.4", "r4", "s_down,sentinel", "-5") +
 		// An integer is not a valid value.
-		"*4\r\n$2\r\nip\r\n$8\r\n10.0.1.5\r\n$18\r\nlast-hello-message\r\n:7\r\n"
+		"*4\r\n$2\r\nip\r\n$8\r\n10.0.1.5\r\n$18\r\nlast-hello-message\r\n:7\r\n" +
+		// An entry without an ip field is skipped.
+		sentinelMasterReply("runid", "r6", "flags", "sentinel")
 	tests := []struct {
 		flags string
 		down  bool
