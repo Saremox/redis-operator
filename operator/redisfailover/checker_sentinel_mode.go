@@ -285,6 +285,9 @@ func (r *RedisFailoverHandler) healSentinelMonitors(rf *redisfailoverv1.RedisFai
 			return err
 		}
 	}
+	if err := r.removeStalePeers(rf, sentinels, heal); err != nil {
+		return err
+	}
 	return r.checkAndHealSentinels(rf, sentinels, heal)
 }
 

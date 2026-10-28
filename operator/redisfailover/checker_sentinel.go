@@ -173,7 +173,7 @@ func (r *RedisFailoverHandler) restoreSentinelMismatches(rf *redisfailoverv1.Red
 			continue
 		}
 		if err != nil {
-			if err := r.restoreSentinel(rf, sentinels, sip, mismatch, heal); err != nil {
+			if _, err := r.restoreSentinel(rf, sentinels, sip, fmt.Sprintf("mismatch number of %s in memory", mismatch), heal); err != nil {
 				rf.Status = redisfailoverv1.RedisFailoverStatus{
 					State:   redisfailoverv1.NotHealthyState,
 					Message: "unable to restore sentinel",
@@ -358,30 +358,67 @@ func (r *RedisFailoverHandler) holdOnReadError(rf *redisfailoverv1.RedisFailover
 // seconds, so a mismatch that stays gets a reset at the next resync.
 const sentinelResetHoldOff = 25 * time.Second
 
-// restoreSentinel resets a Sentinel with a mismatch, unless it had a reset or
-// a new monitor in the hold-off. After a reset, the Sentinel needs some seconds
-// to find the other Sentinels and the replicas, and a new reset makes this
-// time longer.
-func (r *RedisFailoverHandler) restoreSentinel(rf *redisfailoverv1.RedisFailover, sentinels []string, sip, mismatch string, heal *sentinelHeal) error {
+// restoreSentinel resets a Sentinel with the problem, unless it had a reset
+// or a new monitor in the hold-off. After a reset, the Sentinel needs some
+// seconds to find the other Sentinels and the replicas, and a new reset makes
+// this time longer. It reports whether it reset the Sentinel.
+func (r *RedisFailoverHandler) restoreSentinel(rf *redisfailoverv1.RedisFailover, sentinels []string, sip, problem string, heal *sentinelHeal) (bool, error) {
 	now := r.now()
 	if at, ok := heal.resets[sip]; ok {
-		heal.logger.Debugf("Sentinel %s mismatch number of %s in memory. last reset %s ago, waiting", sip, mismatch, now.Sub(at).Round(time.Second))
+		heal.logger.Debugf("Sentinel %s %s. last reset %s ago, waiting", sip, problem, now.Sub(at).Round(time.Second))
 		// Without a pod event, the next resync can come long after the hold-off.
 		if r.requeue != nil {
 			r.requeue(heal.key, sentinelResetHoldOff-now.Sub(at))
 		}
-		return nil
+		return false, nil
 	}
 	if !r.sentinelChangeAllowed(rf, sentinels, heal, sip) {
-		return nil
+		return false, nil
 	}
-	heal.logger.Warningf("Sentinel %s mismatch number of %s in memory. resetting", sip, mismatch)
+	heal.logger.Warningf("Sentinel %s %s. resetting", sip, problem)
 	if err := r.rfHealer.RestoreSentinel(sip); err != nil {
 		if heal.skip(sip, err) {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 	heal.resets[sip] = now
+	return true, nil
+}
+
+// removeStalePeers resets each Sentinel that knows a peer that is no Sentinel
+// pod. A deleted Sentinel stays a peer until a reset, and a Sentinel of
+// another group can then get its IP and merge the two groups. The check by
+// count does not see such a peer while the count stays the same. A reset here
+// starts the hold-off, so the check by count does not reset the Sentinel
+// again in this reconcile.
+func (r *RedisFailoverHandler) removeStalePeers(rf *redisfailoverv1.RedisFailover, sentinels []string, heal *sentinelHeal) error {
+	state := r.loadSentinelUnknown(heal.key)
+	for _, sip := range sentinels {
+		peers := slices.Clone(state.stale[sip])
+		if len(peers) == 0 {
+			continue
+		}
+		slices.Sort(peers)
+		problem := fmt.Sprintf("knows the peers %s, which are no Sentinel pods", strings.Join(peers, ", "))
+		reset, err := r.restoreSentinel(rf, sentinels, sip, problem, heal)
+		if err != nil {
+			rf.Status = redisfailoverv1.RedisFailoverStatus{
+				State:   redisfailoverv1.NotHealthyState,
+				Message: "unable to restore sentinel",
+			}
+			return err
+		}
+		if !reset {
+			continue
+		}
+		for _, ip := range peers {
+			if state.resets[ip] == nil {
+				state.resets[ip] = map[string]time.Time{}
+			}
+			state.resets[ip][sip] = heal.resets[sip]
+		}
+		r.sentinelUnknown.Store(heal.key, state)
+	}
 	return nil
 }
