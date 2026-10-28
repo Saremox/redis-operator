@@ -2,10 +2,12 @@ package service
 
 import (
 	"net"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	"github.com/saremox/redis-operator/service/redis"
 )
 
 // SentinelAddrs holds the addresses that the Sentinels of a RedisFailover
@@ -22,6 +24,9 @@ type SentinelAddrs struct {
 	// Sentinel in deletion is not in it, because on a lost node it never
 	// answers.
 	Unread []string
+	// Groups holds the group that each Sentinel gave, by the IP of the
+	// Sentinel pod. The peer and master IPs have the form of net.IP.String.
+	Groups map[string]redis.SentinelPeers
 }
 
 // GetUnknownSentinelAddrs reads the group of each running Sentinel, also of a
@@ -38,7 +43,7 @@ func (r *RedisFailoverChecker) GetUnknownSentinelAddrs(rf *redisfailoverv1.Redis
 		return SentinelAddrs{}, err
 	}
 	ownSentinels, ownRedises := podIPs(sentinels), podIPs(redises)
-	addrs := SentinelAddrs{Peers: map[string][]string{}, Masters: map[string][]string{}, Own: map[string]bool{}}
+	addrs := SentinelAddrs{Peers: map[string][]string{}, Masters: map[string][]string{}, Own: map[string]bool{}, Groups: map[string]redis.SentinelPeers{}}
 	for ip := range ownSentinels {
 		addrs.Own[ip] = true
 	}
@@ -57,14 +62,19 @@ func (r *RedisFailoverChecker) GetUnknownSentinelAddrs(rf *redisfailoverv1.Redis
 			}
 			continue
 		}
-		for _, peer := range group.Peers {
-			if peer = canonicalIP(peer); !ownSentinels[peer] {
+		group.Peers = slices.Clone(group.Peers)
+		for i := range group.Peers {
+			peer := canonicalIP(group.Peers[i].IP)
+			group.Peers[i].IP = peer
+			if !ownSentinels[peer] && !slices.Contains(addrs.Peers[peer], sip) {
 				addrs.Peers[peer] = append(addrs.Peers[peer], sip)
 			}
 		}
-		if master := canonicalIP(group.Master); !ownRedises[master] {
-			addrs.Masters[master] = append(addrs.Masters[master], sip)
+		group.Master = canonicalIP(group.Master)
+		if !ownRedises[group.Master] {
+			addrs.Masters[group.Master] = append(addrs.Masters[group.Master], sip)
 		}
+		addrs.Groups[sip] = group
 	}
 	return addrs, nil
 }

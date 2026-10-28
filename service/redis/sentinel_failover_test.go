@@ -103,7 +103,7 @@ func TestGetSentinelFailoverErrors(t *testing.T) {
 
 // startSentinelOnAddr starts a Sentinel on ip:sentinelPort that monitors
 // master.
-func startSentinelOnAddr(t *testing.T, ip string, master *redisProc, extraConf ...string) {
+func startSentinelOnAddr(t *testing.T, ip string, master *redisProc, extraConf ...string) *redisProc {
 	t.Helper()
 	l, err := net.Listen("tcp", net.JoinHostPort(ip, sentinelPort))
 	if err != nil {
@@ -122,6 +122,7 @@ func startSentinelOnAddr(t *testing.T, ip string, master *redisProc, extraConf .
 	proc := newRedisProc(ip, 26379, dir, cmd)
 	t.Cleanup(func() { killProc(proc) })
 	require.NoError(t, waitForPingErr(proc, 5*time.Second))
+	return proc
 }
 
 // TestGetSentinelFailoverOfARealFailover reads the state of a real Sentinel
