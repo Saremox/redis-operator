@@ -173,3 +173,38 @@ func TestGetUnknownSentinelAddrsListsASentinelOnce(t *testing.T) {
 	assert.Equal(t, map[string][]string{"10.0.9.9": {"10.0.1.1"}}, addrs.Peers)
 	assert.Len(t, addrs.Groups["10.0.1.1"].Peers, 2)
 }
+
+// TestGetUnknownSentinelAddrsFindsAPodWithoutAnIP sets PendingIP for a pod on
+// a node without an IP in its status. Its Sentinel can already run. A pod
+// that waits for a node has no Sentinel yet.
+func TestGetUnknownSentinelAddrsFindsAPodWithoutAnIP(t *testing.T) {
+	rf := generateRF()
+	onNode := peersPod("", corev1.PodPending, false)
+	onNode.Spec.NodeName = "node-a"
+	withIP := peersPod("10.0.1.1", corev1.PodRunning, false)
+	withIP.Spec.NodeName = "node-a"
+	tests := []struct {
+		name    string
+		pods    []corev1.Pod
+		pending bool
+	}{
+		{name: "pods with an IP", pods: []corev1.Pod{withIP}},
+		{name: "a pod without a node", pods: []corev1.Pod{withIP, peersPod("", corev1.PodPending, false)}},
+		{name: "a pod on a node without an IP", pods: []corev1.Pod{withIP, onNode}, pending: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ms := &mK8SService.Services{}
+			ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(&corev1.PodList{Items: test.pods}, nil)
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{}, nil)
+			mr := &mRedisService.Client{}
+			mr.On("GetSentinelPeers", "10.0.1.1").Once().Return(redis.SentinelPeers{Master: "10.0.0.1"}, nil)
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+			addrs, err := checker.GetUnknownSentinelAddrs(rf)
+
+			require.NoError(t, err)
+			assert.Equal(t, test.pending, addrs.PendingIP)
+		})
+	}
+}

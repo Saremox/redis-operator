@@ -38,6 +38,13 @@ type sentinelHeal struct {
 	// held holds the Sentinels that get no change in this reconcile: after a
 	// read error, or in a failover that the stored wait does not cover.
 	held map[string]bool
+	// merged is true while the Sentinels know a Sentinel or a master of
+	// another group. Then the Sentinels get no SENTINEL MONITOR or RESET,
+	// except a Sentinel in unset.
+	merged bool
+	// unset holds the Sentinels that monitor no Redis and know no alive peer
+	// of another group. They get a SENTINEL MONITOR also while merged.
+	unset map[string]bool
 }
 
 // startSentinelHeal loads the reset times that are still in the hold-off.
@@ -363,6 +370,10 @@ const sentinelResetHoldOff = 25 * time.Second
 // seconds to find the other Sentinels and the replicas, and a new reset makes
 // this time longer. It reports whether it reset the Sentinel.
 func (r *RedisFailoverHandler) restoreSentinel(rf *redisfailoverv1.RedisFailover, sentinels []string, sip, problem string, heal *sentinelHeal) (bool, error) {
+	if heal.merged {
+		heal.logger.Debugf("Sentinel %s %s. The Sentinels know another group, so the operator does not reset it", sip, problem)
+		return false, nil
+	}
 	now := r.now()
 	if at, ok := heal.resets[sip]; ok {
 		heal.logger.Debugf("Sentinel %s %s. last reset %s ago, waiting", sip, problem, now.Sub(at).Round(time.Second))

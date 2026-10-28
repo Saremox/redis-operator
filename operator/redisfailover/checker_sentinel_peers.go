@@ -51,6 +51,14 @@ type sentinelUnknownAddrs struct {
 	// stale holds, by Sentinel IP, the peers of the last check that are no
 	// Sentinel pod. A reset removes them.
 	stale map[string][]string
+	// unset holds the Sentinels of the last check that monitor no Redis and
+	// know no alive peer that is no Sentinel pod.
+	unset map[string]bool
+	// merged holds the description of the addresses of another group, while
+	// the operator sends no SENTINEL MONITOR or RESET. It is empty without
+	// such addresses. mergedIPs holds the IPs of these addresses.
+	merged    string
+	mergedIPs []string
 }
 
 // unknownAddrLog holds the log messages of a kind of unknown address. Each
@@ -76,17 +84,19 @@ var (
 // are no pods of the RedisFailover. A Sentinel accepts each peer that sends the
 // same master name. Thus a Sentinel of another RedisFailover at an old IP of
 // an own Sentinel merges the two groups, and they exchange their masters. The
-// check also finds the peers that a reset removes.
+// check also finds the peers that a reset removes, and the merge that stops
+// the SENTINEL MONITOR and RESET of the operator.
 func (r *RedisFailoverHandler) observeSentinelAddrs(rf *redisfailoverv1.RedisFailover) {
 	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
 	key := failoverKey(rf)
 	state := r.loadSentinelUnknown(key)
 	// The heal does not reset a peer of an old check.
-	state.stale = nil
+	state.stale, state.unset = nil, nil
 	addrs, err := r.rfChecker.GetUnknownSentinelAddrs(rf)
 	if err != nil {
 		logger.Debugf("The operator did not list the pods, so it does not check the Sentinel peers: %v", err)
 		r.sentinelUnknown.Store(key, state)
+		setMergedStatus(rf, state.mergedIPs)
 		return
 	}
 	// A new Sentinel gives 127.0.0.1, which is no pod.
@@ -103,7 +113,7 @@ func (r *RedisFailoverHandler) observeSentinelAddrs(rf *redisfailoverv1.RedisFai
 	}
 	maps.DeleteFunc(state.own, func(_ string, at time.Time) bool { return now.Sub(at) >= sentinelOwnIPMemory })
 	state.learnPeers(addrs, now)
-	state.findStalePeers(addrs)
+	r.checkSentinelMerge(logger, rf, &state, addrs, complete)
 	recent := func(ip string, _ []string) bool { _, ok := state.own[ip]; return ok }
 	maps.DeleteFunc(addrs.Peers, recent)
 	maps.DeleteFunc(addrs.Masters, recent)
@@ -141,6 +151,11 @@ func (s *sentinelUnknownAddrs) learnPeers(addrs rfservice.SentinelAddrs, now tim
 // name comes back.
 func (s *sentinelUnknownAddrs) foreignPeers(addrs rfservice.SentinelAddrs) map[string][]string {
 	foreign := map[string][]string{}
+	// A new Sentinel pod can get the IP of a deleted one and join the
+	// Sentinels before its pod status has the IP.
+	if addrs.PendingIP {
+		return foreign
+	}
 	for sip, group := range addrs.Groups {
 		for _, peer := range group.Peers {
 			if _, unknown := addrs.Peers[peer.IP]; !unknown || !alivePeer(peer) || slices.Contains(foreign[peer.IP], sip) {
@@ -154,23 +169,82 @@ func (s *sentinelUnknownAddrs) foreignPeers(addrs rfservice.SentinelAddrs) map[s
 	return foreign
 }
 
-// findStalePeers keeps, for each Sentinel, the unknown peers that a reset
-// removes. A Sentinel that knows a Sentinel of another group gets no reset,
-// because that peer comes back in about 2 seconds.
-func (s *sentinelUnknownAddrs) findStalePeers(addrs rfservice.SentinelAddrs) {
-	foreign := s.foreignPeers(addrs)
-	s.stale = map[string][]string{}
+// checkSentinelMerge finds the addresses of another group in the Sentinels,
+// and the peers that a reset removes. The operator sends no SENTINEL MONITOR
+// or RESET to a merged group: the other group returns each Sentinel to its
+// master in about 2 seconds, so each change only moves the master of the
+// Sentinels again. A master of another group counts only together with an
+// alive unknown peer. Without such a peer, a new monitor ends the state.
+func (r *RedisFailoverHandler) checkSentinelMerge(logger log.Logger, rf *redisfailoverv1.RedisFailover, state *sentinelUnknownAddrs, addrs rfservice.SentinelAddrs, complete bool) {
+	foreign := state.foreignPeers(addrs)
+	masters := map[string][]string{}
+	alive := false
+	state.stale, state.unset = map[string][]string{}, map[string]bool{}
 	for sip, group := range addrs.Groups {
-		var stale []string
+		aliveHere := false
 		for _, peer := range group.Peers {
-			if _, unknown := addrs.Peers[peer.IP]; !unknown || slices.Contains(stale, peer.IP) {
+			if _, unknown := addrs.Peers[peer.IP]; !unknown {
 				continue
 			}
-			stale = append(stale, peer.IP)
+			aliveHere = aliveHere || alivePeer(peer)
+			if !slices.Contains(state.stale[sip], peer.IP) {
+				state.stale[sip] = append(state.stale[sip], peer.IP)
+			}
 		}
-		if len(stale) > 0 && !slices.ContainsFunc(stale, func(ip string) bool { return slices.Contains(foreign[ip], sip) }) {
-			s.stale[sip] = stale
+		alive = alive || aliveHere
+		if _, unknown := addrs.Masters[group.Master]; unknown && !group.MasterDown {
+			masters[group.Master] = append(masters[group.Master], sip)
 		}
+		if !credibleMaster(group.Master) && !aliveHere {
+			state.unset[sip] = true
+		}
+	}
+	var found, ips []string
+	for ip, sentinels := range foreign {
+		found = append(found, "peer "+describeUnknownAddr(ip, sentinels))
+		ips = append(ips, ip)
+	}
+	if alive {
+		for ip, sentinels := range masters {
+			found = append(found, "master "+describeUnknownAddr(ip, sentinels))
+			ips = append(ips, ip)
+		}
+	}
+	slices.Sort(found)
+	slices.Sort(ips)
+	ips = slices.Compact(ips)
+	merged := strings.Join(found, ", ")
+	switch {
+	case merged != "" && state.merged == "":
+		logger.Warningf(mergeLog.start, merged)
+	case merged != "":
+		logger.Debugf(mergeLog.last, merged)
+	case state.merged != "" && !complete:
+		// A Sentinel without an answer can still know the addresses.
+		merged, ips = state.merged, state.mergedIPs
+	case state.merged != "":
+		logger.Infof(mergeLog.end, state.merged)
+	}
+	state.merged, state.mergedIPs = merged, ips
+	setMergedStatus(rf, ips)
+}
+
+// mergeLog holds the log messages of a merge with another group.
+var mergeLog = unknownAddrLog{
+	start: "Sentinels of this RedisFailover know addresses of another group: %s. The operator sends no SENTINEL MONITOR, REMOVE or RESET to the Sentinels until these addresses are gone, because the other group undoes each change in seconds",
+	last:  "Sentinels still know addresses of another group: %s",
+	end:   "The addresses of another group are gone from the Sentinels: %s. The operator heals the Sentinels again",
+}
+
+// setMergedStatus sets the status while the Sentinels know the addresses ips
+// of another group.
+func setMergedStatus(rf *redisfailoverv1.RedisFailover, ips []string) {
+	if len(ips) == 0 {
+		return
+	}
+	rf.Status = redisfailoverv1.RedisFailoverStatus{
+		State:   redisfailoverv1.NotHealthyState,
+		Message: fmt.Sprintf("Sentinels know the addresses %s of another group, so the operator sends them no SENTINEL MONITOR or RESET", strings.Join(ips, ", ")),
 	}
 }
 

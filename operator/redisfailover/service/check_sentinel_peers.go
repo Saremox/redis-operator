@@ -27,6 +27,9 @@ type SentinelAddrs struct {
 	// Groups holds the group that each Sentinel gave, by the IP of the
 	// Sentinel pod. The peer and master IPs have the form of net.IP.String.
 	Groups map[string]redis.SentinelPeers
+	// PendingIP is true when a Sentinel pod is on a node but the pod status
+	// has no IP yet. Its Sentinel can already be a peer.
+	PendingIP bool
 }
 
 // GetUnknownSentinelAddrs reads the group of each running Sentinel, also of a
@@ -51,6 +54,9 @@ func (r *RedisFailoverChecker) GetUnknownSentinelAddrs(rf *redisfailoverv1.Redis
 		addrs.Own[ip] = true
 	}
 	for _, sp := range sentinels.Items {
+		if sp.Spec.NodeName != "" && sp.Status.PodIP == "" && len(sp.Status.PodIPs) == 0 {
+			addrs.PendingIP = true
+		}
 		if sp.Status.Phase != corev1.PodRunning {
 			continue
 		}
