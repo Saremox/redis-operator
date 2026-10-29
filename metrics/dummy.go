@@ -13,6 +13,8 @@ type dummy struct {
 func (d *dummy) SetClusterOK(namespace string, name string)    {}
 func (d *dummy) SetClusterError(namespace string, name string) {}
 func (d *dummy) DeleteCluster(namespace string, name string)   {}
+func (d *dummy) SetSentinelUnknownAddrs(_, _ string, _ int, _ bool) {
+}
 func (d *dummy) RecordEnsureOperation(objectNamespace string, objectName string, objectKind string, resourceName string, status string) {
 }
 func (d *dummy) RecordRedisCheck(namespace string, resource string, indicator string, instance string, status string) {

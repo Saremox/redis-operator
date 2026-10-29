@@ -515,6 +515,9 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		updateStatus(r.k8sservice, rf, observed)
 	}()
 
+	if rf.Bootstrapping() || rf.OperatorManagedFailover() {
+		r.skipSentinelAddrs(rf)
+	}
 	if rf.Bootstrapping() {
 		return r.checkAndHealBootstrapMode(rf)
 	}
@@ -542,6 +545,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		}
 		setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.REDIS_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Redis quorum not running, waiting for redis statefulset reconcile")
+		r.skipSentinelAddrs(rf)
 		return nil
 	}
 
@@ -553,9 +557,12 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		}
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New(errorMsg))
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Sentinel quorum not running, waiting for sentinel deployment reconcile")
+		r.skipSentinelAddrs(rf)
 		return nil
 	}
 
+	// Before the count of the masters, because two masters end the reconcile.
+	r.observeSentinelAddrs(rf)
 	nMasters, err := r.rfChecker.GetNumberMasters(rf)
 	if err != nil {
 		rf.Status = redisfailoverv1.RedisFailoverStatus{

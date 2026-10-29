@@ -47,6 +47,7 @@ type Client interface {
 	GetSentinelReplicas(ip string) ([]string, error)
 	SentinelMasterDown(ip string) (bool, error)
 	GetSentinelFailover(ip string) (SentinelFailover, error)
+	GetSentinelPeers(ip string) (SentinelPeers, error)
 	SetCustomSentinelConfig(ip string, configs []string) error
 	SetCustomRedisConfig(ip string, port string, configs []string, password string) error
 	SlaveIsReady(ip, port, password string) (bool, error)
@@ -105,6 +106,15 @@ func redisOptions(addr, password string) *rediscli.Options {
 		WriteTimeout: 2 * time.Second,
 		MaxRetries:   1,
 	}
+}
+
+// quickOptions are for a check whose caller treats a slow answer like no
+// answer. Each step waits 500ms at most, and the client does not retry.
+func quickOptions(addr, password string) *rediscli.Options {
+	options := redisOptions(addr, password)
+	options.DialTimeout, options.ReadTimeout, options.WriteTimeout = 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond
+	options.MaxRetries = -1
+	return options
 }
 
 // GetNumberSentinelsInMemory return the number of sentinels that the requested sentinel has

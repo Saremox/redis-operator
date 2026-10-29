@@ -72,7 +72,10 @@ type RedisFailoverHandler struct {
 	// sentinelReadErrors holds, per namespace/name, the time of the first read
 	// error of the failover state of each Sentinel IP.
 	sentinelReadErrors sync.Map
-	now                func() time.Time
+	// sentinelUnknown holds, per namespace/name, the sentinelUnknownAddrs of
+	// the Sentinels.
+	sentinelUnknown sync.Map
+	now             func() time.Time
 	// requeue is nil until New connects the controller.
 	requeue func(key string, after time.Duration)
 }
@@ -113,6 +116,7 @@ func (r *RedisFailoverHandler) Handle(_ context.Context, obj runtime.Object) err
 		r.sentinelResets.Delete(failoverKey(rf))
 		r.sentinelFailovers.Delete(failoverKey(rf))
 		r.sentinelReadErrors.Delete(failoverKey(rf))
+		r.sentinelUnknown.Delete(failoverKey(rf))
 		remaining := slices.DeleteFunc(slices.Clone(rf.Finalizers), func(f string) bool {
 			return f == redisFailoverFinalizer
 		})

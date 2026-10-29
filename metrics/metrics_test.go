@@ -307,5 +307,21 @@ func TestDummyRecorder(t *testing.T) {
 		Dummy.RecordSentinelCheck("ns", "res", SENTINEL_NOT_READY, "inst", FAIL)
 		Dummy.RecordK8sOperation("ns", "Pod", "name", "create", SUCCESS, "")
 		Dummy.RecordRedisOperation("redis", "10.0.0.5", GET_SLAVE_OF, SUCCESS, "")
+		Dummy.SetSentinelUnknownAddrs("ns", "name", 1, true)
 	})
+}
+
+func TestSentinelUnknownAddrsMetrics(t *testing.T) {
+	rec := NewRecorder("unknown_test", prometheus.NewRegistry()).(recorder)
+	rec.SetSentinelUnknownAddrs("ns", "a", 2, true)
+	rec.SetSentinelUnknownAddrs("ns", "b", 0, false)
+
+	assert.InDelta(t, 2.0, testutil.ToFloat64(rec.unknownPeers.WithLabelValues("ns", "a")), 0)
+	assert.InDelta(t, 1.0, testutil.ToFloat64(rec.unknownMaster.WithLabelValues("ns", "a")), 0)
+	assert.InDelta(t, 0.0, testutil.ToFloat64(rec.unknownPeers.WithLabelValues("ns", "b")), 0)
+	assert.InDelta(t, 0.0, testutil.ToFloat64(rec.unknownMaster.WithLabelValues("ns", "b")), 0)
+
+	rec.DeleteCluster("ns", "a")
+	assert.Equal(t, 1, testutil.CollectAndCount(rec.unknownPeers))
+	assert.Equal(t, 1, testutil.CollectAndCount(rec.unknownMaster))
 }

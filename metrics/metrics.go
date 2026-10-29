@@ -69,6 +69,7 @@ const (
 	GET_SENTINEL_REPLICAS       = "SENTINEL_GET_REPLICAS"
 	GET_SENTINEL_MASTER_DOWN    = "SENTINEL_GET_MASTER_DOWN"
 	GET_SENTINEL_FAILOVER       = "SENTINEL_GET_FAILOVER_IN_PROGRESS"
+	GET_SENTINEL_PEERS          = "SENTINEL_GET_PEERS" // the master and the other Sentinels of a Sentinel
 	CHECK_SENTINEL_QUORUM       = "SENTINEL_CKQUORUM"
 	SLAVE_IS_READY              = "CHECK_IF_SLAVE_IS_READY"
 	GET_REPLICATION_INFO        = "GET_REPLICATION_INFO"
@@ -105,6 +106,10 @@ type Recorder interface {
 	SetClusterError(namespace string, name string)
 	DeleteCluster(namespace string, name string)
 
+	// SetSentinelUnknownAddrs sets the count of the unknown peer IPs and the
+	// unknown master flag of the Sentinels of a RedisFailover.
+	SetSentinelUnknownAddrs(namespace string, name string, peers int, master bool)
+
 	// Indicate redis instances being monitored
 	RecordEnsureOperation(objectNamespace string, objectName string, objectKind string, resourceName string, status string)
 
@@ -124,6 +129,8 @@ type recorder struct {
 	sentinelCheck        *prometheus.CounterVec // indicates any error encountered in managed sentinel instance(s)
 	k8sServiceOperations *prometheus.CounterVec // number of operations performed on k8s
 	redisOperations      *prometheus.CounterVec // number of operations performed on redis/sentinel instances
+	unknownPeers         *prometheus.GaugeVec
+	unknownMaster        *prometheus.GaugeVec
 	ControllerRecorder
 }
 
@@ -174,6 +181,20 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 			Help:      "number of operations performed on k8s",
 		}, []string{"namespace", "kind", "name", "operation", "status", "err"})
 
+	unknownPeers := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: promControllerSubsystem,
+		Name:      "unknown_sentinel_peers",
+		Help:      "Number of peer IPs that the Sentinels of the RedisFailover know, that no Sentinel pod of the RedisFailover has, and that no pod of it had in the last 5 minutes, in two checks at least 90s apart.",
+	}, []string{"namespace", "name"})
+
+	unknownMaster := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: promControllerSubsystem,
+		Name:      "sentinel_unknown_master",
+		Help:      "1 when a Sentinel of the RedisFailover monitors a master IP that no Redis pod of the RedisFailover has and that no pod of it had in the last 5 minutes, in two checks at least 90s apart, else 0.",
+	}, []string{"namespace", "name"})
+
 	// Create the instance.
 	r := recorder{
 		clusterOK:            clusterOK,
@@ -182,6 +203,8 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		sentinelCheck:        sentinelCheck,
 		k8sServiceOperations: k8sServiceOperations,
 		redisOperations:      redisOperations,
+		unknownPeers:         unknownPeers,
+		unknownMaster:        unknownMaster,
 		ControllerRecorder:   newControllerRecorder(reg),
 	}
 
@@ -193,6 +216,8 @@ func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 		r.sentinelCheck,
 		r.k8sServiceOperations,
 		r.redisOperations,
+		r.unknownPeers,
+		r.unknownMaster,
 	)
 	mutex.Lock()
 	recorders = append(recorders, r)
@@ -213,6 +238,18 @@ func (r recorder) SetClusterError(namespace string, name string) {
 // DeleteCluster set the cluster status to Error
 func (r recorder) DeleteCluster(namespace string, name string) {
 	r.clusterOK.DeleteLabelValues(namespace, name)
+	r.unknownPeers.DeleteLabelValues(namespace, name)
+	r.unknownMaster.DeleteLabelValues(namespace, name)
+}
+
+func (r recorder) SetSentinelUnknownAddrs(namespace, name string, peers int, master bool) {
+	r.unknownPeers.WithLabelValues(namespace, name).Set(float64(peers))
+	unknownMaster := HEALTHY
+	if master {
+		unknownMaster = UNHEALTHY
+	}
+	r.unknownMaster.WithLabelValues(namespace, name).Set(unknownMaster)
+	updateResourceMetricLastUpdatedTracker(namespace, "redisfailover", name)
 }
 
 func (r recorder) RecordEnsureOperation(objectNamespace string, objectName string, objectKind string, resourceName string, status string) {
@@ -291,6 +328,8 @@ func removeStaleMetrics() {
 				// A new map, because label is used again for the next recorder.
 				labelWithName := prometheus.Labels{"namespace": label["namespace"], "name": label["resource"]}
 				metricsDeletedCount += recorder.clusterOK.DeletePartialMatch(labelWithName)
+				metricsDeletedCount += recorder.unknownPeers.DeletePartialMatch(labelWithName)
+				metricsDeletedCount += recorder.unknownMaster.DeletePartialMatch(labelWithName)
 			}
 			for _, label := range ipBasedLabels {
 				metricsDeletedCount += recorder.redisOperations.DeletePartialMatch(label)
