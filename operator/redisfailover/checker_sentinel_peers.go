@@ -10,6 +10,8 @@ import (
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
+	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
+	"github.com/saremox/redis-operator/service/redis"
 )
 
 // sentinelUnknownPersist is the time from the first check that finds an
@@ -22,6 +24,20 @@ const sentinelUnknownPersist = 90 * time.Second
 // stays known after the last check that found the pod. Thus the old IP of a
 // deleted pod is not unknown while the Sentinels still know it.
 const sentinelOwnIPMemory = 5 * time.Minute
+
+// sentinelPeerHelloFresh is the age of the last hello of an alive peer. A
+// Sentinel sends a hello every 2 seconds.
+const sentinelPeerHelloFresh = 10 * time.Second
+
+// sentinelPeerResetMemory is the time after the reset of a peer in which the
+// return of that peer shows a Sentinel of another group.
+const sentinelPeerResetMemory = 5 * time.Minute
+
+// sentinelMergeHold is the longest time that a Sentinel without an answer
+// keeps a merge after the last check that found it. Two resyncs of 30
+// seconds fit, so one failed read does not end the merge. A Sentinel in a
+// crash loop does not hold the heal of the others for all time.
+const sentinelMergeHold = 60 * time.Second
 
 // unknownAddr is an address that the Sentinels know and that no pod of the
 // RedisFailover has.
@@ -36,6 +52,30 @@ type unknownAddr struct {
 type sentinelUnknownAddrs struct {
 	peers, masters map[string]unknownAddr
 	own            map[string]time.Time
+	// runIDs holds the run IDs of the alive peers at each IP of a Sentinel
+	// pod, for as long as own keeps the IP.
+	runIDs map[string]map[string]bool
+	// resets holds, by peer IP and then by Sentinel IP, the time of the reset
+	// that removed the peer from that Sentinel.
+	resets map[string]map[string]time.Time
+	// foreign holds, by peer IP and then by Sentinel IP, the peers that a
+	// check found as a Sentinel of another group. An entry stays until a check
+	// of that Sentinel finds the peer dead or gone, so the memory of the reset
+	// and of the run IDs does not end it.
+	foreign map[string]map[string]bool
+	// stale holds, by Sentinel IP, the peers of the last check that are no
+	// Sentinel pod. A reset removes them.
+	stale map[string][]string
+	// unset holds the Sentinels of the last check that monitor no Redis and
+	// know no alive peer that is no Sentinel pod.
+	unset map[string]bool
+	// merged holds the description of the addresses of another group, while
+	// the operator sends no SENTINEL MONITOR or RESET. It is empty without
+	// such addresses. mergedIPs holds the IPs of these addresses.
+	merged    string
+	mergedIPs []string
+	// mergedAt is the time of the last check that found these addresses.
+	mergedAt time.Time
 }
 
 // unknownAddrLog holds the log messages of a kind of unknown address. Each
@@ -61,12 +101,19 @@ var (
 // are no pods of the RedisFailover. A Sentinel accepts each peer that sends the
 // same master name. Thus a Sentinel of another RedisFailover at an old IP of
 // an own Sentinel merges the two groups, and they exchange their masters. The
-// operator only reports this and changes nothing.
+// check also finds the peers that a reset removes, and the merge that stops
+// the SENTINEL MONITOR and RESET of the operator.
 func (r *RedisFailoverHandler) observeSentinelAddrs(rf *redisfailoverv1.RedisFailover) {
 	logger := r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace)
+	key := failoverKey(rf)
+	state := r.loadSentinelUnknown(key)
+	// The heal does not reset a peer of an old check.
+	state.stale, state.unset = nil, nil
 	addrs, err := r.rfChecker.GetUnknownSentinelAddrs(rf)
 	if err != nil {
 		logger.Debugf("The operator did not list the pods, so it does not check the Sentinel peers: %v", err)
+		r.sentinelUnknown.Store(key, state)
+		setMergedStatus(rf, state.mergedIPs)
 		return
 	}
 	// A new Sentinel gives 127.0.0.1, which is no pod.
@@ -77,14 +124,19 @@ func (r *RedisFailoverHandler) observeSentinelAddrs(rf *redisfailoverv1.RedisFai
 	if !complete {
 		logger.Debugf("Sentinels %s did not give their peers, so no unknown address ends in this check", strings.Join(addrs.Unread, ", "))
 	}
-	key := failoverKey(rf)
-	state := r.loadSentinelUnknown(key)
 	now := r.now()
 	for ip := range addrs.Own {
 		state.own[ip] = now
 	}
 	maps.DeleteFunc(state.own, func(_ string, at time.Time) bool { return now.Sub(at) >= sentinelOwnIPMemory })
-	recent := func(ip string, _ []string) bool { _, ok := state.own[ip]; return ok }
+	state.learnPeers(addrs, now)
+	r.checkSentinelMerge(logger, rf, &state, addrs, complete)
+
+	// A peer at the IP of a deleted pod that sends hellos with a run ID that
+	// the pod did not have is a new Sentinel, so the memory of the IP does
+	// not hide it.
+	newPeer := state.newPeers(addrs)
+	recent := func(ip string, _ []string) bool { _, ok := state.own[ip]; return ok && !newPeer[ip] }
 	maps.DeleteFunc(addrs.Peers, recent)
 	maps.DeleteFunc(addrs.Masters, recent)
 	peers := trackUnknownAddrs(logger, unknownPeerLog, state.peers, addrs.Peers, complete, now)
@@ -93,13 +145,251 @@ func (r *RedisFailoverHandler) observeSentinelAddrs(rf *redisfailoverv1.RedisFai
 	r.mClient.SetSentinelUnknownAddrs(rf.Namespace, rf.Name, peers, masters > 0)
 }
 
+// alivePeer reports whether the peer sent a hello in the last
+// sentinelPeerHelloFresh. Only a hello merges two groups. A Sentinel with
+// another master name answers PING but sends no hello for this name. Without
+// the age of the hello, a peer without the flags s_down and disconnected is
+// alive.
+func alivePeer(peer redis.SentinelPeer) bool {
+	if peer.LastHello < 0 {
+		return !peer.Down
+	}
+	return peer.LastHello < sentinelPeerHelloFresh
+}
+
+// learnPeers keeps the run IDs at the IPs of the Sentinel pods, and the
+// recent resets of the peers that are no pod.
+func (s *sentinelUnknownAddrs) learnPeers(addrs rfservice.SentinelAddrs, now time.Time) {
+	for _, group := range addrs.Groups {
+		for _, peer := range group.Peers {
+			if _, unknown := addrs.Peers[peer.IP]; unknown || !alivePeer(peer) || peer.RunID == "" {
+				continue
+			}
+			if s.runIDs[peer.IP] == nil {
+				s.runIDs[peer.IP] = map[string]bool{}
+			}
+			s.runIDs[peer.IP][peer.RunID] = true
+		}
+	}
+	// An own Sentinel that still runs after a forced deletion of its pod
+	// keeps its run IDs, so it does not become another group.
+	maps.DeleteFunc(s.runIDs, func(ip string, known map[string]bool) bool {
+		_, ok := s.own[ip]
+		return !ok && !aliveRunID(addrs, ip, known)
+	})
+	// A reset peer that a check does not find stays, because a Sentinel of
+	// another group can come back after this check.
+	maps.DeleteFunc(s.resets, func(ip string, bySentinel map[string]time.Time) bool {
+		maps.DeleteFunc(bySentinel, func(_ string, at time.Time) bool { return now.Sub(at) >= sentinelPeerResetMemory })
+		return addrs.Own[ip] || len(bySentinel) == 0
+	})
+}
+
+// aliveRunID reports whether a Sentinel knows an alive peer at ip with a run
+// ID in known.
+func aliveRunID(addrs rfservice.SentinelAddrs, ip string, known map[string]bool) bool {
+	for _, group := range addrs.Groups {
+		for _, peer := range group.Peers {
+			if peer.IP == ip && alivePeer(peer) && known[peer.RunID] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// newPeers returns the IPs of the unknown peers that are alive and have a
+// run ID that no Sentinel pod had at that IP. Without a known run ID, each
+// alive peer counts.
+func (s *sentinelUnknownAddrs) newPeers(addrs rfservice.SentinelAddrs) map[string]bool {
+	ips := map[string]bool{}
+	for _, group := range addrs.Groups {
+		for _, peer := range group.Peers {
+			if _, unknown := addrs.Peers[peer.IP]; unknown && alivePeer(peer) && !s.runIDs[peer.IP][peer.RunID] {
+				ips[peer.IP] = true
+			}
+		}
+	}
+	return ips
+}
+
+// foreignPeers returns the alive unknown peers that are a Sentinel of another
+// group, with the Sentinels that know them, and keeps them in s.foreign. Such
+// a peer came back after a reset, or it has a run ID that the Sentinel pod at
+// its IP did not have. After a reset, only a Sentinel that sends hellos with
+// this master name comes back. A peer with a run ID of the pod at its IP is
+// an own Sentinel that still runs after a forced deletion.
+func (s *sentinelUnknownAddrs) foreignPeers(addrs rfservice.SentinelAddrs) map[string][]string {
+	foreign := map[string][]string{}
+	for sip, group := range addrs.Groups {
+		for _, peer := range group.Peers {
+			if _, unknown := addrs.Peers[peer.IP]; !unknown || !alivePeer(peer) || slices.Contains(foreign[peer.IP], sip) || s.ownSoon(addrs, peer.IP) {
+				continue
+			}
+			_, reset := s.resets[peer.IP][sip]
+			runIDs := s.runIDs[peer.IP]
+			if s.foreign[peer.IP][sip] || (reset && !runIDs[peer.RunID]) || (len(runIDs) > 0 && !runIDs[peer.RunID]) {
+				foreign[peer.IP] = append(foreign[peer.IP], sip)
+			}
+		}
+	}
+	s.keepForeign(addrs, foreign)
+	return foreign
+}
+
+// keepForeign stores foreign in s.foreign. It removes an entry when a pod has
+// the peer IP, when the Sentinel has no pod, or when a check of that Sentinel
+// does not find the peer alive. A Sentinel without an answer keeps its
+// entries.
+func (s *sentinelUnknownAddrs) keepForeign(addrs rfservice.SentinelAddrs, foreign map[string][]string) {
+	for ip, bySentinel := range s.foreign {
+		if s.ownSoon(addrs, ip) {
+			continue
+		}
+		maps.DeleteFunc(bySentinel, func(sip string, _ bool) bool {
+			if _, read := addrs.Groups[sip]; read {
+				return !slices.Contains(foreign[ip], sip)
+			}
+			return !addrs.Own[sip]
+		})
+		if addrs.Own[ip] || len(bySentinel) == 0 {
+			delete(s.foreign, ip)
+		}
+	}
+	for ip, sentinels := range foreign {
+		if s.foreign[ip] == nil {
+			s.foreign[ip] = map[string]bool{}
+		}
+		for _, sip := range sentinels {
+			s.foreign[ip][sip] = true
+		}
+	}
+}
+
+// ownSoon reports whether ip can be the IP of a Sentinel pod that has no IP in
+// its status yet. Such a pod can get the IP of a deleted pod, and its Sentinel
+// can join the others before the pod status has the IP. Other IPs still
+// count, so a pod start does not end a merge.
+func (s *sentinelUnknownAddrs) ownSoon(addrs rfservice.SentinelAddrs, ip string) bool {
+	_, recent := s.own[ip]
+	return addrs.PendingIP && recent
+}
+
+// pendingPeer reports whether a Sentinel knows an alive unknown peer that
+// ownSoon hides in this check.
+func (s *sentinelUnknownAddrs) pendingPeer(addrs rfservice.SentinelAddrs) bool {
+	for _, group := range addrs.Groups {
+		for _, peer := range group.Peers {
+			if _, unknown := addrs.Peers[peer.IP]; unknown && alivePeer(peer) && s.ownSoon(addrs, peer.IP) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// checkSentinelMerge finds the addresses of another group in the Sentinels,
+// and the peers that a reset removes. The operator sends no SENTINEL MONITOR
+// or RESET to a merged group: the other group returns each Sentinel to its
+// master in about 2 seconds, so each change only moves the master of the
+// Sentinels again. A master of another group counts only when the same
+// Sentinel knows an alive unknown peer, because without such a peer a new
+// monitor ends the state. The master can be down: with another Redis
+// password, the Sentinel flags it s_down. The entry of a deleted own pod is
+// alive for some seconds and has a run ID of that pod, so it does not count.
+// A peer that ownSoon hides can be a starting own pod, so it does not count
+// either.
+func (r *RedisFailoverHandler) checkSentinelMerge(logger log.Logger, rf *redisfailoverv1.RedisFailover, state *sentinelUnknownAddrs, addrs rfservice.SentinelAddrs, complete bool) {
+	foreign := state.foreignPeers(addrs)
+	masters := map[string][]string{}
+	state.stale, state.unset = map[string][]string{}, map[string]bool{}
+	for sip, group := range addrs.Groups {
+		aliveHere, back, other := false, false, false
+		for _, peer := range group.Peers {
+			if _, unknown := addrs.Peers[peer.IP]; !unknown {
+				continue
+			}
+			aliveHere = aliveHere || alivePeer(peer)
+			other = other || (alivePeer(peer) && !state.runIDs[peer.IP][peer.RunID] && !state.ownSoon(addrs, peer.IP))
+			_, reset := state.resets[peer.IP][sip]
+			back = back || (reset && alivePeer(peer))
+			if !slices.Contains(state.stale[sip], peer.IP) {
+				state.stale[sip] = append(state.stale[sip], peer.IP)
+			}
+		}
+		// A peer that came back after a reset comes back after each reset.
+		// The Sentinel gets the next reset when that peer stops.
+		if back {
+			delete(state.stale, sip)
+		}
+		if _, unknown := addrs.Masters[group.Master]; unknown && other {
+			masters[group.Master] = append(masters[group.Master], sip)
+		}
+		if !credibleMaster(group.Master) && !aliveHere {
+			state.unset[sip] = true
+		}
+	}
+	var found, ips []string
+	for ip, sentinels := range foreign {
+		found = append(found, "peer "+describeUnknownAddr(ip, sentinels))
+		ips = append(ips, ip)
+	}
+	for ip, sentinels := range masters {
+		found = append(found, "master "+describeUnknownAddr(ip, sentinels))
+		ips = append(ips, ip)
+	}
+	slices.Sort(found)
+	slices.Sort(ips)
+	ips = slices.Compact(ips)
+	merged := strings.Join(found, ", ")
+	now := r.now()
+	switch {
+	case merged != "" && state.merged == "":
+		logger.Warningf(mergeLog.start, merged)
+		state.mergedAt = now
+	case merged != "":
+		logger.Debugf(mergeLog.last, merged)
+		state.mergedAt = now
+	case state.merged != "" && (!complete || state.pendingPeer(addrs)) && now.Sub(state.mergedAt) < sentinelMergeHold:
+		// A Sentinel without an answer can still know the addresses, and a
+		// peer at the IP of a deleted pod can still be the other group.
+		merged, ips = state.merged, state.mergedIPs
+	case state.merged != "":
+		logger.Infof(mergeLog.end, state.merged)
+	}
+	state.merged, state.mergedIPs = merged, ips
+	setMergedStatus(rf, ips)
+}
+
+// mergeLog holds the log messages of a merge with another group.
+var mergeLog = unknownAddrLog{
+	start: "Sentinels of this RedisFailover know addresses of another group: %s. The operator sends no SENTINEL MONITOR, REMOVE or RESET to the Sentinels until these addresses are gone, because the other group undoes each change in seconds",
+	last:  "Sentinels still know addresses of another group: %s",
+	end:   "The addresses of another group are gone from the Sentinels: %s. The operator heals the Sentinels again",
+}
+
+// setMergedStatus sets the status while the Sentinels know the addresses ips
+// of another group.
+func setMergedStatus(rf *redisfailoverv1.RedisFailover, ips []string) {
+	if len(ips) == 0 {
+		return
+	}
+	rf.Status = redisfailoverv1.RedisFailoverStatus{
+		State:   redisfailoverv1.NotHealthyState,
+		Message: fmt.Sprintf("Sentinels know the addresses %s of another group, so the operator sends them no SENTINEL MONITOR or RESET", strings.Join(ips, ", ")),
+	}
+}
+
 // loadSentinelUnknown returns the state of key, or an empty state.
 func (r *RedisFailoverHandler) loadSentinelUnknown(key string) sentinelUnknownAddrs {
 	v, _ := r.sentinelUnknown.Load(key)
 	if state, ok := v.(sentinelUnknownAddrs); ok {
 		return state
 	}
-	return sentinelUnknownAddrs{peers: map[string]unknownAddr{}, masters: map[string]unknownAddr{}, own: map[string]time.Time{}}
+	return sentinelUnknownAddrs{
+		peers: map[string]unknownAddr{}, masters: map[string]unknownAddr{}, own: map[string]time.Time{},
+		runIDs: map[string]map[string]bool{}, resets: map[string]map[string]time.Time{}, foreign: map[string]map[string]bool{},
+	}
 }
 
 // skipSentinelAddrs ends the unknown addresses in a reconcile without the

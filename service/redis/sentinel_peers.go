@@ -4,6 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
 
 	rediscli "github.com/go-redis/redis/v8"
 	"github.com/saremox/redis-operator/metrics"
@@ -19,7 +23,13 @@ type SentinelPeers struct {
 
 // SentinelPeer is an entry of SENTINEL SENTINELS.
 type SentinelPeer struct {
-	IP string
+	IP    string
+	RunID string
+	// Down is true when the entry has the flag s_down or disconnected.
+	Down bool
+	// LastHello is the time since the last hello of the peer, or -1 when the
+	// reply has no valid value.
+	LastHello time.Duration
 }
 
 // GetSentinelPeers reads the master and the other Sentinels of the Sentinel
@@ -53,8 +63,10 @@ func (c *client) GetSentinelPeers(ip string) (SentinelPeers, error) {
 }
 
 // sentinelPeerEntries reads the entries of a SENTINEL SENTINELS reply. Each
-// entry is a flat array of field names and values. An entry without an ip
-// field is no peer, so it is skipped.
+// entry is a flat array of field names and values. Only the ip field must be
+// valid. A bad value of another field gives its zero value, because the
+// Sentinel image can come from a tenant. An entry without an ip field is no
+// peer that a reset can remove, so it is skipped.
 func sentinelPeerEntries(res []any) ([]SentinelPeer, error) {
 	peers := make([]SentinelPeer, 0, len(res))
 	for _, entry := range res {
@@ -62,17 +74,26 @@ func sentinelPeerEntries(res []any) ([]SentinelPeer, error) {
 		if !ok {
 			return nil, fmt.Errorf("unexpected SENTINEL SENTINELS entry %v", entry)
 		}
-		var peer SentinelPeer
+		peer := SentinelPeer{LastHello: -1}
 		hasIP := false
 		for i := 0; i+1 < len(fields); i += 2 {
-			if fields[i] != "ip" {
-				continue
-			}
 			value, ok := fields[i+1].(string)
-			if !ok {
-				return nil, fmt.Errorf("unexpected SENTINEL SENTINELS ip %v", fields[i+1])
+			switch fields[i] {
+			case "ip":
+				if !ok {
+					return nil, fmt.Errorf("unexpected SENTINEL SENTINELS ip %v", fields[i+1])
+				}
+				peer.IP, hasIP = value, true
+			case "runid":
+				peer.RunID = value
+			case "flags":
+				flags := strings.Split(value, ",")
+				peer.Down = slices.Contains(flags, "s_down") || slices.Contains(flags, "disconnected")
+			case "last-hello-message":
+				if ms, err := strconv.ParseInt(value, 10, 64); err == nil && ms >= 0 {
+					peer.LastHello = time.Duration(ms) * time.Millisecond
+				}
 			}
-			peer.IP, hasIP = value, true
 		}
 		if hasIP {
 			peers = append(peers, peer)
