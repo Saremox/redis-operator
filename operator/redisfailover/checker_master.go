@@ -90,6 +90,7 @@ func (r *RedisFailoverHandler) labelledMasterPod(rf *redisfailoverv1.RedisFailov
 
 const (
 	masterPodLookupFailed = "unable to look up the master pod"
+	redisPodLookupFailed  = "unable to list the redis pods"
 	masterStoppingMsg     = "no master, waiting for the stopping master pod to exit"
 	masterPodStoppingMsg  = "waiting for the stopping master pod to exit"
 )
@@ -174,6 +175,53 @@ func (r *RedisFailoverHandler) waitForFailover(rf *redisfailoverv1.RedisFailover
 	// The deadline can pass without a pod event, so queue a reconcile for it.
 	if r.requeue != nil {
 		r.requeue(failoverKey(rf), timeout-unreachable)
+	}
+	return true, nil
+}
+
+// waitForStartingPods reports whether the election waits for a Redis pod that
+// is not ready. It waits only below a quorum, and only until the pod is
+// sentinel.failoverTimeout old. A pod that the scheduler cannot place passes
+// that age and then holds the election no longer.
+func (r *RedisFailoverHandler) waitForStartingPods(rf *redisfailoverv1.RedisFailover) (bool, error) {
+	timeout := rf.GetFailoverTimeoutDuration()
+	if timeout <= 0 {
+		return false, nil
+	}
+	pods, err := r.k8sservice.GetStatefulSetPods(rf.Namespace, rfservice.GetRedisName(rf))
+	if err != nil {
+		rf.Status = redisfailoverv1.RedisFailoverStatus{
+			State:   redisfailoverv1.NotHealthyState,
+			Message: redisPodLookupFailed,
+		}
+		return false, err
+	}
+	if rfservice.AreQuorumRunning(pods, int(rf.Spec.Redis.Replicas)) {
+		return false, nil
+	}
+	var remaining time.Duration
+	var name string
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if util.PodIsTerminal(pod) || pod.DeletionTimestamp != nil || util.PodIsReady(pod) {
+			continue
+		}
+		if left := timeout - r.now().Sub(pod.CreationTimestamp.Time); left > remaining {
+			remaining, name = left, pod.Name
+		}
+	}
+	if remaining <= 0 {
+		return false, nil
+	}
+	msg := fmt.Sprintf("below a quorum, the election waits up to %s for pod %s", timeout, name)
+	r.logger.WithField("namespace", rf.Namespace).WithField("name", rf.Name).WithField("pod", name).Info(msg)
+	rf.Status = redisfailoverv1.RedisFailoverStatus{
+		State:   redisfailoverv1.NotHealthyState,
+		Message: msg,
+	}
+	// The deadline can pass without a pod event, so queue a reconcile for it.
+	if r.requeue != nil {
+		r.requeue(failoverKey(rf), remaining)
 	}
 	return true, nil
 }
