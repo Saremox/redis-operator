@@ -293,6 +293,7 @@ func TestStalePeerResetWaits(t *testing.T) {
 		got := mt.reconcile(t, round)
 		assert.Empty(t, got.reset)
 		assert.Equal(t, sentinelFailoverMsg, got.status.Message)
+		assert.Empty(t, mt.handler.loadSentinelUnknown(failoverKey(mt.rf)).resets, "a held reset is no reset")
 	})
 }
 
@@ -427,6 +428,28 @@ func TestForeignPeerGuardMonitorsAnUnsetSentinel(t *testing.T) {
 	assert.Equal(t, []string{mgMergeStart, "warning: Fixing sentinel not monitoring expected master: sentinel monitoring 127.0.0.1:6379 instead 10.0.0.1:6379"}, got.warnings())
 	assert.Equal(t, []string{mgS3}, got.monitored)
 	assert.Empty(t, got.reset)
+}
+
+// TestForeignPeerGuardMonitorsAnUnsetSentinelWithADeadPeer gives a new
+// monitor during the guard to a Sentinel without a master that knows only a
+// dead unknown peer. A dead peer sends no hello, so it does not pull the
+// Sentinel into the other group.
+func TestForeignPeerGuardMonitorsAnUnsetSentinelWithADeadPeer(t *testing.T) {
+	mt := newMergeTest()
+	mt.reconcile(t, mgForeignRound(0))
+
+	round := mgForeignRound(30 * time.Second)
+	round.pods = []string{mgS1, mgS2, mgS3, mgS4}
+	round.sentinels = []string{mgS1, mgS2, mgS3, mgS4}
+	round.groups[mgS4] = redis.SentinelPeers{Master: "127.0.0.1", Peers: []redis.SentinelPeer{mgDead("10.0.9.7", "rx")}}
+	round.monitor = map[string]error{
+		mgS2: errMgWrongMaster,
+		mgS4: errors.New("sentinel monitoring 127.0.0.1:6379 instead 10.0.0.1:6379"),
+	}
+	got := mt.reconcile(t, round)
+
+	assert.Equal(t, mgMergeStatus, got.status.Message)
+	assert.Equal(t, []string{mgS4}, got.monitored)
 }
 
 // TestForeignPeerGuardMonitorsASentinelWithoutTheMaster covers a Sentinel
@@ -1044,6 +1067,40 @@ func TestForeignPeerGuardHoldIsBounded(t *testing.T) {
 	assert.Equal(t, []string{mgS2}, got.monitored, "after sentinelMergeHold")
 	assert.Equal(t, mgMergeEnd, got.warnings()[0])
 	assert.NotEqual(t, mgMergeStatus, got.status.Message)
+}
+
+// TestForeignPeerGuardEndsWhenAHiddenPeerIsDead ends the guard during a pod
+// start when the peer at the IP of the deleted pod stopped. Only an alive
+// peer can be the other group.
+func TestForeignPeerGuardEndsWhenAHiddenPeerIsDead(t *testing.T) {
+	mt := newMergeTest()
+	mt.reconcile(t, mgHealthy(0))
+	mt.reconcile(t, mgDeleted(30*time.Second, mgAlive(mgS3, "rB")))
+	require.NotEmpty(t, mt.handler.loadSentinelUnknown(failoverKey(mt.rf)).merged)
+
+	round := mgDeleted(30*time.Second, mgDead(mgS3, "rB"))
+	round.pendingIP = true
+	round.monitor = map[string]error{mgS2: errMgWrongMaster}
+	got := mt.reconcile(t, round)
+
+	assert.Equal(t, []string{mgS2}, got.monitored)
+	assert.Empty(t, mt.handler.loadSentinelUnknown(failoverKey(mt.rf)).merged)
+	assert.NotContains(t, got.status.Message, "another group")
+}
+
+// TestMergeStatusNamesAnIPOnce names an IP once in the status, also when it
+// is a peer and a master of the other group.
+func TestMergeStatusNamesAnIPOnce(t *testing.T) {
+	mt := newMergeTest()
+	mt.reconcile(t, mgForeignRound(0))
+
+	round := mgForeignRound(30 * time.Second)
+	round.groups[mgS1] = redis.SentinelPeers{Master: mgForeign, Peers: []redis.SentinelPeer{mgAlive(mgS2, "r2"), mgAlive(mgS3, "r3"), mgAlive(mgForeign, "rf")}}
+	round.monitor = map[string]error{mgS1: errors.New("sentinel monitoring 10.0.9.9:6379 instead 10.0.0.1:6379")}
+	got := mt.reconcile(t, round)
+
+	assert.Equal(t, mgMergeStatus, got.status.Message)
+	assert.Empty(t, got.monitored)
 }
 
 // TestForeignPeerMarkStaysDuringAPodStart covers a Sentinel of another group

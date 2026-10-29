@@ -420,3 +420,13 @@ func TestSentinelAddrsOnlyInSentinelMode(t *testing.T) {
 		})
 	}
 }
+
+// TestCredibleMaster rejects the addresses that no Redis listens on.
+func TestCredibleMaster(t *testing.T) {
+	for ip, want := range map[string]bool{
+		"10.0.0.1": true, "fd00::1": true,
+		"127.0.0.1": false, "::1": false, "0.0.0.0": false, "::": false, "": false, "host": false,
+	} {
+		assert.Equal(t, want, credibleMaster(ip), ip)
+	}
+}
