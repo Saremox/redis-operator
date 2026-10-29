@@ -33,6 +33,17 @@ func TestPrometheusMetrics(t *testing.T) {
 			expCode: http.StatusOK,
 		},
 		{
+			name: "Setting the unknown Sentinel addresses",
+			addMetrics: func(rec Recorder) {
+				rec.SetSentinelUnknownAddrs("testns", "test", 2, true)
+			},
+			expMetrics: []string{
+				`my_metrics_controller_unknown_sentinel_peers{name="test",namespace="testns"} 2`,
+				`my_metrics_controller_sentinel_unknown_master{name="test",namespace="testns"} 1`,
+			},
+			expCode: http.StatusOK,
+		},
+		{
 			name: "Setting Error should give an Error",
 			addMetrics: func(rec Recorder) {
 				rec.SetClusterError("testns", "test")

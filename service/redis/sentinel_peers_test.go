@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/saremox/redis-operator/metrics"
 )
 
 // sentinelsReply is a SENTINEL SENTINELS reply with one entry for each IP.
@@ -101,6 +103,32 @@ func TestGetSentinelPeersErrors(t *testing.T) {
 	}
 	_, err := newTestClient().GetSentinelPeers("")
 	assert.ErrorIs(t, err, errNoIP)
+}
+
+// opRecorder keeps the operation and the status of each RecordRedisOperation.
+type opRecorder struct {
+	metrics.Recorder
+	ops []string
+}
+
+func (r *opRecorder) RecordRedisOperation(_, _, operation, status, _ string) {
+	r.ops = append(r.ops, operation+" "+status)
+}
+
+// TestGetSentinelPeersRecordsTheOperation records each read, also a failed
+// one.
+func TestGetSentinelPeersRecordsTheOperation(t *testing.T) {
+	startRawSentinel(t, "127.0.0.3", sentinelMasterReply("name", masterName, "ip", "10.0.0.1"), sentinelsReply("10.0.1.2"), "-ERR No such master with that name\r\n")
+	rec := &opRecorder{Recorder: metrics.Dummy}
+	c := New(rec)
+
+	_, err := c.GetSentinelPeers("127.0.0.3")
+	require.NoError(t, err)
+	_, err = c.GetSentinelPeers("127.0.0.3")
+	require.Error(t, err)
+
+	assert.Equal(t, []string{metrics.GET_SENTINEL_PEERS + " " + metrics.SUCCESS, metrics.GET_SENTINEL_PEERS + " " + metrics.FAIL}, rec.ops)
+	assert.Equal(t, "SENTINEL_GET_PEERS", metrics.GET_SENTINEL_PEERS)
 }
 
 // TestGetSentinelPeersOfRealSentinels shows that two Sentinels of one master
