@@ -65,8 +65,10 @@ type mgRound struct {
 	resetErr map[string]error
 	// failover gives a Sentinel that fails over.
 	failover string
-	// replicaErr is the CheckAllSlavesFromMaster error.
+	// replicaErr is the CheckAllSlavesFromMaster error, slaves the
+	// CheckSentinelSlavesNumberInMemory error of a Sentinel.
 	replicaErr error
+	slaves     map[string]error
 }
 
 // mgAddrs gives the answer of GetUnknownSentinelAddrs for the round, as
@@ -160,7 +162,7 @@ func (mt *mergeTest) reconcile(t *testing.T, round mgRound) mgResult {
 	for _, sip := range round.sentinels {
 		mt.check.On("CheckSentinelMonitor", sip, mgMaster, "0").Once().Return(round.monitor[sip])
 		mt.check.On("CheckSentinelNumberInMemory", sip, mt.rf).Maybe().Return(round.count[sip])
-		mt.check.On("CheckSentinelSlavesNumberInMemory", sip, mt.rf).Maybe().Return(nil)
+		mt.check.On("CheckSentinelSlavesNumberInMemory", sip, mt.rf).Maybe().Return(round.slaves[sip])
 		failover := redis.SentinelFailover{}
 		if sip == round.failover {
 			failover = redis.SentinelFailover{InProgress: true, State: "wait_promotion", Master: mgMaster + ":6379"}
@@ -245,6 +247,19 @@ func TestStalePeerResetAfterThePodIsGone(t *testing.T) {
 	got = mt.reconcile(t, round)
 	assert.Empty(t, got.reset)
 	assert.Empty(t, got.warnings())
+}
+
+// TestReplicaCountResetKeepsItsLogLine resets a Sentinel with a wrong count
+// of the replicas, with the log line of 4.1.
+func TestReplicaCountResetKeepsItsLogLine(t *testing.T) {
+	mt := newMergeTest()
+	round := mgHealthy(0)
+	round.slaves = map[string]error{mgS1: errors.New("redis slaves in memory mismatch")}
+
+	got := mt.reconcile(t, round)
+
+	assert.Equal(t, []string{mgS1}, got.reset)
+	assert.Equal(t, []string{"warning: Sentinel 10.0.1.1 mismatch number of expected slaves in memory. resetting"}, got.warnings())
 }
 
 // TestStalePeerResetOnlyOfTheSentinelsThatKnowIt leaves a Sentinel without
