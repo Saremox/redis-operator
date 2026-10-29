@@ -44,7 +44,7 @@ The operator reports the Sentinel peers and the masters that are not pods of the
 - A Sentinel without an answer ends nothing in that check. A Sentinel in deletion is an exception, because on a lost node it never answers.
 - A reconcile without the check, for example without a Sentinel quorum or in another mode, ends the report and sets the gauges to `0`.
 
-No Sentinel knows a stale peer. A stale peer is a peer IP that no current Sentinel pod has, without the memory of 5 minutes. A Sentinel keeps a deleted Sentinel as a peer until a reset. When a Sentinel of another RedisFailover gets that IP, the two groups merge, and the count of the Sentinels does not change.
+The operator checks that no Sentinel knows a stale peer. A stale peer is a peer IP that no current Sentinel pod has, without the memory of 5 minutes. A Sentinel keeps a deleted Sentinel as a peer until a reset. When a Sentinel of another RedisFailover gets that IP, the two groups merge, and the count of the Sentinels does not change.
 
 - The operator resets only the Sentinels that know the stale peer. A pod in each phase has its IP, also a pod in deletion. Thus a peer is stale only after Kubernetes deleted its pod object.
 - The rules of the other resets apply: the hold-off of 25 seconds, the failover hold, and no reset while the master pod stops. The reset starts the hold-off, so the check by count does not reset the Sentinel again in that reconcile.
@@ -52,7 +52,7 @@ No Sentinel knows a stale peer. A stale peer is a peer IP that no current Sentin
 - A reset removes a dead peer for all time. A Sentinel of another group that sends hellos comes back in about 2 seconds. A check can find the peer again on the same Sentinel in the 5 minutes after the reset. Then that Sentinel gets no reset while the peer sends hellos.
 - After a reset, the Sentinel learns the replicas again at its next `INFO` of the master. In a test with Redis 7.0, this took about 4 seconds. Until then, it cannot promote a replica. When the master stops in that time, that Sentinel never learns the replicas. The operator does not reset without a Redis master, or while the master pod stops.
 
-The Sentinels know no address of another group. When they know one, the operator sends no `SENTINEL MONITOR`, `SENTINEL REMOVE` or `SENTINEL RESET` to the Sentinels. The other group returns each changed Sentinel to its master in about 2 seconds. Thus a change only moves the master of the Sentinels again, and the merge stays.
+The operator checks that the Sentinels know no address of another group. When they know one, the operator sends no `SENTINEL MONITOR`, `SENTINEL REMOVE` or `SENTINEL RESET` to the Sentinels. The other group returns each changed Sentinel to its master in about 2 seconds. Thus a change only moves the master of the Sentinels again, and the merge stays.
 
 - An address of another group is an alive unknown peer that came back after a reset, as above. It is also an alive peer at the old IP of a Sentinel pod with a run ID that the pod did not have.
 - A peer that came back with a run ID of the pod at its IP is an own Sentinel. Its pod had a forced deletion, and its process still runs. It is no address of another group. The operator keeps the run IDs of an IP while a Sentinel knows an alive peer with one of them, also after the 5 minutes. Such a Sentinel gets one reset in each 5 minutes.
