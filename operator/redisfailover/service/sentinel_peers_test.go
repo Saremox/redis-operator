@@ -3,6 +3,7 @@ package service_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,6 +17,15 @@ import (
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 	"github.com/saremox/redis-operator/service/redis"
 )
+
+// peerEntries returns an alive SENTINEL SENTINELS entry for each IP.
+func peerEntries(ips ...string) []redis.SentinelPeer {
+	peers := make([]redis.SentinelPeer, 0, len(ips))
+	for _, ip := range ips {
+		peers = append(peers, redis.SentinelPeer{IP: ip, RunID: "run-" + ip, LastHello: time.Second})
+	}
+	return peers
+}
 
 func peersPod(ip string, phase corev1.PodPhase, deleting bool) corev1.Pod {
 	pod := corev1.Pod{Status: corev1.PodStatus{PodIP: ip, Phase: phase}}
@@ -48,16 +58,22 @@ func TestGetUnknownSentinelAddrs(t *testing.T) {
 	ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(sentinels, nil)
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(redises, nil)
 	mr := &mRedisService.Client{}
-	mr.On("GetSentinelPeers", "10.0.1.1").Once().Return(redis.SentinelPeers{Master: "10.0.0.3", Peers: []string{"10.0.1.2", "10.0.1.3", "10.0.9.9"}}, nil)
-	mr.On("GetSentinelPeers", "10.0.1.2").Once().Return(redis.SentinelPeers{Master: "10.0.9.8", Peers: []string{"10.0.1.1", "10.0.9.9"}}, nil)
+	mr.On("GetSentinelPeers", "10.0.1.1").Once().Return(redis.SentinelPeers{Master: "10.0.0.3", Peers: peerEntries("10.0.1.2", "10.0.1.3", "10.0.9.9")}, nil)
+	mr.On("GetSentinelPeers", "10.0.1.2").Once().Return(redis.SentinelPeers{Master: "10.0.9.8", Peers: peerEntries("10.0.1.1", "10.0.9.9")}, nil)
 	mr.On("GetSentinelPeers", "10.0.1.4").Once().Return(redis.SentinelPeers{}, errors.New("i/o timeout"))
-	mr.On("GetSentinelPeers", "10.0.1.5").Once().Return(redis.SentinelPeers{Master: "10.0.0.2", Peers: []string{"10.0.1.1"}}, nil)
+	mr.On("GetSentinelPeers", "10.0.1.5").Once().Return(redis.SentinelPeers{Master: "10.0.0.2", Peers: peerEntries("10.0.1.1")}, nil)
 	mr.On("GetSentinelPeers", "10.0.1.6").Once().Return(redis.SentinelPeers{}, errors.New("i/o timeout"))
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
 
 	addrs, err := checker.GetUnknownSentinelAddrs(rf)
 
 	require.NoError(t, err)
+	assert.Equal(t, map[string]redis.SentinelPeers{
+		"10.0.1.1": {Master: "10.0.0.3", Peers: peerEntries("10.0.1.2", "10.0.1.3", "10.0.9.9")},
+		"10.0.1.2": {Master: "10.0.9.8", Peers: peerEntries("10.0.1.1", "10.0.9.9")},
+		"10.0.1.5": {Master: "10.0.0.2", Peers: peerEntries("10.0.1.1")},
+	}, addrs.Groups)
+	addrs.Groups = nil
 	assert.Equal(t, rfservice.SentinelAddrs{
 		Peers:   map[string][]string{"10.0.9.9": {"10.0.1.1", "10.0.1.2"}},
 		Masters: map[string][]string{"10.0.9.8": {"10.0.1.2"}},
@@ -84,7 +100,10 @@ func TestGetUnknownSentinelAddrsKeepsALoopbackMaster(t *testing.T) {
 	addrs, err := checker.GetUnknownSentinelAddrs(rf)
 
 	require.NoError(t, err)
-	assert.Equal(t, rfservice.SentinelAddrs{Peers: map[string][]string{}, Masters: map[string][]string{"127.0.0.1": {"10.0.1.1"}}, Own: map[string]bool{"10.0.1.1": true}}, addrs)
+	assert.Equal(t, rfservice.SentinelAddrs{
+		Peers: map[string][]string{}, Masters: map[string][]string{"127.0.0.1": {"10.0.1.1"}}, Own: map[string]bool{"10.0.1.1": true},
+		Groups: map[string]redis.SentinelPeers{"10.0.1.1": {Master: "127.0.0.1"}},
+	}, addrs)
 }
 
 // TestGetUnknownSentinelAddrsComparesTheIPs knows both IPs of a dual-stack
@@ -103,8 +122,8 @@ func TestGetUnknownSentinelAddrsComparesTheIPs(t *testing.T) {
 	}}, nil)
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{Items: []corev1.Pod{dualStack("10.0.0.1", "fd00::1")}}, nil)
 	mr := &mRedisService.Client{}
-	mr.On("GetSentinelPeers", "10.0.1.1").Once().Return(redis.SentinelPeers{Master: "FD00:0::0001", Peers: []string{"fd00:0:0:0:0:0:1:2", "fd00:0::9"}}, nil)
-	mr.On("GetSentinelPeers", "10.0.1.2").Once().Return(redis.SentinelPeers{Master: "fd00::0:2", Peers: []string{"FD00::1:1"}}, nil)
+	mr.On("GetSentinelPeers", "10.0.1.1").Once().Return(redis.SentinelPeers{Master: "FD00:0::0001", Peers: peerEntries("fd00:0:0:0:0:0:1:2", "fd00:0::9")}, nil)
+	mr.On("GetSentinelPeers", "10.0.1.2").Once().Return(redis.SentinelPeers{Master: "fd00::0:2", Peers: peerEntries("FD00::1:1")}, nil)
 	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
 
 	addrs, err := checker.GetUnknownSentinelAddrs(rf)
@@ -112,6 +131,9 @@ func TestGetUnknownSentinelAddrsComparesTheIPs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string][]string{"fd00::9": {"10.0.1.1"}}, addrs.Peers)
 	assert.Equal(t, map[string][]string{"fd00::2": {"10.0.1.2"}}, addrs.Masters)
+	// The groups have the same form of each IP, so the caller can compare them.
+	assert.Equal(t, []string{"fd00::1:2", "fd00::9"}, []string{addrs.Groups["10.0.1.1"].Peers[0].IP, addrs.Groups["10.0.1.1"].Peers[1].IP})
+	assert.Equal(t, "fd00::1", addrs.Groups["10.0.1.1"].Master)
 	assert.Equal(t, map[string]bool{"10.0.1.1": true, "fd00::1:1": true, "10.0.1.2": true, "fd00::1:2": true, "10.0.0.1": true, "fd00::1": true}, addrs.Own)
 }
 
@@ -132,4 +154,60 @@ func TestGetUnknownSentinelAddrsWithoutThePods(t *testing.T) {
 		_, err := checker.GetUnknownSentinelAddrs(rf)
 		require.EqualError(t, err, "boom")
 	})
+}
+
+// TestGetUnknownSentinelAddrsListsASentinelOnce covers Redis 6.2. A new run ID
+// at a known address adds a second entry with the same IP.
+func TestGetUnknownSentinelAddrsListsASentinelOnce(t *testing.T) {
+	rf := generateRF()
+	ms := &mK8SService.Services{}
+	ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(&corev1.PodList{Items: []corev1.Pod{peersPod("10.0.1.1", corev1.PodRunning, false)}}, nil)
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{}, nil)
+	mr := &mRedisService.Client{}
+	mr.On("GetSentinelPeers", "10.0.1.1").Once().Return(redis.SentinelPeers{Master: "10.0.0.1", Peers: []redis.SentinelPeer{{IP: "10.0.9.9", RunID: "old"}, {IP: "10.0.9.9", RunID: "new"}}}, nil)
+	checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+	addrs, err := checker.GetUnknownSentinelAddrs(rf)
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]string{"10.0.9.9": {"10.0.1.1"}}, addrs.Peers)
+	assert.Len(t, addrs.Groups["10.0.1.1"].Peers, 2)
+}
+
+// TestGetUnknownSentinelAddrsFindsAPodWithoutAnIP sets PendingIP for a pod on
+// a node without an IP in its status. Its Sentinel can already run. A pod
+// that waits for a node has no Sentinel yet.
+func TestGetUnknownSentinelAddrsFindsAPodWithoutAnIP(t *testing.T) {
+	rf := generateRF()
+	onNode := peersPod("", corev1.PodPending, false)
+	onNode.Spec.NodeName = "node-a"
+	onNodeWithPodIPs := onNode
+	onNodeWithPodIPs.Status.PodIPs = []corev1.PodIP{{IP: "fd00::1:2"}}
+	withIP := peersPod("10.0.1.1", corev1.PodRunning, false)
+	withIP.Spec.NodeName = "node-a"
+	tests := []struct {
+		name    string
+		pods    []corev1.Pod
+		pending bool
+	}{
+		{name: "pods with an IP", pods: []corev1.Pod{withIP}},
+		{name: "a pod without a node", pods: []corev1.Pod{withIP, peersPod("", corev1.PodPending, false)}},
+		{name: "a pod on a node without an IP", pods: []corev1.Pod{withIP, onNode}, pending: true},
+		{name: "a pod with an IP only in PodIPs", pods: []corev1.Pod{withIP, onNodeWithPodIPs}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ms := &mK8SService.Services{}
+			ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(&corev1.PodList{Items: test.pods}, nil)
+			ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(&corev1.PodList{}, nil)
+			mr := &mRedisService.Client{}
+			mr.On("GetSentinelPeers", "10.0.1.1").Once().Return(redis.SentinelPeers{Master: "10.0.0.1"}, nil)
+			checker := rfservice.NewRedisFailoverChecker(ms, mr, log.DummyLogger{}, metrics.Dummy)
+
+			addrs, err := checker.GetUnknownSentinelAddrs(rf)
+
+			require.NoError(t, err)
+			assert.Equal(t, test.pending, addrs.PendingIP)
+		})
+	}
 }

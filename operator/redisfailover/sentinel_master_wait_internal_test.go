@@ -68,6 +68,9 @@ type smReconcile struct {
 	liveErr error
 	// lives holds the reply of GetSentinelFailover of single Sentinels.
 	lives map[string]smLive
+	// addrs is the reply of GetUnknownSentinelAddrs. Without it, the
+	// Sentinels know only pods of the RedisFailover.
+	addrs *rfservice.SentinelAddrs
 }
 
 // smLive is a reply of GetSentinelFailover.
@@ -154,6 +157,9 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 		m.ExpectedCalls, m.Calls = nil, nil
 	}
 	st.lines, st.requeues = nil, nil
+	if s.addrs != nil {
+		st.check.On("GetUnknownSentinelAddrs", st.rf).Once().Return(*s.addrs, nil)
+	}
 	c, h, k, rf := noUnknownSentinelAddrs(st.check), st.heal, st.k8s, st.rf
 	switch s.mode {
 	case "bootstrap":

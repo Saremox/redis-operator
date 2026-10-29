@@ -8,6 +8,7 @@ import (
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/metrics"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
+	"github.com/saremox/redis-operator/service/redis"
 )
 
 // checkAndHealSentinelMode checks and heals, in this order:
@@ -276,6 +277,9 @@ func (r *RedisFailoverHandler) healSentinelMonitors(rf *redisfailoverv1.RedisFai
 
 	heal := r.startSentinelHeal(rf)
 	defer r.saveSentinelResets(heal, sentinels)
+	// observeSentinelAddrs checked the peers at the start of this reconcile.
+	state := r.loadSentinelUnknown(heal.key)
+	heal.merged, heal.unset = state.merged != "", state.unset
 
 	// master can be stale after applyRedisCustomConfig and UpdateRedisesPods.
 	// Read it again only when a Sentinel needs a fix, and only one time.
@@ -284,6 +288,9 @@ func (r *RedisFailoverHandler) healSentinelMonitors(rf *redisfailoverv1.RedisFai
 		if err := r.healSentinelMonitor(rf, sentinels, heal, sip, target); err != nil {
 			return err
 		}
+	}
+	if err := r.removeStalePeers(rf, sentinels, heal); err != nil {
+		return err
 	}
 	return r.checkAndHealSentinels(rf, sentinels, heal)
 }
@@ -301,6 +308,12 @@ func (r *RedisFailoverHandler) healSentinelMonitor(rf *redisfailoverv1.RedisFail
 	err := r.rfChecker.CheckSentinelMonitor(sip, target.master, target.port)
 	setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_WRONG_MASTER, sip, err)
 	if heal.skip(sip, err) || err == nil {
+		return nil
+	}
+	// A Sentinel without a master sends no hello and gives no master to the
+	// clients, so it gets the master also while the Sentinels are merged.
+	if heal.merged && !heal.unset[sip] && !redis.IsNoSuchMasterError(err) {
+		heal.logger.Debugf("The Sentinels know another group, so the operator does not change the master of Sentinel %s", sip)
 		return nil
 	}
 	r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Warningf("Fixing sentinel not monitoring expected master: %s", err.Error())

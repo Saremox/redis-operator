@@ -166,7 +166,7 @@ In Sentinel mode, these gauges have the labels `namespace` and `name`:
 - `redis_operator_controller_unknown_sentinel_peers`: the number of peer IPs that the Sentinels know and that no Sentinel pod of the RedisFailover has.
 - `redis_operator_controller_sentinel_unknown_master`: `1` when a Sentinel monitors a master IP that no Redis pod of the RedisFailover has, else `0`.
 
-The operator counts an IP after two checks at least 90 seconds apart find it. No pod of the RedisFailover had that IP in the last 5 minutes. A value above `0` can show the Sentinels of two RedisFailovers in one group, because all RedisFailovers use the master name `mymaster`. It can also show an old IP of a deleted pod of this RedisFailover. See [Sentinel mode](docs/logic.md#sentinel-mode).
+The operator counts an IP after two checks at least 90 seconds apart find it. No pod of the RedisFailover had that IP in the last 5 minutes. An alive peer with a run ID that the deleted Sentinel pod at its IP did not have counts without the 5 minutes. A value above `0` can show the Sentinels of two RedisFailovers in one group, because all RedisFailovers use the master name `mymaster`. It can also show an old IP of a deleted pod of this RedisFailover. See [Sentinel mode](docs/logic.md#sentinel-mode).
 
 ### Security notes
 
@@ -175,6 +175,36 @@ The author of a RedisFailover controls the pods that the operator creates: conta
 A RedisFailover in the operator namespace can use the service account of the operator. Install the operator in its own namespace. With Helm, use the options `--namespace` and `--create-namespace`.
 
 Redis and Sentinel do not use TLS. Sentinel has no password. Redis has no password without `auth.secretPath`. Use a NetworkPolicy to limit access to the Redis and Sentinel ports. Allow only your monitoring system to reach the exporter port.
+
+#### NetworkPolicy
+
+We recommend NetworkPolicy rules for ingress and egress that isolate each RedisFailover from the other RedisFailovers and from other workloads. This is a best practice, not a guarantee. The owner of this project runs such rules in production, with strong isolation between the namespaces and in each namespace.
+
+The Sentinel port has no password, and all RedisFailovers use the master name `mymaster`. Thus the Sentinels of two RedisFailovers can merge when a pod gets an IP that the Sentinels of the other RedisFailover still know. A merged group can promote the wrong pods, and the pods can lose acknowledged writes. With equal Redis passwords, a Redis pod can replicate from the other RedisFailover and lose all its data. NetworkPolicy rules block the hello messages between the groups.
+
+The checks of the operator make the time for a merge shorter and report a merge, but they do not remove the hazard. See [Sentinel mode](docs/logic.md#sentinel-mode). A master name for each RedisFailover is the planned complete fix.
+
+Allow only this traffic. `<NAME>` is the name of the RedisFailover.
+
+| Pods | Ingress port | Allow ingress from |
+| --- | --- | --- |
+| Sentinel | `26379` | The Sentinel and the Redis pods of the same RedisFailover, the operator pods, and the clients that use Sentinel. |
+| Redis | `redis.port` (default `6379`) | The Redis and the Sentinel pods of the same RedisFailover, the operator pods, and the clients. |
+| Redis exporter | the exporter port (default `9121`) | Only the system that collects the metrics. |
+| Sentinel exporter | the exporter port (default `9355`) | Only the system that collects the metrics. |
+
+- Egress of the Redis and the Sentinel pods: only to the Redis and Sentinel ports of the same RedisFailover, and to DNS. In bootstrap mode, also to the bootstrap node.
+- The DNS rule depends on the cluster. The example allows the pods `k8s-app: kube-dns` in `kube-system` on port 53. With NodeLocal DNSCache, the pods use a node-local address. On OpenShift, the DNS pods are in `openshift-dns` and listen on port 5353. Make sure that the rule allows your DNS. Without DNS, the shutdown script cannot find the Sentinels and asks for no failover. Then each deletion of the master pod gives a failover after `down-after-milliseconds`.
+- The operator connects from its pod to the Redis port and the Sentinel port of each pod. When the operator namespace has egress rules, also allow this traffic and the Kubernetes API.
+- The Redis and the Sentinel pods do not use the Kubernetes API. Without `serviceAccountName`, the operator sets `automountServiceAccountToken: false`.
+- The shutdown script of Redis asks the Sentinel Service for the failover. A NetworkPolicy applies to the pod IPs behind the Service, so the rule for the Sentinel pods allows it. The DNS rule allows the lookup of the Service name.
+- The liveness probe of Redis and the probes of Sentinel connect to the IP of their own pod. The rule for the pods of the same RedisFailover allows this. The readiness probe of Redis connects to `localhost`.
+- Select the pods with the labels that the operator sets: `app.kubernetes.io/part-of: redis-failover`, `app.kubernetes.io/name: <NAME>` and `app.kubernetes.io/component: redis` or `sentinel`. A selector without `app.kubernetes.io/component` selects both.
+- The rules need a CNI plugin that enforces NetworkPolicy. Without such a plugin, Kubernetes accepts the rules and enforces nothing.
+- A pod selector does not select pods with `hostNetwork: true`, so the rules do not isolate such pods.
+- A CNI plugin that tracks connections can keep the connections that were open before you applied the rules. To end a merge of two groups, restart the Sentinel pods of one group after you apply the rules.
+
+See the [NetworkPolicy example file](example/redisfailover/networkpolicy.yaml).
 
 ## Usage
 

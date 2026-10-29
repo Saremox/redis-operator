@@ -1,0 +1,26 @@
+{
+  "data": {
+    "shutdown.sh": "t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"\nlocal_cli() {\n\tif [ -n \"${REDIS_PASSWORD}\" ]; then\n\t\tREDISCLI_AUTH=\"${REDIS_PASSWORD}\" $t redis-cli -p 6379 \"$@\"\n\telse\n\t\t$t redis-cli -p 6379 \"$@\"\n\tfi\n}\nreplicas_behind() {\n\tinfo=$(local_cli INFO replication | tr -d '\\r')\n\ttop=\"\"\n\tfor line in $info; do\n\t\tcase \"$line\" in\n\t\tmaster_repl_offset:*) top=${line#*:} ;;\n\t\tesac\n\tdone\n\t[ -n \"$top\" ] || return\n\tn=0\n\tfor line in $info; do\n\t\tcase \"$line\" in\n\t\tslave*state=online,offset=*)\n\t\t\toffset=${line#*,offset=}\n\t\t\tif [ \"${offset%%,*}\" -lt \"$top\" ]; then n=$((n + 1)); fi ;;\n\t\tesac\n\tdone\n\techo \"$n\"\n}\ndeadline=$(($(date +%s) + 12))\nself=$(hostname -i)\nmaster=\"\"\nretries=0\nwhile [ -z \"$master\" ] && [ \"$retries\" -lt 3 ]; do\n\tretries=$((retries + 1))\n\tmaster=$($t redis-cli -h rfs-redisfailover -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\\\"' |cut -d' ' -f1)\n\tif [ -z \"$master\" ]; then\n\t\tsleep 1\n\tfi\ndone\nif [ -z \"$master\" ]; then\n\techo \"shutdown.sh: could not resolve the master from sentinel after $retries attempts\" >&2\nfi\nif [ \"$master\" = \"$self\" ]; then\n  paused=$(local_cli CLIENT PAUSE $(((deadline + 6 - $(date +%s)) * 1000)) WRITE)\n  if [ \"$paused\" != \"OK\" ]; then\n  \techo \"shutdown.sh: could not pause the writes, so no failover is requested (stale REDIS_PASSWORD, or Redis before 6.2): $paused\" >&2\n  else\n  \tbehind=\"\"\n  \twhile [ \"$behind\" != 0 ] && [ \"$(date +%s)\" -lt \"$((deadline - 8))\" ]; do\n  \t\tbehind=$(replicas_behind)\n  \t\tif [ \"$behind\" != 0 ]; then\n  \t\t\tsleep 0.1\n  \t\tfi\n  \tdone\n  \tif [ \"$behind\" != 0 ]; then\n  \t\techo \"shutdown.sh: not all online replicas confirmed the writes, the failover can lose writes (replicas behind: ${behind:-unknown})\" >&2\n  \tfi\n  \tfailover=\"\"\n  \tretries=0\n  \twhile [ \"$failover\" != \"OK\" ] && [ \"$retries\" -lt 3 ] && [ \"$(date +%s)\" -lt \"$((deadline - 3))\" ]; do\n  \t\tretries=$((retries + 1))\n  \t\tfailover=$($t redis-cli -h rfs-redisfailover -p 26379 SENTINEL failover mymaster)\n  \t\tif [ \"$failover\" != \"OK\" ]; then\n  \t\t\tsleep 1\n  \t\tfi\n  \tdone\n  \tif [ \"$failover\" != \"OK\" ]; then\n  \t\techo \"shutdown.sh: sentinel did not accept the failover after $retries attempts: $failover\" >&2\n  \telse\n  \t\twhile { [ -z \"$master\" ] || [ \"$master\" = \"$self\" ]; } && [ \"$(date +%s)\" -lt \"$deadline\" ]; do\n  \t\t\tsleep 1\n  \t\t\tmaster=$($t redis-cli -h rfs-redisfailover -p 26379 --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\\\"' |cut -d' ' -f1)\n  \t\tdone\n  \t\tif [ -z \"$master\" ] || [ \"$master\" = \"$self\" ]; then\n  \t\t\techo \"shutdown.sh: sentinel did not report a new master before the deadline\" >&2\n  \t\telse\n  \t\t\tlocal_cli REPLICAOF \"$master\" 6379\n  \t\tfi\n  \tfi\n  \tlocal_cli CLIENT UNPAUSE\n  fi\nfi\ncmd=\"redis-cli -p 6379\"\nif [ ! -z \"${REDIS_PASSWORD}\" ]; then\n\texport REDISCLI_AUTH=${REDIS_PASSWORD}\nfi\nsave_command=\"${cmd} save\"\neval $save_command"
+  },
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "redis",
+      "app.kubernetes.io/managed-by": "redis-operator",
+      "app.kubernetes.io/name": "redisfailover",
+      "app.kubernetes.io/part-of": "redis-failover",
+      "redisfailovers.databases.spotahome.com/name": "redisfailover"
+    },
+    "name": "rfr-s-redisfailover",
+    "namespace": "default",
+    "ownerReferences": [
+      {
+        "apiVersion": "databases.spotahome.com/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "RedisFailover",
+        "name": "redisfailover",
+        "uid": ""
+      }
+    ]
+  }
+}
