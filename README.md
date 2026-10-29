@@ -147,8 +147,8 @@ Allow only this traffic. `<NAME>` is the name of the RedisFailover.
 | --- | --- | --- |
 | Sentinel | `26379` | The Sentinel and the Redis pods of the same RedisFailover, the operator pods, and the clients that use Sentinel. |
 | Redis | `redis.port` (default `6379`) | The Redis and the Sentinel pods of the same RedisFailover, the operator pods, and the clients. |
-| Redis exporter | the exporter port (default `9121`) | Only the system that collects the metrics. |
-| Sentinel exporter | the exporter port (default `9355`) | Only the system that collects the metrics. |
+| Redis exporter | `9121` | Only the system that collects the metrics. |
+| Sentinel exporter | `9355` | Only the system that collects the metrics. |
 
 - Egress of the Redis and the Sentinel pods: only to the Redis and Sentinel ports of the same RedisFailover, and to DNS. In bootstrap mode, also to the bootstrap node.
 - The DNS rule depends on the cluster. The example allows the pods `k8s-app: kube-dns` in `kube-system` on port 53. With NodeLocal DNSCache, the pods use a node-local address. On OpenShift, the DNS pods are in `openshift-dns` and listen on port 5353. Make sure that the rule allows your DNS.
