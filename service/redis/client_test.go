@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -906,15 +907,16 @@ func startFakeSentinel(t *testing.T, ip, info string) {
 	startRawSentinel(t, ip, "$"+strconv.Itoa(len(info))+"\r\n"+info+"\r\n")
 }
 
-// startRawSentinel listens on ip:sentinelPort and answers each command with
-// the raw bytes of reply.
-func startRawSentinel(t *testing.T, ip, reply string) {
+// startRawSentinel listens on ip:sentinelPort and answers the commands with
+// the raw bytes of replies, in order. The last reply repeats.
+func startRawSentinel(t *testing.T, ip string, replies ...string) {
 	t.Helper()
 	l, err := net.Listen("tcp", net.JoinHostPort(ip, sentinelPort))
 	if err != nil {
 		t.Skipf("cannot listen on %s: %v", net.JoinHostPort(ip, sentinelPort), err)
 	}
 	t.Cleanup(func() { _ = l.Close() })
+	var sent atomic.Int64
 	go func() {
 		for {
 			conn, err := l.Accept()
@@ -928,6 +930,7 @@ func startRawSentinel(t *testing.T, ip, reply string) {
 					if _, err := conn.Read(buf); err != nil {
 						return
 					}
+					reply := replies[min(int(sent.Add(1))-1, len(replies)-1)]
 					if _, err := conn.Write([]byte(reply)); err != nil {
 						return
 					}

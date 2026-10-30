@@ -53,6 +53,7 @@ type RedisFailoverCheck interface {
 	CheckSentinelsCannotFailover(rFailover *redisfailoverv1.RedisFailover) (bool, error)
 	CheckSentinelMonitor(sentinel string, monitor ...string) error
 	GetSentinelFailover(sentinel string) (redis.SentinelFailover, error)
+	GetUnknownSentinelAddrs(rFailover *redisfailoverv1.RedisFailover) (SentinelAddrs, error)
 	GetMasterIP(rFailover *redisfailoverv1.RedisFailover) (string, error)
 	GetNumberMasters(rFailover *redisfailoverv1.RedisFailover) (int, error)
 	GetRedisesIPs(rFailover *redisfailoverv1.RedisFailover) ([]string, error)

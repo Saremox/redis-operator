@@ -26,6 +26,13 @@ import (
 	"github.com/saremox/redis-operator/service/redis"
 )
 
+// noUnknownSentinelAddrs makes mc answer that the Sentinels know only pods of
+// the RedisFailover.
+func noUnknownSentinelAddrs(mc *mRFService.RedisFailoverCheck) *mRFService.RedisFailoverCheck {
+	mc.On("GetUnknownSentinelAddrs", mock.Anything).Maybe().Return(rfservice.SentinelAddrs{}, nil)
+	return mc
+}
+
 func TestCheckAndHeal(t *testing.T) {
 	tests := []struct {
 		name                           string
@@ -320,7 +327,7 @@ func TestCheckAndHeal(t *testing.T) {
 			// CheckAndHeal always defers updateStatus, on every return path.
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfs := &mRFService.RedisFailoverClient{}
-			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc := noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{})
 			mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 			mrfh := &mRFService.RedisFailoverHeal{}
 
@@ -996,7 +1003,7 @@ func TestCheckAndHealSteadyStateWritesNoStatus(t *testing.T) {
 			writes := 0
 			mk := settledK8sServices()
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Run(func(mock.Arguments) { writes++ }).Return()
-			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc := noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{})
 			mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
@@ -1387,7 +1394,7 @@ func TestCheckAndHealPlainModeErrorBranches(t *testing.T) {
 			// CheckAndHeal always defers updateStatus, on every return path.
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 			mrfs := &mRFService.RedisFailoverClient{}
-			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc := noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{})
 			mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 			mrfh := &mRFService.RedisFailoverHeal{}
 
@@ -1559,7 +1566,7 @@ func TestSentinelModeElectsWhenSentinelKnowsNoReplica(t *testing.T) {
 				return &corev1.PodList{Items: make([]corev1.Pod, 5)}, nil
 			})
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
-			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc := noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{})
 			mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
@@ -1632,7 +1639,7 @@ func TestCheckAndHealSkipsUnreachableSentinel(t *testing.T) {
 
 			mk := settledK8sServices()
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
-			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc := noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{})
 			mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
@@ -1732,6 +1739,7 @@ func TestCheckAndHealNoResetAfterNewMonitor(t *testing.T) {
 
 	for reconcile, monitorErr := range []error{errors.New("monitors 9.9.9.9"), nil} {
 		mrfc.ExpectedCalls, mrfc.Calls = nil, nil
+		noUnknownSentinelAddrs(mrfc)
 		mrfc.On("IsRedisRunningQuorum", rf).Once().Return(true)
 		mrfc.On("IsSentinelRunningQuorum", rf).Once().Return(true)
 		mrfc.On("GetNumberMasters", rf).Once().Return(1, nil)
@@ -3012,7 +3020,7 @@ func TestSentinelModeWaitsForAStoppingMasterBeforeElecting(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			rf := generateRF(false, false)
 			rf.Spec.Redis.Replicas = test.replicas
-			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc := noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{})
 			mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mk := &mK8SService.Services{}
@@ -3508,7 +3516,7 @@ func TestSentinelModeDoesNotHealSentinelsWhileTheMasterStops(t *testing.T) {
 				return pods, nil
 			})
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
-			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc := noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{})
 			mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfh.On("ApplyPassword", mock.Anything, mock.Anything, mock.Anything).Maybe().Return(true, nil)
@@ -3582,7 +3590,7 @@ func TestCheckAndHealSentinelMonitorUsesRefreshedMaster(t *testing.T) {
 
 			mk := settledK8sServices()
 			mk.On("UpdateRedisFailoverStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
-			mrfc := &mRFService.RedisFailoverCheck{}
+			mrfc := noUnknownSentinelAddrs(&mRFService.RedisFailoverCheck{})
 			mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 			mrfh := &mRFService.RedisFailoverHeal{}
 			mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)

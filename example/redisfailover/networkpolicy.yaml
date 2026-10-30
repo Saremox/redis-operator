@@ -1,0 +1,185 @@
+# A RedisFailover with NetworkPolicy rules that isolate it from other
+# RedisFailovers and other workloads. Apply the rules in the namespace of the
+# RedisFailover. They need a CNI plugin
+# that enforces NetworkPolicy. Without such a plugin, Kubernetes accepts the
+# rules and enforces nothing.
+#
+# Replace these values for your installation:
+# - "redisfailover": the name of the RedisFailover, in each selector.
+# - 6379: the value of redis.port.
+# - The operator: the Helm chart in the namespace "redis-operator". The
+#   kubectl manifests in example/operator use the label "app: redisoperator"
+#   in the namespace "default".
+# - The clients: the pods with the label "redis-client: redisfailover" in
+#   this namespace.
+# - The metrics scraper: Prometheus in the namespace "monitoring".
+# - DNS: the pods "k8s-app: kube-dns" in "kube-system" on port 53. This rule
+#   depends on the cluster. NodeLocal DNSCache uses a node-local address, and
+#   OpenShift has its DNS pods in "openshift-dns" on port 5353. The shutdown
+#   script of Redis needs DNS to find the Sentinel Service.
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: redisfailover
+spec:
+  sentinel:
+    enabled: true
+    replicas: 3
+    resources:
+      requests:
+        cpu: 100m
+      limits:
+        memory: 100Mi
+  redis:
+    replicas: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 100Mi
+      limits:
+        cpu: 400m
+        memory: 500Mi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rf-redisfailover-sentinel
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: redis-failover
+      app.kubernetes.io/name: redisfailover
+      app.kubernetes.io/component: sentinel
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 26379
+      from:
+        # The Sentinel and the Redis pods of this RedisFailover. The Redis
+        # shutdown script asks Sentinel for the failover.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: redis-failover
+              app.kubernetes.io/name: redisfailover
+        # The operator connects to each Sentinel.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: redis-operator
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis-operator
+        # The clients that ask Sentinel for the master.
+        - podSelector:
+            matchLabels:
+              redis-client: redisfailover
+    # The Sentinel exporter, only with sentinel.exporter.enabled.
+    - ports:
+        - protocol: TCP
+          port: 9355
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+  egress:
+    # The other Sentinels and the Redis pods of this RedisFailover only.
+    - ports:
+        - protocol: TCP
+          port: 26379
+        - protocol: TCP
+          port: 6379
+      to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: redis-failover
+              app.kubernetes.io/name: redisfailover
+    # DNS, a placeholder that depends on the cluster. Sentinel needs it only
+    # for host names in its configuration.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rf-redisfailover-redis
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: redis-failover
+      app.kubernetes.io/name: redisfailover
+      app.kubernetes.io/component: redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 6379
+      from:
+        # The Redis pods replicate, and the Sentinels monitor them.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: redis-failover
+              app.kubernetes.io/name: redisfailover
+        # The operator connects to each Redis pod.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: redis-operator
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis-operator
+        - podSelector:
+            matchLabels:
+              redis-client: redisfailover
+    # The Redis exporter, only with redis.exporter.enabled.
+    - ports:
+        - protocol: TCP
+          port: 9121
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+  egress:
+    # The replication, and the shutdown script through the Sentinel Service.
+    - ports:
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 26379
+      to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: redis-failover
+              app.kubernetes.io/name: redisfailover
+    # DNS, a placeholder that depends on the cluster. The shutdown script
+    # resolves the name of the Sentinel Service.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
