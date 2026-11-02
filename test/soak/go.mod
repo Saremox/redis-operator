@@ -11,9 +11,9 @@ require (
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/saremox/redis-operator v0.0.0-00010101000000-000000000000
 	golang.org/x/time v0.16.0
-	k8s.io/api v0.37.1
-	k8s.io/apimachinery v0.37.1
-	k8s.io/client-go v0.37.1
+	k8s.io/api v0.37.2
+	k8s.io/apimachinery v0.37.2
+	k8s.io/client-go v0.37.2
 	sigs.k8s.io/yaml v1.6.0
 )
 
