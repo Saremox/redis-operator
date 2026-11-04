@@ -35,6 +35,10 @@ const (
 	DefaultSentinelFailoverTimeoutMilliseconds = 10000
 )
 
+// DefaultInstanceManagerPort is the port of the health server of the
+// instance manager when redis.instanceManager.port is not set.
+const DefaultInstanceManagerPort int32 = 8080
+
 // DefaultSentinelMasterName is the name of the master that the Sentinels
 // monitor. The clients, the probes and the shutdown script use it too.
 const DefaultSentinelMasterName = "mymaster"
