@@ -278,12 +278,18 @@ jobs:
           kustomize build manifests/kustomize/overlays/default > release-artifacts/redis-operator.yaml
           cp -r manifests/*.yaml release-artifacts/ 2>/dev/null || true
 
-      - name: Create Release
+      # The repository has immutable releases. GitHub accepts no asset for a
+      # release after it is published, and the action publishes a release before
+      # it uploads the assets. A draft takes the assets, and the step "Publish
+      # the release" publishes it when all assets and the chart are in place.
+      # A failed run leaves a draft, which a new run of the job can fill again.
+      - name: Create draft release
+        id: draft
         uses: softprops/action-gh-release@v3
         with:
           body_path: release-notes.md
+          draft: true
           prerelease: ${{ steps.relinfo.outputs.prerelease }}
-          make_latest: ${{ steps.relinfo.outputs.latest }}
           files: |
             release-artifacts/*
         env:
@@ -294,6 +300,18 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login "${REGISTRY}" \
             --username "${{ github.actor }}" --password-stdin
           helm push "${CHART_PACKAGE}" "oci://${REGISTRY}/${IMAGE_NAME}/charts"
+
+      # The Helm repo index points to the download URLs of the release, so the
+      # release is public before the index changes. make_latest of the action
+      # does not apply to a draft, so this step sets it.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+          LATEST: ${{ steps.relinfo.outputs.latest }}
+        run: |
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            -F draft=false -f make_latest="${LATEST}"
 
       - name: Update Helm repo index (gh-pages)
         run: |
