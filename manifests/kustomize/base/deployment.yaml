@@ -13,6 +13,12 @@ spec:
         - name: redis-operator
           image: ghcr.io/saremox/redis-operator:4.2.0-rc2
           imagePullPolicy: IfNotPresent
+          # The init container of redis.instanceManager copies the
+          # redis-instance binary out of this image, so the operator
+          # must know its own image name.
+          env:
+            - name: OPERATOR_IMAGE_NAME
+              value: ghcr.io/saremox/redis-operator:4.2.0-rc2
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

@@ -48,6 +48,24 @@ type RedisFailoverSpec struct {
 	BootstrapNode *BootstrapSettings `json:"bootstrapNode,omitempty"`
 }
 
+// InstanceManagerSettings configures the instance manager of the Redis pods.
+//
+// The manager runs as PID 1, with redis-server as its child. An init
+// container copies the redis-instance binary out of the operator image onto
+// a shared volume, so the Redis image needs nothing. The manager serves the
+// health endpoints that the probes then use, so a probe starts no process in
+// the Redis container. On a node that is short of memory an exec probe can
+// fail to fork while Redis is healthy; an HTTP probe cannot.
+type InstanceManagerSettings struct {
+	// Enabled runs the manager in each Redis pod. The operator Deployment
+	// must have the OPERATOR_IMAGE_NAME variable, because the operator image
+	// holds the binary. Defaults to false.
+	Enabled bool `json:"enabled,omitempty"`
+	// Port is the port of the health server of the manager. It must differ
+	// from redis.port and from the exporter ports. Defaults to 8080.
+	Port int32 `json:"port,omitempty"`
+}
+
 // RedisCommandRename is a "rename-command" entry of redis.conf.
 // It must not rename a command that the operator, the pod scripts or the replicas send:
 // AUTH, CLIENT, CONFIG, INFO, PING, PSYNC, REPLCONF, REPLICAOF or SLAVEOF. With Sentinels,
@@ -71,6 +89,9 @@ type RedisSettings struct {
 	// ImagePullPolicy applies to the Redis container and to the init
 	// container that removes RDB tempfiles. Defaults to Always.
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+	// InstanceManager runs redis-server as the child of a manager process.
+	// It is off by default, and then the Redis pods are unchanged.
+	InstanceManager InstanceManagerSettings `json:"instanceManager,omitempty"`
 	// Replicas is the number of Redis pods. Defaults to 3.
 	Replicas int32 `json:"replicas,omitempty"`
 	// Port is the Redis port in each pod and in the Services rfrm-<NAME> and
