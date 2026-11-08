@@ -220,6 +220,11 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	namespace := rf.Namespace
 
 	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
+	// With sentinel.enabled false nothing runs this script: redisLifecycle
+	// gives the Redis container no preStop hook, because Redis saves on
+	// SIGTERM by itself. The ConfigMap and its mount stay in both modes, so
+	// that nothing else has to change and a user who runs the script by hand
+	// still finds it.
 	shutdownContent := ""
 	if rf.SentinelsAllowed() {
 		shutdownContent = fmt.Sprintf(redisShutdownFailoverScript, GetSentinelName(rf), port, SentinelMasterName(rf))
