@@ -553,14 +553,33 @@ func TestCheckAndHealOperatorManagedMode(t *testing.T) {
 		wantMessageRegexp string
 	}{
 		{
-			name: "redis quorum not running - waits for statefulset reconcile",
+			// The gate of this mode is one Running pod, not a quorum: the
+			// operator is the only arbiter of the master role here.
+			name: "no redis pod running - cannot elect a master",
 			setup: func(mrfc *mRFService.RedisFailoverCheck, _ *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
 				mrfc.On("IsRedisRunning", rf).Once().Return(false)
-				mrfc.On("IsRedisRunningQuorum", rf).Once().Return(false)
+				mrfc.On("IsAnyRedisRunning", rf).Once().Return(false)
 			},
 			wantErr:     false,
 			wantState:   v1.NotHealthyState,
-			wantMessage: "redis quorum not running",
+			wantMessage: "no redis pod running",
+		},
+		{
+			// A two-replica failover that lost one pod is not a quorum, and
+			// used to stop here. It now elects from the surviving replica.
+			name: "one of two pods running - elects a master",
+			setup: func(mrfc *mRFService.RedisFailoverCheck, mrfh *mRFService.RedisFailoverHeal, rf *v1.RedisFailover) {
+				rf.Spec.Redis.Replicas = 2
+				mrfc.On("IsRedisRunning", rf).Once().Return(false)
+				mrfc.On("IsAnyRedisRunning", rf).Once().Return(true)
+				mrfc.On("IsRedisRunningQuorum", rf).Maybe().Return(false)
+				mrfh.On("AbortOrphanedFailover", mock.Anything, mock.Anything).Maybe().Return(false, nil)
+				mrfc.On("GetNumberMasters", rf).Once().Return(0, nil)
+				mrfc.On("GetBestReplicaForPromotion", rf).Once().Return(&rfservice.ReplicaInfo{PodName: "rfr-test-1", IP: "10.0.0.2"}, nil)
+				mrfh.On("PromoteBestReplica", "10.0.0.2", rf).Once().Return(nil)
+			},
+			wantErr:   false,
+			wantState: v1.HealthyState,
 		},
 		{
 			name: "GetNumberMasters errors",

@@ -3,6 +3,7 @@ package redisfailover
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -298,8 +299,9 @@ type pendingTest struct {
 }
 
 // newPendingTest has the pod first, and replicas-1 more pods that are
-// Pending on the update revision. IsRedisRunning, and IsRedisRunningQuorum
-// out of bootstrap mode, report false once.
+// Pending on the update revision. IsRedisRunning reports false once, as does
+// the running-pods gate of the mode out of bootstrap mode: IsAnyRedisRunning
+// in operator-managed mode, IsRedisRunningQuorum in Sentinel mode.
 func newPendingTest(mode string, replicas int32, first corev1.Pod) *pendingTest {
 	pt := &pendingTest{
 		rf: &redisfailoverv1.RedisFailover{
@@ -331,7 +333,13 @@ func newPendingTest(mode string, replicas int32, first corev1.Pod) *pendingTest 
 	pt.k8s.On("UpdateRedisFailoverStatus", mock.Anything, "testns", pt.rf, mock.Anything).Maybe().Return()
 	pt.check.On("IsRedisRunning", pt.rf).Once().Return(false)
 	if !pt.rf.Bootstrapping() {
-		pt.check.On("IsRedisRunningQuorum", pt.rf).Once().Return(false)
+		// The two modes gate on different checks: operator-managed needs one
+		// Running pod to elect, Sentinel mode needs a quorum to agree.
+		if pt.rf.OperatorManagedFailover() {
+			pt.check.On("IsAnyRedisRunning", pt.rf).Once().Return(false)
+		} else {
+			pt.check.On("IsRedisRunningQuorum", pt.rf).Once().Return(false)
+		}
 	}
 	pt.handler = NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, pt.check, pt.heal, pt.k8s, metrics.Dummy, pt.logger)
 	return pt
@@ -348,6 +356,9 @@ func (pt *pendingTest) expectDelete(err error) {
 func (pt *pendingTest) gateMessage() string {
 	if pt.rf.Bootstrapping() {
 		return "not all replicas running"
+	}
+	if pt.rf.OperatorManagedFailover() {
+		return "no redis pod running"
 	}
 	return "redis quorum not running"
 }
@@ -374,7 +385,8 @@ func TestCheckAndHealDeletesAnUnschedulableStalePod(t *testing.T) {
 
 // An error of the step is a warning only. The gate on the running pods then
 // decides as without the step, so a webhook that denies the delete does not
-// block the election.
+// block the election. Operator-managed mode adds a warning of its own when no
+// pod runs, so the count of warnings of the step excludes it.
 func TestCheckAndHealGoesOnAfterAnErrorOfTheStalePodStep(t *testing.T) {
 	fail := errors.New("boom")
 	pods := corev1.Resource("pods")
@@ -402,7 +414,15 @@ func TestCheckAndHealGoesOnAfterAnErrorOfTheStalePodStep(t *testing.T) {
 				require.NoError(t, pt.handler.CheckAndHeal(pt.rf))
 				assert.Equal(t, redisfailoverv1.NotHealthyState, pt.rf.Status.State)
 				assert.Equal(t, pt.gateMessage(), pt.rf.Status.Message)
-				assert.Equal(t, test.warning, len(pt.logger.warnings) == 1, pt.logger.warnings)
+				// The gate of operator-managed mode warns when no pod runs, so
+				// drop that one before counting the warnings of the step.
+				stepWarnings := 0
+				for _, w := range pt.logger.warnings {
+					if !strings.Contains(w, "cannot elect a master") {
+						stepWarnings++
+					}
+				}
+				assert.Equal(t, test.warning, stepWarnings == 1, pt.logger.warnings)
 				pt.check.AssertExpectations(t)
 				pt.k8s.AssertExpectations(t)
 			})
@@ -422,7 +442,11 @@ func TestCheckAndHealGoesOnWithAQuorumAndAPendingPod(t *testing.T) {
 			fail := errors.New("no masters")
 			pt.check.ExpectedCalls = nil
 			pt.check.On("IsRedisRunning", pt.rf).Once().Return(false)
-			pt.check.On("IsRedisRunningQuorum", pt.rf).Once().Return(true)
+			if mode == "operator-managed" {
+				pt.check.On("IsAnyRedisRunning", pt.rf).Once().Return(true)
+			} else {
+				pt.check.On("IsRedisRunningQuorum", pt.rf).Once().Return(true)
+			}
 			pt.expectDelete(nil)
 			if mode == "sentinel" {
 				pt.check.On("IsSentinelRunningQuorum", pt.rf).Once().Return(false)

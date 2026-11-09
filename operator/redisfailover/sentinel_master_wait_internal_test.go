@@ -185,6 +185,8 @@ func (st *sentinelMasterTest) run(t *testing.T, s smReconcile) smResult {
 	// In another mode, the reconcile ends at the first check.
 	c.On("IsRedisRunning", rf).Maybe().Return(s.mode == "")
 	c.On("IsRedisRunningQuorum", rf).Maybe().Return(false)
+	// Operator-managed mode gates on one Running pod rather than a quorum.
+	c.On("IsAnyRedisRunning", rf).Maybe().Return(false)
 	c.On("IsSentinelRunningQuorum", rf).Maybe().Return(!s.noSentinelQuorum)
 	c.On("GetNumberMasters", rf).Maybe().Return(s.nMasters, s.nMastersErr)
 	// The election of a master when the Sentinels have no quorum.

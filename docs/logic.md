@@ -47,7 +47,7 @@ Each reconcile does these steps in this order:
 
 ## Check & Heal modes
 
-Operator-managed mode and Sentinel mode need a quorum (a majority) of the pods to run, not the full number in the spec. A Pending pod does not block the heal of the others while the running pods are a majority. With 2 replicas, one Pending pod blocks the heal.
+Sentinel mode needs a quorum (a majority) of the pods to run, not the full number in the spec. A Pending pod does not block the heal of the others while the running pods are a majority. With 2 replicas, one Pending pod blocks the heal in that mode. Operator-managed mode needs one running Redis pod, because the operator alone decides the master role.
 
 A pod rollout replaces one stale pod in each reconcile: the replicas first, the master last. Before each replacement, the operator waits until the last replaced pod is ready and each replica on the new revision is in sync. A stale replica that is not in sync has no data to lose. For this reason, the operator replaces such a replica first and does not wait for its sync. When only the container resources change and the kubelet allows it, the operator resizes the pod in place. With `redis.maxMemory`, a lowered memory limit holds the rollout until the `maxmemory` and the memory in use of the master fit the new limit.
 
@@ -68,18 +68,19 @@ When the spec of a pod requests the limit of a step since a revert, the next ste
 
 A pod on the update revision that keeps an annotation of a resize request loses it, because nothing else removes it. A resize request makes a pod stale, also on the update revision. When such a pod has the resources of the template, or a larger memory limit, the rollout only removes the request. An example is a request that a second operator replica writes again after a revert. Without in-place resize, the rollout still moves a pod of the last step to the update revision. A step does not start when the redis container restarts on a memory resize.
 
-A stale pod stays Pending when its `PodScheduled` condition is `False` with the reason `Unschedulable`. The `OnDelete` StatefulSet does not replace such a pod. The operator deletes such a pod when none of its containers started and the StatefulSet status shows the current generation. It does this before the check of the pods that run, which ends the reconcile with 1 or 2 replicas and in bootstrap mode. The operator does not wait for a quorum or for the last replacement, because the pod has no data in memory and serves no client. Its PVC stays, and the StatefulSet creates the pod again on the new revision, so the operator does not delete it again.
+A stale pod stays Pending when its `PodScheduled` condition is `False` with the reason `Unschedulable`. The `OnDelete` StatefulSet does not replace such a pod. The operator deletes such a pod when none of its containers started and the StatefulSet status shows the current generation. It does this before the check of the pods that run. In Sentinel mode that check ends the reconcile with 1 or 2 replicas and in bootstrap mode. In operator-managed mode it ends the reconcile only when no Redis pod runs. The operator does not wait for a quorum or for the last replacement, because the pod has no data in memory and serves no client. Its PVC stays, and the StatefulSet creates the pod again on the new revision, so the operator does not delete it again.
 
 ### Operator-managed mode
 
 This is the default mode (`sentinel.enabled` not set or `false`). There is no Sentinel, so the operator elects the master itself. It checks:
 
-- A quorum of Redis pods runs.
+- At least one Redis pod runs. A quorum is not needed, because the operator alone decides the master role.
 - Only one Redis works as a master. An old master that did not answer during a failover can come back as a second master. If exactly one running pod has the master label, the other masters become replicas of that pod, because the label shows the elected master. Otherwise the operator reports `multiple masters detected, fix manually`.
 - No master: the operator promotes the best replica, or the oldest pod if it finds no replica to promote. Before the promotion, it waits in these cases. The status is `NotHealthy` while it waits.
   - The old master pod is still stopping. That master can still take writes.
   - No pod answers as master, and a Ready pod does not answer. That pod can be the master in a short stall.
   - The master pod does not answer. It gets `sentinel.failoverTimeout` (default 10s) from the first missed check. The operator keeps that time in a pod annotation, so an operator restart keeps the deadline.
+  - The running pods are below a quorum, and a pod is not Ready. That pod can hold newer data on its volume, and it answers no `INFO` yet. It holds the election until it is `sentinel.failoverTimeout` old. A pod that the scheduler cannot place passes that age and then holds the election no longer.
 - The master does not answer, or is not a master: the operator waits `sentinel.failoverTimeout` as above, then promotes the best replica. Without a replica to promote, it does not promote the oldest pod. The status message is then `no healthy replica available for failover`.
 - All Redis replicas replicate from the master.
 - Redis has the custom configuration and the managed `maxmemory`.
