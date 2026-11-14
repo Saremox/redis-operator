@@ -12,7 +12,7 @@ RUN cd test/soak && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
 # operator_upgrade runs helm.
 FROM alpine/helm:4.3.1@sha256:e3f8d5c462d75470fbb1fce79ad5c20063657096d1f98c0fcea869e2600e2e5e AS helm
 
-FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 COPY --from=helm /usr/bin/helm /usr/local/bin/helm
 COPY --from=build /out/soak /usr/local/bin/soak
 USER 65532:65532
