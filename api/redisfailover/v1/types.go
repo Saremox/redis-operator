@@ -71,6 +71,15 @@ type RedisSettings struct {
 	// ImagePullPolicy applies to the Redis container and to the init
 	// container that removes RDB tempfiles. Defaults to Always.
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+	// InstanceManagerImage is the image that holds the redis-instance binary.
+	// An init container copies the binary from this image to a shared volume,
+	// and the Redis container runs it as PID 1. The manager removes the RDB
+	// tempfiles before Redis starts, serves the health endpoints that the
+	// probes use, and forwards the stop signals. Without a value, the
+	// operator uses its own image, which it reads from OPERATOR_IMAGE.
+	// Set this only to run a different build in the Redis pods than in the
+	// operator.
+	InstanceManagerImage string `json:"instanceManagerImage,omitempty"`
 	// Replicas is the number of Redis pods. Defaults to 3.
 	Replicas int32 `json:"replicas,omitempty"`
 	// Port is the Redis port in each pod and in the Services rfrm-<NAME> and

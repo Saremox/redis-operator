@@ -251,6 +251,8 @@ func TestRedisFailover(t *testing.T) {
 
 func (c *clients) testCRCreation(t *testing.T) {
 	assert := assert.New(t)
+	// Get instance manager image from environment, fallback to test tag
+	instanceManagerImage := "ghcr.io/saremox/redis-operator:test"
 
 	toCreate := &redisfailoverv1.RedisFailover{
 		ObjectMeta: metav1.ObjectMeta{
@@ -259,8 +261,9 @@ func (c *clients) testCRCreation(t *testing.T) {
 		},
 		Spec: redisfailoverv1.RedisFailoverSpec{
 			Redis: redisfailoverv1.RedisSettings{
-				Replicas:        redisSize,
-				ImagePullPolicy: corev1.PullIfNotPresent, // CI pulls the default image first
+				Replicas:             redisSize,
+				InstanceManagerImage: instanceManagerImage,
+				ImagePullPolicy:      corev1.PullIfNotPresent, // CI pulls the default image first
 				Exporter: redisfailoverv1.Exporter{
 					Enabled: true,
 				},
@@ -365,9 +368,28 @@ func (c *clients) testAuth(t *testing.T) {
 	redisSS, err := c.k8sClient.AppsV1().StatefulSets(namespace).Get(context.Background(), fmt.Sprintf("rfr-%s", name), metav1.GetOptions{})
 	assert.NoError(err)
 
+	// Since v4.0.0 the redis container runs the instance manager as PID 1. The
+	// manager reads REDIS_PASSWORD from the env and appends --requirepass and
+	// --masterauth when it execs redis-server, so neither the ConfigMap nor the
+	// pod command ever holds the password. See cmd/instance/run.
 	redisCmd := strings.Join(redisSS.Spec.Template.Spec.Containers[0].Command, " ")
-	assert.Contains(redisCmd, `--requirepass "$REDIS_PASSWORD"`)
-	assert.Contains(redisCmd, `--masterauth "$REDIS_PASSWORD"`)
+	assert.Contains(redisCmd, "redis-instance")
+	assert.Contains(redisCmd, "run")
+	assert.Contains(redisCmd, "--redis-conf")
+	assert.NotContains(redisCmd, testPass, "the password must not appear in the pod command")
+
+	// The manager can only add those flags if the secret is wired into the env.
+	var redisPassEnv *corev1.EnvVar
+	for i, e := range redisSS.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "REDIS_PASSWORD" {
+			redisPassEnv = &redisSS.Spec.Template.Spec.Containers[0].Env[i]
+			break
+		}
+	}
+	if assert.NotNil(redisPassEnv, "redis container must receive REDIS_PASSWORD") {
+		assert.Equal("password", redisPassEnv.ValueFrom.SecretKeyRef.Key)
+		assert.Equal(authSecretPath, redisPassEnv.ValueFrom.SecretKeyRef.LocalObjectReference.Name)
+	}
 
 	assert.Len(redisSS.Spec.Template.Spec.Containers, 2)
 	assert.Equal(redisSS.Spec.Template.Spec.Containers[1].Env[1].Name, "REDIS_ADDR")

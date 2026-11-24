@@ -22,6 +22,16 @@ const (
 	// check or the validation, or that has an object name conflict. The
 	// status.message usually gives the reason.
 	NotHealthyState = "NotHealthy"
+
+	// DefaultInstanceManagerImage is the last resort for the image that holds
+	// the redis-instance binary, for a Deployment that sets no OPERATOR_IMAGE.
+	// The operator normally uses its own image, which the Deployment gives it,
+	// and spec.redis.instanceManagerImage overrides both.
+	//
+	// A constant can only name an image that is already published, so it can
+	// never hold the code of the operator that reads it. Treat it as a
+	// fallback and not as the normal path.
+	DefaultInstanceManagerImage = "ghcr.io/saremox/redis-operator:4.1.0"
 )
 
 // The Sentinel timeouts that apply when sentinel.customConfig does not set them.

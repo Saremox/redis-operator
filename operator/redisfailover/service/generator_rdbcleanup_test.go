@@ -1,7 +1,6 @@
 package service_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -47,7 +46,9 @@ func findInitContainer(ss *appsv1.StatefulSet, name string) *corev1.Container {
 	return nil
 }
 
-func TestRedisStatefulSetHasRDBTempfileCleanupInitContainer(t *testing.T) {
+// This fork's instance manager cleans the data directory before it starts
+// redis, so upstream's shell cleanup container is not added alongside it.
+func TestInstanceManagerReplacesRDBTempfileCleanupContainer(t *testing.T) {
 	assert := assert.New(t)
 
 	ss := redisStatefulSetFor(t, nil)
@@ -55,29 +56,13 @@ func TestRedisStatefulSetHasRDBTempfileCleanupInitContainer(t *testing.T) {
 		return
 	}
 
-	c := findInitContainer(ss, "rdb-tempfile-cleanup")
-	if !assert.NotNil(c, "expected an rdb-tempfile-cleanup init container") {
-		return
-	}
-
-	// Only temp-<pid>.rdb is removed. The live dump must never match, whatever
-	// dbfilename is set to.
-	joined := strings.Join(c.Command, " ")
-	assert.Contains(joined, "temp-*.rdb")
-	assert.NotContains(joined, "dump.rdb")
-	assert.Contains(joined, "-maxdepth 1", "must not recurse out of the data directory")
-
-	// It can only clean what it can see.
-	var mounted bool
-	for _, m := range c.VolumeMounts {
-		if m.MountPath == "/data" {
-			mounted = true
-		}
-	}
-	assert.True(mounted, "cleanup container must mount the redis data volume at /data")
+	assert.Nil(findInitContainer(ss, "rdb-tempfile-cleanup"),
+		"the shell cleanup container must not run alongside the instance manager")
+	assert.NotNil(findInitContainer(ss, "instance-manager-init"),
+		"the instance manager must be installed, since it does the cleanup")
 }
 
-func TestRDBTempfileCleanupRunsBeforeUserInitContainers(t *testing.T) {
+func TestInstanceManagerInitRunsBeforeUserInitContainers(t *testing.T) {
 	assert := assert.New(t)
 
 	ss := redisStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
@@ -91,25 +76,5 @@ func TestRDBTempfileCleanupRunsBeforeUserInitContainers(t *testing.T) {
 	for _, c := range ss.Spec.Template.Spec.InitContainers {
 		names = append(names, c.Name)
 	}
-
-	if assert.Len(names, 2) {
-		assert.Equal("rdb-tempfile-cleanup", names[0], "cleanup must run first")
-		assert.Equal("user-init", names[1])
-	}
-}
-
-func TestRDBTempfileCleanupUsesTheRedisImage(t *testing.T) {
-	assert := assert.New(t)
-
-	ss := redisStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
-		rf.Spec.Redis.Image = "redis:7.2.12-alpine"
-	})
-	if !assert.NotNil(ss) {
-		return
-	}
-
-	c := findInitContainer(ss, "rdb-tempfile-cleanup")
-	if assert.NotNil(c) {
-		assert.Equal("redis:7.2.12-alpine", c.Image, "reuse the redis image rather than pulling another one")
-	}
+	assert.Equal([]string{"instance-manager-init", "user-init"}, names)
 }

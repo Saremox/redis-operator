@@ -228,6 +228,7 @@ jobs:
     # No `needs` on check or unit-test: this matrix does not use their
     # output, so it runs in parallel with them.
     strategy:
+      fail-fast: false
       matrix:
         kubernetes: [1.35.8, 1.36.4, 1.37.0]
     steps:
@@ -258,6 +259,8 @@ jobs:
           # driver=none, crictl cannot reach the containerd CRI socket.
           # This job installs docker and cri-dockerd.
           container-runtime: docker
+      - name: Build operator image for tests
+        run: docker build -t ghcr.io/saremox/redis-operator:test -f docker/app/Dockerfile .
       - name: Add redisfailover CRD
         run: kubectl create -f manifests/databases.spotahome.com_redisfailovers.yaml
       - name: Wait for redis image pre-pull to finish

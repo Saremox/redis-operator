@@ -22,6 +22,7 @@ type CMDFlags struct {
 	Concurrency                 int
 	SyncInterval                int
 	LogLevel                    string
+	InstanceManagerImage        string
 	DisconnectClientsOnDemotion bool
 	WatchAuthSecrets            bool
 	EnablePprof                 bool
@@ -42,6 +43,7 @@ func (c *CMDFlags) Init() {
 	flag.IntVar(&c.Concurrency, "concurrency", 3, "Number of concurrent workers that reconcile the RedisFailovers")
 	flag.IntVar(&c.SyncInterval, "sync-interval", 30, "Seconds between two periodic resyncs of all RedisFailovers. A change of a RedisFailover or its pods starts a reconcile at once. 0 or less means 180. Above 300, the metrics cleanup can delete series between two resyncs")
 	flag.StringVar(&c.LogLevel, "log-level", "info", "set log level")
+	flag.StringVar(&c.InstanceManagerImage, "instance-manager-image", "", "Image containing the redis-instance binary for init containers (defaults to empty, which disables RDB cleanup)")
 	flag.BoolVar(&c.DisconnectClientsOnDemotion, "disconnect-clients-on-demotion", true, "Close a redis pod's normal and pub/sub client connections when it stops being the master, so clients reconnect to the new master instead of staying on a replica")
 	flag.BoolVar(&c.WatchAuthSecrets, "watch-auth-secrets", false, "Apply an auth Secret (spec.auth.secretPath) change immediately, not at the next sync. This needs list and watch on secrets in all namespaces, which can read every Secret")
 	flag.BoolVar(&c.EnablePprof, "enable-pprof", false, "Serve the Go profiler on /debug/pprof/ at the listen address. The profiler has no authentication, so allow only trusted users to reach the listen address.")
@@ -60,6 +62,7 @@ func (c *CMDFlags) ToRedisOperatorConfig() redisfailover.Config {
 		Concurrency:              c.Concurrency,
 		SyncInterval:             c.SyncInterval,
 		SupportedNamespacesRegex: c.SupportedNamespacesRegex,
+		InstanceManagerImage:     c.InstanceManagerImage,
 		KeepClientsOnDemotion:    !c.DisconnectClientsOnDemotion,
 		WatchAuthSecrets:         c.WatchAuthSecrets,
 	}
