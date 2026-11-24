@@ -72,6 +72,10 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											Name:      "redis-data",
 											MountPath: "/data",
 										},
+										{
+											Name:      "instance-manager",
+											MountPath: "/controller",
+										},
 									},
 								},
 							},
@@ -114,6 +118,12 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 										EmptyDir: &corev1.EmptyDirVolumeSource{},
 									},
 								},
+								{
+									Name: "instance-manager",
+									VolumeSource: corev1.VolumeSource{
+										EmptyDir: &corev1.EmptyDirVolumeSource{},
+									},
+								},
 							},
 						},
 					},
@@ -145,6 +155,10 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 										{
 											Name:      "redis-data",
 											MountPath: "/data",
+										},
+										{
+											Name:      "instance-manager",
+											MountPath: "/controller",
 										},
 									},
 								},
@@ -190,6 +204,12 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 										},
 									},
 								},
+								{
+									Name: "instance-manager",
+									VolumeSource: corev1.VolumeSource{
+										EmptyDir: &corev1.EmptyDirVolumeSource{},
+									},
+								},
 							},
 						},
 					},
@@ -226,6 +246,10 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											Name:      "pvc-data",
 											MountPath: "/data",
 										},
+										{
+											Name:      "instance-manager",
+											MountPath: "/controller",
+										},
 									},
 								},
 							},
@@ -260,6 +284,12 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											},
 											DefaultMode: &executeMode,
 										},
+									},
+								},
+								{
+									Name: "instance-manager",
+									VolumeSource: corev1.VolumeSource{
+										EmptyDir: &corev1.EmptyDirVolumeSource{},
 									},
 								},
 							},
@@ -336,6 +366,10 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											Name:      "pvc-data",
 											MountPath: "/data",
 										},
+										{
+											Name:      "instance-manager",
+											MountPath: "/controller",
+										},
 									},
 								},
 							},
@@ -370,6 +404,12 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											},
 											DefaultMode: &executeMode,
 										},
+									},
+								},
+								{
+									Name: "instance-manager",
+									VolumeSource: corev1.VolumeSource{
+										EmptyDir: &corev1.EmptyDirVolumeSource{},
 									},
 								},
 							},
@@ -451,6 +491,10 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											Name:      "pvc-data",
 											MountPath: "/data",
 										},
+										{
+											Name:      "instance-manager",
+											MountPath: "/controller",
+										},
 									},
 								},
 							},
@@ -485,6 +529,12 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 											},
 											DefaultMode: &executeMode,
 										},
+									},
+								},
+								{
+									Name: "instance-manager",
+									VolumeSource: corev1.VolumeSource{
+										EmptyDir: &corev1.EmptyDirVolumeSource{},
 									},
 								},
 							},
@@ -568,10 +618,14 @@ func TestRedisStatefulSetCommands(t *testing.T) {
 		expectedCommands []string
 	}{
 		{
+			// This fork starts the instance manager, which starts
+			// redis-server as its child process.
 			name:          "Default values",
 			givenCommands: []string{},
 			expectedCommands: []string{
-				"redis-server",
+				"/controller/redis-instance",
+				"run",
+				"--redis-conf",
 				"/redis/redis.conf",
 			},
 		},
@@ -2266,7 +2320,9 @@ func TestRedisExtraVolumeMounts(t *testing.T) {
 		ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			s := args.Get(1).(*appsv1.StatefulSet)
 			extraVolume = s.Spec.Template.Spec.Volumes[3]
-			extraVolumeMount = s.Spec.Template.Spec.Containers[0].VolumeMounts[4]
+			// Index 5, not 4: this fork mounts the instance-manager volume
+			// after /data and before the extra mounts.
+			extraVolumeMount = s.Spec.Template.Spec.Containers[0].VolumeMounts[5]
 		}).Return(nil)
 
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
@@ -2643,6 +2699,8 @@ func TestRedisCustomLivenessProbe(t *testing.T) {
 			},
 		},
 		{
+			// The default is an HTTP probe against the instance manager of
+			// this fork, and not the exec probe that upstream uses.
 			name:                "liveness_probe_nil",
 			customLivenessProbe: nil,
 			expectedLivenessProbe: &corev1.Probe{
@@ -2651,12 +2709,9 @@ func TestRedisCustomLivenessProbe(t *testing.T) {
 				FailureThreshold:    6,
 				PeriodSeconds:       15,
 				ProbeHandler: corev1.ProbeHandler{
-					Exec: &corev1.ExecAction{
-						Command: []string{
-							"sh",
-							"-c",
-							"t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'",
-						},
+					HTTPGet: &corev1.HTTPGetAction{
+						Path: "/healthz",
+						Port: intstr.FromInt32(8080),
 					},
 				},
 			},
@@ -2797,14 +2852,19 @@ func TestRedisCustomReadinessProbe(t *testing.T) {
 			},
 		},
 		{
+			// The default is an HTTP probe against the instance manager of
+			// this fork, and not the ready.sh exec probe of upstream.
 			name:                 "readiness_probe_nil",
 			customReadinessProbe: nil,
 			expectedReadinessProbe: &corev1.Probe{
 				InitialDelaySeconds: 30,
 				TimeoutSeconds:      5,
+				PeriodSeconds:       10,
+				FailureThreshold:    3,
 				ProbeHandler: corev1.ProbeHandler{
-					Exec: &corev1.ExecAction{
-						Command: []string{"/bin/sh", "/redis-readiness/ready.sh"},
+					HTTPGet: &corev1.HTTPGetAction{
+						Path: "/readyz",
+						Port: intstr.FromInt32(8080),
 					},
 				},
 			},
@@ -4060,11 +4120,12 @@ func TestRedisReadinessScript(t *testing.T) {
 	}
 }
 
-// TestProbeCommands runs the default Redis and Sentinel liveness commands and
-// the Sentinel readiness command against a fake redis-cli that answers like a
-// healthy server or hangs like a frozen one, with and without timeout on PATH.
-// The Redis liveness command also gets the replies of a server that loads its
-// dataset or refuses the login.
+// TestProbeCommands runs the default Sentinel liveness and readiness commands
+// against a fake redis-cli that answers like a healthy server or hangs like a
+// frozen one, with and without timeout on PATH.
+//
+// The Redis liveness probe of this fork is an HTTP probe against the instance
+// manager and runs no command, so it is not here. cmd/instance/run covers it.
 func TestProbeCommands(t *testing.T) {
 	if _, err := exec.LookPath("timeout"); err != nil {
 		t.Skip("timeout is not installed")
@@ -4074,9 +4135,7 @@ func TestProbeCommands(t *testing.T) {
 	ms := &mK8SService.Services{}
 	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Return(nil, nil)
 	ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Return(nil)
-	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
-		probes["redis liveness"] = args.Get(1).(*appsv1.StatefulSet).Spec.Template.Spec.Containers[0].LivenessProbe
-	}).Return(nil)
+	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Return(nil)
 	ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 		c := args.Get(1).(*appsv1.Deployment).Spec.Template.Spec.Containers[0]
 		probes["sentinel liveness"] = c.LivenessProbe
@@ -4117,33 +4176,10 @@ esac
 		{name: "frozen", path: dir + ":" + os.Getenv("PATH"), env: []string{"FAKE_FROZEN=1"}},
 		{name: "answers, without timeout", path: bare, alive: true},
 	}
-	// redis-cli prints an error reply on stdout and exits 0. With a Redis
-	// password, a wrong pinger password gives WRONGPASS on stderr, and then
-	// NOAUTH for the PING.
-	redisReplies := []probeTest{
-		{
-			name:  "loading",
-			path:  dir + ":" + os.Getenv("PATH"),
-			env:   []string{"FAKE_REPLY=LOADING Redis is loading the dataset in memory"},
-			alive: true,
-		},
-		{
-			name: "wrong password",
-			path: dir + ":" + os.Getenv("PATH"),
-			env: []string{
-				"FAKE_STDERR=AUTH failed: WRONGPASS invalid username-password pair or user is disabled.",
-				"FAKE_REPLY=NOAUTH Authentication required.",
-			},
-		},
-	}
-	for _, component := range []string{"redis liveness", "sentinel liveness", "sentinel readiness"} {
+	for _, component := range []string{"sentinel liveness", "sentinel readiness"} {
 		probe := probes[component]
 		require.Equal(t, "sh", probe.Exec.Command[0])
-		componentTests := tests
-		if component == "redis liveness" {
-			componentTests = append(componentTests, redisReplies...)
-		}
-		for _, test := range componentTests {
+		for _, test := range tests {
 			t.Run(component+", "+test.name, func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 				defer cancel()

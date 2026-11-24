@@ -1,7 +1,8 @@
 // Package main provides the redis-instance binary, an instance manager that
-// runs as PID 1 and starts redis-server as a child process. The operator image
-// contains the binary, but the operator does not use it: the Redis pods run
-// redis-server from the Redis image.
+// runs as PID 1 and starts redis-server as a child process. In this fork the
+// operator uses it: an init container copies the binary out of the operator
+// image, and each Redis pod runs it. Upstream Saremox builds the binary but
+// does not use it.
 package main
 
 import (
@@ -25,8 +26,8 @@ redis-server as a child process. It removes old RDB tempfiles before Redis
 starts, serves health endpoints, forwards the stop signals and reaps zombie
 processes.
 
-The operator does not use this binary. The Redis pods that the operator
-creates run redis-server from the Redis image.`,
+In this fork, the Redis pods that the operator creates run this binary, and
+not redis-server directly. Upstream Saremox does not use it.`,
 	SilenceUsage: true,
 }
 

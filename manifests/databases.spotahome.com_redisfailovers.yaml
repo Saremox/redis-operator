@@ -7749,6 +7749,17 @@ spec:
                       - name
                       type: object
                     type: array
+                  instanceManagerImage:
+                    description: |-
+                      InstanceManagerImage is the image that holds the redis-instance binary.
+                      An init container copies the binary from this image to a shared volume,
+                      and the Redis container runs it as PID 1. The manager removes the RDB
+                      tempfiles before Redis starts, serves the health endpoints that the
+                      probes use, and forwards the stop signals. Without a value, the
+                      operator uses its own image, which it reads from OPERATOR_IMAGE.
+                      Set this only to run a different build in the Redis pods than in the
+                      operator.
+                    type: string
                   maxMemory:
                     description: |-
                       MaxMemory lets the operator set maxmemory and maxmemory-policy from the

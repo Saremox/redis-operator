@@ -54,6 +54,13 @@ spec:
         - --watch-auth-secrets
         {{- end }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
+        env:
+        # The Redis pods run an init container that copies the redis-instance
+        # binary out of this image, so the operator must know its own image.
+        - name: OPERATOR_IMAGE
+          value: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion}}"
+        - name: OPERATOR_IMAGE_PULL_POLICY
+          value: {{ .Values.image.pullPolicy }}
         ports:
           - name: metrics
             containerPort: {{ .Values.container.port }}
