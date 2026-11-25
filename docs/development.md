@@ -95,7 +95,7 @@ In a Claude Code cloud sandbox, use the `kind-cluster` skill in `.claude/skills/
 
 `scripts/quality.sh` prints two scores from 0 to 100. Lint, complexity, duplication, dead code and file size make the Code Quality score. Coverage, the size of the tests, test hygiene and the race detector make the Testing score. Each score starts at its maximum and loses points for each finding, scaled to the size of the code. More code, more tests or more comments never raise a score.
 
-The target is 85-95. A score above 95 does not mean better code, and the script has no gate there. CI fails when a score is more than 2 points below `.quality/baseline.json`. A person updates that file in a commit, after a review of the change.
+The lint job of CI blocks only the findings that a pull request adds. The findings that exist already count in the Code Quality score. The target is 85-95. A score above 95 does not mean better code, and the script has no gate there. CI fails when a score is more than 2 points below `.quality/baseline.json`. A person updates that file in a commit, after a review of the change.
 
 ## Go version
 
