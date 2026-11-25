@@ -105,24 +105,15 @@ func TestLoggerMethodsWriteLevelAndMessage(t *testing.T) {
 	l, buf, exits := testLogger()
 	assertLogCalls(t, []logCall{
 		{name: "Debug", call: func() { l.Debug("a", "b") }, level: "debug", msg: "ab"},
-		{name: "Debugln", call: func() { l.Debugln("a", "b") }, level: "debug", msg: "a b"},
 		{name: "Debugf", call: func() { l.Debugf("n=%d", 1) }, level: "debug", msg: "n=1"},
 		{name: "Info", call: func() { l.Info("a", "b") }, level: "info", msg: "ab"},
-		{name: "Infoln", call: func() { l.Infoln("a", "b") }, level: "info", msg: "a b"},
 		{name: "Infof", call: func() { l.Infof("n=%d", 2) }, level: "info", msg: "n=2"},
-		{name: "Warn", call: func() { l.Warn("a", "b") }, level: "warning", msg: "ab"},
-		{name: "Warnln", call: func() { l.Warnln("a", "b") }, level: "warning", msg: "a b"},
 		{name: "Warnf", call: func() { l.Warnf("n=%d", 3) }, level: "warning", msg: "n=3"},
 		{name: "Warningf", call: func() { l.Warningf("n=%d", 4) }, level: "warning", msg: "n=4"},
 		{name: "Error", call: func() { l.Error("a", "b") }, level: "error", msg: "ab"},
-		{name: "Errorln", call: func() { l.Errorln("a", "b") }, level: "error", msg: "a b"},
 		{name: "Errorf", call: func() { l.Errorf("n=%d", 5) }, level: "error", msg: "n=5"},
 		{name: "Fatal", call: func() { l.Fatal("a", "b") }, level: "fatal", msg: "ab", exit: true},
-		{name: "Fatalln", call: func() { l.Fatalln("a", "b") }, level: "fatal", msg: "a b", exit: true},
 		{name: "Fatalf", call: func() { l.Fatalf("n=%d", 6) }, level: "fatal", msg: "n=6", exit: true},
-		{name: "Panic", call: func() { l.Panic("a", "b") }, level: "panic", msg: "ab", panic: true},
-		{name: "Panicln", call: func() { l.Panicln("a", "b") }, level: "panic", msg: "a b", panic: true},
-		{name: "Panicf", call: func() { l.Panicf("n=%d", 7) }, level: "panic", msg: "n=7", panic: true},
 	}, buf, exits)
 }
 
@@ -130,23 +121,14 @@ func TestPackageFunctionsWriteToTheBaseLogger(t *testing.T) {
 	buf, exits := captureBaseAtDebug(t)
 	assertLogCalls(t, []logCall{
 		{name: "Debug", call: func() { Debug("a", "b") }, level: "debug", msg: "ab"},
-		{name: "Debugln", call: func() { Debugln("a", "b") }, level: "debug", msg: "a b"},
 		{name: "Debugf", call: func() { Debugf("n=%d", 1) }, level: "debug", msg: "n=1"},
 		{name: "Info", call: func() { Info("a", "b") }, level: "info", msg: "ab"},
-		{name: "Infoln", call: func() { Infoln("a", "b") }, level: "info", msg: "a b"},
 		{name: "Infof", call: func() { Infof("n=%d", 2) }, level: "info", msg: "n=2"},
-		{name: "Warn", call: func() { Warn("a", "b") }, level: "warning", msg: "ab"},
-		{name: "Warnln", call: func() { Warnln("a", "b") }, level: "warning", msg: "a b"},
 		{name: "Warnf", call: func() { Warnf("n=%d", 3) }, level: "warning", msg: "n=3"},
 		{name: "Error", call: func() { Error("a", "b") }, level: "error", msg: "ab"},
-		{name: "Errorln", call: func() { Errorln("a", "b") }, level: "error", msg: "a b"},
 		{name: "Errorf", call: func() { Errorf("n=%d", 5) }, level: "error", msg: "n=5"},
 		{name: "Fatal", call: func() { Fatal("a", "b") }, level: "fatal", msg: "ab", exit: true},
-		{name: "Fatalln", call: func() { Fatalln("a", "b") }, level: "fatal", msg: "a b", exit: true},
 		{name: "Fatalf", call: func() { Fatalf("n=%d", 6) }, level: "fatal", msg: "n=6", exit: true},
-		{name: "Panic", call: func() { Panic("a", "b") }, level: "panic", msg: "ab", panic: true},
-		{name: "Panicln", call: func() { Panicln("a", "b") }, level: "panic", msg: "a b", panic: true},
-		{name: "Panicf", call: func() { Panicf("n=%d", 7) }, level: "panic", msg: "n=7", panic: true},
 	}, buf, exits)
 }
 
@@ -185,7 +167,7 @@ func TestLoggerSet(t *testing.T) {
 	require.NoError(t, l.Set("warning"))
 	assert.Equal(t, logrus.WarnLevel, l.entry.Logger.GetLevel())
 	l.Info("dropped")
-	l.Warn("kept")
+	l.Warnf("kept")
 	lines := parseLines(t, buf)
 	require.Len(t, lines, 1)
 	assert.Equal(t, "kept", lines[0].Msg)
@@ -208,24 +190,15 @@ func TestDummyLoggerDiscardsAll(t *testing.T) {
 	var l Logger = Dummy
 	assert.NotPanics(t, func() {
 		l.Debug("m")
-		l.Debugln("m")
 		l.Debugf("m")
 		l.Info("m")
-		l.Infoln("m")
 		l.Infof("m")
-		l.Warn("m")
-		l.Warnln("m")
 		l.Warnf("m")
 		l.Warningf("m")
 		l.Error("m")
-		l.Errorln("m")
 		l.Errorf("m")
 		l.Fatal("m")
-		l.Fatalln("m")
 		l.Fatalf("m")
-		l.Panic("m")
-		l.Panicln("m")
-		l.Panicf("m")
 	})
 	assert.Equal(t, Dummy, l.With("key", "value"))
 	assert.Equal(t, Dummy, l.WithField("key", "value"))

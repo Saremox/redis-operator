@@ -13,7 +13,7 @@
 # Run `set-version` and commit the result, then push the tag. The release
 # workflow runs `check-version` and stops the release if a file disagrees.
 
-set -eu
+set -euo pipefail
 
 # The fields that must carry the version, as "file|pattern". A substitution
 # that matches nothing changes nothing, so without this list a removed or

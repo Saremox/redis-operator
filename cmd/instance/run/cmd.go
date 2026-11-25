@@ -11,13 +11,13 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/saremox/redis-operator/cmd/instance/rdbclean"
 )
 
 // healthServer is the global health server instance.
@@ -57,7 +57,6 @@ var (
 	maxLinkDown time.Duration
 )
 
-// NewCmd creates the run command.
 func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -343,57 +342,22 @@ func waitStatusError(status syscall.WaitStatus) error {
 func performStartupCleanup() error {
 	fmt.Printf("redis-instance: performing startup cleanup in %s\n", dataDir)
 
-	info, err := os.Stat(dataDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Printf("redis-instance: data directory %s does not exist yet, skipping cleanup\n", dataDir)
-			return nil
+	missing := false
+	cleaned, totalSize, err := rdbclean.Clean(dataDir, dbFilename, rdbTempfilePrefix, false, readDir, func(e rdbclean.Event) {
+		switch e.Kind {
+		case rdbclean.Missing:
+			missing = true
+			fmt.Printf("redis-instance: data directory %s does not exist yet, skipping cleanup\n", e.Path)
+		case rdbclean.InfoFailed:
+			fmt.Printf("redis-instance: warning: failed to get info for %s: %v\n", e.Name, e.Err)
+		case rdbclean.RemoveFailed:
+			fmt.Printf("redis-instance: warning: failed to remove %s: %v\n", e.Path, e.Err)
+		case rdbclean.Removed:
+			fmt.Printf("redis-instance: removed stale RDB file %s (%d bytes)\n", e.Name, e.Size)
 		}
-		return fmt.Errorf("failed to stat data directory: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", dataDir)
-	}
-
-	entries, err := readDir(dataDir)
-	if err != nil {
-		return fmt.Errorf("failed to read data directory: %w", err)
-	}
-
-	var cleaned int
-	var totalSize int64
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-
-		name := entry.Name()
-
-		if !strings.HasPrefix(name, rdbTempfilePrefix) || !strings.HasSuffix(name, ".rdb") {
-			continue
-		}
-
-		if name == dbFilename {
-			continue
-		}
-
-		filePath := filepath.Join(dataDir, name)
-
-		fileInfo, err := entry.Info()
-		if err != nil {
-			fmt.Printf("redis-instance: warning: failed to get info for %s: %v\n", name, err)
-			continue
-		}
-
-		if err := os.Remove(filePath); err != nil {
-			fmt.Printf("redis-instance: warning: failed to remove %s: %v\n", filePath, err)
-			continue
-		}
-
-		fmt.Printf("redis-instance: removed stale RDB file %s (%d bytes)\n", name, fileInfo.Size())
-		cleaned++
-		totalSize += fileInfo.Size()
+	})
+	if err != nil || missing {
+		return err
 	}
 
 	if cleaned > 0 {

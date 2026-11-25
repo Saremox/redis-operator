@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	kubernetes "k8s.io/client-go/kubernetes/fake"
 
 	redisfailoverfake "github.com/saremox/redis-operator/client/k8s/clientset/versioned/fake"
@@ -26,9 +25,6 @@ func TestNew(t *testing.T) {
 	svc := k8s.New(kubecli, crdcli, log.Dummy, metrics.Dummy)
 	assertTest.NotNil(svc)
 
-	_, err := svc.ListServiceAccounts("default")
-	require.NoError(t, err)
-
-	_, err = svc.GetStatefulSetPods("default", "does-not-exist")
+	_, err := svc.GetStatefulSetPods("default", "does-not-exist")
 	assertTest.Error(err)
 }

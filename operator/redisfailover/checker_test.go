@@ -44,20 +44,20 @@ func noUnknownSentinelAddrs(mc *mRFService.RedisFailoverCheck) *mRFService.Redis
 
 func TestCheckAndHeal(t *testing.T) {
 	tests := []struct {
-		name                           string
-		nMasters                       int
-		nRedis                         int
-		forceNewMasterNoQrm            bool
-		forceNewMasterFirstBoot        bool
-		singleMasterTest               bool
-		slavesOK                       bool
-		sentinelMonitorOK              bool
-		sentinelNumberInMemoryOK       bool
-		sentinelSlavesNumberInMemoryOK bool
-		redisCheckNumberOK             bool
-		redisSetMasterOnAllOK          bool
-		bootstrapping                  bool
-		allowSentinels                 bool
+		name                               string
+		nMasters                           int
+		nRedis                             int
+		forceNewMasterNoQrm                bool
+		forceNewMasterFirstBoot            bool
+		singleMasterTest                   bool
+		slavesBroken                       bool
+		sentinelMonitorBroken              bool
+		sentinelNumberInMemoryBroken       bool
+		sentinelSlavesNumberInMemoryBroken bool
+		redisCheckNumberBroken             bool
+		redisSetMasterOnAllBroken          bool
+		bootstrapping                      bool
+		allowSentinels                     bool
 		// wantState overrides the default expErr-derived expected state
 		// (NotHealthy-with-error / Healthy-with-no-error) for cases where the
 		// function legitimately returns nil while still being unhealthy - e.g.
@@ -66,244 +66,119 @@ func TestCheckAndHeal(t *testing.T) {
 		wantState string
 	}{
 		{
-			name:                           "Everything ok, no need to heal",
-			nMasters:                       1,
-			nRedis:                         3,
-			singleMasterTest:               false,
-			forceNewMasterNoQrm:            false,
-			forceNewMasterFirstBoot:        false,
-			slavesOK:                       true,
-			sentinelMonitorOK:              true,
-			sentinelNumberInMemoryOK:       true,
-			sentinelSlavesNumberInMemoryOK: true,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			bootstrapping:                  false,
-			allowSentinels:                 false,
+			name:     "Everything ok, no need to heal",
+			nMasters: 1,
+			nRedis:   3,
 		},
 		{
-			name:                           "Multiple masters",
-			nMasters:                       2,
-			nRedis:                         3,
-			singleMasterTest:               false,
-			forceNewMasterNoQrm:            false,
-			forceNewMasterFirstBoot:        false,
-			slavesOK:                       true,
-			sentinelMonitorOK:              true,
-			sentinelNumberInMemoryOK:       true,
-			sentinelSlavesNumberInMemoryOK: true,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			bootstrapping:                  false,
-			allowSentinels:                 false,
+			name:     "Multiple masters",
+			nMasters: 2,
+			nRedis:   3,
 		},
 		{
-			name:                           "No masters but wait",
-			nMasters:                       0,
-			nRedis:                         3,
-			singleMasterTest:               false,
-			forceNewMasterNoQrm:            false,
-			forceNewMasterFirstBoot:        false,
-			slavesOK:                       true,
-			sentinelMonitorOK:              true,
-			sentinelNumberInMemoryOK:       true,
-			sentinelSlavesNumberInMemoryOK: true,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			bootstrapping:                  false,
-			allowSentinels:                 false,
+			name:     "No masters but wait",
+			nMasters: 0,
+			nRedis:   3,
 
 			// There is no master until the Sentinel failover ends.
 			wantState: v1.NotHealthyState,
 		},
 		{
-			name:                           "No masters, only one redis available, make master",
-			nMasters:                       0,
-			nRedis:                         1,
-			singleMasterTest:               true,
-			forceNewMasterNoQrm:            false,
-			forceNewMasterFirstBoot:        false,
-			slavesOK:                       true,
-			sentinelMonitorOK:              true,
-			sentinelNumberInMemoryOK:       true,
-			sentinelSlavesNumberInMemoryOK: true,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			bootstrapping:                  false,
-			allowSentinels:                 false,
+			name:             "No masters, only one redis available, make master",
+			nMasters:         0,
+			nRedis:           1,
+			singleMasterTest: true,
 		},
 		{
-			name:                           "No masters,No sentinel quorum set random",
-			nMasters:                       0,
-			nRedis:                         3,
-			singleMasterTest:               false,
-			forceNewMasterNoQrm:            true,
-			forceNewMasterFirstBoot:        false,
-			slavesOK:                       true,
-			sentinelMonitorOK:              true,
-			sentinelNumberInMemoryOK:       true,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			sentinelSlavesNumberInMemoryOK: true,
-			allowSentinels:                 false,
+			name:                "No masters,No sentinel quorum set random",
+			nMasters:            0,
+			nRedis:              3,
+			forceNewMasterNoQrm: true,
 		},
 		{
-			name:                           "No masters,Sentinel Quorum but slave of local host set random",
-			nMasters:                       0,
-			nRedis:                         3,
-			singleMasterTest:               false,
-			forceNewMasterNoQrm:            false,
-			forceNewMasterFirstBoot:        true,
-			slavesOK:                       true,
-			sentinelMonitorOK:              true,
-			sentinelNumberInMemoryOK:       true,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			sentinelSlavesNumberInMemoryOK: true,
-			allowSentinels:                 false,
+			name:                    "No masters,Sentinel Quorum but slave of local host set random",
+			nMasters:                0,
+			nRedis:                  3,
+			forceNewMasterFirstBoot: true,
 		},
 		{
-			name:                           "Slaves from master wrong",
-			nMasters:                       1,
-			nRedis:                         3,
-			singleMasterTest:               false,
-			forceNewMasterNoQrm:            false,
-			forceNewMasterFirstBoot:        false,
-			slavesOK:                       false,
-			sentinelMonitorOK:              true,
-			sentinelNumberInMemoryOK:       true,
-			sentinelSlavesNumberInMemoryOK: true,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			bootstrapping:                  false,
-			allowSentinels:                 false,
+			name:         "Slaves from master wrong",
+			nMasters:     1,
+			nRedis:       3,
+			slavesBroken: true,
 		},
 		{
-			name:                           "Sentinels not pointing correct monitor",
-			nMasters:                       1,
-			nRedis:                         3,
-			singleMasterTest:               false,
-			forceNewMasterNoQrm:            false,
-			forceNewMasterFirstBoot:        false,
-			slavesOK:                       true,
-			sentinelMonitorOK:              false,
-			sentinelNumberInMemoryOK:       true,
-			sentinelSlavesNumberInMemoryOK: true,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			bootstrapping:                  false,
-			allowSentinels:                 false,
-		},
-		{
-			name:                           "Sentinels with wrong number of sentinels",
-			nMasters:                       1,
-			nRedis:                         3,
-			singleMasterTest:               false,
-			forceNewMasterNoQrm:            false,
-			forceNewMasterFirstBoot:        false,
-			slavesOK:                       true,
-			sentinelMonitorOK:              true,
-			sentinelNumberInMemoryOK:       false,
-			sentinelSlavesNumberInMemoryOK: true,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			bootstrapping:                  false,
-			allowSentinels:                 false,
-		},
-		{
-			name:                           "Sentinels with wrong number of slaves",
-			nMasters:                       1,
-			nRedis:                         3,
-			singleMasterTest:               false,
-			forceNewMasterNoQrm:            false,
-			forceNewMasterFirstBoot:        false,
-			slavesOK:                       true,
-			sentinelMonitorOK:              true,
-			sentinelNumberInMemoryOK:       true,
-			sentinelSlavesNumberInMemoryOK: false,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			bootstrapping:                  false,
-			allowSentinels:                 false,
-		},
-		{
-			name:                  "Bootstrapping Mode",
+			name:                  "Sentinels not pointing correct monitor",
 			nMasters:              1,
 			nRedis:                3,
-			redisCheckNumberOK:    true,
-			redisSetMasterOnAllOK: true,
-			bootstrapping:         true,
-			allowSentinels:        false,
+			sentinelMonitorBroken: true,
 		},
 		{
-			name:                  "Bootstrapping Mode with failure to check redis number",
-			nMasters:              1,
-			nRedis:                3,
-			redisCheckNumberOK:    false,
-			redisSetMasterOnAllOK: true,
-			bootstrapping:         true,
-			allowSentinels:        false,
+			name:                         "Sentinels with wrong number of sentinels",
+			nMasters:                     1,
+			nRedis:                       3,
+			sentinelNumberInMemoryBroken: true,
+		},
+		{
+			name:                               "Sentinels with wrong number of slaves",
+			nMasters:                           1,
+			nRedis:                             3,
+			sentinelSlavesNumberInMemoryBroken: true,
+		},
+		{
+			name:          "Bootstrapping Mode",
+			nMasters:      1,
+			nRedis:        3,
+			bootstrapping: true,
+		},
+		{
+			name:                   "Bootstrapping Mode with failure to check redis number",
+			nMasters:               1,
+			nRedis:                 3,
+			redisCheckNumberBroken: true,
+			bootstrapping:          true,
 			// checkAndHealBootstrapMode's redis-not-running gate must report
 			// NotHealthy even though it returns nil (it is waiting for the next
 			// reconcile, not failing outright).
 			wantState: v1.NotHealthyState,
 		},
 		{
-			name:                  "Bootstrapping Mode with failure to set master on all",
+			name:                      "Bootstrapping Mode with failure to set master on all",
+			nMasters:                  1,
+			nRedis:                    3,
+			redisSetMasterOnAllBroken: true,
+			bootstrapping:             true,
+		},
+		{
+			name:           "Bootstrapping Mode that allows sentinels",
+			nMasters:       1,
+			nRedis:         3,
+			bootstrapping:  true,
+			allowSentinels: true,
+		},
+		{
+			name:                  "Bootstrapping Mode that allows sentinels sentinel monitor fails",
 			nMasters:              1,
 			nRedis:                3,
-			redisCheckNumberOK:    true,
-			redisSetMasterOnAllOK: false,
+			sentinelMonitorBroken: true,
 			bootstrapping:         true,
-			allowSentinels:        false,
+			allowSentinels:        true,
 		},
 		{
-			name:                           "Bootstrapping Mode that allows sentinels",
-			nMasters:                       1,
-			nRedis:                         3,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			sentinelMonitorOK:              true,
-			sentinelNumberInMemoryOK:       true,
-			sentinelSlavesNumberInMemoryOK: true,
-			bootstrapping:                  true,
-			allowSentinels:                 true,
+			name:                         "Bootstrapping Mode that allows sentinels sentinel with wrong number of sentinels",
+			nMasters:                     1,
+			nRedis:                       3,
+			sentinelNumberInMemoryBroken: true,
+			bootstrapping:                true,
+			allowSentinels:               true,
 		},
 		{
-			name:                           "Bootstrapping Mode that allows sentinels sentinel monitor fails",
-			nMasters:                       1,
-			nRedis:                         3,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			sentinelMonitorOK:              false,
-			sentinelNumberInMemoryOK:       true,
-			sentinelSlavesNumberInMemoryOK: true,
-			bootstrapping:                  true,
-			allowSentinels:                 true,
-		},
-		{
-			name:                           "Bootstrapping Mode that allows sentinels sentinel with wrong number of sentinels",
-			nMasters:                       1,
-			nRedis:                         3,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			sentinelMonitorOK:              true,
-			sentinelNumberInMemoryOK:       false,
-			sentinelSlavesNumberInMemoryOK: true,
-			bootstrapping:                  true,
-			allowSentinels:                 true,
-		},
-		{
-			name:                           "Bootstrapping Mode that allows sentinels sentinel with wrong number of slaves",
-			nMasters:                       1,
-			nRedis:                         3,
-			redisCheckNumberOK:             true,
-			redisSetMasterOnAllOK:          true,
-			sentinelMonitorOK:              true,
-			sentinelNumberInMemoryOK:       true,
-			sentinelSlavesNumberInMemoryOK: false,
-			bootstrapping:                  true,
-			allowSentinels:                 true,
+			name:                               "Bootstrapping Mode that allows sentinels sentinel with wrong number of slaves",
+			nMasters:                           1,
+			nRedis:                             3,
+			sentinelSlavesNumberInMemoryBroken: true,
+			bootstrapping:                      true,
+			allowSentinels:                     true,
 		},
 	}
 
@@ -350,7 +225,7 @@ func TestCheckAndHeal(t *testing.T) {
 				sentinelRunningMethod = "IsSentinelRunning"
 			}
 
-			if test.redisCheckNumberOK {
+			if !test.redisCheckNumberBroken {
 				mrfc.On("IsRedisRunning", rf).Once().Return(true)
 			} else {
 				continueTests = false
@@ -376,7 +251,7 @@ func TestCheckAndHeal(t *testing.T) {
 				mrfc.On("GetStatefulSetUpdateRevision", rf).Once().Return("1", nil)
 				mrfc.On("GetRedisesSlavesPods", rf).Once().Return([]string{}, nil)
 
-				if test.redisSetMasterOnAllOK {
+				if !test.redisSetMasterOnAllBroken {
 					mrfh.On("SetExternalMasterOnAll", bootstrapMaster, bootstrapMasterPort, rf).Once().Return(nil)
 				} else {
 					expErr = true
@@ -419,18 +294,18 @@ func TestCheckAndHeal(t *testing.T) {
 					// of the base call in checkAndHeal and the one inside
 					// UpdateRedisesPods.
 					getMasterIPCalls := 2
-					if !test.slavesOK {
+					if test.slavesBroken {
 						getMasterIPCalls++
 					}
-					if !test.sentinelMonitorOK {
+					if test.sentinelMonitorBroken {
 						getMasterIPCalls++
 					}
 					mrfc.On("GetMasterIP", rf).Times(getMasterIPCalls).Return(master, nil)
-					if test.slavesOK {
+					if !test.slavesBroken {
 						mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(nil)
 					} else {
 						mrfc.On("CheckAllSlavesFromMaster", master, rf).Once().Return(errors.New(""))
-						if test.redisSetMasterOnAllOK {
+						if !test.redisSetMasterOnAllBroken {
 							mrfh.On("SetMasterOnAll", master, rf).Once().Return(nil)
 						} else {
 							expErr = true
@@ -449,7 +324,7 @@ func TestCheckAndHeal(t *testing.T) {
 
 			if allowSentinels && !expErr && continueTests {
 				mrfc.On("GetSentinelsIPs", rf).Once().Return([]string{sentinel}, nil)
-				if test.sentinelMonitorOK {
+				if !test.sentinelMonitorBroken {
 					if test.bootstrapping {
 						mrfc.On("CheckSentinelMonitor", sentinel, bootstrapMaster, bootstrapMasterPort).Once().Return(nil)
 					} else {
@@ -466,14 +341,14 @@ func TestCheckAndHeal(t *testing.T) {
 						mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 					}
 				}
-				if test.sentinelNumberInMemoryOK {
+				if !test.sentinelNumberInMemoryBroken {
 					mrfc.On("CheckSentinelNumberInMemory", sentinel, rf).Once().Return(nil)
 				} else {
 					mrfc.On("CheckSentinelNumberInMemory", sentinel, rf).Once().Return(errors.New(""))
 					mrfh.On("RestoreSentinel", sentinel).Once().Return(nil)
 					mrfc.On("GetSentinelFailover", mock.Anything).Maybe().Return(redis.SentinelFailover{}, nil)
 				}
-				if test.sentinelSlavesNumberInMemoryOK {
+				if !test.sentinelSlavesNumberInMemoryBroken {
 					mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(nil)
 				} else {
 					mrfc.On("CheckSentinelSlavesNumberInMemory", sentinel, rf).Once().Return(errors.New(""))
@@ -2173,12 +2048,26 @@ func TestCheckAndHealBootstrapModeErrorBranches(t *testing.T) {
 	}
 }
 
-func TestUpdate(t *testing.T) {
-	type podStatus struct {
-		pod    corev1.Pod
-		ready  bool
-		master bool
+// podStatus is a pod of TestUpdate with the state that the mocks report for it.
+type podStatus struct {
+	pod    corev1.Pod
+	ready  bool
+	master bool
+}
+
+// updatePod is a pod of TestUpdate with its revision hash, IP and state.
+func updatePod(name, revision, ip string, master, ready bool) podStatus {
+	return podStatus{
+		pod: corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: revision}},
+			Status:     corev1.PodStatus{PodIP: ip},
+		},
+		master: master,
+		ready:  ready,
 	}
+}
+
+func TestUpdate(t *testing.T) {
 	tests := []struct {
 		name          string
 		pods          []podStatus
@@ -2193,51 +2082,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "all ok, no change needed",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "master",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: true,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, true),
+				updatePod("master", "10", "1.1.1.1", true, true),
 			},
 			ssVersion:     "10",
 			errExpected:   false,
@@ -2246,51 +2093,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "syncing",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  false,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "master",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: true,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, false),
+				updatePod("master", "10", "1.1.1.1", true, true),
 			},
 			ssVersion:     "10",
 			errExpected:   false,
@@ -2299,51 +2104,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "pod version incorrect",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "master",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: true,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, true),
+				updatePod("master", "10", "1.1.1.1", true, true),
 			},
 			ssVersion:     "1",
 			errExpected:   false,
@@ -2352,51 +2115,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "master version incorrect",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "master",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "1",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: true,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, true),
+				updatePod("master", "1", "1.1.1.1", true, true),
 			},
 			ssVersion:     "10",
 			errExpected:   false,
@@ -2450,51 +2171,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "all ok, no change needed when in bootstrap mode",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave3",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, true),
+				updatePod("slave3", "10", "1.1.1.1", false, true),
 			},
 			ssVersion:     "10",
 			errExpected:   false,
@@ -2503,51 +2182,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "syncing when in bootstrap mode",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  false,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave3",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, false),
+				updatePod("slave3", "10", "1.1.1.1", false, true),
 			},
 			ssVersion:     "10",
 			errExpected:   false,
@@ -2556,51 +2193,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "pod version incorrect when in bootstrap mode",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave3",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, true),
+				updatePod("slave3", "10", "1.1.1.1", false, true),
 			},
 			ssVersion:     "1",
 			errExpected:   false,
@@ -2609,51 +2204,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "when no master exists",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave3",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, true),
+				updatePod("slave3", "10", "1.1.1.1", false, true),
 			},
 			ssVersion:     "10",
 			errExpected:   true,

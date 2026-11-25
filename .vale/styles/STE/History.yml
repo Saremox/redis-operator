@@ -1,0 +1,9 @@
+extends: existence
+message: "Do not write history ('%s'). Put release notes in docs/migrations."
+level: error
+ignorecase: true
+tokens:
+  - previously
+  - this PR
+  - this pull request
+  - was changed

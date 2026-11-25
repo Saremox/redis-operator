@@ -1,0 +1,17 @@
+extends: existence
+message: "Use a single-word verb, not the phrasal verb '%s'."
+level: warning
+ignorecase: true
+tokens:
+  - '(?:set|sets|setting) up'
+  - '(?:pick|picks) up'
+  - '(?:spin|spins) up'
+  - '(?:back|backs) up'
+  - '(?:come|comes) from'
+  - '(?:fall|falls) back'
+  - '(?:take|takes) over'
+  - '(?:give|gives) up'
+  - '(?:catch|catches) up'
+  - '(?:look|looks) up'
+  - '(?:bring|brings) up'
+  - '(?:bail|bails|bailing) out'

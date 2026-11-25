@@ -1,0 +1,17 @@
+extends: existence
+message: "Remove the hedging or marketing word '%s'."
+level: warning
+ignorecase: true
+tokens:
+  - robust
+  - seamless(?:ly)?
+  - effortless(?:ly)?
+  - powerful
+  - state-of-the-art
+  - best practices?
+  - we recommend
+  - usually
+  - probably
+  - hopefully
+  - simply
+  - easily

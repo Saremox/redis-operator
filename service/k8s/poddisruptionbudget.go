@@ -1,11 +1,8 @@
+//nolint:dupl // Each kind has its own interface, and the Services interface and the mocks need these names.
 package k8s
 
 import (
-	"context"
-	"fmt"
-
 	policyv1 "k8s.io/api/policy/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/saremox/redis-operator/log"
@@ -15,73 +12,40 @@ import (
 // PodDisruptionBudget the PodDisruptionBudget service that knows how to interact with k8s to manage them.
 type PodDisruptionBudget interface {
 	GetPodDisruptionBudget(namespace string, name string) (*policyv1.PodDisruptionBudget, error)
-	CreatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error
-	UpdatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error
 	CreateOrUpdatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error
 	DeletePodDisruptionBudget(namespace string, name string) error
 }
 
-// PodDisruptionBudgetService is the podDisruptionBudget service implementation using API calls to kubernetes.
+// PodDisruptionBudgetService is the poddisruptionbudget service implementation using API calls to kubernetes.
 type PodDisruptionBudgetService struct {
-	kubeClient      kubernetes.Interface
-	logger          log.Logger
-	metricsRecorder metrics.Recorder
+	kindClient[*policyv1.PodDisruptionBudget]
 }
 
-// NewPodDisruptionBudgetService returns a new PodDisruptionBudget KubeService.
 func NewPodDisruptionBudgetService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *PodDisruptionBudgetService {
 	logger = logger.With("service", "k8s.podDisruptionBudget")
 	return &PodDisruptionBudgetService{
-		kubeClient:      kubeClient,
-		logger:          logger,
-		metricsRecorder: metricsRecorder,
-	}
-}
-
-// GetPodDisruptionBudget returns the named PodDisruptionBudget.
-func (p *PodDisruptionBudgetService) GetPodDisruptionBudget(namespace, name string) (*policyv1.PodDisruptionBudget, error) {
-	podDisruptionBudget, err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-	recordMetrics(namespace, "PodDisruptionBudget", name, "GET", err, p.metricsRecorder)
-	if err != nil {
-		return nil, fmt.Errorf("get poddisruptionbudget %s/%s: %w", namespace, name, err)
-	}
-	return podDisruptionBudget, nil
-}
-
-// CreatePodDisruptionBudget creates the given PodDisruptionBudget.
-func (p *PodDisruptionBudgetService) CreatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
-	_, err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Create(context.TODO(), podDisruptionBudget, metav1.CreateOptions{})
-	recordMetrics(namespace, "PodDisruptionBudget", podDisruptionBudget.GetName(), "CREATE", err, p.metricsRecorder)
-	return writeResult(err, p.logger, namespace, "podDisruptionBudget", podDisruptionBudget.Name, "create poddisruptionbudget", "podDisruptionBudget created")
-}
-
-// UpdatePodDisruptionBudget replaces the stored PodDisruptionBudget with the given
-// PodDisruptionBudget.
-func (p *PodDisruptionBudgetService) UpdatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
-	_, err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Update(context.TODO(), podDisruptionBudget, metav1.UpdateOptions{})
-	recordMetrics(namespace, "PodDisruptionBudget", podDisruptionBudget.GetName(), "UPDATE", err, p.metricsRecorder)
-	return writeResult(err, p.logger, namespace, "podDisruptionBudget", podDisruptionBudget.Name, "update poddisruptionbudget", "podDisruptionBudget updated")
-}
-
-// CreateOrUpdatePodDisruptionBudget creates the PodDisruptionBudget, or
-// updates the stored PodDisruptionBudget when it is not up to date. It returns
-// a ControlledByOtherError when another controller controls the stored
-// PodDisruptionBudget.
-func (p *PodDisruptionBudgetService) CreateOrUpdatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
-	return createOrUpdate(namespace, podDisruptionBudget, objectCalls[*policyv1.PodDisruptionBudget]{
-		kind: "PodDisruptionBudget", get: p.GetPodDisruptionBudget, create: p.CreatePodDisruptionBudget, update: p.UpdatePodDisruptionBudget, upToDate: podDisruptionBudgetUpToDate,
-		skipped: func() {
-			p.logger.WithField("namespace", namespace).WithField("podDisruptionBudget", podDisruptionBudget.Name).Debugf("pod disruption budget already up to date, skipping update")
+		kindClient: kindClient[*policyv1.PodDisruptionBudget]{
+			kind: "PodDisruptionBudget", noun: "poddisruptionbudget", field: "podDisruptionBudget",
+			api: func(namespace string) namespacedAPI[*policyv1.PodDisruptionBudget] {
+				return kubeClient.PolicyV1().PodDisruptionBudgets(namespace)
+			},
+			upToDate: podDisruptionBudgetUpToDate,
+			logger:   logger, metrics: metricsRecorder,
 		},
-	})
+	}
 }
 
-// DeletePodDisruptionBudget deletes the named PodDisruptionBudget.
-func (p *PodDisruptionBudgetService) DeletePodDisruptionBudget(namespace, name string) error {
-	err := p.kubeClient.PolicyV1().PodDisruptionBudgets(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
-	recordMetrics(namespace, "PodDisruptionBudget", name, "DELETE", err, p.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("delete poddisruptionbudget %s/%s: %w", namespace, name, err)
-	}
-	return nil
+func (s *PodDisruptionBudgetService) GetPodDisruptionBudget(namespace, name string) (*policyv1.PodDisruptionBudget, error) {
+	return s.get(namespace, name)
+}
+
+// CreateOrUpdatePodDisruptionBudget creates the PodDisruptionBudget, or updates the stored PodDisruptionBudget when
+// it is not up to date. It returns a ControlledByOtherError when another
+// controller controls the stored PodDisruptionBudget.
+func (s *PodDisruptionBudgetService) CreateOrUpdatePodDisruptionBudget(namespace string, object *policyv1.PodDisruptionBudget) error {
+	return s.createOrUpdate(namespace, object)
+}
+
+func (s *PodDisruptionBudgetService) DeletePodDisruptionBudget(namespace, name string) error {
+	return s.delete(namespace, name)
 }

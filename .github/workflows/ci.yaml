@@ -25,6 +25,9 @@ jobs:
       chart: ${{ steps.filter.outputs.chart }}
       docker: ${{ steps.filter.outputs.docker }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      docs: ${{ steps.filter.outputs.docs }}
+      mocks: ${{ steps.filter.outputs.mocks }}
+      shell: ${{ steps.filter.outputs.shell }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -34,6 +37,25 @@ jobs:
           # filter has the workflow files, so a change to a workflow runs the
           # jobs. Documentation and metadata files match no rule.
           filters: |
+            # The mocks come from the interfaces in the Go packages that mocks/doc.go lists.
+            mocks:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'Makefile'
+              - '.github/workflows/**'
+            # Every shell script of the repository.
+            shell:
+              - '**/*.sh'
+              - '.githooks/**'
+              - '.claude/hooks/**'
+              - '.github/workflows/**'
+            # The writing rules of docs/writing.md.
+            docs:
+              - '**/*.md'
+              - '.vale.ini'
+              - '.vale/**'
+              - '.github/workflows/**'
             # Build and lint.
             go:
               - '**/*.go'
@@ -62,6 +84,9 @@ jobs:
               - 'Makefile'
               - 'example/**'
               - 'codecov.yml'
+              - '.golangci*'
+              - 'scripts/quality.sh'
+              - '.quality/**'
               - '.github/workflows/**'
             # The job applies the CRD file of the operator.
             integration:
@@ -121,6 +146,9 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     needs: changes
+    permissions:
+      contents: read
+      pull-requests: read
     if: needs.changes.outputs.go == 'true'
     steps:
       - uses: actions/checkout@v7
@@ -139,6 +167,48 @@ jobs:
         with:
           version: v2.13.2
           args: --timeout=15m
+          # The findings that already exist are in the Code Quality score. This
+          # job blocks the findings that a pull request adds.
+          only-new-issues: true
+
+  shellcheck:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.shell == 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck
+        # The runner has shellcheck. Only warnings and errors fail the job.
+        run: git ls-files '*.sh' .githooks/pre-commit | xargs shellcheck --severity=warning
+
+  verify-mocks:
+    name: Verify mocks
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.mocks == 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install mockery
+        run: make install-mockery
+      - run: make verify-mocks
+
+  docs:
+    name: Writing rules
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Vale
+        run: |
+          curl -sSfL https://github.com/errata-ai/vale/releases/download/v3.12.0/vale_3.12.0_Linux_64-bit.tar.gz | tar -xz vale
+      - name: Check the documents against the STE rules
+        # Only errors fail the job. Warnings are for the reviewer.
+        run: ./vale --minAlertLevel=error README.md AGENTS.md CLAUDE.md docs .claude
 
   verify-codegen:
     name: Verify generated code
@@ -174,6 +244,27 @@ jobs:
           files: ./coverage.out
           fail_ci_if_error: false     
 
+  quality:
+    name: Quality score
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.unit == 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install redis-server (for service/redis unit tests)
+        run: sudo apt-get update && sudo apt-get install -y redis-server
+      - name: Install the quality tools
+        run: make install-quality-tools
+      - name: Compare the scores with .quality/baseline.json
+        # The score script fails when a score is more than 2 points below the
+        # baseline. A person updates the baseline in a commit, never CI.
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          QUALITY_RACE=1 ./scripts/quality.sh --check
+
   soak-changes:
     name: Soak tester changes
     runs-on: ubuntu-latest
@@ -201,6 +292,9 @@ jobs:
     name: Soak tester lint and unit test
     runs-on: ubuntu-latest
     needs: soak-changes
+    permissions:
+      contents: read
+      pull-requests: read
     if: needs.soak-changes.outputs.soak == 'true'
     defaults:
       run:
@@ -217,6 +311,7 @@ jobs:
           version: v2.13.2
           working-directory: test/soak
           args: --timeout=15m
+          only-new-issues: true
       - run: make test
       - run: make check-monitoring
 
@@ -284,7 +379,7 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v5
         with:
-          version: v3.7.2
+          version: v3.19.0
       - name: Helm test
         run: make helm-test
 

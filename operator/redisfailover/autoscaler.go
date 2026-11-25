@@ -506,8 +506,10 @@ func (r *RedisFailoverHandler) getAutoscaleConfigMap(rf *redisfailoverv1.RedisFa
 }
 
 func (r *RedisFailoverHandler) writeAutoscaleState(rf *redisfailoverv1.RedisFailover, stored *corev1.ConfigMap, state autoscale.State) error {
-	// State has only strings and finite numbers, so Marshal cannot fail.
-	data, _ := json.Marshal(state)
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshal the autoscale state of %s/%s: %w", rf.Namespace, rf.Name, err)
+	}
 	cm := rfservice.GenerateAutoscalerStateConfigMap(rf, r.getLabels(rf), r.createOwnerReferences(rf), string(data))
 	if stored == nil {
 		return r.k8sservice.CreateConfigMap(rf.Namespace, cm)

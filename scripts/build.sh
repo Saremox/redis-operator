@@ -3,7 +3,7 @@
 set -o errexit
 set -o nounset
 
-if [[ ! -z ${TARGETOS+x} ]] && [[ ! -z ${TARGETARCH+x} ]];
+if [[ -n ${TARGETOS+x} ]] && [[ -n ${TARGETARCH+x} ]];
 then
     echo "Building ${TARGETOS}/${TARGETARCH} release..."
     export GOOS=${TARGETOS}

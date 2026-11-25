@@ -98,24 +98,6 @@ func (_m *RedisFailoverCheck) CheckMasterHealth(rFailover *v1.RedisFailover) (bo
 	return r0, r1, r2
 }
 
-// CheckRedisNumber provides a mock function with given fields: rFailover
-func (_m *RedisFailoverCheck) CheckRedisNumber(rFailover *v1.RedisFailover) error {
-	ret := _m.Called(rFailover)
-
-	if len(ret) == 0 {
-		panic("no return value specified for CheckRedisNumber")
-	}
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(*v1.RedisFailover) error); ok {
-		r0 = rf(rFailover)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
 // CheckRedisSlavesReady provides a mock function with given fields: slaveIP, rFailover
 func (_m *RedisFailoverCheck) CheckRedisSlavesReady(slaveIP string, rFailover *v1.RedisFailover) (bool, error) {
 	ret := _m.Called(slaveIP, rFailover)
@@ -162,24 +144,6 @@ func (_m *RedisFailoverCheck) CheckSentinelMonitor(sentinel string, monitor ...s
 	var r0 error
 	if rf, ok := ret.Get(0).(func(string, ...string) error); ok {
 		r0 = rf(sentinel, monitor...)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// CheckSentinelNumber provides a mock function with given fields: rFailover
-func (_m *RedisFailoverCheck) CheckSentinelNumber(rFailover *v1.RedisFailover) error {
-	ret := _m.Called(rFailover)
-
-	if len(ret) == 0 {
-		panic("no return value specified for CheckSentinelNumber")
-	}
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(*v1.RedisFailover) error); ok {
-		r0 = rf(rFailover)
 	} else {
 		r0 = ret.Error(0)
 	}
@@ -737,24 +701,6 @@ func (_m *RedisFailoverCheck) IsAnyRedisRunning(rFailover *v1.RedisFailover) boo
 
 	if len(ret) == 0 {
 		panic("no return value specified for IsAnyRedisRunning")
-	}
-
-	var r0 bool
-	if rf, ok := ret.Get(0).(func(*v1.RedisFailover) bool); ok {
-		r0 = rf(rFailover)
-	} else {
-		r0 = ret.Get(0).(bool)
-	}
-
-	return r0
-}
-
-// IsClusterRunning provides a mock function with given fields: rFailover
-func (_m *RedisFailoverCheck) IsClusterRunning(rFailover *v1.RedisFailover) bool {
-	ret := _m.Called(rFailover)
-
-	if len(ret) == 0 {
-		panic("no return value specified for IsClusterRunning")
 	}
 
 	var r0 bool

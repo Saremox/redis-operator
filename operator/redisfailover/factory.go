@@ -34,7 +34,7 @@ func New(cfg Config, k8sService k8s.Services, k8sClient kubernetes.Interface, me
 	rfService := rfservice.NewRedisFailoverKubeClient(k8sService, logger, metricsRecorder)
 	var opts []rfservice.Option
 	if !cfg.KeepClientsOnDemotion {
-		disconnector := rfservice.NewClientDisconnector(k8sClient, redisClient, logger, endpointRemovalTimeout, kubeProxySyncGrace)
+		disconnector := rfservice.NewClientDisconnector(k8sService, redisClient, logger, endpointRemovalTimeout, kubeProxySyncGrace)
 		opts = append(opts, rfservice.WithClientDisconnector(disconnector))
 	}
 	rfChecker := rfservice.NewRedisFailoverChecker(k8sService, redisClient, logger, metricsRecorder, opts...)

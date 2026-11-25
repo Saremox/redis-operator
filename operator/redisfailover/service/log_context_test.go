@@ -483,7 +483,7 @@ func TestClientDisconnectorLogLevel(t *testing.T) {
 			}
 			mr, called := disconnectClientsMock(errors.New("connection refused"))
 			logger, logs := newRecordingLogger()
-			disconnector := rfservice.NewClientDisconnector(kubeClient, mr, logger, time.Minute, 0)
+			disconnector := rfservice.NewClientDisconnector(k8sOver(kubeClient), mr, logger, time.Minute, 0)
 
 			demoted := podWithRole("old-master", "1.1.1.1", slaveRoleLabel)
 			if !test.noUID {

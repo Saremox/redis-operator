@@ -19,6 +19,7 @@ type Services interface {
 	Deployment
 	StatefulSet
 	ServiceAccount
+	EndpointSlice
 }
 
 type services struct {
@@ -31,9 +32,9 @@ type services struct {
 	Deployment
 	StatefulSet
 	ServiceAccount
+	EndpointSlice
 }
 
-// New returns a new Kubernetes service.
 func New(kubecli kubernetes.Interface, crdcli redisfailoverclientset.Interface, logger log.Logger, metricsRecorder metrics.Recorder) Services {
 	return &services{
 		ConfigMap:           NewConfigMapService(kubecli, logger, metricsRecorder),
@@ -45,5 +46,6 @@ func New(kubecli kubernetes.Interface, crdcli redisfailoverclientset.Interface, 
 		Deployment:          NewDeploymentService(kubecli, logger, metricsRecorder),
 		StatefulSet:         NewStatefulSetService(kubecli, logger, metricsRecorder),
 		ServiceAccount:      NewServiceAccountService(kubecli, logger, metricsRecorder),
+		EndpointSlice:       NewEndpointSliceService(kubecli, logger, metricsRecorder),
 	}
 }

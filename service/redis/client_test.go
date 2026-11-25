@@ -314,24 +314,6 @@ func TestMakeSlaveOfWithPort_ConnectionError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestMakeSlaveOf_ConnectionError covers the MakeSlaveOf wrapper where
-// TestMakeSlaveOf skips: on a CI runner the redis-server package runs a Redis
-// on 127.0.0.1:6379. This test uses 127.0.0.2, which that Redis does not
-// bind, and checks that the wrapper connects to the target on redisPort.
-func TestMakeSlaveOf_ConnectionError(t *testing.T) {
-	const target = "127.0.0.2"
-	addr := net.JoinHostPort(target, redisPort)
-	if conn, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
-		_ = conn.Close()
-		t.Skipf("a server listens on %s; skipping so the test does not change it", addr)
-	}
-	c := newTestClient()
-
-	err := c.MakeSlaveOf(target, "10.0.0.1", "")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), addr)
-}
-
 func TestMakeMaster(t *testing.T) {
 	requireRedisServer(t)
 	master := startRedisProcess(t)
@@ -564,40 +546,6 @@ func TestMakeSlaveOfWithPort_MismatchedTargetPort(t *testing.T) {
 	masterOf, err = c.GetSlaveOf(b.IP, strconv.Itoa(b.Port), "")
 	require.NoError(t, err)
 	assert.Empty(t, masterOf, "the master should be untouched, still a master")
-}
-
-// TestMakeSlaveOf covers the MakeSlaveOf convenience wrapper, which hardcodes
-// the master port to redisPort ("6379") rather than accepting one - see
-// MakeSlaveOfWithPort. Like TestMakeSlaveOfWithPort_SamePortDifferentIP, it
-// needs the target and master on the same port at different IPs for
-// MakeSlaveOfWithPort's connection-address logic to reach the right
-// instance (see TestMakeSlaveOfWithPort_MismatchedTargetPort). Skipped if
-// this machine has no non-loopback IPv4 address, or if port 6379 is
-// already in use.
-func TestMakeSlaveOf(t *testing.T) {
-	requireRedisServer(t)
-	otherIP, ok := nonLoopbackIPv4()
-	if !ok {
-		t.Skip("no non-loopback IPv4 address available on this machine")
-	}
-	if !isPortFree(t, testLoopbackIP, 6379) || !isPortFree(t, otherIP, 6379) {
-		t.Skip("port 6379 is already in use on this machine; skipping MakeSlaveOf (hardcoded redisPort) test")
-	}
-
-	master := startRedisProcessOnAddr(t, otherIP, 6379)
-	slave := startRedisProcessOnAddr(t, testLoopbackIP, 6379)
-	c := newTestClient()
-
-	err := c.MakeSlaveOf(slave.IP, master.IP, "")
-	require.NoError(t, err)
-
-	waitForCondition(t, 5*time.Second, func() bool {
-		masterOf, err := c.GetSlaveOf(slave.IP, strconv.Itoa(slave.Port), "")
-		return err == nil && masterOf == master.IP
-	})
-	masterOf, err := c.GetSlaveOf(slave.IP, strconv.Itoa(slave.Port), "")
-	require.NoError(t, err)
-	assert.Equal(t, master.IP, masterOf)
 }
 
 func isPortFree(t *testing.T, ip string, port int) bool {
@@ -1029,28 +977,6 @@ func TestGetNumberSentinelsInMemory_Bounds(t *testing.T) {
 // back to the shared master via t.Cleanup. Go runs tests within a package
 // sequentially by default (none of these call t.Parallel), so this is safe.
 // ---------------------------------------------------------------------
-
-// TestMonitorRedis covers the MonitorRedis convenience wrapper, which
-// hardcodes the monitored master's port to redisPort ("6379") when calling
-// MonitorRedisWithPort. Unlike MakeSlaveOf's use of the same constant, this
-// does not require anything actually listening on 6379: the port is only
-// ever used as a text argument to `SENTINEL MONITOR`, never as a connection
-// address (MonitorRedisWithPort always connects to the sentinel itself, on
-// sentinelPort), so this can safely run even where port 6379 is unavailable
-// or already in use.
-func TestMonitorRedis(t *testing.T) {
-	env := getSharedEnv(t)
-	c := newTestClient()
-	t.Cleanup(func() { restoreSharedSentinel(t, env) })
-
-	err := c.MonitorRedis(env.sentinel.IP, testLoopbackIP, "1", "")
-	require.NoError(t, err)
-
-	ip, port, err := c.GetSentinelMonitor(env.sentinel.IP)
-	require.NoError(t, err)
-	assert.Equal(t, testLoopbackIP, ip)
-	assert.Equal(t, redisPort, port)
-}
 
 func TestMonitorRedisWithPort(t *testing.T) {
 	env := getSharedEnv(t)

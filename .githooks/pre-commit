@@ -2,25 +2,49 @@
 # Installed via `make install-hooks` (git hooks under .git/hooks aren't
 # version controlled, so core.hooksPath points here instead).
 #
-# Only runs verify-codegen when a commit actually touches the API types or
-# go.mod (a k8s.io/api bump changes the CRD schema) - every other commit
-# exits immediately without needing controller-gen at all, so this doesn't
-# add friction to unrelated work.
+# Each check runs only when the commit contains a file that it reads, so an
+# unrelated commit exits at once. The full tests and the quality score stay
+# in CI. The Claude Code Stop hook (.claude/hooks/verify.sh) runs the same
+# lint check, so a session finds the findings before the commit.
 set -euo pipefail
 
-if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '^(api/.*\.go|go\.mod)$'; then
-	exit 0
+staged() { git diff --cached --name-only --diff-filter=ACMR; }
+
+go_files=$(staged | grep '\.go$' | grep -v '^test/soak/' || true)
+if [ -n "$go_files" ]; then
+	# shellcheck disable=SC2086
+	unformatted=$(gofmt -l $go_files)
+	if [ -n "$unformatted" ]; then
+		echo "pre-commit: run gofmt -w on:"
+		echo "$unformatted"
+		exit 1
+	fi
+	if command -v golangci-lint >/dev/null 2>&1; then
+		dirs=$(echo "$go_files" | xargs -n1 dirname | sort -u | sed 's|^|./|')
+		# shellcheck disable=SC2086
+		golangci-lint run --new-from-rev=HEAD $dirs
+	else
+		echo "pre-commit: golangci-lint is not on PATH, so the lint check is skipped."
+		echo "Install it with: make install-quality-tools"
+	fi
 fi
 
-if ! command -v controller-gen >/dev/null 2>&1; then
-	echo "pre-commit: api/ or go.mod changed, but controller-gen isn't on PATH."
-	echo "Install it with: make install-controller-gen"
-	exit 1
+docs=$(staged | grep '\.md$' | grep -v '^docs/migrations/' || true)
+if [ -n "$docs" ] && [ -f .vale.ini ] && command -v vale >/dev/null 2>&1; then
+	# shellcheck disable=SC2086
+	vale --minAlertLevel=error $docs
 fi
 
-if ! make verify-codegen; then
-	echo ""
-	echo "pre-commit: generated DeepCopy code or CRD manifests don't match the API types."
-	echo "Review the diff above, then 'git add' the regenerated files and commit again."
-	exit 1
+if staged | grep -qE '^(api/.*\.go|go\.mod)$'; then
+	if ! command -v controller-gen >/dev/null 2>&1; then
+		echo "pre-commit: api/ or go.mod changed, but controller-gen isn't on PATH."
+		echo "Install it with: make install-controller-gen"
+		exit 1
+	fi
+	if ! make verify-codegen; then
+		echo ""
+		echo "pre-commit: generated DeepCopy code or CRD manifests don't match the API types."
+		echo "Review the diff above, then 'git add' the regenerated files and commit again."
+		exit 1
+	fi
 fi

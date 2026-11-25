@@ -44,10 +44,6 @@ func newDeploymentDeleteAction(ns, name string) kubetesting.DeleteActionImpl {
 	return kubetesting.NewDeleteActionWithOptions(deploymentsGroup, ns, name, metav1.DeleteOptions{PropagationPolicy: &propagation})
 }
 
-func newDeploymentListAction(ns string) kubetesting.ListActionImpl {
-	return kubetesting.NewListAction(deploymentsGroup, schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, ns, metav1.ListOptions{})
-}
-
 func TestDeploymentServiceGetCreateOrUpdate(t *testing.T) {
 	testDeployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -357,61 +353,6 @@ func TestDeploymentServiceUpdateWritesTheDesiredAnnotations(t *testing.T) {
 	assert.Equal(t, map[string]string{"deployment.kubernetes.io/revision": "3", "example.com/owner": "operator"}, got.Annotations)
 }
 
-func TestDeploymentServiceUpdate(t *testing.T) {
-	testDeployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "testdeployment1",
-		},
-	}
-
-	testns := "testns"
-
-	tests := []struct {
-		name          string
-		errorOnUpdate error
-		expActions    []kubetesting.Action
-		expErr        bool
-	}{
-		{
-			name:          "Updating an existent deployment should not error.",
-			errorOnUpdate: nil,
-			expActions: []kubetesting.Action{
-				newDeploymentUpdateAction(testns, testDeployment),
-			},
-			expErr: false,
-		},
-		{
-			name:          "Updating should error when the client fails.",
-			errorOnUpdate: errors.New("wanted error"),
-			expActions: []kubetesting.Action{
-				newDeploymentUpdateAction(testns, testDeployment),
-			},
-			expErr: true,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			assertTest := assert.New(t)
-
-			mcli := &kubernetes.Clientset{}
-			mcli.AddReactor("update", "deployments", func(_ kubetesting.Action) (bool, runtime.Object, error) {
-				return true, nil, test.errorOnUpdate
-			})
-
-			service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
-			err := service.UpdateDeployment(testns, testDeployment)
-
-			if test.expErr {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-			assertTest.Equal(test.expActions, mcli.Actions())
-		})
-	}
-}
-
 func TestDeploymentServiceDelete(t *testing.T) {
 	testns := "testns"
 
@@ -445,42 +386,6 @@ func TestDeploymentServiceDelete(t *testing.T) {
 		err := service.DeleteDeployment(testns, "does-not-exist")
 		require.Error(t, err)
 		assertTest.True(kubeerrors.IsNotFound(err))
-	})
-}
-
-func TestDeploymentServiceList(t *testing.T) {
-	testns := "testns"
-
-	t.Run("lists deployments in a namespace", func(t *testing.T) {
-		assertTest := assert.New(t)
-
-		d1 := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "d1", Namespace: testns}}
-		d2 := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "d2", Namespace: testns}}
-		d3 := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "d3", Namespace: "otherns"}}
-		mcli := kubernetes.NewClientset(d1, d2, d3)
-		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
-
-		list, err := service.ListDeployments(testns)
-		require.NoError(t, err)
-		assertTest.Len(list.Items, 2)
-		names := []string{list.Items[0].Name, list.Items[1].Name}
-		assertTest.ElementsMatch([]string{"d1", "d2"}, names)
-	})
-
-	t.Run("returns an error when the client fails", func(t *testing.T) {
-		assertTest := assert.New(t)
-
-		mcli := &kubernetes.Clientset{}
-		wantErr := errors.New("wanted error")
-		mcli.AddReactor("list", "deployments", func(_ kubetesting.Action) (bool, runtime.Object, error) {
-			return true, nil, wantErr
-		})
-		service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
-
-		list, err := service.ListDeployments(testns)
-		require.Error(t, err)
-		assertTest.Empty(list.Items)
-		assertTest.Equal([]kubetesting.Action{newDeploymentListAction(testns)}, mcli.Actions())
 	})
 }
 

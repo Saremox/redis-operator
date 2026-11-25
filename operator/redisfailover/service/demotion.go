@@ -10,11 +10,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/kubernetes"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -24,7 +21,8 @@ import (
 
 const endpointPollInterval = 200 * time.Millisecond
 
-// podGoneTimeout limits the pod read that only selects a log level.
+// podGoneTimeout limits the pod read that only selects a log level. A stalled
+// API server must not keep the disconnect of a pod busy.
 const podGoneTimeout = 5 * time.Second
 
 // Option configures optional behaviour shared by RedisFailoverChecker and
@@ -76,7 +74,7 @@ func setSlaveLabel(k8sService k8s.Services, o options, rf *redisfailoverv1.Redis
 }
 
 type endpointAwareDisconnector struct {
-	kubeClient  kubernetes.Interface
+	k8sService  k8s.Services
 	redisClient redis.Client
 	logger      log.Logger
 	timeout     time.Duration
@@ -92,9 +90,9 @@ type endpointAwareDisconnector struct {
 // background: it waits (up to timeout) for the pod to leave the master
 // Service's EndpointSlices, then for grace so kube-proxy can catch up, and
 // only then disconnects. Disconnecting earlier sends clients straight back.
-func NewClientDisconnector(kubeClient kubernetes.Interface, redisClient redis.Client, logger log.Logger, timeout, grace time.Duration) ClientDisconnector {
+func NewClientDisconnector(k8sService k8s.Services, redisClient redis.Client, logger log.Logger, timeout, grace time.Duration) ClientDisconnector {
 	return &endpointAwareDisconnector{
-		kubeClient:  kubeClient,
+		k8sService:  k8sService,
 		redisClient: redisClient,
 		logger:      logger,
 		timeout:     timeout,
@@ -169,7 +167,7 @@ func (d *endpointAwareDisconnector) disconnect(rf *redisfailoverv1.RedisFailover
 func (d *endpointAwareDisconnector) podGone(namespace string, pod corev1.Pod) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), podGoneTimeout)
 	defer cancel()
-	current, err := d.kubeClient.CoreV1().Pods(namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+	current, err := d.k8sService.GetPodContext(ctx, namespace, pod.Name)
 	if err != nil {
 		return apierrors.IsNotFound(err)
 	}
@@ -177,20 +175,12 @@ func (d *endpointAwareDisconnector) podGone(namespace string, pod corev1.Pod) bo
 }
 
 func (d *endpointAwareDisconnector) waitForEndpointRemoval(namespace, service, ip string) error {
-	selector := metav1.ListOptions{LabelSelector: discoveryv1.LabelServiceName + "=" + service}
 	err := wait.PollUntilContextTimeout(context.Background(), endpointPollInterval, d.timeout, true, func(ctx context.Context) (bool, error) {
-		endpointSlices, err := d.kubeClient.DiscoveryV1().EndpointSlices(namespace).List(ctx, selector)
+		addresses, err := d.k8sService.GetEndpointAddresses(ctx, namespace, service)
 		if err != nil {
-			return false, fmt.Errorf("list endpointslices: %w", err)
+			return false, err
 		}
-		for _, endpointSlice := range endpointSlices.Items {
-			for _, endpoint := range endpointSlice.Endpoints {
-				if slices.Contains(endpoint.Addresses, ip) {
-					return false, nil
-				}
-			}
-		}
-		return true, nil
+		return !slices.Contains(addresses, ip), nil
 	})
 	if err != nil {
 		return fmt.Errorf("wait for the endpoint removal: %w", err)

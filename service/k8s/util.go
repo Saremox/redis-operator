@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"encoding/json"
 	"fmt"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
@@ -134,6 +135,17 @@ func GetRedisPassword(s Services, rf *redisfailoverv1.RedisFailover) (string, er
 	}
 
 	return "", fmt.Errorf("secret \"%s\" does not have a password field", rf.Spec.Auth.SecretPath)
+}
+
+// marshalPatch returns the JSON of a patch. The code builds each patch from
+// maps and strings, so an error is a bug. The caller must stop, because a
+// request with an empty body would change nothing and report success.
+func marshalPatch(patch any) ([]byte, error) {
+	data, err := json.Marshal(patch)
+	if err != nil {
+		return nil, fmt.Errorf("marshal the patch: %w", err)
+	}
+	return data, nil
 }
 
 func recordMetrics(namespace, kind, object, operation string, err error, metricsRecorder metrics.Recorder) {

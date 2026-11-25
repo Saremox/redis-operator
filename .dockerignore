@@ -1,0 +1,15 @@
+# The images build Go binaries from the repository root. The soak image reads
+# api/, client/ and test/soak/ through the replace in its go.mod, so these stay.
+.git
+.github
+.githooks
+.claude
+.vale
+.quality
+bin
+coverage.out
+docs
+charts
+manifests
+example
+/*.md
