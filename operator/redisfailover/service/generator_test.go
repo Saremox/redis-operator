@@ -37,527 +37,115 @@ import (
 )
 
 func TestRedisStatefulSetStorageGeneration(t *testing.T) {
-	configMapName := rfservice.GetRedisName(generateRF())
-	shutdownConfigMapName := rfservice.GetRedisShutdownConfigMapName(generateRF())
-	readinesConfigMapName := rfservice.GetRedisReadinessName(generateRF())
 	executeMode := int32(0o744)
+	configVolume := func(name, configMap string, mode *int32) corev1.Volume {
+		return corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+			LocalObjectReference: corev1.LocalObjectReference{Name: configMap}, DefaultMode: mode,
+		}}}
+	}
+	// The three ConfigMap volumes are the same for each storage. The data
+	// volume of an emptyDir comes after them, and a claim template has none.
+	volumes := func(data ...corev1.Volume) []corev1.Volume {
+		rf := generateRF()
+		return append([]corev1.Volume{
+			configVolume("redis-config", rfservice.GetRedisName(rf), nil),
+			configVolume("redis-shutdown-config", rfservice.GetRedisShutdownConfigMapName(rf), &executeMode),
+			configVolume("redis-readiness-config", rfservice.GetRedisReadinessName(rf), &executeMode),
+		}, data...)
+	}
+	mounts := func(data string) []corev1.VolumeMount {
+		return []corev1.VolumeMount{
+			{Name: "redis-config", MountPath: "/redis"},
+			{Name: "redis-shutdown-config", MountPath: "/redis-shutdown"},
+			{Name: "redis-readiness-config", MountPath: "/redis-readiness"},
+			{Name: data, MountPath: "/data"},
+		}
+	}
+	claimSpec := corev1.PersistentVolumeClaimSpec{
+		AccessModes: []corev1.PersistentVolumeAccessMode{"ReadWriteOnce"},
+		Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}},
+	}
+	claimStorage := func(keep bool) redisfailoverv1.RedisStorage {
+		return redisfailoverv1.RedisStorage{
+			KeepAfterDeletion: keep,
+			PersistentVolumeClaim: &redisfailoverv1.EmbeddedPersistentVolumeClaim{
+				EmbeddedObjectMetadata: redisfailoverv1.EmbeddedObjectMetadata{Name: "pvc-data"}, Spec: claimSpec,
+			},
+		}
+	}
+	claimTemplate := func(owners []metav1.OwnerReference) []corev1.PersistentVolumeClaim {
+		return []corev1.PersistentVolumeClaim{{
+			TypeMeta:   metav1.TypeMeta{Kind: "PersistentVolumeClaim", APIVersion: "v1"},
+			ObjectMeta: metav1.ObjectMeta{Name: "pvc-data", OwnerReferences: owners},
+			Spec:       claimSpec,
+		}}
+	}
+	owners := []metav1.OwnerReference{{Name: "testing"}}
+	memory := &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}
+
 	tests := []struct {
-		name           string
-		ownerRefs      []metav1.OwnerReference
-		expectedSS     appsv1.StatefulSet
-		rfRedisStorage redisfailoverv1.RedisStorage
+		name          string
+		storage       redisfailoverv1.RedisStorage
+		ownerRefs     []metav1.OwnerReference
+		wantVolumes   []corev1.Volume
+		wantMounts    []corev1.VolumeMount
+		wantTemplates []corev1.PersistentVolumeClaim
 	}{
 		{
-			name: "Default values",
-			expectedSS: appsv1.StatefulSet{
-				Spec: appsv1.StatefulSetSpec{
-					Template: corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									VolumeMounts: []corev1.VolumeMount{
-										{
-											Name:      "redis-config",
-											MountPath: "/redis",
-										},
-										{
-											Name:      "redis-shutdown-config",
-											MountPath: "/redis-shutdown",
-										},
-										{
-											Name:      "redis-readiness-config",
-											MountPath: "/redis-readiness",
-										},
-										{
-											Name:      "redis-data",
-											MountPath: "/data",
-										},
-									},
-								},
-							},
-							Volumes: []corev1.Volume{
-								{
-									Name: "redis-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: configMapName,
-											},
-										},
-									},
-								},
-								{
-									Name: "redis-shutdown-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: shutdownConfigMapName,
-											},
-											DefaultMode: &executeMode,
-										},
-									},
-								},
-								{
-									Name: "redis-readiness-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: readinesConfigMapName,
-											},
-											DefaultMode: &executeMode,
-										},
-									},
-								},
-								{
-									Name: "redis-data",
-									VolumeSource: corev1.VolumeSource{
-										EmptyDir: &corev1.EmptyDirVolumeSource{},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			rfRedisStorage: redisfailoverv1.RedisStorage{},
+			name:        "Default values",
+			wantVolumes: volumes(corev1.Volume{Name: "redis-data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}),
+			wantMounts:  mounts("redis-data"),
 		},
 		{
-			name: "Defined an emptydir with storage on memory",
-			expectedSS: appsv1.StatefulSet{
-				Spec: appsv1.StatefulSetSpec{
-					Template: corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									VolumeMounts: []corev1.VolumeMount{
-										{
-											Name:      "redis-config",
-											MountPath: "/redis",
-										},
-										{
-											Name:      "redis-shutdown-config",
-											MountPath: "/redis-shutdown",
-										},
-										{
-											Name:      "redis-readiness-config",
-											MountPath: "/redis-readiness",
-										},
-										{
-											Name:      "redis-data",
-											MountPath: "/data",
-										},
-									},
-								},
-							},
-							Volumes: []corev1.Volume{
-								{
-									Name: "redis-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: configMapName,
-											},
-										},
-									},
-								},
-								{
-									Name: "redis-shutdown-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: shutdownConfigMapName,
-											},
-											DefaultMode: &executeMode,
-										},
-									},
-								},
-								{
-									Name: "redis-readiness-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: readinesConfigMapName,
-											},
-											DefaultMode: &executeMode,
-										},
-									},
-								},
-								{
-									Name: "redis-data",
-									VolumeSource: corev1.VolumeSource{
-										EmptyDir: &corev1.EmptyDirVolumeSource{
-											Medium: corev1.StorageMediumMemory,
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			rfRedisStorage: redisfailoverv1.RedisStorage{
-				EmptyDir: &corev1.EmptyDirVolumeSource{
-					Medium: corev1.StorageMediumMemory,
-				},
-			},
+			name:        "Defined an emptydir with storage on memory",
+			storage:     redisfailoverv1.RedisStorage{EmptyDir: memory},
+			wantVolumes: volumes(corev1.Volume{Name: "redis-data", VolumeSource: corev1.VolumeSource{EmptyDir: memory}}),
+			wantMounts:  mounts("redis-data"),
 		},
 		{
-			name: "Defined an persistentvolumeclaim",
-			expectedSS: appsv1.StatefulSet{
-				Spec: appsv1.StatefulSetSpec{
-					Template: corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									VolumeMounts: []corev1.VolumeMount{
-										{
-											Name:      "redis-config",
-											MountPath: "/redis",
-										},
-										{
-											Name:      "redis-shutdown-config",
-											MountPath: "/redis-shutdown",
-										},
-										{
-											Name:      "redis-readiness-config",
-											MountPath: "/redis-readiness",
-										},
-										{
-											Name:      "pvc-data",
-											MountPath: "/data",
-										},
-									},
-								},
-							},
-							Volumes: []corev1.Volume{
-								{
-									Name: "redis-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: configMapName,
-											},
-										},
-									},
-								},
-								{
-									Name: "redis-shutdown-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: shutdownConfigMapName,
-											},
-											DefaultMode: &executeMode,
-										},
-									},
-								},
-								{
-									Name: "redis-readiness-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: readinesConfigMapName,
-											},
-											DefaultMode: &executeMode,
-										},
-									},
-								},
-							},
-						},
-					},
-					VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
-						{
-							TypeMeta: metav1.TypeMeta{
-								Kind:       "PersistentVolumeClaim",
-								APIVersion: "v1",
-							},
-							ObjectMeta: metav1.ObjectMeta{
-								Name: "pvc-data",
-							},
-							Spec: corev1.PersistentVolumeClaimSpec{
-								AccessModes: []corev1.PersistentVolumeAccessMode{
-									"ReadWriteOnce",
-								},
-								Resources: corev1.VolumeResourceRequirements{
-									Requests: corev1.ResourceList{
-										corev1.ResourceStorage: resource.MustParse("1Gi"),
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			rfRedisStorage: redisfailoverv1.RedisStorage{
-				PersistentVolumeClaim: &redisfailoverv1.EmbeddedPersistentVolumeClaim{
-					EmbeddedObjectMetadata: redisfailoverv1.EmbeddedObjectMetadata{
-						Name: "pvc-data",
-					},
-					Spec: corev1.PersistentVolumeClaimSpec{
-						AccessModes: []corev1.PersistentVolumeAccessMode{
-							"ReadWriteOnce",
-						},
-						Resources: corev1.VolumeResourceRequirements{
-							Requests: corev1.ResourceList{
-								corev1.ResourceStorage: resource.MustParse("1Gi"),
-							},
-						},
-					},
-				},
-			},
+			name:          "Defined an persistentvolumeclaim",
+			storage:       claimStorage(false),
+			wantVolumes:   volumes(),
+			wantMounts:    mounts("pvc-data"),
+			wantTemplates: claimTemplate(nil),
 		},
 		{
-			name: "Defined an persistentvolumeclaim with ownerRefs",
-			ownerRefs: []metav1.OwnerReference{
-				{
-					Name: "testing",
-				},
-			},
-			expectedSS: appsv1.StatefulSet{
-				Spec: appsv1.StatefulSetSpec{
-					Template: corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									VolumeMounts: []corev1.VolumeMount{
-										{
-											Name:      "redis-config",
-											MountPath: "/redis",
-										},
-										{
-											Name:      "redis-shutdown-config",
-											MountPath: "/redis-shutdown",
-										},
-										{
-											Name:      "redis-readiness-config",
-											MountPath: "/redis-readiness",
-										},
-										{
-											Name:      "pvc-data",
-											MountPath: "/data",
-										},
-									},
-								},
-							},
-							Volumes: []corev1.Volume{
-								{
-									Name: "redis-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: configMapName,
-											},
-										},
-									},
-								},
-								{
-									Name: "redis-shutdown-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: shutdownConfigMapName,
-											},
-											DefaultMode: &executeMode,
-										},
-									},
-								},
-								{
-									Name: "redis-readiness-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: readinesConfigMapName,
-											},
-											DefaultMode: &executeMode,
-										},
-									},
-								},
-							},
-						},
-					},
-					VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
-						{
-							TypeMeta: metav1.TypeMeta{
-								Kind:       "PersistentVolumeClaim",
-								APIVersion: "v1",
-							},
-							ObjectMeta: metav1.ObjectMeta{
-								Name: "pvc-data",
-								OwnerReferences: []metav1.OwnerReference{
-									{
-										Name: "testing",
-									},
-								},
-							},
-							Spec: corev1.PersistentVolumeClaimSpec{
-								AccessModes: []corev1.PersistentVolumeAccessMode{
-									"ReadWriteOnce",
-								},
-								Resources: corev1.VolumeResourceRequirements{
-									Requests: corev1.ResourceList{
-										corev1.ResourceStorage: resource.MustParse("1Gi"),
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			rfRedisStorage: redisfailoverv1.RedisStorage{
-				PersistentVolumeClaim: &redisfailoverv1.EmbeddedPersistentVolumeClaim{
-					EmbeddedObjectMetadata: redisfailoverv1.EmbeddedObjectMetadata{
-						Name: "pvc-data",
-					},
-					Spec: corev1.PersistentVolumeClaimSpec{
-						AccessModes: []corev1.PersistentVolumeAccessMode{
-							"ReadWriteOnce",
-						},
-						Resources: corev1.VolumeResourceRequirements{
-							Requests: corev1.ResourceList{
-								corev1.ResourceStorage: resource.MustParse("1Gi"),
-							},
-						},
-					},
-				},
-			},
+			name:          "Defined an persistentvolumeclaim with ownerRefs",
+			storage:       claimStorage(false),
+			ownerRefs:     owners,
+			wantVolumes:   volumes(),
+			wantMounts:    mounts("pvc-data"),
+			wantTemplates: claimTemplate(owners),
 		},
 		{
-			name: "Defined an persistentvolumeclaim with ownerRefs keeping the pvc",
-			ownerRefs: []metav1.OwnerReference{
-				{
-					Name: "testing",
-				},
-			},
-			expectedSS: appsv1.StatefulSet{
-				Spec: appsv1.StatefulSetSpec{
-					Template: corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									VolumeMounts: []corev1.VolumeMount{
-										{
-											Name:      "redis-config",
-											MountPath: "/redis",
-										},
-										{
-											Name:      "redis-shutdown-config",
-											MountPath: "/redis-shutdown",
-										},
-										{
-											Name:      "redis-readiness-config",
-											MountPath: "/redis-readiness",
-										},
-										{
-											Name:      "pvc-data",
-											MountPath: "/data",
-										},
-									},
-								},
-							},
-							Volumes: []corev1.Volume{
-								{
-									Name: "redis-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: configMapName,
-											},
-										},
-									},
-								},
-								{
-									Name: "redis-shutdown-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: shutdownConfigMapName,
-											},
-											DefaultMode: &executeMode,
-										},
-									},
-								},
-								{
-									Name: "redis-readiness-config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: readinesConfigMapName,
-											},
-											DefaultMode: &executeMode,
-										},
-									},
-								},
-							},
-						},
-					},
-					VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
-						{
-							TypeMeta: metav1.TypeMeta{
-								Kind:       "PersistentVolumeClaim",
-								APIVersion: "v1",
-							},
-							ObjectMeta: metav1.ObjectMeta{
-								Name: "pvc-data",
-							},
-							Spec: corev1.PersistentVolumeClaimSpec{
-								AccessModes: []corev1.PersistentVolumeAccessMode{
-									"ReadWriteOnce",
-								},
-								Resources: corev1.VolumeResourceRequirements{
-									Requests: corev1.ResourceList{
-										corev1.ResourceStorage: resource.MustParse("1Gi"),
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			rfRedisStorage: redisfailoverv1.RedisStorage{
-				KeepAfterDeletion: true,
-				PersistentVolumeClaim: &redisfailoverv1.EmbeddedPersistentVolumeClaim{
-					EmbeddedObjectMetadata: redisfailoverv1.EmbeddedObjectMetadata{
-						Name: "pvc-data",
-					},
-					Spec: corev1.PersistentVolumeClaimSpec{
-						AccessModes: []corev1.PersistentVolumeAccessMode{
-							"ReadWriteOnce",
-						},
-						Resources: corev1.VolumeResourceRequirements{
-							Requests: corev1.ResourceList{
-								corev1.ResourceStorage: resource.MustParse("1Gi"),
-							},
-						},
-					},
-				},
-			},
+			name:          "Defined an persistentvolumeclaim with ownerRefs keeping the pvc",
+			storage:       claimStorage(true),
+			ownerRefs:     owners,
+			wantVolumes:   volumes(),
+			wantMounts:    mounts("pvc-data"),
+			wantTemplates: claimTemplate(nil),
 		},
 	}
 
 	for _, test := range tests {
-		assert := assert.New(t)
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRF()
+			rf.Spec.Redis.Storage = test.storage
 
-		// Generate a default RedisFailover and attaching the required storage
-		rf := generateRF()
-		rf.Spec.Redis.Storage = test.rfRedisStorage
+			var got appsv1.StatefulSet
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+			ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				got = *args.Get(1).(*appsv1.StatefulSet)
+			}).Return(nil)
 
-		generatedStatefulSet := appsv1.StatefulSet{}
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			require.NoError(t, client.EnsureRedisStatefulset(rf, nil, test.ownerRefs))
 
-		ms := &mK8SService.Services{}
-		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
-		ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
-			ss := args.Get(1).(*appsv1.StatefulSet)
-			generatedStatefulSet = *ss
-		}).Return(nil)
-
-		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-		err := client.EnsureRedisStatefulset(rf, nil, test.ownerRefs)
-
-		// Check that the storage-related fields are as expected
-		assert.Equal(test.expectedSS.Spec.Template.Spec.Volumes, generatedStatefulSet.Spec.Template.Spec.Volumes)
-		assert.Equal(test.expectedSS.Spec.Template.Spec.Containers[0].VolumeMounts, generatedStatefulSet.Spec.Template.Spec.Containers[0].VolumeMounts)
-		assert.Equal(test.expectedSS.Spec.VolumeClaimTemplates, generatedStatefulSet.Spec.VolumeClaimTemplates)
-		assert.NoError(err)
+			assert.Equal(t, test.wantVolumes, got.Spec.Template.Spec.Volumes)
+			assert.Equal(t, test.wantMounts, got.Spec.Template.Spec.Containers[0].VolumeMounts)
+			assert.Equal(t, test.wantTemplates, got.Spec.VolumeClaimTemplates)
+		})
 	}
 }
 
