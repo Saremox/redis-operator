@@ -44,6 +44,8 @@ type rolloutTest struct {
 	heal            *mRFService.RedisFailoverHeal
 	k8s             *mK8SService.Services
 	handler         *RedisFailoverHandler
+	// clock is the time of the handler. A test moves it, and waits for nothing.
+	clock time.Time
 }
 
 func newRolloutTest(t *testing.T) *rolloutTest {
@@ -105,8 +107,13 @@ func newRolloutTest(t *testing.T) *rolloutTest {
 	})
 	rt.k8s = mk
 	rt.handler = NewRedisFailoverHandler(Config{}, &mRFService.RedisFailoverClient{}, mrfc, rt.heal, mk, metrics.Dummy, log.Dummy)
+	rt.clock = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	rt.handler.now = func() time.Time { return rt.clock }
 	return rt
 }
+
+// wait moves the clock past the stall time of the rollout.
+func (rt *rolloutTest) wait() { rt.clock = rt.clock.Add(2 * rolloutStallTimeout) }
 
 // update runs UpdateRedisesPods on a fresh status, keeping message, and
 // returns the status message.
@@ -122,7 +129,7 @@ func TestUpdateRedisesPodsReportsAStalledRollout(t *testing.T) {
 	// A replaced replica that does not sync is reported once the rollout has
 	// waited on it for longer than the bound.
 	assert.Empty(t, rt.update(""))
-	time.Sleep(2 * rolloutStallTimeout)
+	rt.wait()
 	assert.Equal(t, "rollout waiting on pod rfr-test-1 for more than 0m: not synced with the master", rt.update(""))
 
 	// The pod recreated starts over.
@@ -130,7 +137,7 @@ func TestUpdateRedisesPodsReportsAStalledRollout(t *testing.T) {
 	assert.Empty(t, rt.update(""))
 
 	// Once it syncs, the rollout moves on, and a later wait starts over.
-	time.Sleep(2 * rolloutStallTimeout)
+	rt.wait()
 	rt.synced = true
 	rt.pods[1].Status.Conditions = podReady
 	rt.heal.On("ResizePodInPlace", rt.rf, "rfr-test-0", "new", rfservice.AutoscalerLimits{}).Once().Return(rfservice.ResizeResult{Action: rfservice.ResizeRecreate}, nil)
@@ -143,7 +150,7 @@ func TestUpdateRedisesPodsReportsAStalledRollout(t *testing.T) {
 
 	// A replica that is not synced while no rollout is pending is not reported.
 	rt.pods[0].Labels[appsv1.ControllerRevisionHashLabelKey] = "new"
-	time.Sleep(2 * rolloutStallTimeout)
+	rt.wait()
 	assert.Empty(t, rt.update(""))
 	rt.heal.AssertExpectations(t)
 }
@@ -182,7 +189,7 @@ func TestUpdateRedisesPodsReportsAStalledReplacement(t *testing.T) {
 			rt.pods = test.pods(rt.pods)
 
 			assert.Empty(t, rt.update(""))
-			time.Sleep(2 * rolloutStallTimeout)
+			rt.wait()
 			assert.Equal(t, test.want, rt.update(""))
 			rt.heal.AssertExpectations(t)
 		})
@@ -196,7 +203,7 @@ func TestUpdateRedisesPodsResetsTheWaitOnAReplacedStaleReplica(t *testing.T) {
 	key := passwordKey(rt.rf)
 
 	assert.Empty(t, rt.update(""))
-	time.Sleep(2 * rolloutStallTimeout)
+	rt.wait()
 	assert.Equal(t, "rollout waiting on pod rfr-test-1 for more than 0m: not synced with the master", rt.update(""))
 
 	// The revert puts the unsynced replica on a stale revision.
@@ -221,7 +228,7 @@ func TestUpdateRedisesPodsKeepsAnEarlierMessage(t *testing.T) {
 	rt := newRolloutTest(t)
 
 	assert.Equal(t, "maxmemory kept at 100mb", rt.update("maxmemory kept at 100mb"))
-	time.Sleep(2 * rolloutStallTimeout)
+	rt.wait()
 	assert.Equal(t, "maxmemory kept at 100mb; rollout waiting on pod rfr-test-1 for more than 0m: not synced with the master",
 		rt.update("maxmemory kept at 100mb"))
 }
@@ -231,7 +238,7 @@ func TestUpdateRedisesPodsKeepsWaitingAcrossErrors(t *testing.T) {
 		t.Run(step, func(t *testing.T) {
 			rt := newRolloutTest(t)
 			assert.Empty(t, rt.update(""))
-			time.Sleep(2 * rolloutStallTimeout)
+			rt.wait()
 
 			// A failed lookup is returned and does not restart the wait.
 			err := errors.New("lookup failed")

@@ -118,7 +118,7 @@ func TestUpdateRedisesPodsWaitsForTheObservedTemplate(t *testing.T) {
 	rt.check.On("GetStatefulSetUpdateRevision", rt.rf).Return("", rfservice.ErrUpdateRevisionNotObserved)
 
 	rt.update("")
-	time.Sleep(2 * rolloutStallTimeout)
+	rt.wait()
 	assert.Equal(t, "rollout waiting for more than 0m: "+rfservice.ErrUpdateRevisionNotObserved.Error(), rt.update(""))
 	rt.heal.AssertNotCalled(t, "ResizePodInPlace", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	rt.heal.AssertNotCalled(t, "DeletePod", mock.Anything, mock.Anything)
