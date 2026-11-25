@@ -32,6 +32,7 @@ CONTROLLER_GEN_VERSION := v0.20.1
 GOLANGCI_LINT_VERSION := v2.13.2
 DEADCODE_VERSION := v0.53.0
 GOVULNCHECK_VERSION := v1.10.0
+MOCKERY_VERSION := v2.53.7
 CRD_MANIFESTS := manifests/databases.spotahome.com_redisfailovers.yaml \
 	manifests/kustomize/base/databases.spotahome.com_redisfailovers.yaml \
 	charts/redisoperator/crds/databases.spotahome.com_redisfailovers.yaml
@@ -142,6 +143,20 @@ go-generate: docker-build
 
 .PHONY: generate
 generate: go-generate
+
+# Fails if the committed mocks differ from the mocks that mockery generates
+# from the interfaces. Run `make install-mockery` first on a host without it.
+.PHONY: verify-mocks
+verify-mocks:
+	$(MOCKS_CMD)
+	@git diff --exit-code -- mocks/ || \
+		(echo ""; \
+		echo "The mocks are out of date. Run 'make mocks' and commit the result."; \
+		exit 1)
+
+.PHONY: install-mockery
+install-mockery:
+	go install github.com/vektra/mockery/v2@$(MOCKERY_VERSION)
 
 .PHONY: mocks
 mocks: docker-build

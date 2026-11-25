@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -eu
+set -euo pipefail
 
 chart=charts/redisoperator
 # Helm's built-in default Capabilities.KubeVersion is older than this chart's
@@ -12,7 +12,7 @@ echo ">> Testing chart ${chart} against kubeVersion ${kube_version}"
 # The release workflow sets the operator image in a copy of the chart. The
 # CRD upgrade hook must keep its own image, because it runs kubectl.
 hook_image() {
-    helm template "$1" --kube-version ${kube_version} --set crds.upgradeHook.enabled=true \
+    helm template "$1" --kube-version "${kube_version}" --set crds.upgradeHook.enabled=true \
         | grep -A1 'name: crds-upgrade$' | sed -n 's/^ *image: //p'
 }
 release_chart=$(mktemp -d)
@@ -26,7 +26,7 @@ if [ -z "${want}" ] || [ "${got}" != "${want}" ]; then
     echo "Release chart: upgrade hook image is '${got}', want '${want}'." >&2
     exit 1
 fi
-helm template "${release_chart}/redisoperator" --kube-version ${kube_version} \
+helm template "${release_chart}/redisoperator" --kube-version "${kube_version}" \
     | grep -q 'image: "ghcr.io/example/redis-operator:9.9.9"' \
     || { echo "Release chart: operator image is not ghcr.io/example/redis-operator:9.9.9." >&2; exit 1; }
 
@@ -73,7 +73,7 @@ for want in "3.2.5:3.2.4" "4.2.1:4.2.0" "4.3.0-rc1:4.2.0" "4.2.0:4.1.2" "3.2.4:"
 done
 
 helm lint ${chart}
-out=$(helm template ${chart} --kube-version ${kube_version})
+out=$(helm template ${chart} --kube-version "${kube_version}")
 echo "${out}"
 # The operator keeps the applied Redis passwords in a Secret.
 for verb in create update; do
@@ -82,7 +82,7 @@ for verb in create update; do
 done
 
 echo ">> Testing watchAuthSecrets=true"
-out=$(helm template ${chart} --kube-version ${kube_version} --set watchAuthSecrets=true)
+out=$(helm template ${chart} --kube-version "${kube_version}" --set watchAuthSecrets=true)
 fail=0
 grep -qx -- '        - --watch-auth-secrets' <<<"${out}" \
   || { echo "FAIL: the Deployment does not pass --watch-auth-secrets" >&2; fail=1; }
@@ -93,7 +93,7 @@ grep -A10 -- '      - secrets$' <<<"${out}" | grep -q '"watch"' \
 # The Deployment, the ServiceAccount and the binding subject must use the same
 # name. Otherwise the pod refers to a ServiceAccount that does not exist.
 echo ">> Testing serviceAccount.name=custom with serviceAccount.create=true"
-out=$(helm template ${chart} --kube-version ${kube_version} \
+out=$(helm template ${chart} --kube-version "${kube_version}" \
   --set serviceAccount.create=true --set serviceAccount.name=custom)
 fail=0
 grep -A2 '^kind: ServiceAccount$' <<<"${out}" | grep -qx '  name: custom' \
@@ -116,9 +116,11 @@ manifest() {
 
 fail=0
 echo ">> Testing imageCredentials"
-out=$(helm template t ${chart} --kube-version ${kube_version} --set crds.upgradeHook.enabled=true \
+out=$(helm template t ${chart} --kube-version "${kube_version}" --set crds.upgradeHook.enabled=true \
   --set imageCredentials.create=true --set 'imageCredentials.existsSecrets={a,b}')
 for pod in "Deployment t-redis-operator" "Job t-redis-operator-crds-upgrade"; do
+  # ${pod} holds the kind and the name, and the function reads them as two words.
+  # shellcheck disable=SC2086
   doc=$(manifest "${out}" ${pod})
   # A YAML decoder keeps only the last copy of a repeated key.
   [ "$(grep -c 'imagePullSecrets:' <<<"${doc}")" -eq 1 ] \
@@ -128,18 +130,19 @@ for pod in "Deployment t-redis-operator" "Job t-redis-operator-crds-upgrade"; do
 done
 # A pull Secret with the placeholder credentials cannot pull. A release that
 # used the old default existsSecrets [registrysecret] must not get one.
-if helm template t ${chart} --kube-version ${kube_version} --set imageCredentials.create=true >/dev/null 2>&1; then
+if helm template t ${chart} --kube-version "${kube_version}" --set imageCredentials.create=true >/dev/null 2>&1; then
   echo "FAIL: imageCredentials.create=true renders a pull Secret with the placeholder credentials" >&2; fail=1
 fi
-out=$(helm template t ${chart} --kube-version ${kube_version} --set crds.upgradeHook.enabled=true \
+out=$(helm template t ${chart} --kube-version "${kube_version}" --set crds.upgradeHook.enabled=true \
   --set imageCredentials.create=true --set 'imageCredentials.existsSecrets={registrysecret}')
 [ "$(grep -c '^kind: Secret$' <<<"${out}")" -eq 0 ] \
   || { echo "FAIL: existsSecrets={registrysecret} creates a registry Secret" >&2; fail=1; }
 for pod in "Deployment t-redis-operator" "Job t-redis-operator-crds-upgrade"; do
+  # shellcheck disable=SC2086
   manifest "${out}" ${pod} | grep -qx '        - name: registrysecret' \
     || { echo "FAIL: ${pod} does not pull with registrysecret" >&2; fail=1; }
 done
-out=$(helm template t ${chart} --kube-version ${kube_version} --set crds.upgradeHook.enabled=true \
+out=$(helm template t ${chart} --kube-version "${kube_version}" --set crds.upgradeHook.enabled=true \
   --set imageCredentials.create=true --set imageCredentials.username=u --set imageCredentials.password=p)
 manifest "${out}" Secret t-redis-operator-registry | grep -q '^type: kubernetes.io/dockerconfigjson$' \
   || { echo "FAIL: imageCredentials.create=true creates no registry Secret" >&2; fail=1; }
@@ -160,13 +163,13 @@ done
 
 echo ">> Testing image.cli_args"
 for args in 'image.cli_args=--concurrency=5 --log-level=debug' 'image.cli_args={--concurrency=5,--log-level=debug}'; do
-  out=$(helm template t ${chart} --kube-version ${kube_version} --set "${args}")
+  out=$(helm template t ${chart} --kube-version "${kube_version}" --set "${args}")
   grep -qx '        - "--concurrency=5"' <<<"${out}" && grep -qx '        - "--log-level=debug"' <<<"${out}" \
     || { echo "FAIL: --set '${args}' does not give one argument for each flag" >&2; fail=1; }
 done
 
 echo ">> Testing container.port and service.port"
-out=$(helm template t ${chart} --kube-version ${kube_version} --set container.port=8080 --set service.port=80)
+out=$(helm template t ${chart} --kube-version "${kube_version}" --set container.port=8080 --set service.port=80)
 grep -qx -- '        - --listen-address=:8080' <<<"${out}" \
   || { echo "FAIL: container.port=8080 does not set --listen-address=:8080" >&2; fail=1; }
 manifest "${out}" Service t-redis-operator | grep -q 'targetPort: metrics' \

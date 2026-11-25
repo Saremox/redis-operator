@@ -4,8 +4,9 @@
 # Exit 2 sends the findings back to Claude. Claude Code stops the loop after
 # 8 blocked stops in a row, so the message must say what to fix.
 set -uo pipefail
-cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
-export PATH="$PATH:$(go env GOPATH 2>/dev/null)/bin"
+cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}" || exit 0
+gopath=$(go env GOPATH 2>/dev/null)
+export PATH="$PATH:${gopath}/bin"
 
 # A second stop in the same turn means the first block did not help.
 [ "$(jq -r '.stop_hook_active // false')" = true ] && exit 0

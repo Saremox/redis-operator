@@ -26,6 +26,8 @@ jobs:
       docker: ${{ steps.filter.outputs.docker }}
       e2e: ${{ steps.filter.outputs.e2e }}
       docs: ${{ steps.filter.outputs.docs }}
+      mocks: ${{ steps.filter.outputs.mocks }}
+      shell: ${{ steps.filter.outputs.shell }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -35,6 +37,19 @@ jobs:
           # filter has the workflow files, so a change to a workflow runs the
           # jobs. Documentation and metadata files match no rule.
           filters: |
+            # The mocks come from the interfaces in the Go packages that mocks/doc.go lists.
+            mocks:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'Makefile'
+              - '.github/workflows/**'
+            # Every shell script of the repository.
+            shell:
+              - '**/*.sh'
+              - '.githooks/**'
+              - '.claude/hooks/**'
+              - '.github/workflows/**'
             # The writing rules of docs/writing.md.
             docs:
               - '**/*.md'
@@ -149,6 +164,31 @@ jobs:
         with:
           version: v2.13.2
           args: --timeout=15m
+
+  shellcheck:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.shell == 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck
+        # The runner has shellcheck. Only warnings and errors fail the job.
+        run: git ls-files '*.sh' .githooks/pre-commit | xargs shellcheck --severity=warning
+
+  verify-mocks:
+    name: Verify mocks
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.mocks == 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install mockery
+        run: make install-mockery
+      - run: make verify-mocks
 
   docs:
     name: Writing rules
@@ -326,7 +366,7 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v5
         with:
-          version: v3.7.2
+          version: v3.19.0
       - name: Helm test
         run: make helm-test
 
