@@ -11,14 +11,14 @@ spec:
       enableServiceLinks: false
       containers:
         - name: redis-operator
-          image: ghcr.io/saremox/redis-operator:4.2.0-rc4
+          image: ghcr.io/saremox/redis-operator:4.2.0
           imagePullPolicy: IfNotPresent
           env:
             # The Redis pods run an init container that copies the
             # redis-instance binary out of this image, so the operator must
             # know its own image. Keep this in step with image above.
             - name: OPERATOR_IMAGE
-              value: ghcr.io/saremox/redis-operator:4.2.0-rc4
+              value: ghcr.io/saremox/redis-operator:4.2.0
             - name: OPERATOR_IMAGE_PULL_POLICY
               value: IfNotPresent
           securityContext:

@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -128,11 +129,21 @@ func instanceManagerReadinessProbe() *corev1.Probe {
 // instanceManagerCommand starts the manager. The password is in no ConfigMap
 // and in no pod command: the manager reads REDIS_PASSWORD from its
 // environment and gives requirepass and masterauth to redis-server.
-func instanceManagerCommand() []string {
+//
+// The flags carry what ready.sh and the probes of the pod would otherwise
+// hold: the Redis port and the window in which a replica stays ready after
+// it lost its master.
+//
+// The manager gets no shutdown timeout, so it sends no SIGKILL of its own.
+// The kubelet ends the pod at terminationGracePeriodSeconds, and a stop-time
+// save then keeps its whole window.
+func instanceManagerCommand(rf *redisfailoverv1.RedisFailover) []string {
 	return []string{
 		fmt.Sprintf("%s/%s", instanceManagerMountPath, instanceManagerBinaryName),
 		"run",
 		"--redis-conf", fmt.Sprintf("/redis/%s", redisConfigFileName),
+		"--redis-port", strconv.Itoa(int(rf.Spec.Redis.Port)),
+		"--max-link-down", fmt.Sprintf("%ds", redisReadinessMaxLinkDownSeconds(rf)),
 	}
 }
 

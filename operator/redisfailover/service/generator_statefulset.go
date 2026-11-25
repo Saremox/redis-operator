@@ -463,7 +463,7 @@ func getRedisCommand(rf *redisfailoverv1.RedisFailover) []string {
 	// ConfigMap or in the pod spec. The shell expands the env var, and exec
 	// keeps redis-server as PID 1, so it gets SIGTERM.
 	if instanceManagerEnabled(rf) {
-		return instanceManagerCommand()
+		return instanceManagerCommand(rf)
 	}
 	if rf.Spec.Auth.SecretPath != "" {
 		return []string{

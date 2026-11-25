@@ -19,7 +19,7 @@ spec:
       serviceAccountName: redisoperator
       enableServiceLinks: false
       containers:
-        - image: ghcr.io/saremox/redis-operator:4.2.0-rc4
+        - image: ghcr.io/saremox/redis-operator:4.2.0
           imagePullPolicy: IfNotPresent
           name: app
           env:
@@ -27,7 +27,7 @@ spec:
             # redis-instance binary out of this image, so the operator must
             # know its own image.
             - name: OPERATOR_IMAGE
-              value: ghcr.io/saremox/redis-operator:4.2.0-rc4
+              value: ghcr.io/saremox/redis-operator:4.2.0
             - name: OPERATOR_IMAGE_PULL_POLICY
               value: IfNotPresent
           ports:

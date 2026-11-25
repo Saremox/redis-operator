@@ -617,6 +617,18 @@ command:
   - exec redis-server /redis/redis.conf --requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD"
 ```
 
+### Instance manager
+
+The operator image holds a second binary, `redis-instance`. Each Redis pod runs it as PID 1, and it starts `redis-server` as a child process.
+
+An init container copies the binary out of an image onto a shared `emptyDir` volume, and the Redis container runs the copy. By default that image is the operator's own, which the operator reads from the `OPERATOR_IMAGE` variable on its Deployment. The Helm chart, `manifests/kustomize` and `example/operator` set it, together with `OPERATOR_IMAGE_PULL_POLICY`. Set `spec.redis.instanceManagerImage` to run a different build in the Redis pods than in the operator. Without either, the operator falls back to a published image.
+
+The manager removes the RDB tempfiles of a killed save before Redis starts, so the pods need no `rdb-tempfile-cleanup` init container. It serves `/healthz` and `/readyz` on port 8080, so the liveness and the readiness probes are HTTP probes and start no process in the Redis container. On a node that is short of memory, an exec probe can fail to fork while Redis is healthy; an HTTP probe cannot. The endpoints answer like the scripts they replace: `/healthz` accepts a Redis that loads its dataset, and `/readyz` keeps a replica ready for the failover window and ignores a refused password.
+
+The manager sends no `SIGKILL` of its own. The kubelet ends the pod at the end of `terminationGracePeriodSeconds`, so a save at stop keeps its whole window.
+
+A custom `redis.customLivenessProbe` or `redis.customReadinessProbe` still wins.
+
 ### Custom environment variables
 
 Use `redis.env` and `sentinel.env` to add environment variables (standard Kubernetes `EnvVar` entries) to the main Redis and Sentinel containers.

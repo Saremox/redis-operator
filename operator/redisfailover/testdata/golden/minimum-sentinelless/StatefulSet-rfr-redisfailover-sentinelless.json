@@ -75,7 +75,11 @@
               "/controller/redis-instance",
               "run",
               "--redis-conf",
-              "/redis/redis.conf"
+              "/redis/redis.conf",
+              "--redis-port",
+              "6379",
+              "--max-link-down",
+              "70s"
             ],
             "env": [
               {

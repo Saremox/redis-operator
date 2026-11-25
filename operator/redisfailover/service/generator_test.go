@@ -627,6 +627,11 @@ func TestRedisStatefulSetCommands(t *testing.T) {
 				"run",
 				"--redis-conf",
 				"/redis/redis.conf",
+				// generateRF sets no port; the defaults set it in a real cluster.
+				"--redis-port",
+				"0",
+				"--max-link-down",
+				"70s",
 			},
 		},
 		{
