@@ -454,10 +454,13 @@ func TestHealthServerStartServesHealthz(t *testing.T) {
 }
 
 // fakeRedis is a tiny Redis stand-in. It answers PING, and it answers INFO
-// with info, or with an error when infoErr is set.
+// with info, or with an error when infoErr is set. pingErr and infoErrMsg
+// replace a reply with that Redis error, for example LOADING or NOAUTH.
 type fakeRedis struct {
-	info    string
-	infoErr bool
+	info       string
+	infoErr    bool
+	pingErr    string
+	infoErrMsg string
 }
 
 // start serves the fake on a random local port until the test ends and
@@ -511,10 +514,16 @@ func (f *fakeRedis) serve(conn net.Conn) {
 		switch strings.ToUpper(args[0]) {
 		case "PING":
 			reply = "+PONG\r\n"
+			if f.pingErr != "" {
+				reply = "-" + f.pingErr + "\r\n"
+			}
 		case "INFO":
-			if f.infoErr {
+			switch {
+			case f.infoErrMsg != "":
+				reply = "-" + f.infoErrMsg + "\r\n"
+			case f.infoErr:
 				reply = "-ERR injected INFO error\r\n"
-			} else {
+			default:
 				reply = fmt.Sprintf("$%d\r\n%s\r\n", len(f.info), f.info)
 			}
 		default:
@@ -720,6 +729,85 @@ func TestHealthServerReadyzNotReadyReasons(t *testing.T) {
 			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 			assert.Equal(t, "not ready", resp.Status)
 			assert.Equal(t, tt.want, resp.Error)
+		})
+	}
+}
+
+// The liveness probe of the pod accepts LOADING, so a dataset that loads for
+// longer than the probe allows must not restart the pod.
+func TestUpdateHealthStatusKeepsRedisAliveWhileItLoads(t *testing.T) {
+	port := (&fakeRedis{pingErr: "LOADING Redis is loading the dataset in memory"}).start(t)
+	h := NewHealthServer(0, port, "")
+	h.client = newTestClient(t, port)
+	h.redisHealthy.Store(false)
+	h.redisReady.Store(true)
+
+	h.updateHealthStatus(context.Background())
+
+	assert.True(t, h.redisHealthy.Load(), "a loading Redis is alive")
+	assert.False(t, h.redisReady.Load(), "a loading Redis serves no client")
+}
+
+// The operator changes the password of a running Redis in place, and the pod
+// restarts onto it later. Until then a refused password says nothing about
+// Redis, so ready.sh exits 0.
+func TestUpdateHealthStatusIgnoresAnAuthError(t *testing.T) {
+	for _, message := range []string{"NOAUTH Authentication required.", "WRONGPASS invalid username-password pair"} {
+		t.Run(message, func(t *testing.T) {
+			port := (&fakeRedis{pingErr: message}).start(t)
+			h := NewHealthServer(0, port, "")
+			h.client = newTestClient(t, port)
+			h.redisHealthy.Store(false)
+			h.redisReady.Store(false)
+
+			h.updateHealthStatus(context.Background())
+
+			assert.True(t, h.redisHealthy.Load(), "an auth error says nothing about Redis")
+			assert.True(t, h.redisReady.Load(), "an auth error says nothing about Redis")
+		})
+	}
+}
+
+// INFO can refuse the password although PING answered, because the operator
+// can change the password between the two commands.
+func TestUpdateHealthStatusIgnoresAnAuthErrorOfInfo(t *testing.T) {
+	port := (&fakeRedis{infoErrMsg: "NOAUTH Authentication required."}).start(t)
+	h := NewHealthServer(0, port, "")
+	h.client = newTestClient(t, port)
+	h.redisReady.Store(false)
+
+	h.updateHealthStatus(context.Background())
+
+	assert.True(t, h.redisHealthy.Load())
+	assert.True(t, h.redisReady.Load())
+}
+
+// Every replica loses its link during a failover. ready.sh keeps the replica
+// ready for that window, so that the Service keeps an endpoint.
+func TestUpdateHealthStatusKeepsAReplicaReadyInsideTheLinkDownWindow(t *testing.T) {
+	tests := []struct {
+		name      string
+		downSince string
+		want      bool
+	}{
+		{name: "inside the window", downSince: "5", want: true},
+		{name: "at the window", downSince: "70", want: true},
+		{name: "after the window", downSince: "300"},
+		{name: "never up", downSince: "-1"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			info := "role:slave\r\nloading:0\r\nmaster_host:10.0.0.1\r\nmaster_link_status:down\r\n" +
+				"master_sync_in_progress:0\r\nmaster_link_down_since_seconds:" + test.downSince + "\r\n"
+			port := (&fakeRedis{info: info}).start(t)
+			h := NewHealthServer(0, port, "")
+			h.maxLinkDown = 70 * time.Second
+			h.client = newTestClient(t, port)
+			h.redisReady.Store(!test.want)
+
+			h.updateHealthStatus(context.Background())
+
+			assert.Equal(t, test.want, h.redisReady.Load())
 		})
 	}
 }

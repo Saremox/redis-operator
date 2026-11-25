@@ -36,11 +36,12 @@ type Event struct {
 	Err error
 }
 
-// Clean removes the .rdb files of dir except keep. It reports each file to
+// Clean removes the .rdb files of dir that start with prefix, except keep. An
+// empty prefix matches all .rdb files. It reports each file to
 // report, and returns the number and the size of the files that it removed, or
 // would remove in a dry run. readDir is a parameter so that a test can inject
 // a read fault.
-func Clean(dir, keep string, dryRun bool, readDir func(string) ([]os.DirEntry, error), report func(Event)) (int, int64, error) {
+func Clean(dir, keep, prefix string, dryRun bool, readDir func(string) ([]os.DirEntry, error), report func(Event)) (int, int64, error) {
 	entries, err := list(dir, readDir, report)
 	if err != nil {
 		return 0, 0, err
@@ -48,7 +49,7 @@ func Clean(dir, keep string, dryRun bool, readDir func(string) ([]os.DirEntry, e
 	var cleaned int
 	var total int64
 	for _, entry := range entries {
-		if size, ok := cleanEntry(entry, dir, keep, dryRun, report); ok {
+		if size, ok := cleanEntry(entry, dir, keep, prefix, dryRun, report); ok {
 			cleaned++
 			total += size
 		}
@@ -77,16 +78,17 @@ func list(dir string, readDir func(string) ([]os.DirEntry, error), report func(E
 	return entries, nil
 }
 
-// stale reports whether the entry is a .rdb file other than keep.
-func stale(entry os.DirEntry, keep string) bool {
-	return !entry.IsDir() && strings.HasSuffix(entry.Name(), ".rdb") && entry.Name() != keep
+// stale reports whether the entry is a .rdb file that starts with prefix and is not keep.
+func stale(entry os.DirEntry, keep, prefix string) bool {
+	name := entry.Name()
+	return !entry.IsDir() && strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".rdb") && name != keep
 }
 
 // cleanEntry removes the entry when it is a stale .rdb file. It returns the
 // size of the file, and whether the file counts as cleaned.
-func cleanEntry(entry os.DirEntry, dir, keep string, dryRun bool, report func(Event)) (int64, bool) {
+func cleanEntry(entry os.DirEntry, dir, keep, prefix string, dryRun bool, report func(Event)) (int64, bool) {
 	name := entry.Name()
-	if !stale(entry, keep) {
+	if !stale(entry, keep, prefix) {
 		return 0, false
 	}
 	path := filepath.Join(dir, name)

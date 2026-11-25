@@ -26,7 +26,7 @@ func TestCleanRemovesOnlyTheStaleRDBFiles(t *testing.T) {
 	require.NoError(t, os.Mkdir(filepath.Join(dir, "old.rdb"), 0o755))
 
 	var events []rdbclean.Kind
-	cleaned, size, err := rdbclean.Clean(dir, "dump.rdb", false, os.ReadDir, func(e rdbclean.Event) { events = append(events, e.Kind) })
+	cleaned, size, err := rdbclean.Clean(dir, "dump.rdb", "", false, os.ReadDir, func(e rdbclean.Event) { events = append(events, e.Kind) })
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, cleaned)
@@ -44,7 +44,7 @@ func TestCleanInADryRunKeepsTheFiles(t *testing.T) {
 	write(t, dir, "temp-1.rdb", 3)
 
 	var got rdbclean.Event
-	cleaned, _, err := rdbclean.Clean(dir, "dump.rdb", true, os.ReadDir, func(e rdbclean.Event) { got = e })
+	cleaned, _, err := rdbclean.Clean(dir, "dump.rdb", "", true, os.ReadDir, func(e rdbclean.Event) { got = e })
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, cleaned)
@@ -54,7 +54,7 @@ func TestCleanInADryRunKeepsTheFiles(t *testing.T) {
 
 func TestCleanReportsAMissingDirectoryAndReturnsNoError(t *testing.T) {
 	var got rdbclean.Event
-	cleaned, _, err := rdbclean.Clean(filepath.Join(t.TempDir(), "none"), "dump.rdb", false, os.ReadDir, func(e rdbclean.Event) { got = e })
+	cleaned, _, err := rdbclean.Clean(filepath.Join(t.TempDir(), "none"), "dump.rdb", "", false, os.ReadDir, func(e rdbclean.Event) { got = e })
 
 	require.NoError(t, err)
 	assert.Zero(t, cleaned)
@@ -67,9 +67,23 @@ func TestCleanReturnsTheErrors(t *testing.T) {
 	readErr := errors.New("read failed")
 	failing := func(string) ([]os.DirEntry, error) { return nil, readErr }
 
-	_, _, err := rdbclean.Clean(file, "dump.rdb", false, os.ReadDir, func(rdbclean.Event) {})
+	_, _, err := rdbclean.Clean(file, "dump.rdb", "", false, os.ReadDir, func(rdbclean.Event) {})
 	require.ErrorContains(t, err, "is not a directory")
 
-	_, _, err = rdbclean.Clean(t.TempDir(), "dump.rdb", false, failing, func(rdbclean.Event) {})
+	_, _, err = rdbclean.Clean(t.TempDir(), "dump.rdb", "", false, failing, func(rdbclean.Event) {})
 	require.ErrorIs(t, err, readErr)
+}
+
+func TestCleanWithAPrefixKeepsTheOtherRDBFiles(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "temp-1.rdb", 3)
+	write(t, dir, "user.rdb", 4)
+
+	cleaned, size, err := rdbclean.Clean(dir, "dump.rdb", "temp-", false, os.ReadDir, func(rdbclean.Event) {})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, cleaned)
+	assert.EqualValues(t, 3, size)
+	assert.FileExists(t, filepath.Join(dir, "user.rdb"))
+	assert.NoFileExists(t, filepath.Join(dir, "temp-1.rdb"))
 }

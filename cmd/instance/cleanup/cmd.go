@@ -46,7 +46,7 @@ This command removes all the .rdb files in the data directory, except the
 
 func runCleanup(_ *cobra.Command, _ []string) error {
 	missing := false
-	cleaned, totalSize, err := rdbclean.Clean(dataDir, dbFilename, dryRun, readDir, func(e rdbclean.Event) {
+	cleaned, totalSize, err := rdbclean.Clean(dataDir, dbFilename, "", dryRun, readDir, func(e rdbclean.Event) {
 		switch e.Kind {
 		case rdbclean.Missing:
 			missing = true

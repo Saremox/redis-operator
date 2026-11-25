@@ -165,6 +165,10 @@ Moved to [Custom containerSecurityContext at container level](docs/customization
 
 Moved to [Custom command](docs/customization.md#custom-command).
 
+### Instance manager
+
+Moved to [Instance manager](docs/customization.md#instance-manager).
+
 ### Custom environment variables
 
 Moved to [Custom environment variables](docs/customization.md#custom-environment-variables).

@@ -290,3 +290,74 @@ func TestValidateCommandRenames(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateInstanceManager(t *testing.T) {
+	tests := []struct {
+		name          string
+		mutate        func(*RedisFailover)
+		expectedError string
+	}{
+		{
+			name:   "off, so nothing applies",
+			mutate: func(rf *RedisFailover) { rf.Spec.Redis.Command = []string{"redis-server"} },
+		},
+		{
+			name:   "the default port",
+			mutate: func(rf *RedisFailover) { rf.Spec.Redis.InstanceManager.Enabled = true },
+		},
+		{
+			name: "a port of its own",
+			mutate: func(rf *RedisFailover) {
+				rf.Spec.Redis.InstanceManager.Enabled = true
+				rf.Spec.Redis.InstanceManager.Port = 9999
+			},
+		},
+		{
+			name: "a custom command",
+			mutate: func(rf *RedisFailover) {
+				rf.Spec.Redis.InstanceManager.Enabled = true
+				rf.Spec.Redis.Command = []string{"redis-server", "/redis/redis.conf"}
+			},
+			expectedError: "redis.instanceManager.enabled does not work with redis.command, because the custom command does not serve the health endpoints of the probes",
+		},
+		{
+			name: "a port out of range",
+			mutate: func(rf *RedisFailover) {
+				rf.Spec.Redis.InstanceManager.Enabled = true
+				rf.Spec.Redis.InstanceManager.Port = 65536
+			},
+			expectedError: "redis.instanceManager.port 65536 must be between 1 and 65535, or 0 for the default",
+		},
+		{
+			name: "the port of Redis",
+			mutate: func(rf *RedisFailover) {
+				rf.Spec.Redis.InstanceManager.Enabled = true
+				rf.Spec.Redis.InstanceManager.Port = 6380
+				rf.Spec.Redis.Port = 6380
+			},
+			expectedError: "redis.instanceManager.port 6380 is also redis.port",
+		},
+		{
+			name: "the port of the exporter",
+			mutate: func(rf *RedisFailover) {
+				rf.Spec.Redis.InstanceManager.Enabled = true
+				rf.Spec.Redis.Exporter.Port = DefaultInstanceManagerPort
+			},
+			expectedError: "redis.instanceManager.port 8080 is also redis.exporter.port",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rf := generateRedisFailover("test", nil)
+			test.mutate(rf)
+
+			err := rf.Validate()
+
+			if test.expectedError == "" {
+				require.NoError(t, err)
+				return
+			}
+			assert.EqualError(t, err, test.expectedError)
+		})
+	}
+}

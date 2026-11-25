@@ -154,6 +154,10 @@ func (r *RedisFailoverKubeClient) EnsureRedisStatefulset(rf *redisfailoverv1.Red
 		return err
 	}
 
+	if err := checkInstanceManagerImage(rf); err != nil {
+		return err
+	}
+
 	password, err := k8s.GetRedisPassword(r.K8SService, rf)
 	if err != nil {
 		return err
