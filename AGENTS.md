@@ -11,7 +11,7 @@ A Kubernetes operator that creates and heals Redis failover clusters (`RedisFail
 - `log`, `metrics`, `version`: logrus wrapper, Prometheus metrics, version string.
 - `mocks`, `client`, `api/**/zz_generated*`, the CRD copies in `manifests/` and `charts/*/crds/`: generated. Change the source, then run the make target.
 - `test/integration`: needs a cluster. `test/soak`: separate Go module for long release-candidate tests.
-- `docs`: read the file for your topic only. `docs/logic.md` explains the failover logic, `docs/development.md` the make targets, `docs/writing.md` the writing rules.
+- `docs`: read the file for your topic only. `docs/logic.md` explains the shared failover logic, with `docs/logic-operator-managed.md` and `docs/logic-sentinel.md` for each mode. `docs/development.md` lists the make targets, `docs/writing.md` the writing rules, and `docs/install.md`, `docs/configuration.md`, `docs/autoscaling.md`, `docs/customization.md`, `docs/authentication.md` and `docs/versions.md` the user guide.
 
 ## Rules and their reasons
 
