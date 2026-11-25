@@ -409,19 +409,3 @@ func TestServiceServiceDeleteService(t *testing.T) {
 		assertTest.True(kubeerrors.IsNotFound(err))
 	})
 }
-
-func TestServiceServiceListServices(t *testing.T) {
-	assertTest := assert.New(t)
-	testns := "testns"
-
-	svc1 := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc1", Namespace: testns}}
-	svc2 := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc2", Namespace: testns}}
-	otherNsSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc3", Namespace: "otherns"}}
-
-	mcli := kubernetes.NewClientset(svc1, svc2, otherNsSvc)
-	service := k8s.NewServiceService(mcli, log.Dummy, metrics.Dummy)
-
-	list, err := service.ListServices(testns)
-	require.NoError(t, err)
-	assertTest.Len(list.Items, 2)
-}

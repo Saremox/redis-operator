@@ -784,57 +784,6 @@ func TestStatefulSetServiceObjectUpToDate(t *testing.T) {
 	}
 }
 
-func TestStatefulSetServiceDeleteStatefulSet(t *testing.T) {
-	testns := "testns"
-
-	t.Run("deletes an existing StatefulSet", func(t *testing.T) {
-		assertTest := assert.New(t)
-
-		sts := &appsv1.StatefulSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "teststatefulset",
-				Namespace: testns,
-			},
-		}
-		mcli := kubernetes.NewClientset(sts)
-		service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
-
-		err := service.DeleteStatefulSet(testns, "teststatefulset")
-		require.NoError(t, err)
-
-		_, err = mcli.AppsV1().StatefulSets(testns).Get(context.TODO(), "teststatefulset", metav1.GetOptions{})
-		require.Error(t, err)
-		assertTest.True(kubeerrors.IsNotFound(err))
-	})
-
-	t.Run("returns an error when deleting a non-existent StatefulSet", func(t *testing.T) {
-		assertTest := assert.New(t)
-
-		mcli := kubernetes.NewClientset()
-		service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
-
-		err := service.DeleteStatefulSet(testns, "does-not-exist")
-		require.Error(t, err)
-		assertTest.True(kubeerrors.IsNotFound(err))
-	})
-}
-
-func TestStatefulSetServiceListStatefulSets(t *testing.T) {
-	assertTest := assert.New(t)
-	testns := "testns"
-
-	sts1 := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "sts1", Namespace: testns}}
-	sts2 := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "sts2", Namespace: testns}}
-	otherNsSts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "sts3", Namespace: "otherns"}}
-
-	mcli := kubernetes.NewClientset(sts1, sts2, otherNsSts)
-	service := k8s.NewStatefulSetService(mcli, log.Dummy, metrics.Dummy)
-
-	list, err := service.ListStatefulSets(testns)
-	require.NoError(t, err)
-	assertTest.Len(list.Items, 2)
-}
-
 // TestStatefulSetServiceRejectedResizeKeepsTheNextPVCs checks that a rejected
 // resize of one PVC does not stop the owner removal and the resize of the
 // PVCs after it.

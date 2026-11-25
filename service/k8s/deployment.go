@@ -23,7 +23,6 @@ type Deployment interface {
 	UpdateDeployment(namespace string, deployment *appsv1.Deployment) error
 	CreateOrUpdateDeployment(namespace string, deployment *appsv1.Deployment) error
 	DeleteDeployment(namespace string, name string) error
-	ListDeployments(namespace string) (*appsv1.DeploymentList, error)
 }
 
 // DeploymentService is the deployment service implementation using API calls to kubernetes.
@@ -125,14 +124,4 @@ func (d *DeploymentService) DeleteDeployment(namespace, name string) error {
 		return fmt.Errorf("delete deployment %s/%s: %w", namespace, name, err)
 	}
 	return nil
-}
-
-// ListDeployments will give all the deployments on a given namespace.
-func (d *DeploymentService) ListDeployments(namespace string) (*appsv1.DeploymentList, error) {
-	deployments, err := d.kubeClient.AppsV1().Deployments(namespace).List(context.TODO(), metav1.ListOptions{})
-	recordMetrics(namespace, "Deployment", metrics.NOT_APPLICABLE, "LIST", err, d.metricsRecorder)
-	if err != nil {
-		return deployments, fmt.Errorf("list deployments in %s: %w", namespace, err)
-	}
-	return deployments, nil
 }

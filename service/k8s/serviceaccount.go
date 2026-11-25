@@ -19,7 +19,6 @@ type ServiceAccount interface {
 	UpdateServiceAccount(namespace string, serviceAccount *corev1.ServiceAccount) error
 	CreateOrUpdateServiceAccount(namespace string, serviceAccount *corev1.ServiceAccount) error
 	DeleteServiceAccount(namespace string, name string) error
-	ListServiceAccounts(namespace string) (*corev1.ServiceAccountList, error)
 }
 
 // ServiceAccountService is the service account service implementation using API calls to kubernetes.
@@ -85,14 +84,4 @@ func (s *ServiceAccountService) DeleteServiceAccount(namespace, name string) err
 		return fmt.Errorf("delete serviceaccount %s/%s: %w", namespace, name, err)
 	}
 	return nil
-}
-
-// ListServiceAccounts returns all the ServiceAccounts of the namespace.
-func (s *ServiceAccountService) ListServiceAccounts(namespace string) (*corev1.ServiceAccountList, error) {
-	objects, err := s.kubeClient.CoreV1().ServiceAccounts(namespace).List(context.TODO(), metav1.ListOptions{})
-	recordMetrics(namespace, "ServiceAccount", metrics.NOT_APPLICABLE, "LIST", err, s.metricsRecorder)
-	if err != nil {
-		return objects, fmt.Errorf("list serviceaccounts in %s: %w", namespace, err)
-	}
-	return objects, nil
 }

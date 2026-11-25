@@ -98,10 +98,6 @@ func (c *client) MakeMaster(ip, port, password string) error {
 	return nil
 }
 
-func (c *client) MakeSlaveOf(ip, masterIP, password string) error {
-	return c.MakeSlaveOfWithPort(ip, redisPort, masterIP, redisPort, password)
-}
-
 // MakeSlaveOfWithPort reconfigures the Redis instance at ip:port to become a
 // replica of masterIP:masterPort. port is the target's own listening port -
 // it must not be assumed to equal masterPort, since a target and its master

@@ -17,10 +17,8 @@ type Client interface {
 	ResetSentinel(ip string) error
 	GetSlaveOf(ip, port, password string) (string, error)
 	IsMaster(ip, port, password string) (bool, error)
-	MonitorRedis(ip, monitor, quorum, password string) error
 	MonitorRedisWithPort(ip, monitor, port, quorum, password string) error
 	MakeMaster(ip, port, password string) error
-	MakeSlaveOf(ip, masterIP, password string) error
 	MakeSlaveOfWithPort(ip, port, masterIP, masterPort, password string) error
 	DisconnectClients(ip, port, password string) error
 	GetSentinelMonitor(ip string) (string, string, error)

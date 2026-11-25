@@ -19,7 +19,6 @@ type ConfigMap interface {
 	UpdateConfigMap(namespace string, configMap *corev1.ConfigMap) error
 	CreateOrUpdateConfigMap(namespace string, np *corev1.ConfigMap) error
 	DeleteConfigMap(namespace string, name string) error
-	ListConfigMaps(namespace string) (*corev1.ConfigMapList, error)
 }
 
 // ConfigMapService is the configMap service implementation using API calls to kubernetes.
@@ -84,14 +83,4 @@ func (p *ConfigMapService) DeleteConfigMap(namespace, name string) error {
 		return fmt.Errorf("delete configmap %s/%s: %w", namespace, name, err)
 	}
 	return nil
-}
-
-// ListConfigMaps returns all the ConfigMaps of the namespace.
-func (p *ConfigMapService) ListConfigMaps(namespace string) (*corev1.ConfigMapList, error) {
-	objects, err := p.kubeClient.CoreV1().ConfigMaps(namespace).List(context.TODO(), metav1.ListOptions{})
-	recordMetrics(namespace, "ConfigMap", metrics.NOT_APPLICABLE, "LIST", err, p.metricsRecorder)
-	if err != nil {
-		return objects, fmt.Errorf("list configmaps in %s: %w", namespace, err)
-	}
-	return objects, nil
 }

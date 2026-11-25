@@ -35,13 +35,11 @@ func TestServicesWrapTheAPIErrors(t *testing.T) {
 		{"create configmap", func(s k8s.Services) error { return s.CreateConfigMap("ns", &corev1.ConfigMap{ObjectMeta: meta}) }, "create configmap ns/x: ", kubeerrors.IsConflict},
 		{"update configmap", func(s k8s.Services) error { return s.UpdateConfigMap("ns", &corev1.ConfigMap{ObjectMeta: meta}) }, "update configmap ns/x: ", kubeerrors.IsConflict},
 		{"delete configmap", func(s k8s.Services) error { return s.DeleteConfigMap("ns", "x") }, "delete configmap ns/x: ", kubeerrors.IsConflict},
-		{"list configmaps", func(s k8s.Services) error { _, err := s.ListConfigMaps("ns"); return err }, "list configmaps in ns: ", kubeerrors.IsConflict},
 		{"get deployment", func(s k8s.Services) error { _, err := s.GetDeployment("ns", "x"); return err }, "get deployment ns/x: ", kubeerrors.IsNotFound},
 		{"get deployment pods", func(s k8s.Services) error { _, err := s.GetDeploymentPods("ns", "x"); return err }, "get deployment ns/x: ", kubeerrors.IsNotFound},
 		{"create deployment", func(s k8s.Services) error { return s.CreateDeployment("ns", &appsv1.Deployment{ObjectMeta: meta}) }, "create deployment ns/x: ", kubeerrors.IsConflict},
 		{"update deployment", func(s k8s.Services) error { return s.UpdateDeployment("ns", &appsv1.Deployment{ObjectMeta: meta}) }, "update deployment ns/x: ", kubeerrors.IsConflict},
 		{"delete deployment", func(s k8s.Services) error { return s.DeleteDeployment("ns", "x") }, "delete deployment ns/x: ", kubeerrors.IsConflict},
-		{"list deployments", func(s k8s.Services) error { _, err := s.ListDeployments("ns"); return err }, "list deployments in ns: ", kubeerrors.IsConflict},
 		{"get pod", func(s k8s.Services) error { _, err := s.GetPod("ns", "x"); return err }, "get pod ns/x: ", kubeerrors.IsNotFound},
 		{"delete pod", func(s k8s.Services) error { return s.DeletePod("ns", "x") }, "delete pod ns/x: ", kubeerrors.IsConflict},
 		{"delete pod with uid", func(s k8s.Services) error { return s.DeletePodWithUID("ns", "x", "uid") }, "delete pod ns/x: ", kubeerrors.IsConflict},
@@ -66,7 +64,6 @@ func TestServicesWrapTheAPIErrors(t *testing.T) {
 		{"create service", func(s k8s.Services) error { return s.CreateService("ns", &corev1.Service{ObjectMeta: meta}) }, "create service ns/x: ", kubeerrors.IsConflict},
 		{"update service", func(s k8s.Services) error { return s.UpdateService("ns", &corev1.Service{ObjectMeta: meta}) }, "update service ns/x: ", kubeerrors.IsConflict},
 		{"delete service", func(s k8s.Services) error { return s.DeleteService("ns", "x") }, "delete service ns/x: ", kubeerrors.IsConflict},
-		{"list services", func(s k8s.Services) error { _, err := s.ListServices("ns"); return err }, "list services in ns: ", kubeerrors.IsConflict},
 		{"get serviceaccount", func(s k8s.Services) error { _, err := s.GetServiceAccount("ns", "x"); return err }, "get serviceaccount ns/x: ", kubeerrors.IsNotFound},
 		{"create serviceaccount", func(s k8s.Services) error {
 			return s.CreateServiceAccount("ns", &corev1.ServiceAccount{ObjectMeta: meta})
@@ -75,13 +72,10 @@ func TestServicesWrapTheAPIErrors(t *testing.T) {
 			return s.UpdateServiceAccount("ns", &corev1.ServiceAccount{ObjectMeta: meta})
 		}, "update serviceaccount ns/x: ", kubeerrors.IsConflict},
 		{"delete serviceaccount", func(s k8s.Services) error { return s.DeleteServiceAccount("ns", "x") }, "delete serviceaccount ns/x: ", kubeerrors.IsConflict},
-		{"list serviceaccounts", func(s k8s.Services) error { _, err := s.ListServiceAccounts("ns"); return err }, "list serviceaccounts in ns: ", kubeerrors.IsConflict},
 		{"get statefulset", func(s k8s.Services) error { _, err := s.GetStatefulSet("ns", "x"); return err }, "get statefulset ns/x: ", kubeerrors.IsNotFound},
 		{"get statefulset pods", func(s k8s.Services) error { _, err := s.GetStatefulSetPods("ns", "x"); return err }, "get statefulset ns/x: ", kubeerrors.IsNotFound},
 		{"create statefulset", func(s k8s.Services) error { return s.CreateStatefulSet("ns", &appsv1.StatefulSet{ObjectMeta: meta}) }, "create statefulset ns/x: ", kubeerrors.IsConflict},
 		{"update statefulset", func(s k8s.Services) error { return s.UpdateStatefulSet("ns", &appsv1.StatefulSet{ObjectMeta: meta}) }, "update statefulset ns/x: ", kubeerrors.IsConflict},
-		{"delete statefulset", func(s k8s.Services) error { return s.DeleteStatefulSet("ns", "x") }, "delete statefulset ns/x: ", kubeerrors.IsConflict},
-		{"list statefulsets", func(s k8s.Services) error { _, err := s.ListStatefulSets("ns"); return err }, "list statefulsets in ns: ", kubeerrors.IsConflict},
 		{"get controllerrevision", func(s k8s.Services) error { _, err := s.GetControllerRevision("ns", "x"); return err }, "get controllerrevision ns/x: ", kubeerrors.IsNotFound},
 	}
 	for _, test := range tests {

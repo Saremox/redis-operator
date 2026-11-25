@@ -59,24 +59,6 @@ func TestSourceIsTheCallSite(t *testing.T) {
 			Infof("message")
 			return line
 		}},
-		{"package Panic", func() (line int) {
-			defer func() { _ = recover() }()
-			_, _, line, _ = runtime.Caller(0)
-			Panic("message")
-			return line
-		}},
-		{"package Panicln", func() (line int) {
-			defer func() { _ = recover() }()
-			_, _, line, _ = runtime.Caller(0)
-			Panicln("message")
-			return line
-		}},
-		{"package Panicf", func() (line int) {
-			defer func() { _ = recover() }()
-			_, _, line, _ = runtime.Caller(0)
-			Panicf("message")
-			return line
-		}},
 	}
 
 	for _, test := range tests {

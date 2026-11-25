@@ -20,7 +20,6 @@ type Service interface {
 	UpdateService(namespace string, service *corev1.Service) error
 	CreateOrUpdateService(namespace string, service *corev1.Service) error
 	DeleteService(namespace string, name string) error
-	ListServices(namespace string) (*corev1.ServiceList, error)
 }
 
 // ServiceService implements Service with calls to the Kubernetes API.
@@ -145,14 +144,4 @@ func (s *ServiceService) DeleteService(namespace, name string) error {
 		return fmt.Errorf("delete service %s/%s: %w", namespace, name, err)
 	}
 	return nil
-}
-
-// ListServices returns all the Services of the namespace.
-func (s *ServiceService) ListServices(namespace string) (*corev1.ServiceList, error) {
-	serviceList, err := s.kubeClient.CoreV1().Services(namespace).List(context.TODO(), metav1.ListOptions{})
-	recordMetrics(namespace, "Service", metrics.NOT_APPLICABLE, "LIST", err, s.metricsRecorder)
-	if err != nil {
-		return serviceList, fmt.Errorf("list services in %s: %w", namespace, err)
-	}
-	return serviceList, nil
 }

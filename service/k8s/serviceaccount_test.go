@@ -152,22 +152,6 @@ func TestServiceAccountServiceDelete(t *testing.T) {
 	assertTest.True(kubeerrors.IsNotFound(err))
 }
 
-func TestServiceAccountServiceList(t *testing.T) {
-	assertTest := assert.New(t)
-	testns := "testns"
-
-	sa1 := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "sa1", Namespace: testns}}
-	sa2 := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "sa2", Namespace: testns}}
-	otherNsSa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "sa3", Namespace: "otherns"}}
-
-	mcli := kubernetes.NewClientset(sa1, sa2, otherNsSa)
-	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
-
-	list, err := service.ListServiceAccounts(testns)
-	require.NoError(t, err)
-	assertTest.Len(list.Items, 2)
-}
-
 // TestServiceAccountServiceGetCreateOrUpdate exercises the create/update branching
 // of CreateOrUpdateServiceAccount against hand-rolled reactors (matching the
 // convention used by the other CreateOrUpdate* tests in this package), including

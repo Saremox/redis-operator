@@ -27,13 +27,6 @@ func (_m *Logger) Debugf(_a0 string, _a1 ...interface{}) {
 	_m.Called(_ca...)
 }
 
-// Debugln provides a mock function with given fields: _a0
-func (_m *Logger) Debugln(_a0 ...interface{}) {
-	var _ca []interface{}
-	_ca = append(_ca, _a0...)
-	_m.Called(_ca...)
-}
-
 // Error provides a mock function with given fields: _a0
 func (_m *Logger) Error(_a0 ...interface{}) {
 	var _ca []interface{}
@@ -46,13 +39,6 @@ func (_m *Logger) Errorf(_a0 string, _a1 ...interface{}) {
 	var _ca []interface{}
 	_ca = append(_ca, _a0)
 	_ca = append(_ca, _a1...)
-	_m.Called(_ca...)
-}
-
-// Errorln provides a mock function with given fields: _a0
-func (_m *Logger) Errorln(_a0 ...interface{}) {
-	var _ca []interface{}
-	_ca = append(_ca, _a0...)
 	_m.Called(_ca...)
 }
 
@@ -71,13 +57,6 @@ func (_m *Logger) Fatalf(_a0 string, _a1 ...interface{}) {
 	_m.Called(_ca...)
 }
 
-// Fatalln provides a mock function with given fields: _a0
-func (_m *Logger) Fatalln(_a0 ...interface{}) {
-	var _ca []interface{}
-	_ca = append(_ca, _a0...)
-	_m.Called(_ca...)
-}
-
 // Info provides a mock function with given fields: _a0
 func (_m *Logger) Info(_a0 ...interface{}) {
 	var _ca []interface{}
@@ -90,35 +69,6 @@ func (_m *Logger) Infof(_a0 string, _a1 ...interface{}) {
 	var _ca []interface{}
 	_ca = append(_ca, _a0)
 	_ca = append(_ca, _a1...)
-	_m.Called(_ca...)
-}
-
-// Infoln provides a mock function with given fields: _a0
-func (_m *Logger) Infoln(_a0 ...interface{}) {
-	var _ca []interface{}
-	_ca = append(_ca, _a0...)
-	_m.Called(_ca...)
-}
-
-// Panic provides a mock function with given fields: _a0
-func (_m *Logger) Panic(_a0 ...interface{}) {
-	var _ca []interface{}
-	_ca = append(_ca, _a0...)
-	_m.Called(_ca...)
-}
-
-// Panicf provides a mock function with given fields: _a0, _a1
-func (_m *Logger) Panicf(_a0 string, _a1 ...interface{}) {
-	var _ca []interface{}
-	_ca = append(_ca, _a0)
-	_ca = append(_ca, _a1...)
-	_m.Called(_ca...)
-}
-
-// Panicln provides a mock function with given fields: _a0
-func (_m *Logger) Panicln(_a0 ...interface{}) {
-	var _ca []interface{}
-	_ca = append(_ca, _a0...)
 	_m.Called(_ca...)
 }
 
@@ -140,13 +90,6 @@ func (_m *Logger) Set(level log.Level) error {
 	return r0
 }
 
-// Warn provides a mock function with given fields: _a0
-func (_m *Logger) Warn(_a0 ...interface{}) {
-	var _ca []interface{}
-	_ca = append(_ca, _a0...)
-	_m.Called(_ca...)
-}
-
 // Warnf provides a mock function with given fields: _a0, _a1
 func (_m *Logger) Warnf(_a0 string, _a1 ...interface{}) {
 	var _ca []interface{}
@@ -160,13 +103,6 @@ func (_m *Logger) Warningf(_a0 string, _a1 ...interface{}) {
 	var _ca []interface{}
 	_ca = append(_ca, _a0)
 	_ca = append(_ca, _a1...)
-	_m.Called(_ca...)
-}
-
-// Warnln provides a mock function with given fields: _a0
-func (_m *Logger) Warnln(_a0 ...interface{}) {
-	var _ca []interface{}
-	_ca = append(_ca, _a0...)
 	_m.Called(_ca...)
 }
 
