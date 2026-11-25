@@ -69,68 +69,6 @@ func TestServiceAccountServiceGet(t *testing.T) {
 	})
 }
 
-func TestServiceAccountServiceCreate(t *testing.T) {
-	assertTest := assert.New(t)
-	testns := "testns"
-
-	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "testsa",
-			Namespace: testns,
-		},
-	}
-	mcli := kubernetes.NewClientset()
-	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
-
-	err := service.CreateServiceAccount(testns, sa)
-	require.NoError(t, err)
-
-	got, err := mcli.CoreV1().ServiceAccounts(testns).Get(context.TODO(), "testsa", metav1.GetOptions{})
-	require.NoError(t, err)
-	assertTest.Equal("testsa", got.Name)
-}
-
-func TestServiceAccountServiceUpdate(t *testing.T) {
-	assertTest := assert.New(t)
-	testns := "testns"
-
-	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "testsa",
-			Namespace: testns,
-			Labels:    map[string]string{"foo": "bar"},
-		},
-	}
-	mcli := kubernetes.NewClientset(sa)
-	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
-
-	sa.Labels["foo"] = "baz"
-	err := service.UpdateServiceAccount(testns, sa)
-	require.NoError(t, err)
-
-	got, err := mcli.CoreV1().ServiceAccounts(testns).Get(context.TODO(), "testsa", metav1.GetOptions{})
-	require.NoError(t, err)
-	assertTest.Equal("baz", got.Labels["foo"])
-}
-
-func TestServiceAccountServiceUpdateError(t *testing.T) {
-	assertTest := assert.New(t)
-	testns := "testns"
-
-	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "does-not-exist",
-			Namespace: testns,
-		},
-	}
-	mcli := kubernetes.NewClientset()
-	service := k8s.NewServiceAccountService(mcli, log.Dummy, metrics.Dummy)
-
-	err := service.UpdateServiceAccount(testns, sa)
-	require.Error(t, err)
-	assertTest.True(kubeerrors.IsNotFound(err))
-}
-
 func TestServiceAccountServiceDelete(t *testing.T) {
 	assertTest := assert.New(t)
 	testns := "testns"

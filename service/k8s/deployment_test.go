@@ -353,61 +353,6 @@ func TestDeploymentServiceUpdateWritesTheDesiredAnnotations(t *testing.T) {
 	assert.Equal(t, map[string]string{"deployment.kubernetes.io/revision": "3", "example.com/owner": "operator"}, got.Annotations)
 }
 
-func TestDeploymentServiceUpdate(t *testing.T) {
-	testDeployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "testdeployment1",
-		},
-	}
-
-	testns := "testns"
-
-	tests := []struct {
-		name          string
-		errorOnUpdate error
-		expActions    []kubetesting.Action
-		expErr        bool
-	}{
-		{
-			name:          "Updating an existent deployment should not error.",
-			errorOnUpdate: nil,
-			expActions: []kubetesting.Action{
-				newDeploymentUpdateAction(testns, testDeployment),
-			},
-			expErr: false,
-		},
-		{
-			name:          "Updating should error when the client fails.",
-			errorOnUpdate: errors.New("wanted error"),
-			expActions: []kubetesting.Action{
-				newDeploymentUpdateAction(testns, testDeployment),
-			},
-			expErr: true,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			assertTest := assert.New(t)
-
-			mcli := &kubernetes.Clientset{}
-			mcli.AddReactor("update", "deployments", func(_ kubetesting.Action) (bool, runtime.Object, error) {
-				return true, nil, test.errorOnUpdate
-			})
-
-			service := k8s.NewDeploymentService(mcli, log.Dummy, metrics.Dummy)
-			err := service.UpdateDeployment(testns, testDeployment)
-
-			if test.expErr {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-			assertTest.Equal(test.expActions, mcli.Actions())
-		})
-	}
-}
-
 func TestDeploymentServiceDelete(t *testing.T) {
 	testns := "testns"
 

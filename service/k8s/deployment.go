@@ -19,37 +19,46 @@ import (
 type Deployment interface {
 	GetDeployment(namespace, name string) (*appsv1.Deployment, error)
 	GetDeploymentPods(namespace, name string) (*corev1.PodList, error)
-	CreateDeployment(namespace string, deployment *appsv1.Deployment) error
-	UpdateDeployment(namespace string, deployment *appsv1.Deployment) error
 	CreateOrUpdateDeployment(namespace string, deployment *appsv1.Deployment) error
 	DeleteDeployment(namespace string, name string) error
 }
 
 // DeploymentService is the deployment service implementation using API calls to kubernetes.
 type DeploymentService struct {
-	kubeClient      kubernetes.Interface
-	logger          log.Logger
-	metricsRecorder metrics.Recorder
+	kubeClient kubernetes.Interface
+	kindClient[*appsv1.Deployment]
 }
 
 // NewDeploymentService returns a new Deployment KubeService.
 func NewDeploymentService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *DeploymentService {
-	logger = logger.With("service", "k8s.deployment")
+	foreground := metav1.DeletePropagationForeground
 	return &DeploymentService{
-		kubeClient:      kubeClient,
-		logger:          logger,
-		metricsRecorder: metricsRecorder,
+		kubeClient: kubeClient,
+		kindClient: kindClient[*appsv1.Deployment]{
+			kind: "Deployment", noun: "deployment", field: "deployment",
+			deleteOpts: metav1.DeleteOptions{PropagationPolicy: &foreground},
+			api: func(namespace string) namespacedAPI[*appsv1.Deployment] {
+				return kubeClient.AppsV1().Deployments(namespace)
+			},
+			upToDate: deploymentUpToDate,
+			// The API server increments the generation also when the annotations
+			// change. An update without the stored annotations removes
+			// deployment.kubernetes.io/revision, and a further generation restarts
+			// the wait of the master replacement for the Sentinel rollout.
+			keep: func(stored, desired *appsv1.Deployment) {
+				if len(stored.Annotations) != 0 {
+					desired.Annotations = util.MergeAnnotations(stored.Annotations, desired.Annotations)
+				}
+			},
+			logger:  logger.With("service", "k8s.deployment"),
+			metrics: metricsRecorder,
+		},
 	}
 }
 
-// GetDeployment will retrieve the requested deployment based on namespace and name.
+// GetDeployment returns the named Deployment.
 func (d *DeploymentService) GetDeployment(namespace, name string) (*appsv1.Deployment, error) {
-	deployment, err := d.kubeClient.AppsV1().Deployments(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-	recordMetrics(namespace, "Deployment", name, "GET", err, d.metricsRecorder)
-	if err != nil {
-		return nil, fmt.Errorf("get deployment %s/%s: %w", namespace, name, err)
-	}
-	return deployment, nil
+	return d.get(namespace, name)
 }
 
 // GetDeploymentPods will retrieve the pods managed by a given deployment.
@@ -59,7 +68,7 @@ func (d *DeploymentService) GetDeployment(namespace, name string) (*appsv1.Deplo
 // not its UID.
 func (d *DeploymentService) GetDeploymentPods(namespace, name string) (*corev1.PodList, error) {
 	deployment, err := d.kubeClient.AppsV1().Deployments(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-	recordMetrics(namespace, "Deployment", name, "GET", err, d.metricsRecorder)
+	recordMetrics(namespace, "Deployment", name, "GET", err, d.metrics)
 	if err != nil {
 		return nil, fmt.Errorf("get deployment %s/%s: %w", namespace, name, err)
 	}
@@ -78,50 +87,18 @@ func (d *DeploymentService) GetDeploymentPods(namespace, name string) (*corev1.P
 	}
 	pods.Items = owned
 	// The sentinel pods are the only Deployment pods that the operator lists.
-	setPodIPs(metrics.KIND_SENTINEL, pods.Items, d.metricsRecorder)
+	setPodIPs(metrics.KIND_SENTINEL, pods.Items, d.metrics)
 	return pods, nil
 }
 
-// CreateDeployment will create the given deployment.
-func (d *DeploymentService) CreateDeployment(namespace string, deployment *appsv1.Deployment) error {
-	_, err := d.kubeClient.AppsV1().Deployments(namespace).Create(context.TODO(), deployment, metav1.CreateOptions{})
-	recordMetrics(namespace, "Deployment", deployment.GetName(), "CREATE", err, d.metricsRecorder)
-	return writeResult(err, d.logger, namespace, "deployment", deployment.Name, "create deployment", "deployment created")
-}
-
-// UpdateDeployment will update the given deployment.
-func (d *DeploymentService) UpdateDeployment(namespace string, deployment *appsv1.Deployment) error {
-	_, err := d.kubeClient.AppsV1().Deployments(namespace).Update(context.TODO(), deployment, metav1.UpdateOptions{})
-	recordMetrics(namespace, "Deployment", deployment.GetName(), "UPDATE", err, d.metricsRecorder)
-	return writeResult(err, d.logger, namespace, "deployment", deployment.Name, "update deployment", "deployment updated")
-}
-
-// CreateOrUpdateDeployment will update the given deployment or create it if does not exist.
+// CreateOrUpdateDeployment creates the Deployment, or updates the stored
+// Deployment when it is not up to date.
 func (d *DeploymentService) CreateOrUpdateDeployment(namespace string, deployment *appsv1.Deployment) error {
-	return createOrUpdate(namespace, deployment, objectCalls[*appsv1.Deployment]{
-		kind: "Deployment", get: d.GetDeployment, create: d.CreateDeployment, update: d.UpdateDeployment, upToDate: deploymentUpToDate,
-		// The API server increments the generation also when the annotations
-		// change. An update without the stored annotations removes
-		// deployment.kubernetes.io/revision, and a further generation restarts
-		// the wait of the master replacement for the Sentinel rollout.
-		keep: func(stored, desired *appsv1.Deployment) {
-			if len(stored.Annotations) != 0 {
-				desired.Annotations = util.MergeAnnotations(stored.Annotations, desired.Annotations)
-			}
-		},
-		skipped: func() {
-			d.logger.WithField("namespace", namespace).WithField("deployment", deployment.Name).Debugf("deployment already up to date, skipping update")
-		},
-	})
+	return d.createOrUpdate(namespace, deployment)
 }
 
-// DeleteDeployment will delete the given deployment.
+// DeleteDeployment deletes the Deployment and waits for its pods in the
+// foreground.
 func (d *DeploymentService) DeleteDeployment(namespace, name string) error {
-	propagation := metav1.DeletePropagationForeground
-	err := d.kubeClient.AppsV1().Deployments(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{PropagationPolicy: &propagation})
-	recordMetrics(namespace, "Deployment", name, "DELETE", err, d.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("delete deployment %s/%s: %w", namespace, name, err)
-	}
-	return nil
+	return d.delete(namespace, name)
 }

@@ -199,61 +199,6 @@ func TestPodDisruptionBudgetServiceObjectUpToDate(t *testing.T) {
 	}
 }
 
-func TestPodDisruptionBudgetServiceUpdate(t *testing.T) {
-	testPodDisruptionBudget := &policyv1.PodDisruptionBudget{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "testpodDisruptionBudget1",
-		},
-	}
-
-	testns := "testns"
-
-	tests := []struct {
-		name          string
-		errorOnUpdate error
-		expActions    []kubetesting.Action
-		expErr        bool
-	}{
-		{
-			name:          "Updating an existent podDisruptionBudget should not error.",
-			errorOnUpdate: nil,
-			expActions: []kubetesting.Action{
-				newPodDisruptionBudgetUpdateAction(testns, testPodDisruptionBudget),
-			},
-			expErr: false,
-		},
-		{
-			name:          "Updating should error when the client fails.",
-			errorOnUpdate: errors.New("wanted error"),
-			expActions: []kubetesting.Action{
-				newPodDisruptionBudgetUpdateAction(testns, testPodDisruptionBudget),
-			},
-			expErr: true,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			assertTest := assert.New(t)
-
-			mcli := &kubernetes.Clientset{}
-			mcli.AddReactor("update", "poddisruptionbudgets", func(_ kubetesting.Action) (bool, runtime.Object, error) {
-				return true, nil, test.errorOnUpdate
-			})
-
-			service := k8s.NewPodDisruptionBudgetService(mcli, log.Dummy, metrics.Dummy)
-			err := service.UpdatePodDisruptionBudget(testns, testPodDisruptionBudget)
-
-			if test.expErr {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-			assertTest.Equal(test.expActions, mcli.Actions())
-		})
-	}
-}
-
 func TestPodDisruptionBudgetServiceDelete(t *testing.T) {
 	testns := "testns"
 
