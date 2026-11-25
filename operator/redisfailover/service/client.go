@@ -36,7 +36,6 @@ type RedisFailoverKubeClient struct {
 	metricsClient metrics.Recorder
 }
 
-// NewRedisFailoverKubeClient creates a new RedisFailoverKubeClient.
 func NewRedisFailoverKubeClient(k8sService k8s.Services, logger log.Logger, metricsClient metrics.Recorder) *RedisFailoverKubeClient {
 	return &RedisFailoverKubeClient{
 		K8SService:    k8sService,

@@ -21,7 +21,6 @@ type ServiceAccountService struct {
 	kindClient[*corev1.ServiceAccount]
 }
 
-// NewServiceAccountService returns a new ServiceAccount KubeService.
 func NewServiceAccountService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *ServiceAccountService {
 	logger = logger.With("service", "k8s.serviceAccount")
 	return &ServiceAccountService{
@@ -36,7 +35,6 @@ func NewServiceAccountService(kubeClient kubernetes.Interface, logger log.Logger
 	}
 }
 
-// GetServiceAccount returns the named ServiceAccount.
 func (s *ServiceAccountService) GetServiceAccount(namespace, name string) (*corev1.ServiceAccount, error) {
 	return s.get(namespace, name)
 }
@@ -48,7 +46,6 @@ func (s *ServiceAccountService) CreateOrUpdateServiceAccount(namespace string, o
 	return s.createOrUpdate(namespace, object)
 }
 
-// DeleteServiceAccount deletes the named ServiceAccount.
 func (s *ServiceAccountService) DeleteServiceAccount(namespace, name string) error {
 	return s.delete(namespace, name)
 }

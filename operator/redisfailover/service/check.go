@@ -60,7 +60,6 @@ type RedisFailoverChecker struct {
 	opts          options
 }
 
-// NewRedisFailoverChecker creates an object of the RedisFailoverChecker struct.
 func NewRedisFailoverChecker(k8sService k8s.Services, redisClient redis.Client, logger log.Logger, metricsClient metrics.Recorder, opts ...Option) *RedisFailoverChecker {
 	return &RedisFailoverChecker{
 		k8sService:    k8sService,

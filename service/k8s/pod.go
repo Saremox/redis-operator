@@ -58,7 +58,6 @@ type PodService struct {
 // cluster upgrade is picked up without restarting the operator.
 const podResizeSupportTTL = 10 * time.Minute
 
-// NewPodService returns a new Pod KubeService.
 func NewPodService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *PodService {
 	logger = logger.With("service", "k8s.pod")
 	return &PodService{
@@ -68,7 +67,6 @@ func NewPodService(kubeClient kubernetes.Interface, logger log.Logger, metricsRe
 	}
 }
 
-// GetPod returns the named pod.
 func (p *PodService) GetPod(namespace, name string) (*corev1.Pod, error) {
 	pod, err := p.kubeClient.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "Pod", name, "GET", err, p.metricsRecorder)
@@ -101,7 +99,6 @@ func (p *PodService) DeletePodWithUID(namespace, name string, uid types.UID) err
 	return nil
 }
 
-// ListPods returns all the pods of the namespace.
 func (p *PodService) ListPods(namespace string) (*corev1.PodList, error) {
 	pods, err := p.kubeClient.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{})
 	recordMetrics(namespace, "Pod", metrics.NOT_APPLICABLE, "LIST", err, p.metricsRecorder)

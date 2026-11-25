@@ -22,7 +22,6 @@ type ConfigMapService struct {
 	kindClient[*corev1.ConfigMap]
 }
 
-// NewConfigMapService returns a new ConfigMap KubeService.
 func NewConfigMapService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *ConfigMapService {
 	logger = logger.With("service", "k8s.configMap")
 	return &ConfigMapService{
@@ -37,17 +36,14 @@ func NewConfigMapService(kubeClient kubernetes.Interface, logger log.Logger, met
 	}
 }
 
-// GetConfigMap returns the named ConfigMap.
 func (s *ConfigMapService) GetConfigMap(namespace, name string) (*corev1.ConfigMap, error) {
 	return s.get(namespace, name)
 }
 
-// CreateConfigMap creates the given ConfigMap.
 func (s *ConfigMapService) CreateConfigMap(namespace string, object *corev1.ConfigMap) error {
 	return s.create(namespace, object)
 }
 
-// UpdateConfigMap replaces the stored ConfigMap with the given ConfigMap.
 func (s *ConfigMapService) UpdateConfigMap(namespace string, object *corev1.ConfigMap) error {
 	return s.update(namespace, object)
 }
@@ -59,7 +55,6 @@ func (s *ConfigMapService) CreateOrUpdateConfigMap(namespace string, object *cor
 	return s.createOrUpdate(namespace, object)
 }
 
-// DeleteConfigMap deletes the named ConfigMap.
 func (s *ConfigMapService) DeleteConfigMap(namespace, name string) error {
 	return s.delete(namespace, name)
 }

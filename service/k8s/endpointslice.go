@@ -23,7 +23,6 @@ type EndpointSliceService struct {
 	metricsRecorder metrics.Recorder
 }
 
-// NewEndpointSliceService returns a new EndpointSlice KubeService.
 func NewEndpointSliceService(kubeClient kubernetes.Interface, _ log.Logger, metricsRecorder metrics.Recorder) *EndpointSliceService {
 	return &EndpointSliceService{kubeClient: kubeClient, metricsRecorder: metricsRecorder}
 }

@@ -30,7 +30,7 @@ var sentinelRedisCommands = []string{"EXEC", "MULTI", "PUBLISH", "SUBSCRIBE"}
 // Validate rejects an invalid spec and sets the defaults of the fields that are not set.
 func (r *RedisFailover) Validate() error {
 	if len(r.Name) > maxNameLength {
-		return fmt.Errorf("name length can't be higher than %d", maxNameLength)
+		return fmt.Errorf("name length cannot be higher than %d", maxNameLength)
 	}
 
 	if err := r.validateCommandRenames(); err != nil {

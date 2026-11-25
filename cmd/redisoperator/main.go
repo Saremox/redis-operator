@@ -37,7 +37,6 @@ type Main struct {
 	logger log.Logger
 }
 
-// New returns a Main object.
 func New(logger log.Logger) Main {
 	// Init flags.
 	flgs := &utils.CMDFlags{}

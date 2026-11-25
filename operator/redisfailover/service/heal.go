@@ -53,7 +53,6 @@ type RedisFailoverHealer struct {
 	opts        options
 }
 
-// NewRedisFailoverHealer returns a RedisFailoverHealer.
 func NewRedisFailoverHealer(k8sService k8s.Services, redisClient redis.Client, logger log.Logger, opts ...Option) *RedisFailoverHealer {
 	logger = logger.With("service", "redis.healer")
 	return &RedisFailoverHealer{

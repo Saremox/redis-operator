@@ -29,7 +29,6 @@ type DeploymentService struct {
 	kindClient[*appsv1.Deployment]
 }
 
-// NewDeploymentService returns a new Deployment KubeService.
 func NewDeploymentService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *DeploymentService {
 	foreground := metav1.DeletePropagationForeground
 	return &DeploymentService{
@@ -56,7 +55,6 @@ func NewDeploymentService(kubeClient kubernetes.Interface, logger log.Logger, me
 	}
 }
 
-// GetDeployment returns the named Deployment.
 func (d *DeploymentService) GetDeployment(namespace, name string) (*appsv1.Deployment, error) {
 	return d.get(namespace, name)
 }

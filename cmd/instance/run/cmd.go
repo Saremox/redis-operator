@@ -52,7 +52,6 @@ var (
 	redisPort  string
 )
 
-// NewCmd creates the run command.
 func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run",

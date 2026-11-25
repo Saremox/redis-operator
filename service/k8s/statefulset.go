@@ -40,7 +40,6 @@ type StatefulSetService struct {
 	metricsRecorder metrics.Recorder
 }
 
-// NewStatefulSetService returns a new StatefulSet KubeService.
 func NewStatefulSetService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *StatefulSetService {
 	logger = logger.With("service", "k8s.statefulSet")
 	return &StatefulSetService{
@@ -248,7 +247,6 @@ func hasOwnerReference(ownerReferences []metav1.OwnerReference, uid types.UID) b
 	return false
 }
 
-// GetControllerRevision returns the named ControllerRevision.
 func (s *StatefulSetService) GetControllerRevision(namespace, name string) (*appsv1.ControllerRevision, error) {
 	revision, err := s.kubeClient.AppsV1().ControllerRevisions(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "ControllerRevision", name, "GET", err, s.metricsRecorder)

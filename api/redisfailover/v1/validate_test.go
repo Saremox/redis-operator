@@ -28,7 +28,7 @@ func TestValidate(t *testing.T) {
 		{
 			name:          "errors on too long of name",
 			rfName:        "some-super-absurdely-unnecessarily-long-name-that-will-most-definitely-fail",
-			expectedError: "name length can't be higher than 48",
+			expectedError: "name length cannot be higher than 48",
 		},
 		{
 			name:                         "SentinelCustomConfig value wins over its default",

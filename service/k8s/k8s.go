@@ -35,7 +35,6 @@ type services struct {
 	EndpointSlice
 }
 
-// New returns a new Kubernetes service.
 func New(kubecli kubernetes.Interface, crdcli redisfailoverclientset.Interface, logger log.Logger, metricsRecorder metrics.Recorder) Services {
 	return &services{
 		ConfigMap:           NewConfigMapService(kubecli, logger, metricsRecorder),

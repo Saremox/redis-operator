@@ -21,7 +21,6 @@ type PodDisruptionBudgetService struct {
 	kindClient[*policyv1.PodDisruptionBudget]
 }
 
-// NewPodDisruptionBudgetService returns a new PodDisruptionBudget KubeService.
 func NewPodDisruptionBudgetService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *PodDisruptionBudgetService {
 	logger = logger.With("service", "k8s.podDisruptionBudget")
 	return &PodDisruptionBudgetService{
@@ -36,7 +35,6 @@ func NewPodDisruptionBudgetService(kubeClient kubernetes.Interface, logger log.L
 	}
 }
 
-// GetPodDisruptionBudget returns the named PodDisruptionBudget.
 func (s *PodDisruptionBudgetService) GetPodDisruptionBudget(namespace, name string) (*policyv1.PodDisruptionBudget, error) {
 	return s.get(namespace, name)
 }
@@ -48,7 +46,6 @@ func (s *PodDisruptionBudgetService) CreateOrUpdatePodDisruptionBudget(namespace
 	return s.createOrUpdate(namespace, object)
 }
 
-// DeletePodDisruptionBudget deletes the named PodDisruptionBudget.
 func (s *PodDisruptionBudgetService) DeletePodDisruptionBudget(namespace, name string) error {
 	return s.delete(namespace, name)
 }

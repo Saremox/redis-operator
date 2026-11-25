@@ -23,7 +23,6 @@ var (
 	dryRun     bool
 )
 
-// NewCmd creates the cleanup command.
 func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cleanup",

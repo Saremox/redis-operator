@@ -29,7 +29,6 @@ type ServiceService struct {
 	metricsRecorder metrics.Recorder
 }
 
-// NewServiceService returns a new Service KubeService.
 func NewServiceService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *ServiceService {
 	logger = logger.With("service", "k8s.service")
 	return &ServiceService{
@@ -39,7 +38,6 @@ func NewServiceService(kubeClient kubernetes.Interface, logger log.Logger, metri
 	}
 }
 
-// GetService returns the named Service.
 func (s *ServiceService) GetService(namespace, name string) (*corev1.Service, error) {
 	service, err := s.kubeClient.CoreV1().Services(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "Service", name, "GET", err, s.metricsRecorder)
@@ -49,7 +47,6 @@ func (s *ServiceService) GetService(namespace, name string) (*corev1.Service, er
 	return service, nil
 }
 
-// CreateService creates the given Service.
 func (s *ServiceService) CreateService(namespace string, service *corev1.Service) error {
 	_, err := s.kubeClient.CoreV1().Services(namespace).Create(context.TODO(), service, metav1.CreateOptions{})
 	recordMetrics(namespace, "Service", service.GetName(), "CREATE", err, s.metricsRecorder)
@@ -60,7 +57,6 @@ func (s *ServiceService) CreateService(namespace string, service *corev1.Service
 	return nil
 }
 
-// UpdateService replaces the stored Service with the given Service.
 func (s *ServiceService) UpdateService(namespace string, service *corev1.Service) error {
 	_, err := s.kubeClient.CoreV1().Services(namespace).Update(context.TODO(), service, metav1.UpdateOptions{})
 	recordMetrics(namespace, "Service", service.GetName(), "UPDATE", err, s.metricsRecorder)
@@ -135,7 +131,6 @@ func mergeImmutableServiceFields(stored, desired *corev1.Service) {
 	}
 }
 
-// DeleteService deletes the named Service with foreground propagation.
 func (s *ServiceService) DeleteService(namespace, name string) error {
 	propagation := metav1.DeletePropagationForeground
 	err := s.kubeClient.CoreV1().Services(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{PropagationPolicy: &propagation})
