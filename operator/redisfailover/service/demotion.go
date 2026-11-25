@@ -21,6 +21,10 @@ import (
 
 const endpointPollInterval = 200 * time.Millisecond
 
+// podGoneTimeout limits the pod read that only selects a log level. A stalled
+// API server must not keep the disconnect of a pod busy.
+const podGoneTimeout = 5 * time.Second
+
 // Option configures optional behaviour shared by RedisFailoverChecker and
 // RedisFailoverHealer.
 type Option func(*options)
@@ -161,7 +165,9 @@ func (d *endpointAwareDisconnector) disconnect(rf *redisfailoverv1.RedisFailover
 // podGone reports whether the pod is deleted, terminating or replaced by a
 // new pod with the same name.
 func (d *endpointAwareDisconnector) podGone(namespace string, pod corev1.Pod) bool {
-	current, err := d.k8sService.GetPod(namespace, pod.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), podGoneTimeout)
+	defer cancel()
+	current, err := d.k8sService.GetPodContext(ctx, namespace, pod.Name)
 	if err != nil {
 		return apierrors.IsNotFound(err)
 	}
@@ -169,8 +175,8 @@ func (d *endpointAwareDisconnector) podGone(namespace string, pod corev1.Pod) bo
 }
 
 func (d *endpointAwareDisconnector) waitForEndpointRemoval(namespace, service, ip string) error {
-	err := wait.PollUntilContextTimeout(context.Background(), endpointPollInterval, d.timeout, true, func(context.Context) (bool, error) {
-		addresses, err := d.k8sService.GetEndpointAddresses(namespace, service)
+	err := wait.PollUntilContextTimeout(context.Background(), endpointPollInterval, d.timeout, true, func(ctx context.Context) (bool, error) {
+		addresses, err := d.k8sService.GetEndpointAddresses(ctx, namespace, service)
 		if err != nil {
 			return false, err
 		}

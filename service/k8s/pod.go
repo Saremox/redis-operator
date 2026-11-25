@@ -23,6 +23,8 @@ import (
 // Pod the Pod service that knows how to interact with k8s to manage them.
 type Pod interface {
 	GetPod(namespace string, name string) (*corev1.Pod, error)
+	// GetPodContext is GetPod with a context, for a caller that bounds the wait for the API server.
+	GetPodContext(ctx context.Context, namespace string, name string) (*corev1.Pod, error)
 	DeletePod(namespace string, name string) error
 	DeletePodWithUID(namespace string, name string, uid types.UID) error
 	ListPods(namespace string) (*corev1.PodList, error)
@@ -67,7 +69,11 @@ func NewPodService(kubeClient kubernetes.Interface, logger log.Logger, metricsRe
 }
 
 func (p *PodService) GetPod(namespace, name string) (*corev1.Pod, error) {
-	pod, err := p.kubeClient.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	return p.GetPodContext(context.TODO(), namespace, name)
+}
+
+func (p *PodService) GetPodContext(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
+	pod, err := p.kubeClient.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
 	recordMetrics(namespace, "Pod", name, "GET", err, p.metricsRecorder)
 	if err != nil {
 		return nil, fmt.Errorf("get pod %s/%s: %w", namespace, name, err)

@@ -1,6 +1,7 @@
 package k8s_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -28,7 +29,7 @@ func TestEndpointSliceServiceGetEndpointAddresses(t *testing.T) {
 	cli := fake.NewClientset(slice("a", "master", "1.1.1.1"), slice("b", "master", "2.2.2.2", "3.3.3.3"), slice("c", "other", "9.9.9.9"))
 	service := k8s.NewEndpointSliceService(cli, log.Dummy, metrics.Dummy)
 
-	addresses, err := service.GetEndpointAddresses("ns", "master")
+	addresses, err := service.GetEndpointAddresses(context.Background(), "ns", "master")
 
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"1.1.1.1", "2.2.2.2", "3.3.3.3"}, addresses)
@@ -41,7 +42,7 @@ func TestEndpointSliceServiceWrapsTheListError(t *testing.T) {
 	})
 	service := k8s.NewEndpointSliceService(cli, log.Dummy, metrics.Dummy)
 
-	_, err := service.GetEndpointAddresses("ns", "master")
+	_, err := service.GetEndpointAddresses(context.Background(), "ns", "master")
 
 	require.ErrorContains(t, err, "list endpointslices of service ns/master: boom")
 }
