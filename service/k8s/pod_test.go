@@ -247,7 +247,6 @@ func TestPodServiceLogsTheNamespaceAndPod(t *testing.T) {
 			},
 			expLines: []string{
 				"info: service=k8s.pod namespace=testns pod=testpod Update pod annotations, annotations: map[a:b]",
-				"error: service=k8s.pod namespace=testns pod=testpod Update pod annotations failed: forbidden",
 			},
 		},
 		{
@@ -258,7 +257,6 @@ func TestPodServiceLogsTheNamespaceAndPod(t *testing.T) {
 			},
 			expLines: []string{
 				"info: service=k8s.pod namespace=testns pod=testpod Remove pod annotation, annotation: a",
-				"error: service=k8s.pod namespace=testns pod=testpod Remove pod annotation failed: forbidden",
 			},
 		},
 	}

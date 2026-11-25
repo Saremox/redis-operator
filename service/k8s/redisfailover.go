@@ -142,7 +142,7 @@ func (r *RedisFailoverService) PatchRedisFailoverFinalizers(ctx context.Context,
 	_, err = r.k8sCli.DatabasesV1().RedisFailovers(namespace).Patch(ctx, name, types.MergePatchType, patchBytes, opts)
 	recordMetrics(namespace, "RedisFailover", metrics.NOT_APPLICABLE, "PATCH", err, r.metricsRecorder)
 	if err != nil {
-		r.logger.WithField("redisfailover", name).WithField("namespace", namespace).Errorf("Error while patching RedisFailover finalizers: %s", err.Error())
+		return fmt.Errorf("patch the finalizers of RedisFailover %s/%s: %w", namespace, name, err)
 	}
-	return err
+	return nil
 }

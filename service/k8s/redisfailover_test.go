@@ -212,7 +212,6 @@ func TestRedisFailoverServiceLogsTheRedisFailover(t *testing.T) {
 
 	assert.Equal(t, []string{
 		"error: service=k8s.redisfailover redisfailover=rf1 namespace=testns Error while patching RedisFailover status: forbidden",
-		"error: service=k8s.redisfailover redisfailover=rf1 namespace=testns Error while patching RedisFailover finalizers: forbidden",
 	}, lines)
 }
 

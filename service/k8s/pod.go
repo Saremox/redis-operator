@@ -161,7 +161,6 @@ func (p *PodService) UpdatePodAnnotations(namespace, podName string, annotations
 	_, err = p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.MergePatchType, payloadBytes, metav1.PatchOptions{})
 	recordMetrics(namespace, "Pod", podName, "PATCH", err, p.metricsRecorder)
 	if err != nil {
-		p.logger.WithField("namespace", namespace).WithField("pod", podName).Errorf("Update pod annotations failed: %v", err)
 		return fmt.Errorf("patch the annotations of pod %s/%s: %w", namespace, podName, err)
 	}
 	return nil
@@ -185,7 +184,6 @@ func (p *PodService) RemovePodAnnotation(namespace, podName, key string) error {
 	_, err = p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.MergePatchType, payloadBytes, metav1.PatchOptions{})
 	recordMetrics(namespace, "Pod", podName, "PATCH", err, p.metricsRecorder)
 	if err != nil {
-		p.logger.WithField("namespace", namespace).WithField("pod", podName).Errorf("Remove pod annotation failed: %v", err)
 		return fmt.Errorf("remove annotation %s of pod %s/%s: %w", key, namespace, podName, err)
 	}
 	return nil

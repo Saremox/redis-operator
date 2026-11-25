@@ -77,7 +77,6 @@ func (s *ServiceService) CreateOrUpdateService(namespace string, service *corev1
 		if errors.IsNotFound(err) {
 			return s.CreateService(namespace, service)
 		}
-		log.Errorf("Error while updating service %v in %v namespace : %v", service.GetName(), namespace, err)
 		return err
 	}
 
