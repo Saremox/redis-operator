@@ -20,8 +20,11 @@ set -eu
 # renamed field passes the check.
 version_fields=(
     "example/operator/all-redis-operator-resources.yaml|image: ghcr\.io/saremox/redis-operator:"
+    "example/operator/all-redis-operator-resources.yaml|value: ghcr\.io/saremox/redis-operator:"
     "example/operator/operator.yaml|image: ghcr\.io/saremox/redis-operator:"
+    "example/operator/operator.yaml|value: ghcr\.io/saremox/redis-operator:"
     "manifests/kustomize/base/deployment.yaml|image: ghcr\.io/saremox/redis-operator:"
+    "manifests/kustomize/base/deployment.yaml|value: ghcr\.io/saremox/redis-operator:"
     "manifests/kustomize/components/version/kustomization.yaml|^\s*newTag:"
     "manifests/kustomize/components/version/kustomization.yaml|^\s*app\.kubernetes\.io/version:"
     "charts/redisoperator/Chart.yaml|^version:"
@@ -46,6 +49,7 @@ with_version() {
     local file=$1 version=$2
     sed -E \
         -e "s|(image: ghcr\.io/saremox/redis-operator:).*|\1${version}|" \
+        -e "s|(value: ghcr\.io/saremox/redis-operator:).*|\1${version}|" \
         -e "s|^(\s*newTag:).*|\1 \"${version}\"|" \
         -e "s|^(\s*app\.kubernetes\.io/version:).*|\1 \"${version}\"|" \
         -e "s|^version:.*|version: ${version}|" \

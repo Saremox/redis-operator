@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,9 @@ const (
 	healthCheckInterval = time.Second
 	redisConnectTimeout = 2 * time.Second
 	redisCommandTimeout = time.Second
+	// defaultMaxLinkDown is the window of ready.sh for the operator-managed
+	// mode with the default failoverTimeout: 60s plus 10s.
+	defaultMaxLinkDown = 70 * time.Second
 )
 
 // HealthServer provides HTTP health endpoints for the instance manager.
@@ -31,9 +35,12 @@ type HealthServer struct {
 	redisAddr     string
 	redisPort     string
 	redisPassword string
-	server        *http.Server
-	listenAddr    net.Addr
-	client        *redis.Client
+	// maxLinkDown is how long a replica stays ready after its link to the
+	// master dropped. Every replica loses the link during a failover.
+	maxLinkDown time.Duration
+	server      *http.Server
+	listenAddr  net.Addr
+	client      *redis.Client
 
 	// Cached status (updated every healthCheckInterval)
 	mu          sync.RWMutex
@@ -112,6 +119,7 @@ func NewHealthServer(port int, redisPort, redisPassword string) *HealthServer {
 		redisAddr:     "127.0.0.1",
 		redisPort:     redisPort,
 		redisPassword: redisPassword,
+		maxLinkDown:   defaultMaxLinkDown,
 		startTime:     time.Now(),
 		cachedInfo:    make(map[string]string),
 	}
@@ -216,8 +224,7 @@ func (h *HealthServer) updateHealthStatus(ctx context.Context) {
 
 	// Try to ping Redis
 	if err := h.client.Ping(checkCtx).Err(); err != nil {
-		h.redisHealthy.Store(false)
-		h.redisReady.Store(false)
+		h.storeReplyError(err)
 		return
 	}
 	h.redisHealthy.Store(true)
@@ -225,7 +232,9 @@ func (h *HealthServer) updateHealthStatus(ctx context.Context) {
 	// Get INFO for detailed status
 	info, err := h.client.Info(checkCtx).Result()
 	if err != nil {
-		h.redisReady.Store(false)
+		// PING answered, so Redis lives. Only the readiness is open, and a
+		// refused password says nothing about it.
+		h.redisReady.Store(isAuthError(err))
 		return
 	}
 
@@ -248,10 +257,54 @@ func (h *HealthServer) updateHealthStatus(ctx context.Context) {
 
 	ready := !loading
 	if isReplica {
-		ready = ready && !syncInProgress && !masterLinkDown && !noMasterConfigured
+		ready = ready && !syncInProgress && !noMasterConfigured &&
+			(!masterLinkDown || h.insideLinkDownWindow(h.cachedInfo))
 	}
 
 	h.redisReady.Store(ready)
+}
+
+// storeReplyError records what a Redis error reply means for the probes.
+//
+// A LOADING reply comes from a Redis that lives and loads its dataset. The
+// liveness probe of the pod accepts it, so a long load must restart no pod.
+//
+// The operator changes the password of a running Redis in place, and the pod
+// restarts onto it later. Until then a refused password says nothing about
+// Redis, so ready.sh also keeps the pod ready.
+func (h *HealthServer) storeReplyError(err error) {
+	switch {
+	case isRedisError(err, "LOADING"):
+		h.redisHealthy.Store(true)
+		h.redisReady.Store(false)
+	case isAuthError(err):
+		h.redisHealthy.Store(true)
+		h.redisReady.Store(true)
+	default:
+		h.redisHealthy.Store(false)
+		h.redisReady.Store(false)
+	}
+}
+
+// isAuthError reports whether Redis refused the password.
+func isAuthError(err error) bool {
+	return isRedisError(err, "NOAUTH") || isRedisError(err, "WRONGPASS")
+}
+
+// isRedisError reports whether err is the Redis error reply with this code.
+func isRedisError(err error, code string) bool {
+	return err != nil && strings.HasPrefix(err.Error(), code)
+}
+
+// insideLinkDownWindow reports whether the link to the master dropped less
+// than maxLinkDown ago. A value below 0 means that the link was never up, so
+// this replica never loaded the data of the master.
+func (h *HealthServer) insideLinkDownWindow(info map[string]string) bool {
+	down, err := strconv.ParseInt(info["master_link_down_since_seconds"], 10, 64)
+	if err != nil || down < 0 {
+		return false
+	}
+	return time.Duration(down)*time.Second <= h.maxLinkDown
 }
 
 // handleHealthz handles the /healthz liveness endpoint.
@@ -318,7 +371,7 @@ func (h *HealthServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		} else if resp.MasterSyncInProgress {
 			resp.Error = "replica sync in progress"
 		} else if info["master_link_status"] == "down" {
-			resp.Error = "master link is down"
+			resp.Error = "master link has been down longer than the failover window"
 		} else if info["master_host"] == "127.0.0.1" {
 			resp.Error = "no master configured (replica pointing to self)"
 		} else if !h.redisHealthy.Load() {

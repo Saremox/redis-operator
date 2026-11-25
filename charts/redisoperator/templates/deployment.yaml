@@ -54,6 +54,12 @@ spec:
         - --watch-auth-secrets
         {{- end }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
+        # The init container of redis.instanceManager copies the
+        # redis-instance binary out of this image, so the operator must know
+        # its own image name.
+        env:
+        - name: OPERATOR_IMAGE_NAME
+          value: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion}}"
         ports:
           - name: metrics
             containerPort: {{ .Values.container.port }}
