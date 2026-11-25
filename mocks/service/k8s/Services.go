@@ -455,6 +455,36 @@ func (_m *Services) GetDeploymentPods(namespace string, name string) (*v1.PodLis
 	return r0, r1
 }
 
+// GetEndpointAddresses provides a mock function with given fields: namespace, serviceName
+func (_m *Services) GetEndpointAddresses(namespace string, serviceName string) ([]string, error) {
+	ret := _m.Called(namespace, serviceName)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetEndpointAddresses")
+	}
+
+	var r0 []string
+	var r1 error
+	if rf, ok := ret.Get(0).(func(string, string) ([]string, error)); ok {
+		return rf(namespace, serviceName)
+	}
+	if rf, ok := ret.Get(0).(func(string, string) []string); ok {
+		r0 = rf(namespace, serviceName)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]string)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(string, string) error); ok {
+		r1 = rf(namespace, serviceName)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetPod provides a mock function with given fields: namespace, name
 func (_m *Services) GetPod(namespace string, name string) (*v1.Pod, error) {
 	ret := _m.Called(namespace, name)
