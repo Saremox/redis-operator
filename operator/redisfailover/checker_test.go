@@ -2048,12 +2048,26 @@ func TestCheckAndHealBootstrapModeErrorBranches(t *testing.T) {
 	}
 }
 
-func TestUpdate(t *testing.T) {
-	type podStatus struct {
-		pod    corev1.Pod
-		ready  bool
-		master bool
+// podStatus is a pod of TestUpdate with the state that the mocks report for it.
+type podStatus struct {
+	pod    corev1.Pod
+	ready  bool
+	master bool
+}
+
+// updatePod is a pod of TestUpdate with its revision hash, IP and state.
+func updatePod(name, revision, ip string, master, ready bool) podStatus {
+	return podStatus{
+		pod: corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{appsv1.ControllerRevisionHashLabelKey: revision}},
+			Status:     corev1.PodStatus{PodIP: ip},
+		},
+		master: master,
+		ready:  ready,
 	}
+}
+
+func TestUpdate(t *testing.T) {
 	tests := []struct {
 		name          string
 		pods          []podStatus
@@ -2068,51 +2082,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "all ok, no change needed",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "master",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: true,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, true),
+				updatePod("master", "10", "1.1.1.1", true, true),
 			},
 			ssVersion:     "10",
 			errExpected:   false,
@@ -2121,51 +2093,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "syncing",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  false,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "master",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: true,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, false),
+				updatePod("master", "10", "1.1.1.1", true, true),
 			},
 			ssVersion:     "10",
 			errExpected:   false,
@@ -2174,51 +2104,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "pod version incorrect",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "master",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: true,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, true),
+				updatePod("master", "10", "1.1.1.1", true, true),
 			},
 			ssVersion:     "1",
 			errExpected:   false,
@@ -2227,51 +2115,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "master version incorrect",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "master",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "1",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: true,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, true),
+				updatePod("master", "1", "1.1.1.1", true, true),
 			},
 			ssVersion:     "10",
 			errExpected:   false,
@@ -2325,51 +2171,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "all ok, no change needed when in bootstrap mode",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave3",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, true),
+				updatePod("slave3", "10", "1.1.1.1", false, true),
 			},
 			ssVersion:     "10",
 			errExpected:   false,
@@ -2378,51 +2182,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "syncing when in bootstrap mode",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  false,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave3",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, false),
+				updatePod("slave3", "10", "1.1.1.1", false, true),
 			},
 			ssVersion:     "10",
 			errExpected:   false,
@@ -2431,51 +2193,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "pod version incorrect when in bootstrap mode",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave3",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, true),
+				updatePod("slave3", "10", "1.1.1.1", false, true),
 			},
 			ssVersion:     "1",
 			errExpected:   false,
@@ -2484,51 +2204,9 @@ func TestUpdate(t *testing.T) {
 		{
 			name: "when no master exists",
 			pods: []podStatus{
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave1",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.0",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave2",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "0.0.0.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
-				{
-					pod: corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "slave3",
-							Labels: map[string]string{
-								appsv1.ControllerRevisionHashLabelKey: "10",
-							},
-						},
-						Status: corev1.PodStatus{
-							PodIP: "1.1.1.1",
-						},
-					},
-					master: false,
-					ready:  true,
-				},
+				updatePod("slave1", "10", "0.0.0.0", false, true),
+				updatePod("slave2", "10", "0.0.0.1", false, true),
+				updatePod("slave3", "10", "1.1.1.1", false, true),
 			},
 			ssVersion:     "10",
 			errExpected:   true,
