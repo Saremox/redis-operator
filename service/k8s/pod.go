@@ -2,7 +2,6 @@ package k8s
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -123,9 +122,12 @@ func (p *PodService) UpdatePodLabels(namespace, podName string, labels map[strin
 			"labels": labels,
 		},
 	}
-	payloadBytes, _ := json.Marshal(patch)
+	payloadBytes, err := marshalPatch(patch)
+	if err != nil {
+		return fmt.Errorf("build the patch of pod %s/%s: %w", namespace, podName, err)
+	}
 
-	_, err := p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.MergePatchType, payloadBytes, metav1.PatchOptions{})
+	_, err = p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.MergePatchType, payloadBytes, metav1.PatchOptions{})
 	recordMetrics(namespace, "Pod", podName, "PATCH", err, p.metricsRecorder)
 	if err != nil {
 		logger := p.logger.WithField("namespace", namespace).WithField("pod", podName)
@@ -151,9 +153,12 @@ func (p *PodService) UpdatePodAnnotations(namespace, podName string, annotations
 			"annotations": annotations,
 		},
 	}
-	payloadBytes, _ := json.Marshal(patch)
+	payloadBytes, err := marshalPatch(patch)
+	if err != nil {
+		return fmt.Errorf("build the patch of pod %s/%s: %w", namespace, podName, err)
+	}
 
-	_, err := p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.MergePatchType, payloadBytes, metav1.PatchOptions{})
+	_, err = p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.MergePatchType, payloadBytes, metav1.PatchOptions{})
 	recordMetrics(namespace, "Pod", podName, "PATCH", err, p.metricsRecorder)
 	if err != nil {
 		p.logger.WithField("namespace", namespace).WithField("pod", podName).Errorf("Update pod annotations failed: %v", err)
@@ -172,9 +177,12 @@ func (p *PodService) RemovePodAnnotation(namespace, podName, key string) error {
 			"annotations": map[string]any{key: nil},
 		},
 	}
-	payloadBytes, _ := json.Marshal(patch)
+	payloadBytes, err := marshalPatch(patch)
+	if err != nil {
+		return fmt.Errorf("build the patch of pod %s/%s: %w", namespace, podName, err)
+	}
 
-	_, err := p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.MergePatchType, payloadBytes, metav1.PatchOptions{})
+	_, err = p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.MergePatchType, payloadBytes, metav1.PatchOptions{})
 	recordMetrics(namespace, "Pod", podName, "PATCH", err, p.metricsRecorder)
 	if err != nil {
 		p.logger.WithField("namespace", namespace).WithField("pod", podName).Errorf("Remove pod annotation failed: %v", err)
@@ -195,8 +203,11 @@ func (p *PodService) ResizePod(namespace, podName string, resources map[string]c
 	for _, name := range names {
 		containers = append(containers, map[string]any{"name": name, "resources": resources[name]})
 	}
-	payloadBytes, _ := json.Marshal(map[string]any{"spec": map[string]any{"containers": containers}})
-	_, err := p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.StrategicMergePatchType, payloadBytes, metav1.PatchOptions{}, "resize")
+	payloadBytes, err := marshalPatch(map[string]any{"spec": map[string]any{"containers": containers}})
+	if err != nil {
+		return fmt.Errorf("build the resize of pod %s/%s: %w", namespace, podName, err)
+	}
+	_, err = p.kubeClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.StrategicMergePatchType, payloadBytes, metav1.PatchOptions{}, "resize")
 	recordMetrics(namespace, "Pod", podName, "RESIZE", err, p.metricsRecorder)
 	if err != nil {
 		return fmt.Errorf("resize pod %s/%s: %w", namespace, podName, err)

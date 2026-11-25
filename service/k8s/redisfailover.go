@@ -2,7 +2,7 @@ package k8s
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/types"
 
@@ -69,10 +69,6 @@ func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, na
 	// omitting an empty Message here would leave a stale one from a previous
 	// status on the server.
 	//
-	// The marshal error is ignored (matching pod.go's UpdatePodLabels and
-	// UpdatePodAnnotations, which do the same for their merge patches): every
-	// value here is a string, an integer, nil or a map of them, and
-	// json.Marshal cannot fail on such a map.
 	patch := map[string]any{
 		"status": map[string]any{
 			"state":       rf.Status.State,
@@ -81,11 +77,15 @@ func (r *RedisFailoverService) UpdateRedisFailoverStatus(ctx context.Context, na
 			"autoscaling": autoscalingPatch(rf.Status.Autoscaling),
 		},
 	}
-	patchBytes, _ := json.Marshal(patch)
+	patchBytes, err := marshalPatch(patch)
+	if err != nil {
+		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Errorf("Error while building the RedisFailover status patch: %s", err.Error())
+		return
+	}
 
 	// Through the status subresource, so a status change does not bump
 	// metadata.generation.
-	_, err := r.k8sCli.DatabasesV1().RedisFailovers(namespace).Patch(ctx, rf.Name, types.MergePatchType, patchBytes, opts, "status")
+	_, err = r.k8sCli.DatabasesV1().RedisFailovers(namespace).Patch(ctx, rf.Name, types.MergePatchType, patchBytes, opts, "status")
 	if err != nil {
 		recordMetrics(namespace, "RedisFailover", metrics.NOT_APPLICABLE, "PATCH", err, r.metricsRecorder)
 		r.logger.WithField("redisfailover", rf.Name).WithField("namespace", rf.Namespace).Errorf("Error while patching RedisFailover status: %s", err.Error())
@@ -134,9 +134,12 @@ func (r *RedisFailoverService) PatchRedisFailoverFinalizers(ctx context.Context,
 			"finalizers": finalizers,
 		},
 	}
-	patchBytes, _ := json.Marshal(patch)
+	patchBytes, err := marshalPatch(patch)
+	if err != nil {
+		return fmt.Errorf("build the finalizer patch of RedisFailover %s/%s: %w", namespace, name, err)
+	}
 
-	_, err := r.k8sCli.DatabasesV1().RedisFailovers(namespace).Patch(ctx, name, types.MergePatchType, patchBytes, opts)
+	_, err = r.k8sCli.DatabasesV1().RedisFailovers(namespace).Patch(ctx, name, types.MergePatchType, patchBytes, opts)
 	recordMetrics(namespace, "RedisFailover", metrics.NOT_APPLICABLE, "PATCH", err, r.metricsRecorder)
 	if err != nil {
 		r.logger.WithField("redisfailover", name).WithField("namespace", namespace).Errorf("Error while patching RedisFailover finalizers: %s", err.Error())
