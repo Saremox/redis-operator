@@ -2129,30 +2129,32 @@ func TestRedisImagePullPolicy(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		assert := assert.New(t)
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
 
-		var policy corev1.PullPolicy
-		var exporterPolicy corev1.PullPolicy
+			var policy corev1.PullPolicy
+			var exporterPolicy corev1.PullPolicy
 
-		rf := generateRF()
-		rf.Spec.Redis.ImagePullPolicy = test.policy
-		rf.Spec.Redis.Exporter.Enabled = true
-		rf.Spec.Redis.Exporter.ImagePullPolicy = test.expectedExporterPolicy
+			rf := generateRF()
+			rf.Spec.Redis.ImagePullPolicy = test.policy
+			rf.Spec.Redis.Exporter.Enabled = true
+			rf.Spec.Redis.Exporter.ImagePullPolicy = test.exporterPolicy
 
-		ms := &mK8SService.Services{}
-		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
-		ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
-			ss := args.Get(1).(*appsv1.StatefulSet)
-			policy = ss.Spec.Template.Spec.Containers[0].ImagePullPolicy
-			exporterPolicy = ss.Spec.Template.Spec.Containers[1].ImagePullPolicy
-		}).Return(nil)
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+			ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				ss := args.Get(1).(*appsv1.StatefulSet)
+				policy = ss.Spec.Template.Spec.Containers[0].ImagePullPolicy
+				exporterPolicy = ss.Spec.Template.Spec.Containers[1].ImagePullPolicy
+			}).Return(nil)
 
-		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-		err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
-		require.NoError(t, err)
-		assert.Equal(string(test.expectedPolicy), string(policy))
-		assert.Equal(string(test.expectedExporterPolicy), string(exporterPolicy))
+			require.NoError(t, err)
+			assert.Equal(string(test.expectedPolicy), string(policy))
+			assert.Equal(string(test.expectedExporterPolicy), string(exporterPolicy))
+		})
 	}
 }
 
@@ -2177,29 +2179,31 @@ func TestSentinelImagePullPolicy(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		assert := assert.New(t)
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
 
-		var policy corev1.PullPolicy
-		var configPolicy corev1.PullPolicy
+			var policy corev1.PullPolicy
+			var configPolicy corev1.PullPolicy
 
-		rf := generateRF()
-		rf.Spec.Sentinel.ImagePullPolicy = test.policy
+			rf := generateRF()
+			rf.Spec.Sentinel.ImagePullPolicy = test.policy
 
-		ms := &mK8SService.Services{}
-		ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
-		ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
-		ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
-			d := args.Get(1).(*appsv1.Deployment)
-			policy = d.Spec.Template.Spec.Containers[0].ImagePullPolicy
-			configPolicy = d.Spec.Template.Spec.InitContainers[0].ImagePullPolicy
-		}).Return(nil)
+			ms := &mK8SService.Services{}
+			ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
+			ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Once().Return(nil)
+			ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
+				d := args.Get(1).(*appsv1.Deployment)
+				policy = d.Spec.Template.Spec.Containers[0].ImagePullPolicy
+				configPolicy = d.Spec.Template.Spec.InitContainers[0].ImagePullPolicy
+			}).Return(nil)
 
-		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-		err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
+			client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
+			err := client.EnsureSentinelDeployment(rf, nil, []metav1.OwnerReference{})
 
-		require.NoError(t, err)
-		assert.Equal(string(test.expectedPolicy), string(policy))
-		assert.Equal(string(test.expectedConfigPolicy), string(configPolicy))
+			require.NoError(t, err)
+			assert.Equal(string(test.expectedPolicy), string(policy))
+			assert.Equal(string(test.expectedConfigPolicy), string(configPolicy))
+		})
 	}
 }
 
