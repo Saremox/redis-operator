@@ -64,10 +64,14 @@ func TestRedisCommandUsesEnvAuthWhenSecretConfigured(t *testing.T) {
 	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
 
 	require.NoError(t, err)
-	// Shell wrapper so $REDIS_PASSWORD expands; exec keeps redis as PID 1.
-	assert.Equal([]string{"sh", "-c"}, gotCommand[:2])
+	// This fork runs the instance manager as PID 1 instead of the shell
+	// wrapper that upstream Saremox uses. The manager reads REDIS_PASSWORD
+	// from the environment and appends requirepass and masterauth when it
+	// starts redis-server, so the password reaches no ConfigMap and no pod
+	// command. See cmd/instance/run.
 	joined := strings.Join(gotCommand, " ")
-	assert.Contains(joined, "exec redis-server")
-	assert.Contains(joined, `--requirepass "$REDIS_PASSWORD"`)
-	assert.Contains(joined, `--masterauth "$REDIS_PASSWORD"`)
+	assert.Contains(joined, "redis-instance")
+	assert.Contains(joined, "run")
+	assert.Contains(joined, "--redis-conf")
+	assert.NotContains(joined, "pw1", "the password must not appear in the pod command")
 }

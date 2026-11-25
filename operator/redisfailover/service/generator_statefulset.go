@@ -87,13 +87,16 @@ func generateRedisPodSpec(rf *redisfailoverv1.RedisFailover, affinityLabels map[
 
 	// Runs before any user-supplied init container, so a restore or migration
 	// step starts from a directory with no stale tempfiles in it. The
-	// instance manager adds a second container beside it, which only copies
-	// the binary of the manager onto the shared volume.
-	first := []corev1.Container{createRDBTempfileCleanupContainer(rf)}
+	// instance manager of this fork removes the tempfiles itself, so with the
+	// manager the pod needs only the container that copies its binary.
+	first := createRDBTempfileCleanupContainer(rf)
 	if instanceManagerEnabled(rf) {
-		first = append(first, createInstanceManagerInitContainer(rf))
+		first = createInstanceManagerInitContainer(rf)
 	}
-	spec.InitContainers = append(first, spec.InitContainers...)
+	spec.InitContainers = append(
+		[]corev1.Container{first},
+		spec.InitContainers...,
+	)
 
 	if rf.Spec.Redis.InitContainers != nil {
 		initContainers := getInitContainersWithRedisEnv(rf)
@@ -144,7 +147,7 @@ func generateRedisContainer(rf *redisfailoverv1.RedisFailover) corev1.Container 
 		StartupProbe:   redisStartupProbe(rf),
 	}
 	if instanceManagerEnabled(rf) {
-		container.Ports = append(container.Ports, instanceManagerPort(rf))
+		container.Ports = append(container.Ports, instanceManagerPort())
 	}
 	return container
 }
@@ -210,7 +213,7 @@ func redisLivenessProbe(rf *redisfailoverv1.RedisFailover) *corev1.Probe {
 		return rf.Spec.Redis.CustomLivenessProbe
 	}
 	if instanceManagerEnabled(rf) {
-		return instanceManagerLivenessProbe(rf)
+		return instanceManagerLivenessProbe()
 	}
 	return &corev1.Probe{
 		InitialDelaySeconds: graceTime,
@@ -239,7 +242,7 @@ func redisReadinessProbe(rf *redisfailoverv1.RedisFailover) *corev1.Probe {
 		return rf.Spec.Redis.CustomReadinessProbe
 	}
 	if instanceManagerEnabled(rf) {
-		return instanceManagerReadinessProbe(rf)
+		return instanceManagerReadinessProbe()
 	}
 	return &corev1.Probe{
 		InitialDelaySeconds: graceTime,
@@ -459,9 +462,6 @@ func getRedisCommand(rf *redisfailoverv1.RedisFailover) []string {
 	// REDIS_PASSWORD env var, a SecretKeyRef. Thus the password is not in a
 	// ConfigMap or in the pod spec. The shell expands the env var, and exec
 	// keeps redis-server as PID 1, so it gets SIGTERM.
-	//
-	// The instance manager is PID 1 instead, and it reads REDIS_PASSWORD from
-	// its own environment, so it needs neither the shell nor the arguments.
 	if instanceManagerEnabled(rf) {
 		return instanceManagerCommand(rf)
 	}

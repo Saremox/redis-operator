@@ -9,6 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 	"github.com/saremox/redis-operator/log"
@@ -21,6 +22,13 @@ func execProbe(delay, timeout, failures, period int32, command ...string) *corev
 	return &corev1.Probe{
 		InitialDelaySeconds: delay, TimeoutSeconds: timeout, FailureThreshold: failures, PeriodSeconds: period,
 		ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: command}},
+	}
+}
+
+func httpProbe(delay, timeout, failures, period int32, path string) *corev1.Probe {
+	return &corev1.Probe{
+		InitialDelaySeconds: delay, TimeoutSeconds: timeout, FailureThreshold: failures, PeriodSeconds: period,
+		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: path, Port: intstr.FromInt32(8080)}},
 	}
 }
 
@@ -60,8 +68,10 @@ func probeComponents() []probeComponent {
 				return container
 			},
 			defaults: probes{
-				liveness:  execProbe(30, 5, 6, 15, "sh", "-c", "t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'"),
-				readiness: execProbe(30, 5, 0, 0, "/bin/sh", "/redis-readiness/ready.sh"),
+				// The instance manager serves both probes, so they start no
+				// process in the Redis container.
+				liveness:  httpProbe(30, 5, 6, 15, "/healthz"),
+				readiness: httpProbe(30, 5, 3, 10, "/readyz"),
 			},
 		},
 		{

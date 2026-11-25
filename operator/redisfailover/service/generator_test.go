@@ -35,13 +35,15 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 	}
 	// The three ConfigMap volumes are the same for each storage. The data
 	// volume of an emptyDir comes after them, and a claim template has none.
+	// The volume that holds the instance manager binary comes last.
 	volumes := func(data ...corev1.Volume) []corev1.Volume {
 		rf := generateRF()
-		return append([]corev1.Volume{
+		v := append([]corev1.Volume{
 			configVolume("redis-config", rfservice.GetRedisName(rf), nil),
 			configVolume("redis-shutdown-config", rfservice.GetRedisShutdownConfigMapName(rf), &executeMode),
 			configVolume("redis-readiness-config", rfservice.GetRedisReadinessName(rf), &executeMode),
 		}, data...)
+		return append(v, corev1.Volume{Name: "instance-manager", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
 	}
 	mounts := func(data string) []corev1.VolumeMount {
 		return []corev1.VolumeMount{
@@ -49,6 +51,7 @@ func TestRedisStatefulSetStorageGeneration(t *testing.T) {
 			{Name: "redis-shutdown-config", MountPath: "/redis-shutdown"},
 			{Name: "redis-readiness-config", MountPath: "/redis-readiness"},
 			{Name: data, MountPath: "/data"},
+			{Name: "instance-manager", MountPath: "/controller"},
 		}
 	}
 	claimSpec := corev1.PersistentVolumeClaimSpec{
@@ -146,11 +149,19 @@ func TestRedisStatefulSetCommands(t *testing.T) {
 		expectedCommands []string
 	}{
 		{
+			// The instance manager starts redis-server as its child process.
 			name:          "Default values",
 			givenCommands: []string{},
 			expectedCommands: []string{
-				"redis-server",
+				"/controller/redis-instance",
+				"run",
+				"--redis-conf",
 				"/redis/redis.conf",
+				// generateRF sets no port. The defaults set it in a real cluster.
+				"--redis-port",
+				"0",
+				"--max-link-down",
+				"70s",
 			},
 		},
 		{
@@ -859,7 +870,9 @@ func TestRedisExtraVolumeMounts(t *testing.T) {
 		ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 			s := args.Get(1).(*appsv1.StatefulSet)
 			extraVolume = s.Spec.Template.Spec.Volumes[3]
-			extraVolumeMount = s.Spec.Template.Spec.Containers[0].VolumeMounts[4]
+			// Index 5, not 4: the instance-manager volume is mounted after
+			// /data and before the extra mounts.
+			extraVolumeMount = s.Spec.Template.Spec.Containers[0].VolumeMounts[5]
 		}).Return(nil)
 
 		client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)

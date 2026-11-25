@@ -12,70 +12,88 @@ import (
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
 )
 
-// The instance manager is opt-in. Set spec.redis.instanceManager.enabled and
-// each Redis pod gets an init container that copies the redis-instance
-// binary out of the operator image onto an emptyDir volume. The Redis
-// container then runs that copy as PID 1, with redis-server as its child.
+// This file holds what this fork adds to the Redis pods of upstream
+// Saremox/redis-operator: the instance manager. It is in a file of its own, so
+// that a merge of upstream keeps the fork delta in one place.
 //
-// The manager serves the health endpoints that the probes use, so the probes
-// start no process in the Redis container. On a node that is short of memory
-// an exec probe can fail to fork while Redis is healthy; an HTTP probe
-// cannot.
-//
-// Without the field nothing below runs and the pods are unchanged.
+// An init container runs the redis-instance binary of the operator image,
+// which copies itself to an emptyDir volume. The Redis container then runs
+// that copy as PID 1 with
+// redis-server as its child. The manager removes the old RDB tempfiles before
+// Redis starts, so this fork needs no rdb-tempfile-cleanup init container. It
+// also serves the health endpoints that the liveness and the readiness probes
+// use, so these probes start no process in the Redis container.
 const (
 	instanceManagerVolumeName  = "instance-manager"
 	instanceManagerMountPath   = "/controller"
 	instanceManagerBinaryName  = "redis-instance"
+	instanceManagerHealthPort  = 8080
 	instanceManagerHealthzPath = "/healthz"
 	instanceManagerReadyzPath  = "/readyz"
-	// operatorImageVar names the image that holds the redis-instance binary.
-	// The operator Deployment carries it, as OPERATOR_IMAGE_NAME does for
-	// CloudNativePG. The operator writes the flags of the binary, so the
-	// operator must also choose the build that reads them.
-	operatorImageVar = "OPERATOR_IMAGE_NAME"
 )
 
-// instanceManagerEnabled reports whether the Redis pods run the manager.
-func instanceManagerEnabled(rf *redisfailoverv1.RedisFailover) bool {
-	return rf.Spec.Redis.InstanceManager.Enabled
+// instanceManagerEnabled reports whether the Redis pods run the instance
+// manager. Since 4.0.0 this fork always runs it, and it removed the probes
+// that do not need it. The function stays, so that each place which depends on
+// the manager names it.
+func instanceManagerEnabled(_ *redisfailoverv1.RedisFailover) bool {
+	return true
 }
 
-// operatorImage returns the image of the operator, or an empty string when
-// the operator Deployment does not name it.
-func operatorImage() string {
-	return os.Getenv(operatorImageVar)
-}
+// operatorImageVar holds the image of the operator itself, and
+// operatorPullPolicyVar the policy that pulled it. The Deployment sets both
+// to what it runs.
+const (
+	operatorImageVar      = "OPERATOR_IMAGE"
+	operatorPullPolicyVar = "OPERATOR_IMAGE_PULL_POLICY"
+)
 
-// checkInstanceManagerImage reports that the operator cannot name its own
-// image. The init container has to copy the binary out of an image, and only
-// the operator Deployment knows which image holds it.
-func checkInstanceManagerImage(rf *redisfailoverv1.RedisFailover) error {
-	if instanceManagerEnabled(rf) && operatorImage() == "" {
-		return fmt.Errorf("redis.instanceManager.enabled needs the %s variable on the operator Deployment", operatorImageVar)
+// instanceManagerPullPolicy returns the pull policy of the init container.
+// The init container runs the operator image, so the Redis pull policy does
+// not describe it, and an image that is loaded into the node and never
+// published cannot be pulled at all. Without the variable the behaviour does
+// not change.
+func instanceManagerPullPolicy(rf *redisfailoverv1.RedisFailover) corev1.PullPolicy {
+	if policy := os.Getenv(operatorPullPolicyVar); policy != "" {
+		return corev1.PullPolicy(policy)
 	}
-	return nil
+	return pullPolicy(rf.Spec.Redis.ImagePullPolicy)
 }
 
-// instanceManagerHealthPort is the port of the health server.
-func instanceManagerHealthPort(rf *redisfailoverv1.RedisFailover) int32 {
-	if p := rf.Spec.Redis.InstanceManager.Port; p != 0 {
-		return p
+// getInstanceManagerImage returns the image that holds the redis-instance
+// binary.
+//
+// The init container pulls this image at run time, so a constant can only
+// name an image that is already published. That makes the operator's own new
+// code unreachable until the next release, and it makes CI test the previous
+// release instead of the build under test. The operator therefore uses its
+// own image, which the Deployment gives it in OPERATOR_IMAGE.
+//
+// spec.redis.instanceManagerImage wins over both, for a user who wants a
+// different build in the Redis pods than in the operator.
+func getInstanceManagerImage(rf *redisfailoverv1.RedisFailover) string {
+	if rf.Spec.Redis.InstanceManagerImage != "" {
+		return rf.Spec.Redis.InstanceManagerImage
 	}
-	return redisfailoverv1.DefaultInstanceManagerPort
+	if image := os.Getenv(operatorImageVar); image != "" {
+		return image
+	}
+	return redisfailoverv1.DefaultInstanceManagerImage
 }
 
 // instanceManagerPort is the container port of the health server.
-func instanceManagerPort(rf *redisfailoverv1.RedisFailover) corev1.ContainerPort {
+func instanceManagerPort() corev1.ContainerPort {
 	return corev1.ContainerPort{
 		Name:          "health",
-		ContainerPort: instanceManagerHealthPort(rf),
+		ContainerPort: instanceManagerHealthPort,
 		Protocol:      corev1.ProtocolTCP,
 	}
 }
 
 // instanceManagerLivenessProbe asks the health server whether Redis answers.
-func instanceManagerLivenessProbe(rf *redisfailoverv1.RedisFailover) *corev1.Probe {
+// An HTTP probe starts no process, so it also works when the node has little
+// memory left.
+func instanceManagerLivenessProbe() *corev1.Probe {
 	return &corev1.Probe{
 		InitialDelaySeconds: graceTime,
 		TimeoutSeconds:      5,
@@ -84,7 +102,7 @@ func instanceManagerLivenessProbe(rf *redisfailoverv1.RedisFailover) *corev1.Pro
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path: instanceManagerHealthzPath,
-				Port: intstr.FromInt32(instanceManagerHealthPort(rf)),
+				Port: intstr.FromInt32(instanceManagerHealthPort),
 			},
 		},
 	}
@@ -93,7 +111,7 @@ func instanceManagerLivenessProbe(rf *redisfailoverv1.RedisFailover) *corev1.Pro
 // instanceManagerReadinessProbe asks the health server whether Redis can take
 // the traffic: it does not load its dataset, it does not sync, and a replica
 // has its link to the master.
-func instanceManagerReadinessProbe(rf *redisfailoverv1.RedisFailover) *corev1.Probe {
+func instanceManagerReadinessProbe() *corev1.Probe {
 	return &corev1.Probe{
 		InitialDelaySeconds: graceTime,
 		TimeoutSeconds:      5,
@@ -102,7 +120,7 @@ func instanceManagerReadinessProbe(rf *redisfailoverv1.RedisFailover) *corev1.Pr
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path: instanceManagerReadyzPath,
-				Port: intstr.FromInt32(instanceManagerHealthPort(rf)),
+				Port: intstr.FromInt32(instanceManagerHealthPort),
 			},
 		},
 	}
@@ -113,8 +131,8 @@ func instanceManagerReadinessProbe(rf *redisfailoverv1.RedisFailover) *corev1.Pr
 // environment and gives requirepass and masterauth to redis-server.
 //
 // The flags carry what ready.sh and the probes of the pod would otherwise
-// hold: the Redis port, the port of the health server, and the window in
-// which a replica stays ready after it lost its master.
+// hold: the Redis port and the window in which a replica stays ready after
+// it lost its master.
 //
 // The manager gets no shutdown timeout, so it sends no SIGKILL of its own.
 // The kubelet ends the pod at terminationGracePeriodSeconds, and a stop-time
@@ -125,7 +143,6 @@ func instanceManagerCommand(rf *redisfailoverv1.RedisFailover) []string {
 		"run",
 		"--redis-conf", fmt.Sprintf("/redis/%s", redisConfigFileName),
 		"--redis-port", strconv.Itoa(int(rf.Spec.Redis.Port)),
-		"--health-port", strconv.Itoa(int(instanceManagerHealthPort(rf))),
 		"--max-link-down", fmt.Sprintf("%ds", redisReadinessMaxLinkDownSeconds(rf)),
 	}
 }
@@ -149,16 +166,18 @@ func instanceManagerVolumeMount() corev1.VolumeMount {
 	}
 }
 
-// createInstanceManagerInitContainer puts the redis-instance binary on the
-// shared volume. The binary copies itself, with its own bootstrap subcommand,
-// so the image needs no shell and no cp and can stay distroless.
+// createInstanceManagerInitContainer puts the redis-instance binary of the
+// operator image on the shared volume. The binary copies itself, with its own
+// bootstrap subcommand, so the operator image needs no shell and no cp and can
+// stay the distroless image that upstream uses.
 func createInstanceManagerInitContainer(rf *redisfailoverv1.RedisFailover) corev1.Container {
 	return corev1.Container{
 		Name:            "instance-manager-init",
-		Image:           operatorImage(),
-		ImagePullPolicy: pullPolicy(rf.Spec.Redis.ImagePullPolicy),
-		// The same context as the rdb-tempfile-cleanup container beside it.
-		// The copy goes to the mounted volume and not to the root
+		Image:           getInstanceManagerImage(rf),
+		ImagePullPolicy: instanceManagerPullPolicy(rf),
+		// The same context as the rdb-tempfile-cleanup container that this one
+		// replaces, and it honours spec.redis.containerSecurityContext in the
+		// same way. The copy goes to the mounted volume and not to the root
 		// filesystem, so readOnlyRootFilesystem holds.
 		SecurityContext: getContainerSecurityContext(rf.Spec.Redis.ContainerSecurityContext),
 		Command: []string{

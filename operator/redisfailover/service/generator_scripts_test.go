@@ -628,11 +628,12 @@ func TestRedisReadinessScript(t *testing.T) {
 	}
 }
 
-// TestProbeCommands runs the default Redis and Sentinel liveness commands and
-// the Sentinel readiness command against a fake redis-cli that answers like a
-// healthy server or hangs like a frozen one, with and without timeout on PATH.
-// The Redis liveness command also gets the replies of a server that loads its
-// dataset or refuses the login.
+// TestProbeCommands runs the default Sentinel liveness and readiness commands
+// against a fake redis-cli that answers like a healthy server or hangs like a
+// frozen one, with and without timeout on PATH.
+//
+// The Redis liveness probe is an HTTP probe against the instance manager and
+// runs no command, so it is not here. cmd/instance/run covers it.
 func TestProbeCommands(t *testing.T) {
 	if _, err := exec.LookPath("timeout"); err != nil {
 		skipOrFail(t, "timeout is not installed")
@@ -642,16 +643,12 @@ func TestProbeCommands(t *testing.T) {
 	ms := &mK8SService.Services{}
 	ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Return(nil, nil)
 	ms.On("CreateOrUpdateServiceAccount", namespace, mock.Anything).Return(nil)
-	ms.On("CreateOrUpdateStatefulSet", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
-		probes["redis liveness"] = args.Get(1).(*appsv1.StatefulSet).Spec.Template.Spec.Containers[0].LivenessProbe
-	}).Return(nil)
 	ms.On("CreateOrUpdateDeployment", namespace, mock.Anything).Once().Run(func(args mock.Arguments) {
 		c := args.Get(1).(*appsv1.Deployment).Spec.Template.Spec.Containers[0]
 		probes["sentinel liveness"] = c.LivenessProbe
 		probes["sentinel readiness"] = c.ReadinessProbe
 	}).Return(nil)
 	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-	require.NoError(t, client.EnsureRedisStatefulset(generateRF(), nil, []metav1.OwnerReference{}))
 	require.NoError(t, client.EnsureSentinelDeployment(generateRF(), nil, []metav1.OwnerReference{}))
 
 	fakeCLI := `#!/bin/sh
@@ -685,33 +682,10 @@ esac
 		{name: "frozen", path: dir + ":" + os.Getenv("PATH"), env: []string{"FAKE_FROZEN=1"}},
 		{name: "answers, without timeout", path: bare, alive: true},
 	}
-	// redis-cli prints an error reply on stdout and exits 0. With a Redis
-	// password, a wrong pinger password gives WRONGPASS on stderr, and then
-	// NOAUTH for the PING.
-	redisReplies := []probeTest{
-		{
-			name:  "loading",
-			path:  dir + ":" + os.Getenv("PATH"),
-			env:   []string{"FAKE_REPLY=LOADING Redis is loading the dataset in memory"},
-			alive: true,
-		},
-		{
-			name: "wrong password",
-			path: dir + ":" + os.Getenv("PATH"),
-			env: []string{
-				"FAKE_STDERR=AUTH failed: WRONGPASS invalid username-password pair or user is disabled.",
-				"FAKE_REPLY=NOAUTH Authentication required.",
-			},
-		},
-	}
-	for _, component := range []string{"redis liveness", "sentinel liveness", "sentinel readiness"} {
+	for _, component := range []string{"sentinel liveness", "sentinel readiness"} {
 		probe := probes[component]
 		require.Equal(t, "sh", probe.Exec.Command[0])
-		componentTests := tests
-		if component == "redis liveness" {
-			componentTests = append(componentTests, redisReplies...)
-		}
-		for _, test := range componentTests {
+		for _, test := range tests {
 			t.Run(component+", "+test.name, func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 				defer cancel()

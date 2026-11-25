@@ -5,281 +5,208 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
-	"github.com/saremox/redis-operator/log"
-	"github.com/saremox/redis-operator/metrics"
-	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
-	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
 )
 
-const (
-	operatorImageVar   = "OPERATOR_IMAGE_NAME"
-	operatorImage      = "ghcr.io/saremox/redis-operator:4.2.0"
-	instanceManagerBin = "/controller/redis-instance"
-)
-
-// withInstanceManager turns the manager on and gives the operator its own
-// image, as the operator Deployment does. The field is false by default, so
-// the RedisFailover that redisStatefulSetFor builds runs redis-server
-// straight from the Redis image.
-func withInstanceManager(t *testing.T) func(*redisfailoverv1.RedisFailover) {
-	t.Helper()
-	t.Setenv(operatorImageVar, operatorImage)
-	return func(rf *redisfailoverv1.RedisFailover) {
-		rf.Spec.Redis.InstanceManager.Enabled = true
-		rf.Spec.Redis.Port = 6379
-	}
-}
-
-// managedStatefulSetFor builds the StatefulSet of a RedisFailover with the
-// manager on, after mutate.
-func managedStatefulSetFor(t *testing.T, mutate func(*redisfailoverv1.RedisFailover)) *appsv1.StatefulSet {
-	t.Helper()
-	on := withInstanceManager(t)
-	return redisStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
-		on(rf)
-		if mutate != nil {
-			mutate(rf)
-		}
-	})
-}
-
-// The field is the switch. Without it nothing below changes.
-func TestTheInstanceManagerIsOffByDefault(t *testing.T) {
+// The init container replaces upstream's rdb-tempfile-cleanup container, so
+// it must keep the hardening that the replaced container had.
+func TestInstanceManagerInitContainerKeepsTheHardening(t *testing.T) {
 	ss := redisStatefulSetFor(t, nil)
 
-	assert.Nil(t, findInitContainer(ss, "instance-manager-init"),
-		"the manager must be opt-in")
-	assert.NotNil(t, findInitContainer(ss, "rdb-tempfile-cleanup"),
-		"without the manager the cleanup container must stay")
+	require.NotEmpty(t, ss.Spec.Template.Spec.InitContainers)
+	sc := ss.Spec.Template.Spec.InitContainers[0].SecurityContext
+	require.NotNil(t, sc, "the init container must have a security context")
+
+	require.NotNil(t, sc.AllowPrivilegeEscalation)
+	assert.False(t, *sc.AllowPrivilegeEscalation)
+	require.NotNil(t, sc.Privileged)
+	assert.False(t, *sc.Privileged)
+	require.NotNil(t, sc.ReadOnlyRootFilesystem)
+	assert.True(t, *sc.ReadOnlyRootFilesystem)
+	require.NotNil(t, sc.RunAsNonRoot)
+	assert.True(t, *sc.RunAsNonRoot)
+	require.NotNil(t, sc.Capabilities)
+	assert.Equal(t, []corev1.Capability{"ALL"}, sc.Capabilities.Drop)
 }
 
-// The init container copies the binary out of the operator image. The
-// operator writes the flags of the binary, so the operator also chooses the
-// build that reads them.
-func TestTheInitContainerCopiesTheBinaryOutOfTheOperatorImage(t *testing.T) {
-	ss := managedStatefulSetFor(t, nil)
-
-	c := findInitContainer(ss, "instance-manager-init")
-	require.NotNil(t, c, "expected an instance-manager-init container")
-	assert.Equal(t, operatorImage, c.Image)
-	assert.Equal(t,
-		[]string{"/usr/local/bin/redis-instance", "bootstrap", instanceManagerBin},
-		c.Command)
-
-	var mounted bool
-	for _, m := range c.VolumeMounts {
-		if m.MountPath == "/controller" {
-			mounted = true
-		}
-	}
-	assert.True(t, mounted, "the binary needs the shared volume to copy itself onto")
-}
-
-// The operator cannot guess its own image, and a pod without the binary
-// stays in Init:CrashLoopBackOff. The reconcile must fail instead.
-func TestTheManagerNeedsTheOperatorImageVariable(t *testing.T) {
-	t.Setenv(operatorImageVar, "")
-	rf := &redisfailoverv1.RedisFailover{
-		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "testns"},
-		Spec: redisfailoverv1.RedisFailoverSpec{
-			Redis: redisfailoverv1.RedisSettings{Replicas: 3, Port: 6379},
-		},
-	}
-	rf.Spec.Redis.InstanceManager.Enabled = true
-
-	ms := &mK8SService.Services{}
-	ms.On("CreateOrUpdatePodDisruptionBudget", "testns", mock.Anything).Maybe().Return(nil, nil)
-	client := rfservice.NewRedisFailoverKubeClient(ms, log.Dummy, metrics.Dummy)
-
-	err := client.EnsureRedisStatefulset(rf, nil, []metav1.OwnerReference{})
-
-	require.ErrorContains(t, err, operatorImageVar)
-	ms.AssertNotCalled(t, "CreateOrUpdateStatefulSet", mock.Anything, mock.Anything)
-}
-
-// The cleanup container keeps its own job: it removes temp-*.rdb before the
-// user init containers run, as it does without the manager.
-func TestTheCleanupContainerStaysWithTheManager(t *testing.T) {
-	ss := managedStatefulSetFor(t, nil)
-
-	assert.NotNil(t, findInitContainer(ss, "rdb-tempfile-cleanup"),
-		"the cleanup must keep its place before the user init containers")
-}
-
-// A user init container still runs after ours, as it does without the
-// manager.
-func TestTheInitContainersRunBeforeUserInitContainers(t *testing.T) {
-	ss := managedStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
-		rf.Spec.Redis.InitContainers = []corev1.Container{{Name: "user-init", Image: "busybox"}}
+// A user who sets spec.redis.containerSecurityContext must reach the init
+// container too, exactly as with the container it replaces.
+func TestInstanceManagerInitContainerHonoursTheUserSecurityContext(t *testing.T) {
+	want := int64(2000)
+	ss := redisStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
+		rf.Spec.Redis.ContainerSecurityContext = &corev1.SecurityContext{RunAsUser: &want}
 	})
 
-	names := make([]string, 0, len(ss.Spec.Template.Spec.InitContainers))
-	for _, c := range ss.Spec.Template.Spec.InitContainers {
-		names = append(names, c.Name)
-	}
-
-	assert.Equal(t, []string{"rdb-tempfile-cleanup", "instance-manager-init", "user-init"}, names)
+	require.NotEmpty(t, ss.Spec.Template.Spec.InitContainers)
+	sc := ss.Spec.Template.Spec.InitContainers[0].SecurityContext
+	require.NotNil(t, sc)
+	require.NotNil(t, sc.RunAsUser)
+	assert.Equal(t, want, *sc.RunAsUser)
 }
 
-// The init container honours spec.redis.containerSecurityContext, as the
-// cleanup container beside it does. The copy goes to the mounted volume and
-// not to the root filesystem, so readOnlyRootFilesystem holds.
-func TestTheInitContainerTakesTheContainerSecurityContext(t *testing.T) {
-	ss := managedStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
-		rf.Spec.Redis.ContainerSecurityContext = &corev1.SecurityContext{
-			ReadOnlyRootFilesystem: boolPtr(true),
-		}
-	})
+// The init container must put the redis-instance binary on the shared volume
+// without a shell and without cp, because the operator image is distroless.
+// The binary copies itself with its own bootstrap subcommand.
+func TestInstanceManagerInitContainerCopiesWithTheBinaryItself(t *testing.T) {
+	ss := redisStatefulSetFor(t, nil)
 
-	c := findInitContainer(ss, "instance-manager-init")
-	require.NotNil(t, c)
-	require.NotNil(t, c.SecurityContext)
-	require.NotNil(t, c.SecurityContext.ReadOnlyRootFilesystem)
-	assert.True(t, *c.SecurityContext.ReadOnlyRootFilesystem)
-}
+	require.NotEmpty(t, ss.Spec.Template.Spec.InitContainers)
+	init := ss.Spec.Template.Spec.InitContainers[0]
 
-// The Redis container runs the copy, not redis-server. The flags carry what
-// ready.sh and the probes of the pod hold without the manager.
-func TestTheRedisContainerRunsTheManager(t *testing.T) {
-	ss := managedStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
-		rf.Spec.Redis.Port = 7000
-	})
-
-	require.NotEmpty(t, ss.Spec.Template.Spec.Containers)
-	c := ss.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, "instance-manager-init", init.Name)
 	assert.Equal(t, []string{
-		instanceManagerBin, "run",
-		"--redis-conf", "/redis/redis.conf",
-		"--redis-port", "7000",
-		"--health-port", "8080",
-		"--max-link-down", "70s",
-	}, c.Command)
-	assert.NotContains(t, strings.Join(c.Command, " "), "redis-server",
-		"the manager starts redis-server itself")
+		"/usr/local/bin/redis-instance",
+		"bootstrap",
+		"/controller/redis-instance",
+	}, init.Command)
 }
 
-// Sentinel gives the replicas a longer window, because the failover takes
-// down-after-milliseconds plus failover-timeout.
-func TestTheLinkDownWindowFollowsTheFailoverMode(t *testing.T) {
-	ss := managedStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
-		rf.Spec.Sentinel.Enabled = boolPtr(true)
+// A distroless image has no shell and no coreutils. If the init container ever
+// goes back to one of them, the Redis pods stop starting, and this names why.
+func TestInstanceManagerInitContainerNeedsNoShellOrCoreutils(t *testing.T) {
+	ss := redisStatefulSetFor(t, nil)
+
+	require.NotEmpty(t, ss.Spec.Template.Spec.InitContainers)
+	init := ss.Spec.Template.Spec.InitContainers[0]
+
+	require.NotEmpty(t, init.Command)
+	for _, forbidden := range []string{"cp", "sh", "/bin/sh", "bash", "/bin/bash"} {
+		assert.NotEqual(t, forbidden, init.Command[0],
+			"the operator image is distroless and holds no %s", forbidden)
+	}
+	assert.True(t, strings.HasSuffix(init.Command[0], "/redis-instance"),
+		"the init container must run the redis-instance binary, got %q", init.Command[0])
+}
+
+// The destination of the copy must be the path that the Redis container runs,
+// on the volume that both containers mount.
+func TestInstanceManagerInitContainerWritesWhereRedisReadsIt(t *testing.T) {
+	ss := redisStatefulSetFor(t, nil)
+
+	require.NotEmpty(t, ss.Spec.Template.Spec.InitContainers)
+	init := ss.Spec.Template.Spec.InitContainers[0]
+	require.Len(t, init.Command, 3)
+	dest := init.Command[2]
+
+	require.NotEmpty(t, ss.Spec.Template.Spec.Containers)
+	redis := ss.Spec.Template.Spec.Containers[0]
+	require.NotEmpty(t, redis.Command)
+
+	assert.Equal(t, dest, redis.Command[0],
+		"the Redis container must run the file that the init container wrote")
+
+	var initMount, redisMount string
+	for _, m := range init.VolumeMounts {
+		if strings.HasPrefix(dest, m.MountPath+"/") {
+			initMount = m.Name
+		}
+	}
+	for _, m := range redis.VolumeMounts {
+		if strings.HasPrefix(dest, m.MountPath+"/") {
+			redisMount = m.Name
+		}
+	}
+	assert.Equal(t, "instance-manager", initMount, "the init container must mount the volume that holds %s", dest)
+	assert.Equal(t, initMount, redisMount, "both containers must mount the same volume")
+}
+
+// spec.redis.instanceManagerImage chooses the image that holds the binary.
+// Without it the operator falls back to the default, so the override is the
+// only way to run a build that is not yet released.
+func TestInstanceManagerInitContainerHonoursTheImageOverride(t *testing.T) {
+	const want = "example.test/redis-operator:under-test"
+	ss := redisStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
+		rf.Spec.Redis.InstanceManagerImage = want
 	})
 
-	require.NotEmpty(t, ss.Spec.Template.Spec.Containers)
-	assert.Contains(t, ss.Spec.Template.Spec.Containers[0].Command, "75s")
+	require.NotEmpty(t, ss.Spec.Template.Spec.InitContainers)
+	assert.Equal(t, want, ss.Spec.Template.Spec.InitContainers[0].Image)
 }
 
-// It can only run the binary if it mounts the volume the init container
-// wrote.
-func TestTheRedisContainerMountsTheSharedVolume(t *testing.T) {
-	ss := managedStatefulSetFor(t, nil)
+func TestInstanceManagerInitContainerFallsBackToTheDefaultImage(t *testing.T) {
+	ss := redisStatefulSetFor(t, nil)
 
-	require.NotEmpty(t, ss.Spec.Template.Spec.Containers)
-	var mounted bool
-	for _, m := range ss.Spec.Template.Spec.Containers[0].VolumeMounts {
-		if m.MountPath == "/controller" {
-			mounted = true
-		}
-	}
-	assert.True(t, mounted)
-
-	var declared bool
-	for _, v := range ss.Spec.Template.Spec.Volumes {
-		if v.Name == "instance-manager" {
-			declared = true
-			assert.NotNil(t, v.EmptyDir, "the binary needs no storage that outlives the pod")
-		}
-	}
-	assert.True(t, declared)
+	require.NotEmpty(t, ss.Spec.Template.Spec.InitContainers)
+	assert.Equal(t, redisfailoverv1.DefaultInstanceManagerImage,
+		ss.Spec.Template.Spec.InitContainers[0].Image)
 }
 
-// The manager serves the health endpoints, so the probes become HTTP probes.
-// An exec probe can fail to fork on a node that is short of memory while
-// Redis is healthy; an HTTP probe cannot.
-func TestTheProbesBecomeHTTPProbes(t *testing.T) {
-	ss := managedStatefulSetFor(t, nil)
+// The init container pulls its image at run time, so a constant pinned to a
+// released image can never hold the operator's own new code. The Deployment
+// gives the operator its own image in OPERATOR_IMAGE, and the init container
+// uses that, so the binary it copies is always the one this operator shipped.
+func TestInstanceManagerInitContainerUsesTheOperatorImage(t *testing.T) {
+	const want = "example.test/redis-operator:built-by-ci"
+	t.Setenv("OPERATOR_IMAGE", want)
 
-	require.NotEmpty(t, ss.Spec.Template.Spec.Containers)
-	c := ss.Spec.Template.Spec.Containers[0]
+	ss := redisStatefulSetFor(t, nil)
 
-	require.NotNil(t, c.LivenessProbe)
-	require.NotNil(t, c.LivenessProbe.HTTPGet, "liveness must not start a process")
-	assert.Equal(t, "/healthz", c.LivenessProbe.HTTPGet.Path)
-	assert.Equal(t, int32(8080), c.LivenessProbe.HTTPGet.Port.IntVal)
-
-	require.NotNil(t, c.ReadinessProbe)
-	require.NotNil(t, c.ReadinessProbe.HTTPGet, "readiness must not start a process")
-	assert.Equal(t, "/readyz", c.ReadinessProbe.HTTPGet.Path)
-	assert.Equal(t, int32(8080), c.ReadinessProbe.HTTPGet.Port.IntVal)
-
-	var port bool
-	for _, p := range c.Ports {
-		if p.ContainerPort == 8080 {
-			port = true
-		}
-	}
-	assert.True(t, port, "the health port must be declared")
+	require.NotEmpty(t, ss.Spec.Template.Spec.InitContainers)
+	assert.Equal(t, want, ss.Spec.Template.Spec.InitContainers[0].Image)
 }
 
-// With hostNetwork the pod shares the ports of the node, so 8080 can be
-// taken. The port follows the field, as the exporter port does.
-func TestTheHealthPortFollowsTheField(t *testing.T) {
-	ss := managedStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
-		rf.Spec.Redis.InstanceManager.Port = 9999
+// A user who names an image keeps it, whatever the operator runs.
+func TestInstanceManagerImageOverrideBeatsTheOperatorImage(t *testing.T) {
+	const want = "example.test/redis-operator:chosen"
+	t.Setenv("OPERATOR_IMAGE", "example.test/redis-operator:built-by-ci")
+
+	ss := redisStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
+		rf.Spec.Redis.InstanceManagerImage = want
 	})
 
-	require.NotEmpty(t, ss.Spec.Template.Spec.Containers)
-	c := ss.Spec.Template.Spec.Containers[0]
-	assert.Equal(t, int32(9999), c.LivenessProbe.HTTPGet.Port.IntVal)
-	assert.Equal(t, int32(9999), c.ReadinessProbe.HTTPGet.Port.IntVal)
-	assert.Contains(t, c.Command, "9999")
-
-	var port bool
-	for _, p := range c.Ports {
-		if p.ContainerPort == 9999 {
-			port = true
-		}
-	}
-	assert.True(t, port)
+	require.NotEmpty(t, ss.Spec.Template.Spec.InitContainers)
+	assert.Equal(t, want, ss.Spec.Template.Spec.InitContainers[0].Image)
 }
 
-// A custom probe is the user's own choice and still wins.
-func TestACustomProbeBeatsTheManagerProbe(t *testing.T) {
-	custom := &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			Exec: &corev1.ExecAction{Command: []string{"mine"}},
-		},
-	}
-	ss := managedStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
-		rf.Spec.Redis.CustomLivenessProbe = custom
-		rf.Spec.Redis.CustomReadinessProbe = custom
-	})
+// An empty variable is the same as no variable, so a Deployment that sets it
+// from a value the user left blank does not break the pods.
+func TestInstanceManagerIgnoresAnEmptyOperatorImage(t *testing.T) {
+	t.Setenv("OPERATOR_IMAGE", "")
 
-	require.NotEmpty(t, ss.Spec.Template.Spec.Containers)
-	c := ss.Spec.Template.Spec.Containers[0]
-	require.NotNil(t, c.LivenessProbe)
-	assert.Equal(t, custom, c.LivenessProbe)
-	require.NotNil(t, c.ReadinessProbe)
-	assert.Equal(t, custom, c.ReadinessProbe)
+	ss := redisStatefulSetFor(t, nil)
+
+	require.NotEmpty(t, ss.Spec.Template.Spec.InitContainers)
+	assert.Equal(t, redisfailoverv1.DefaultInstanceManagerImage,
+		ss.Spec.Template.Spec.InitContainers[0].Image)
 }
 
-// The init container pulls the operator image, and spec.redis.imagePullPolicy
-// is the only policy the RedisFailover has.
-func TestTheInitContainerTakesThePullPolicy(t *testing.T) {
-	ss := managedStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
+// The init container runs the operator image, not the Redis image, so the
+// Redis pull policy does not describe it. The Deployment gives the operator
+// its own policy in OPERATOR_IMAGE_PULL_POLICY. Without this, an image that
+// is loaded into the node and never published cannot be pulled at all.
+func TestInstanceManagerInitContainerUsesTheOperatorPullPolicy(t *testing.T) {
+	t.Setenv("OPERATOR_IMAGE_PULL_POLICY", "Never")
+
+	ss := redisStatefulSetFor(t, nil)
+
+	require.NotEmpty(t, ss.Spec.Template.Spec.InitContainers)
+	assert.Equal(t, corev1.PullNever, ss.Spec.Template.Spec.InitContainers[0].ImagePullPolicy)
+}
+
+// Without the variable the behaviour does not change: the init container
+// keeps the policy it had.
+func TestInstanceManagerInitContainerFallsBackToTheRedisPullPolicy(t *testing.T) {
+	t.Setenv("OPERATOR_IMAGE_PULL_POLICY", "")
+
+	ss := redisStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
 		rf.Spec.Redis.ImagePullPolicy = corev1.PullIfNotPresent
 	})
 
-	c := findInitContainer(ss, "instance-manager-init")
-	require.NotNil(t, c)
-	assert.Equal(t, corev1.PullIfNotPresent, c.ImagePullPolicy)
+	require.NotEmpty(t, ss.Spec.Template.Spec.InitContainers)
+	assert.Equal(t, corev1.PullIfNotPresent, ss.Spec.Template.Spec.InitContainers[0].ImagePullPolicy)
 }
 
-func boolPtr(b bool) *bool { return &b }
+// The Redis container must keep the Redis policy, whatever the operator runs.
+func TestTheOperatorPullPolicyDoesNotReachTheRedisContainer(t *testing.T) {
+	t.Setenv("OPERATOR_IMAGE_PULL_POLICY", "Never")
+
+	ss := redisStatefulSetFor(t, func(rf *redisfailoverv1.RedisFailover) {
+		rf.Spec.Redis.ImagePullPolicy = corev1.PullIfNotPresent
+	})
+
+	require.NotEmpty(t, ss.Spec.Template.Spec.Containers)
+	assert.Equal(t, corev1.PullIfNotPresent, ss.Spec.Template.Spec.Containers[0].ImagePullPolicy)
+}

@@ -22,12 +22,14 @@ spec:
         - image: ghcr.io/saremox/redis-operator:4.2.0
           imagePullPolicy: IfNotPresent
           name: app
-          # The init container of redis.instanceManager copies the
-          # redis-instance binary out of this image, so the operator
-          # must know its own image name.
           env:
-            - name: OPERATOR_IMAGE_NAME
+            # The Redis pods run an init container that copies the
+            # redis-instance binary out of this image, so the operator must
+            # know its own image.
+            - name: OPERATOR_IMAGE
               value: ghcr.io/saremox/redis-operator:4.2.0
+            - name: OPERATOR_IMAGE_PULL_POLICY
+              value: IfNotPresent
           ports:
             - name: metrics
               containerPort: 9710

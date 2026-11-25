@@ -7749,24 +7749,17 @@ spec:
                       - name
                       type: object
                     type: array
-                  instanceManager:
+                  instanceManagerImage:
                     description: |-
-                      InstanceManager runs redis-server as the child of a manager process.
-                      It is off by default, and then the Redis pods are unchanged.
-                    properties:
-                      enabled:
-                        description: |-
-                          Enabled runs the manager in each Redis pod. The operator Deployment
-                          must have the OPERATOR_IMAGE_NAME variable, because the operator image
-                          holds the binary. Defaults to false.
-                        type: boolean
-                      port:
-                        description: |-
-                          Port is the port of the health server of the manager. It must differ
-                          from redis.port and from the exporter ports. Defaults to 8080.
-                        format: int32
-                        type: integer
-                    type: object
+                      InstanceManagerImage is the image that holds the redis-instance binary.
+                      An init container copies the binary from this image to a shared volume,
+                      and the Redis container runs it as PID 1. The manager removes the RDB
+                      tempfiles before Redis starts, serves the health endpoints that the
+                      probes use, and forwards the stop signals. Without a value, the
+                      operator uses its own image, which it reads from OPERATOR_IMAGE.
+                      Set this only to run a different build in the Redis pods than in the
+                      operator.
+                    type: string
                   maxMemory:
                     description: |-
                       MaxMemory lets the operator set maxmemory and maxmemory-policy from the

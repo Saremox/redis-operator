@@ -51,24 +51,25 @@ command:
 
 ## Instance manager
 
-The operator image holds a second binary, `redis-instance`. It runs as PID 1 and starts `redis-server` as a child process. To use it, turn it on:
+The operator image holds a second binary, `redis-instance`. Each Redis pod runs it as PID 1, and it starts `redis-server` as a child process.
 
-```yaml
-spec:
-  redis:
-    instanceManager:
-      enabled: true
-```
+An init container copies the binary out of an image onto a shared `emptyDir` volume. The Redis container runs the copy.
 
-Each Redis pod then gets a second init container. It copies the binary out of the operator image onto a shared `emptyDir` volume, and the Redis container runs the copy. The field names no image. The operator writes the flags of the binary, so it also chooses the build that reads them. It takes its own image from the `OPERATOR_IMAGE_NAME` variable on its Deployment. The Helm chart, `manifests/kustomize` and `example/operator` set that variable. Without it the RedisFailover reports `NotHealthy` and the pods do not change.
+The operator selects the image in this order:
 
-The manager serves `/healthz` and `/readyz`, so the liveness and the readiness probes become HTTP probes and start no process in the Redis container. On a node that is short of memory, an exec probe can fail to fork while Redis is healthy. An HTTP probe cannot. The endpoints answer like the scripts they replace. `/healthz` accepts a Redis that loads its dataset. `/readyz` keeps a replica ready for the failover window, and it ignores a refused password.
+1. `spec.redis.instanceManagerImage`, to run a different build in the Redis pods than in the operator.
+2. The `OPERATOR_IMAGE` variable on the operator Deployment, which names the image of the operator itself.
+3. A published image, as the last resort. A constant cannot name the build that reads it.
 
-The health server listens on port 8080. Set `redis.instanceManager.port` for another one, for example with `redis.hostNetwork`. The port must differ from `redis.port` and from `redis.exporter.port`.
+The Helm chart, `manifests/kustomize` and `example/operator` set `OPERATOR_IMAGE` and `OPERATOR_IMAGE_PULL_POLICY`. The pull policy applies to the init container, so a node can use an image that is loaded and not published.
+
+The manager removes the RDB tempfiles of a killed save before Redis starts. Thus the pods need no `rdb-tempfile-cleanup` init container.
+
+The manager serves `/healthz` and `/readyz` on port 8080, so the liveness and the readiness probes are HTTP probes. On a node that is short of memory, an exec probe can fail to fork while Redis is healthy. An HTTP probe cannot. The endpoints answer like the scripts that they replace. `/healthz` accepts a Redis that loads its dataset. `/readyz` keeps a replica ready for the failover window, and it ignores a refused password.
 
 The manager sends no `SIGKILL` of its own. The kubelet ends the pod at the end of `terminationGracePeriodSeconds`, so a save at stop keeps its whole window.
 
-Without the field the Redis pods are unchanged. A custom `redis.customLivenessProbe` or `redis.customReadinessProbe` still wins. Validation rejects `redis.command` with the manager, because a custom command serves no health endpoint and the probes would never pass.
+A custom `redis.customLivenessProbe` or `redis.customReadinessProbe` has priority over the HTTP probes. A custom `redis.command` replaces the manager, but the HTTP probes stay. Set custom probes together with a custom command.
 
 ## Custom environment variables
 

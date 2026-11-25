@@ -349,9 +349,12 @@ func TestRedisFailoverOperatorManagedModeRollout(t *testing.T) {
 		},
 		Spec: redisfailoverv1.RedisFailoverSpec{
 			Redis: redisfailoverv1.RedisSettings{
-				Replicas:        ommRedisSize,
-				ImagePullPolicy: corev1.PullIfNotPresent,
-				CustomConfig:    []string{`save ""`},
+				Replicas: ommRedisSize,
+				// This fork always runs the instance manager, and its default
+				// image is not in the test cluster. The CI loads this tag.
+				InstanceManagerImage: "ghcr.io/saremox/redis-operator:test",
+				ImagePullPolicy:      corev1.PullIfNotPresent,
+				CustomConfig:         []string{`save ""`},
 			},
 			Sentinel: redisfailoverv1.SentinelSettings{
 				// Operator-managed mode, set explicitly. It is also the

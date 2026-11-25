@@ -72,8 +72,14 @@
         "containers": [
           {
             "command": [
-              "redis-server",
-              "/redis/redis.conf"
+              "/controller/redis-instance",
+              "run",
+              "--redis-conf",
+              "/redis/redis.conf",
+              "--redis-port",
+              "6379",
+              "--max-link-down",
+              "75s"
             ],
             "env": [
               {
@@ -102,14 +108,11 @@
               }
             },
             "livenessProbe": {
-              "exec": {
-                "command": [
-                  "sh",
-                  "-c",
-                  "t=; command -v timeout >/dev/null 2>&1 && t=\"timeout 2\"; $t redis-cli -h $(hostname) -p 6379 --user pinger --pass pingpass --no-auth-warning ping | grep -qE '^(PONG|LOADING)'"
-                ]
-              },
               "failureThreshold": 6,
+              "httpGet": {
+                "path": "/healthz",
+                "port": 8080
+              },
               "initialDelaySeconds": 30,
               "periodSeconds": 15,
               "timeoutSeconds": 5
@@ -120,16 +123,21 @@
                 "containerPort": 6379,
                 "name": "redis",
                 "protocol": "TCP"
+              },
+              {
+                "containerPort": 8080,
+                "name": "health",
+                "protocol": "TCP"
               }
             ],
             "readinessProbe": {
-              "exec": {
-                "command": [
-                  "/bin/sh",
-                  "/redis-readiness/ready.sh"
-                ]
+              "failureThreshold": 3,
+              "httpGet": {
+                "path": "/readyz",
+                "port": 8080
               },
               "initialDelaySeconds": 30,
+              "periodSeconds": 10,
               "timeoutSeconds": 5
             },
             "resources": {},
@@ -162,6 +170,10 @@
               {
                 "mountPath": "/data",
                 "name": "redis-data"
+              },
+              {
+                "mountPath": "/controller",
+                "name": "instance-manager"
               }
             ]
           }
@@ -171,21 +183,21 @@
         "initContainers": [
           {
             "command": [
-              "sh",
-              "-c",
-              "find /data -maxdepth 1 -type f -name 'temp-*.rdb' -delete"
+              "/usr/local/bin/redis-instance",
+              "bootstrap",
+              "/controller/redis-instance"
             ],
-            "image": "redis:7.2.12-alpine",
+            "image": "ghcr.io/saremox/redis-operator:4.1.0",
             "imagePullPolicy": "Always",
-            "name": "rdb-tempfile-cleanup",
+            "name": "instance-manager-init",
             "resources": {
               "limits": {
-                "cpu": "10m",
-                "memory": "32Mi"
+                "cpu": "100m",
+                "memory": "64Mi"
               },
               "requests": {
                 "cpu": "10m",
-                "memory": "32Mi"
+                "memory": "16Mi"
               }
             },
             "securityContext": {
@@ -203,8 +215,8 @@
             },
             "volumeMounts": [
               {
-                "mountPath": "/data",
-                "name": "redis-data"
+                "mountPath": "/controller",
+                "name": "instance-manager"
               }
             ]
           }
@@ -251,6 +263,10 @@
           {
             "emptyDir": {},
             "name": "redis-data"
+          },
+          {
+            "emptyDir": {},
+            "name": "instance-manager"
           }
         ]
       }
