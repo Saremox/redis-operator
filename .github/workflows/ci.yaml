@@ -25,6 +25,7 @@ jobs:
       chart: ${{ steps.filter.outputs.chart }}
       docker: ${{ steps.filter.outputs.docker }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      docs: ${{ steps.filter.outputs.docs }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -34,6 +35,12 @@ jobs:
           # filter has the workflow files, so a change to a workflow runs the
           # jobs. Documentation and metadata files match no rule.
           filters: |
+            # The writing rules of docs/writing.md.
+            docs:
+              - '**/*.md'
+              - '.vale.ini'
+              - '.vale/**'
+              - '.github/workflows/**'
             # Build and lint.
             go:
               - '**/*.go'
@@ -142,6 +149,20 @@ jobs:
         with:
           version: v2.13.2
           args: --timeout=15m
+
+  docs:
+    name: Writing rules
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Vale
+        run: |
+          curl -sSfL https://github.com/errata-ai/vale/releases/download/v3.12.0/vale_3.12.0_Linux_64-bit.tar.gz | tar -xz vale
+      - name: Check the documents against the STE rules
+        # Only errors fail the job. Warnings are for the reviewer.
+        run: ./vale --minAlertLevel=error README.md AGENTS.md CLAUDE.md docs .claude
 
   verify-codegen:
     name: Verify generated code

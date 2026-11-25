@@ -1,0 +1,6 @@
+extends: occurrence
+message: "A sentence has %s words. Use at most 25."
+level: error
+scope: sentence
+max: 25
+token: '\b(\w+)\b'

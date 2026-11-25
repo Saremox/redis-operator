@@ -13,7 +13,7 @@ The operator creates, configures and manages Redis with automatic failover on Ku
 - Kubernetes version: 1.32 or higher
 - Redis version: 6 or higher
 
-CI runs the integration tests on Kubernetes 1.35.8, 1.36.4 and 1.37.0, and the end-to-end test on Kubernetes 1.32.0. Both use Redis 7.2. The soak test runs Redis 6.2, 7.2, 7.4 and 8 and Valkey 7.2, 8 and 9. See [Tested server versions and upgrade paths](#tested-server-versions-and-upgrade-paths).
+CI runs the integration tests on Kubernetes 1.35.8, 1.36.4 and 1.37.0. It runs the end-to-end test on Kubernetes 1.32.0. Both use Redis 7.2. The soak test runs Redis 6.2, 7.2, 7.4 and 8 and Valkey 7.2, 8 and 9. See [Tested server versions and upgrade paths](#tested-server-versions-and-upgrade-paths).
 
 ## Operator deployment on Kubernetes
 
@@ -217,7 +217,7 @@ REDIS_OPERATOR_VERSION=<release-tag>
 kubectl create -f https://raw.githubusercontent.com/Saremox/redis-operator/${REDIS_OPERATOR_VERSION}/example/redisfailover/basic.yaml
 ```
 
-By default, Sentinel is disabled and the operator manages the failover. Set `spec.sentinel.enabled: true` to deploy the Sentinel resources. Use `spec.sentinel.failoverTimeout` to tune the failover of the operator.
+The example `basic.yaml` enables Sentinel. Without `spec.sentinel.enabled: true`, Sentinel is disabled and the operator manages the failover, as in [`minimum-sentinelless.yaml`](example/redisfailover/minimum-sentinelless.yaml). Set `spec.sentinel.enabled: true` to deploy the Sentinel resources. Use `spec.sentinel.failoverTimeout` to tune the failover of the operator.
 
 `spec.sentinel.failoverTimeout` (default `10s`, `0s` disables it) is the time that the operator waits for a master that does not answer while its pod runs. The wait prevents a failover after a short stall, for example a GC pause, because a failover makes all replicas resync and can lose writes.
 
@@ -506,7 +506,7 @@ Before the StatefulSet gets the limit before the step, the operator checks the p
 
 The reason of `Reverted` and `Held` gives the refusal that ended the step. A later refusal does not change that reason. Alert on `redis_operator_controller_autoscaler_step_phase` equal to `4`. In the other phases, the reason also shows a refused resize. An example is a change of the spec while the operator cannot read a revision.
 
-A pod can run with a larger limit than the StatefulSet. This happens when the kubelet applies a resize after a revert, or on Kubernetes 1.33 and 1.34, which cannot lower a limit in place. The operator does not change such a pod. A pod that the StatefulSet created from the template of the last step also keeps its limit. The rollout only moves its revision label. `maxmemory` follows the smallest pod, so the larger pod is safe.
+A pod can run with a larger limit than the StatefulSet. This happens when the kubelet applies a resize after a revert. It also happens on Kubernetes 1.33 and 1.34, which cannot lower a limit in place. The operator does not change such a pod. A pod that the StatefulSet created from the template of the last step also keeps its limit. The rollout only moves its revision label. `maxmemory` follows the smallest pod, so the larger pod is safe.
 
 The spec of a pod can also request the limit of a step after a revert. The operator then removes only the resize request, and the pod keeps the request. Before Kubernetes 1.35, the API server refuses a lower limit in the pod spec. Thus a later change of the limit holds the rollout at such a pod, and the reason shows the pod. The operator does not recreate it.
 
@@ -674,7 +674,7 @@ redisfailovers.databases.spotahome.com/name
 ### ExtraVolumes and ExtraVolumeMounts
 
 Use `extraVolumes` and `extraVolumeMounts` in `spec.redis` and `spec.sentinel` to mount more volumes, for example with configuration files or Secrets. Typical uses are:
-- Secrets for a sidecar that backs up the RDB files
+- Secrets for a sidecar that copies the RDB files
 - Users with their Secrets and ACLs, for an init container that creates more users
 - Configuration files that merge with the Redis configuration
 - Failover scripts for more operations
@@ -859,7 +859,7 @@ The soak test runs RedisFailovers with these server images, in [operator-managed
 | Valkey 8 | `valkey/valkey:8.1.10-alpine` |
 | Valkey 9 | `valkey/valkey:9.1.2-alpine` |
 
-The soak test does not run other versions: Redis 6.0 and 7.0, other patch releases of Redis 7.4 and 8, and Valkey 8.0.
+The soak test does not run Redis 6.0 and 7.0, other patch releases of Redis 7.4 and 8, or Valkey 8.0.
 
 An in-place upgrade is a change of `spec.redis.image` on a RedisFailover that runs. The soak test made 3,775 such changes in a window of about 3.5 days. Each instance had up to 3 Redis pods, a 16 MiB data set and a write ledger. The ledger checks each acknowledged write. The Redis 6.2 row comes from a separate window of about 17.5 hours on two extra instances. All other rows come from the 3.5-day window.
 
@@ -880,7 +880,7 @@ An in-place upgrade is a change of `spec.redis.image` on a RedisFailover that ru
 
 "Fails safe" means that the rollout stops after the first replica. The new Valkey pod cannot load the data of the old master and stays not Ready. Its log shows `Can't handle RDB format version 12` (data from Redis 7.4) or `Can't handle RDB format version 15` (data from Redis 8). The master and the other replicas keep the old version and accept writes. In all 973 cases, the master stayed writable and the ledger found no lost acknowledged write.
 
-Valkey forked from Redis 7.2.4, so it reads Redis 7.2 data and not the data format of Redis 7.4 or Redis 8. There is no in-place path from Redis 7.4 or Redis 8 to Valkey. [Migrate to Valkey](#migrate-to-valkey) tells how to stop such a rollout.
+Valkey forked from Redis 7.2.4. It reads Redis 7.2 data, but not the data format of Redis 7.4 or Redis 8. There is no in-place path from Redis 7.4 or Redis 8 to Valkey. [Migrate to Valkey](#migrate-to-valkey) tells how to stop such a rollout.
 
 Two extra instances, one per mode, ran the chain Redis 6.2, 7.2, 7.4 and 8 and then reset. In about 17.5 hours they made 283 upgrades (operator-managed / Sentinel mode):
 
@@ -888,7 +888,7 @@ Two extra instances, one per mode, ran the chain Redis 6.2, 7.2, 7.4 and 8 and t
 - Redis 7.2 to Redis 7.4: 43 / 52.
 - Redis 7.4 to Redis 8: 42 / 51.
 
-All 283 converged, and the ledger found no lost acknowledged write. Only the first step is in the table above. On this chain, an upgrade took 131 s on average (95th percentile 176 s) in operator-managed mode and 166 s (258 s) in Sentinel mode.
+All 283 converged, and the ledger found no lost acknowledged write. Only the first step is in the table above. On this chain, an upgrade took 131 s on average (95th percentile 176 s) in operator-managed mode. It took 166 s (258 s) in Sentinel mode.
 
 In the 3.5-day window, the soak test did not test these changes of `spec.redis.image`:
 

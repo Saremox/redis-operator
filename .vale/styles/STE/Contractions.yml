@@ -1,0 +1,8 @@
+extends: existence
+message: "Do not use the contraction '%s'."
+level: error
+ignorecase: true
+tokens:
+  - '\b\w+n''t\b'
+  - '\b(?:I|you|we|they)''(?:re|ve|ll|d)\b'
+  - '\b(?:it|that|there|here|let)''s\b'
