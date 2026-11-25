@@ -1,0 +1,36 @@
+name: Vulnerability check
+
+permissions:
+  contents: read
+
+# The result depends on the vulnerability database, not only on the code, so
+# a push cannot explain a new failure. The check runs each week, and when
+# go.mod changes.
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  push:
+    branches:
+      - main
+    paths:
+      - go.mod
+      - go.sum
+  pull_request:
+    paths:
+      - go.mod
+      - go.sum
+  workflow_dispatch:
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Check the dependencies and the standard library
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.10.0
+          "$(go env GOPATH)/bin/govulncheck" ./...

@@ -16,7 +16,6 @@ const destMode = 0o755
 // executable is a variable so that tests can inject a source fault.
 var executable = os.Executable
 
-// NewCmd creates the bootstrap command.
 func NewCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "bootstrap <destination>",

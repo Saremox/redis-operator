@@ -4,6 +4,5 @@
 .idea/
 /tmp
 vendor
-.claude/*
-!.claude/skills/
+.claude/settings.local.json
 coverage.out

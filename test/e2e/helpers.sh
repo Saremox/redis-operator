@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shell functions for the steps of .github/workflows/e2e.yml. Each step
 # runs in its own shell, so each step that uses them sources this file.
 

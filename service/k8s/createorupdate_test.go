@@ -79,7 +79,7 @@ func createOrUpdateKinds() []createOrUpdateKind {
 		},
 		{
 			kind: "PodDisruptionBudget", getLabel: "x", field: "podDisruptionBudget", noun: "poddisruptionbudget", serviceField: "k8s.podDisruptionBudget",
-			created: "podDisruptionBudget created", updated: "podDisruptionBudget updated", skipped: "pod disruption budget already up to date, skipping update",
+			created: "podDisruptionBudget created", updated: "podDisruptionBudget updated", skipped: "poddisruptionbudget already up to date, skipping update",
 			object: func(meta metav1.ObjectMeta) runtime.Object { return &policyv1.PodDisruptionBudget{ObjectMeta: meta} },
 			createOrUpdate: func(cli kubernetes.Interface, logger log.Logger, rec metrics.Recorder, object runtime.Object) error {
 				return k8s.NewPodDisruptionBudgetService(cli, logger, rec).CreateOrUpdatePodDisruptionBudget("ns", object.(*policyv1.PodDisruptionBudget))
@@ -87,7 +87,7 @@ func createOrUpdateKinds() []createOrUpdateKind {
 		},
 		{
 			kind: "ServiceAccount", getLabel: "x", field: "serviceAccount", noun: "serviceaccount", serviceField: "k8s.serviceAccount",
-			created: "serviceAccount created", updated: "serviceAccount updated", skipped: "service account already up to date, skipping update",
+			created: "serviceAccount created", updated: "serviceAccount updated", skipped: "serviceaccount already up to date, skipping update",
 			object: func(meta metav1.ObjectMeta) runtime.Object { return &corev1.ServiceAccount{ObjectMeta: meta} },
 			createOrUpdate: func(cli kubernetes.Interface, logger log.Logger, rec metrics.Recorder, object runtime.Object) error {
 				return k8s.NewServiceAccountService(cli, logger, rec).CreateOrUpdateServiceAccount("ns", object.(*corev1.ServiceAccount))

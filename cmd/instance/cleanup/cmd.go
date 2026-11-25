@@ -3,10 +3,10 @@ package cleanup
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/saremox/redis-operator/cmd/instance/rdbclean"
 )
 
 const (
@@ -23,7 +23,6 @@ var (
 	dryRun     bool
 )
 
-// NewCmd creates the cleanup command.
 func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cleanup",
@@ -46,31 +45,24 @@ This command removes all the .rdb files in the data directory, except the
 }
 
 func runCleanup(_ *cobra.Command, _ []string) error {
-	info, err := os.Stat(dataDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Printf("Data directory %s does not exist, skipping cleanup\n", dataDir)
-			return nil
+	missing := false
+	cleaned, totalSize, err := rdbclean.Clean(dataDir, dbFilename, "", dryRun, readDir, func(e rdbclean.Event) {
+		switch e.Kind {
+		case rdbclean.Missing:
+			missing = true
+			fmt.Printf("Data directory %s does not exist, skipping cleanup\n", e.Path)
+		case rdbclean.InfoFailed:
+			fmt.Printf("Warning: failed to get info for %s: %v\n", e.Name, e.Err)
+		case rdbclean.RemoveFailed:
+			fmt.Printf("Warning: failed to remove %s: %v\n", e.Path, e.Err)
+		case rdbclean.WouldRemove:
+			fmt.Printf("Would delete: %s (%d bytes)\n", e.Path, e.Size)
+		case rdbclean.Removed:
+			fmt.Printf("Deleted: %s (%d bytes)\n", e.Path, e.Size)
 		}
-		return fmt.Errorf("failed to stat data directory: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", dataDir)
-	}
-
-	entries, err := readDir(dataDir)
-	if err != nil {
-		return fmt.Errorf("failed to read data directory: %w", err)
-	}
-
-	var cleaned int
-	var totalSize int64
-
-	for _, entry := range entries {
-		if size, ok := cleanEntry(entry); ok {
-			cleaned++
-			totalSize += size
-		}
+	})
+	if err != nil || missing {
+		return err
 	}
 
 	if cleaned > 0 {
@@ -84,43 +76,4 @@ func runCleanup(_ *cobra.Command, _ []string) error {
 	}
 
 	return nil
-}
-
-// cleanEntry removes the entry if it is a stale RDB file, or prints it in a
-// dry run. It returns the size of the file, and whether the file counts as
-// cleaned.
-func cleanEntry(entry os.DirEntry) (int64, bool) {
-	if entry.IsDir() {
-		return 0, false
-	}
-
-	name := entry.Name()
-
-	if !strings.HasSuffix(name, ".rdb") {
-		return 0, false
-	}
-
-	if name == dbFilename {
-		return 0, false
-	}
-
-	filePath := filepath.Join(dataDir, name)
-
-	fileInfo, err := entry.Info()
-	if err != nil {
-		fmt.Printf("Warning: failed to get info for %s: %v\n", name, err)
-		return 0, false
-	}
-
-	if dryRun {
-		fmt.Printf("Would delete: %s (%d bytes)\n", filePath, fileInfo.Size())
-	} else {
-		if err := os.Remove(filePath); err != nil {
-			fmt.Printf("Warning: failed to remove %s: %v\n", filePath, err)
-			return 0, false
-		}
-		fmt.Printf("Deleted: %s (%d bytes)\n", filePath, fileInfo.Size())
-	}
-
-	return fileInfo.Size(), true
 }

@@ -125,10 +125,6 @@ func (c *client) ResetSentinel(ip string) error {
 	return nil
 }
 
-func (c *client) MonitorRedis(ip, monitor, quorum, password string) error {
-	return c.MonitorRedisWithPort(ip, monitor, redisPort, quorum, password)
-}
-
 func (c *client) MonitorRedisWithPort(ip, monitor, port, quorum, password string) error {
 	if ip == "" {
 		return errNoIP

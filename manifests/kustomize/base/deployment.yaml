@@ -18,7 +18,7 @@ spec:
           # must know its own image name.
           env:
             - name: OPERATOR_IMAGE_NAME
-              value: ghcr.io/saremox/redis-operator:4.2.0-rc2
+              value: ghcr.io/saremox/redis-operator:4.2.0
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -17,64 +16,6 @@ import (
 )
 
 // ResizeAction is what the rollout does with a pod that is not on the update revision.
-type ResizeAction int
-
-const (
-	// ResizeRecreate means the pod has to be deleted and recreated.
-	ResizeRecreate ResizeAction = iota
-	// ResizeWaiting means an in-place resize of the pod is in progress.
-	ResizeWaiting
-	// ResizeDone means the pod was resized in place and moved to the update revision.
-	ResizeDone
-)
-
-// ResizeClass tells whether a later attempt of the resize can succeed.
-type ResizeClass string
-
-const (
-	// ResizeUserRevision means that the revisions differ in more than cpu and
-	// memory, so only a recreate moves the pod.
-	ResizeUserRevision ResizeClass = "UserRevision"
-	// ResizeTransient means that the resize can still succeed.
-	ResizeTransient ResizeClass = "Transient"
-	// ResizePermanent means that the cluster refuses the resize, or that the
-	// kubelet did not apply it in time.
-	ResizePermanent ResizeClass = "Permanent"
-)
-
-// AutoscalerLimits are the memory limits of the redis container with
-// autoscaling. The zero value means that no step of the autoscaler is
-// possible.
-type AutoscalerLimits struct {
-	// Effective is the limit of the pods, or 0. Spec is the limit of
-	// redis.resources, the limit before the step when the spec limit is at
-	// the target of the step, or 0 without a known state. Only a revision to
-	// an Effective above Spec can be a step.
-	Spec, Effective int64
-	// Step is the limit of the last autoscaler step, or 0. A spec limit at or
-	// above it and a memoryMax below it end it. A pod with this limit keeps
-	// it, also when it only requests it since a revert.
-	Step int64
-	// StepMax is memoryMax when the state of the last step is not known, or
-	// 0. Then a pod with a larger limit up to StepMax keeps it, as for Step.
-	StepMax int64
-}
-
-// ResizeResult is the outcome of ResizePodInPlace.
-type ResizeResult struct {
-	Action ResizeAction
-	// Class is empty for ResizeDone.
-	Class ResizeClass
-	// Message is the progress of a resize, the reason for a recreate, or
-	// empty.
-	Message string
-	// AutoscalerRevision reports that the update revision is a step of the
-	// memory autoscaler from the pod's revision, that the pod requests the
-	// Step limit, or that a revision cannot be read with autoscaler limits.
-	// The rollout never recreates such a pod.
-	AutoscalerRevision bool
-}
-
 // inPlaceResizeTimeout bounds how long a deferred or failing resize is waited
 // for before the pod is recreated instead.
 var inPlaceResizeTimeout = 5 * time.Minute
@@ -423,73 +364,6 @@ func (r *RedisFailoverHealer) markResizeRequested(rf *redisfailoverv1.RedisFailo
 	return r.k8sService.UpdatePodAnnotations(rf.Namespace, podName, map[string]string{resizeRequestedAnnotation: time.Now().UTC().Format(time.RFC3339)})
 }
 
-// autoscalerRevision reports whether update is a step of the memory
-// autoscaler from current. effectiveRF changes only the memory limit of the
-// redis container, and a memory request equal to that limit. A step only
-// raises the limit to an effective limit above the spec limit. A lower limit
-// holds a change of the user, for example a lower memoryMax. A raise of the
-// spec below the effective limit does not change the template, so a pod from
-// before it keeps the step.
-func autoscalerRevision(current, update *corev1.PodTemplateSpec, limits AutoscalerLimits) bool {
-	if limits.Effective == 0 {
-		return false
-	}
-	current = current.DeepCopy()
-	c, u := redisContainer(current), redisContainer(update)
-	if c == nil || u == nil {
-		return false
-	}
-	cl, cok := c.Resources.Limits[corev1.ResourceMemory]
-	ul, uok := u.Resources.Limits[corev1.ResourceMemory]
-	if !cok || !uok || ul.Value() != limits.Effective || ul.Value() <= limits.Spec || cl.Value() >= ul.Value() {
-		return false
-	}
-	cr, cok := c.Resources.Requests[corev1.ResourceMemory]
-	ur, uok := u.Resources.Requests[corev1.ResourceMemory]
-	if cok != uok || cok && !cr.Equal(ur) && (!cr.Equal(cl) || !ur.Equal(ul)) {
-		return false
-	}
-	c.Resources.Limits[corev1.ResourceMemory] = ul
-	if cok {
-		c.Resources.Requests[corev1.ResourceMemory] = ur
-	}
-	return equality.Semantic.DeepEqual(current, update)
-}
-
-// stepRevision reports whether current differs from update only by a larger
-// redis memory limit up to stepMax, as a revision of an unknown step.
-func stepRevision(update, current *corev1.PodTemplateSpec, stepMax int64) bool {
-	c := redisContainer(current)
-	if stepMax == 0 || c == nil {
-		return false
-	}
-	cl := c.Resources.Limits.Memory().Value()
-	return cl <= stepMax && autoscalerRevision(update, current, AutoscalerLimits{Effective: cl})
-}
-
-func redisContainer(t *corev1.PodTemplateSpec) *corev1.Container {
-	for i := range t.Spec.Containers {
-		if t.Spec.Containers[i].Name == redisContainerName {
-			return &t.Spec.Containers[i]
-		}
-	}
-	return nil
-}
-
-// revisionTemplates returns the templates of the pod's revision and of the
-// update revision, or the reason that one is not available.
-func (r *RedisFailoverHealer) revisionTemplates(rf *redisfailoverv1.RedisFailover, pod *corev1.Pod, updateRevision string) (current, update *corev1.PodTemplateSpec, reason string, err error) {
-	current, err = r.revisionTemplate(rf, pod.Labels[appsv1.ControllerRevisionHashLabelKey])
-	if current == nil || err != nil {
-		return nil, nil, "the pod's revision is not available", err
-	}
-	update, err = r.revisionTemplate(rf, updateRevision)
-	if update == nil || err != nil {
-		return nil, nil, "the update revision is not available", err
-	}
-	return current, update, "", nil
-}
-
 // inPlaceResources returns the container resources of the update revision
 // when the pod can be moved to it by an in-place resize, or the reason and
 // the class when it cannot. A held memory limit of the redis container stays
@@ -640,53 +514,6 @@ func overlay(list, new corev1.ResourceList) corev1.ResourceList {
 	return list
 }
 
-func (r *RedisFailoverHealer) revisionTemplate(rf *redisfailoverv1.RedisFailover, revision string) (*corev1.PodTemplateSpec, error) {
-	// The revision hash label and the update revision are the ControllerRevision's name.
-	cr, err := r.k8sService.GetControllerRevision(rf.Namespace, revision)
-	// Forbidden without the RBAC added for in-place resize: recreate instead.
-	if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	// The StatefulSet controller stores the template as a patch of the
-	// StatefulSet: {"spec":{"template":{...}}}.
-	var data struct {
-		Spec struct {
-			Template corev1.PodTemplateSpec `json:"template"`
-		} `json:"spec"`
-	}
-	if err := json.Unmarshal(cr.Data.Raw, &data); err != nil {
-		return nil, fmt.Errorf("decode controllerrevision %s/%s: %w", rf.Namespace, revision, err)
-	}
-	return &data.Spec.Template, nil
-}
-
-func withoutResources(t *corev1.PodTemplateSpec) *corev1.PodTemplateSpec {
-	t = t.DeepCopy()
-	for i := range t.Spec.Containers {
-		t.Spec.Containers[i].Resources.Requests = nil
-		t.Spec.Containers[i].Resources.Limits = nil
-	}
-	return t
-}
-
-// withDefaultRequests sets unset requests to their limits, as the API server
-// does for pods but not for the templates they are created from.
-func withDefaultRequests(r corev1.ResourceRequirements) corev1.ResourceRequirements {
-	r = *r.DeepCopy()
-	for name, q := range r.Limits {
-		if _, ok := r.Requests[name]; !ok {
-			if r.Requests == nil {
-				r.Requests = corev1.ResourceList{}
-			}
-			r.Requests[name] = q
-		}
-	}
-	return r
-}
-
 // podRequests reports whether the pod spec already requests the desired resources.
 func podRequests(pod *corev1.Pod, desired map[string]corev1.ResourceRequirements) bool {
 	for _, c := range pod.Spec.Containers {
@@ -706,59 +533,6 @@ func podApplied(pod *corev1.Pod, desired map[string]corev1.ResourceRequirements)
 	for name, d := range desired {
 		if a := applied[name]; a == nil || !sameResizable(*a, d) {
 			return false
-		}
-	}
-	return true
-}
-
-// keepsTemplate reports whether the pod spec and the applied resources have
-// the resources of the template t, with a redis memory limit at or above
-// the one of t.
-func keepsTemplate(pod *corev1.Pod, t *corev1.PodTemplateSpec) bool {
-	spec, applied := map[string]*corev1.ResourceRequirements{}, map[string]*corev1.ResourceRequirements{}
-	for i := range pod.Spec.Containers {
-		spec[pod.Spec.Containers[i].Name] = &pod.Spec.Containers[i].Resources
-	}
-	for _, cs := range pod.Status.ContainerStatuses {
-		applied[cs.Name] = cs.Resources
-	}
-	for _, c := range t.Spec.Containers {
-		for _, got := range []*corev1.ResourceRequirements{spec[c.Name], applied[c.Name]} {
-			if !keepsResources(got, c) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// keepsResources reports whether got has the resources of the template
-// container c, with a redis memory limit at or above the one of c.
-func keepsResources(got *corev1.ResourceRequirements, c corev1.Container) bool {
-	if got == nil {
-		return false
-	}
-	want := withDefaultRequests(c.Resources)
-	if q, ok := want.Limits[corev1.ResourceMemory]; ok && c.Name == redisContainerName {
-		if got.Limits.Memory().Cmp(q) < 0 {
-			return false
-		}
-		want.Limits[corev1.ResourceMemory] = got.Limits[corev1.ResourceMemory]
-		if r, ok := got.Requests[corev1.ResourceMemory]; ok && want.Requests.Memory().Equal(q) {
-			want.Requests[corev1.ResourceMemory] = r
-		}
-	}
-	return sameResizable(*got, want)
-}
-
-func sameResizable(a, b corev1.ResourceRequirements) bool {
-	for _, name := range resizableResources {
-		for _, list := range [][2]corev1.ResourceList{{a.Requests, b.Requests}, {a.Limits, b.Limits}} {
-			qa, oka := list[0][name]
-			qb, okb := list[1][name]
-			if oka != okb || !qa.Equal(qb) {
-				return false
-			}
 		}
 	}
 	return true

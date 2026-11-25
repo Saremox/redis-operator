@@ -112,7 +112,6 @@ type InstanceManagerStatus struct {
 	HealthPort         int    `json:"health_port"`
 }
 
-// NewHealthServer creates a new health server.
 func NewHealthServer(port int, redisPort, redisPassword string) *HealthServer {
 	return &HealthServer{
 		port:          port,

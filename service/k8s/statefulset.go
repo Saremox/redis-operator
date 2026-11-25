@@ -30,8 +30,6 @@ type StatefulSet interface {
 	CreateStatefulSet(namespace string, statefulSet *appsv1.StatefulSet) error
 	UpdateStatefulSet(namespace string, statefulSet *appsv1.StatefulSet) error
 	CreateOrUpdateStatefulSet(namespace string, statefulSet *appsv1.StatefulSet) error
-	DeleteStatefulSet(namespace string, name string) error
-	ListStatefulSets(namespace string) (*appsv1.StatefulSetList, error)
 	GetControllerRevision(namespace, name string) (*appsv1.ControllerRevision, error)
 }
 
@@ -42,7 +40,6 @@ type StatefulSetService struct {
 	metricsRecorder metrics.Recorder
 }
 
-// NewStatefulSetService returns a new StatefulSet KubeService.
 func NewStatefulSetService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *StatefulSetService {
 	logger = logger.With("service", "k8s.statefulSet")
 	return &StatefulSetService{
@@ -250,28 +247,6 @@ func hasOwnerReference(ownerReferences []metav1.OwnerReference, uid types.UID) b
 	return false
 }
 
-// DeleteStatefulSet will delete the statefulset.
-func (s *StatefulSetService) DeleteStatefulSet(namespace, name string) error {
-	propagation := metav1.DeletePropagationForeground
-	err := s.kubeClient.AppsV1().StatefulSets(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{PropagationPolicy: &propagation})
-	recordMetrics(namespace, "StatefulSet", name, "DELETE", err, s.metricsRecorder)
-	if err != nil {
-		return fmt.Errorf("delete statefulset %s/%s: %w", namespace, name, err)
-	}
-	return nil
-}
-
-// ListStatefulSets will retrieve a list of statefulset in the given namespace.
-func (s *StatefulSetService) ListStatefulSets(namespace string) (*appsv1.StatefulSetList, error) {
-	stsList, err := s.kubeClient.AppsV1().StatefulSets(namespace).List(context.TODO(), metav1.ListOptions{})
-	recordMetrics(namespace, "StatefulSet", metrics.NOT_APPLICABLE, "LIST", err, s.metricsRecorder)
-	if err != nil {
-		return stsList, fmt.Errorf("list statefulsets in %s: %w", namespace, err)
-	}
-	return stsList, nil
-}
-
-// GetControllerRevision returns the named ControllerRevision.
 func (s *StatefulSetService) GetControllerRevision(namespace, name string) (*appsv1.ControllerRevision, error) {
 	revision, err := s.kubeClient.AppsV1().ControllerRevisions(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	recordMetrics(namespace, "ControllerRevision", name, "GET", err, s.metricsRecorder)

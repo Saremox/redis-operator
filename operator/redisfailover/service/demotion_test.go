@@ -13,16 +13,24 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
 	redisfailoverv1 "github.com/saremox/redis-operator/api/redisfailover/v1"
+	redisfailoverfake "github.com/saremox/redis-operator/client/k8s/clientset/versioned/fake"
 	"github.com/saremox/redis-operator/log"
 	"github.com/saremox/redis-operator/metrics"
 	mK8SService "github.com/saremox/redis-operator/mocks/service/k8s"
 	mRedisService "github.com/saremox/redis-operator/mocks/service/redis"
 	rfservice "github.com/saremox/redis-operator/operator/redisfailover/service"
+	"github.com/saremox/redis-operator/service/k8s"
 )
+
+// k8sOver gives the disconnector the real Kubernetes service on a fake client.
+func k8sOver(kubeClient kubernetes.Interface) k8s.Services {
+	return k8s.New(kubeClient, redisfailoverfake.NewSimpleClientset(), log.Dummy, metrics.Dummy)
+}
 
 var (
 	masterRoleLabel = map[string]string{"redisfailovers-role": "master"}
@@ -310,7 +318,7 @@ func TestClientDisconnectorWaitsForPodToLeaveMasterService(t *testing.T) {
 		endpointSlice("unrelated", "1.1.1.1"),
 	)
 	mr, called := disconnectClientsMock(nil)
-	disconnector := rfservice.NewClientDisconnector(kubeClient, mr, log.DummyLogger{}, time.Minute, 0)
+	disconnector := rfservice.NewClientDisconnector(k8sOver(kubeClient), mr, log.DummyLogger{}, time.Minute, 0)
 
 	demoted := podWithRole("old-master", "1.1.1.1", slaveRoleLabel)
 	disconnector.DisconnectDemoted(rf, demoted, "0", "")
@@ -340,7 +348,7 @@ func TestClientDisconnectorWaitsForGraceAfterRemoval(t *testing.T) {
 	kubeClient := fake.NewClientset(masterEndpointSlice(rf, "0.0.0.0"))
 	mr, called := disconnectClientsMock(nil)
 	grace := 500 * time.Millisecond
-	disconnector := rfservice.NewClientDisconnector(kubeClient, mr, log.DummyLogger{}, time.Minute, grace)
+	disconnector := rfservice.NewClientDisconnector(k8sOver(kubeClient), mr, log.DummyLogger{}, time.Minute, grace)
 
 	start := time.Now()
 	disconnector.DisconnectDemoted(rf, podWithRole("old-master", "1.1.1.1", slaveRoleLabel), "0", "")
@@ -382,7 +390,7 @@ func TestClientDisconnectorFallsBackToDisconnecting(t *testing.T) {
 				test.setup(kubeClient)
 			}
 			mr, called := disconnectClientsMock(errors.New("NOPERM"))
-			disconnector := rfservice.NewClientDisconnector(kubeClient, mr, log.DummyLogger{}, test.timeout, 0)
+			disconnector := rfservice.NewClientDisconnector(k8sOver(kubeClient), mr, log.DummyLogger{}, test.timeout, 0)
 
 			disconnector.DisconnectDemoted(rf, podWithRole("old-master", "1.1.1.1", slaveRoleLabel), "0", "")
 
@@ -404,7 +412,7 @@ func TestClientDisconnectorRunsAgainAfterAFailureWhenDemotedAgain(t *testing.T) 
 		Run(func(mock.Arguments) { called <- struct{}{} })
 	mr.On("DisconnectClients", "1.1.1.1", "0", "").Once().Return(nil).
 		Run(func(mock.Arguments) { called <- struct{}{} })
-	disconnector := rfservice.NewClientDisconnector(kubeClient, mr, log.DummyLogger{}, time.Minute, 0)
+	disconnector := rfservice.NewClientDisconnector(k8sOver(kubeClient), mr, log.DummyLogger{}, time.Minute, 0)
 
 	demoted := podWithRole("old-master", "1.1.1.1", slaveRoleLabel)
 	disconnector.DisconnectDemoted(rf, demoted, "0", "")
@@ -438,7 +446,7 @@ func TestClientDisconnectorSurvivesAPanicOfTheRedisClient(t *testing.T) {
 		}).Return(nil)
 	mr.On("DisconnectClients", "1.1.1.1", "0", "").Once().Return(nil).
 		Run(func(mock.Arguments) { called <- struct{}{} })
-	disconnector := rfservice.NewClientDisconnector(kubeClient, mr, log.DummyLogger{}, time.Minute, 0)
+	disconnector := rfservice.NewClientDisconnector(k8sOver(kubeClient), mr, log.DummyLogger{}, time.Minute, 0)
 
 	demoted := podWithRole("old-master", "1.1.1.1", slaveRoleLabel)
 	disconnector.DisconnectDemoted(rf, demoted, "0", "")

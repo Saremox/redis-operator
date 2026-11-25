@@ -18,8 +18,6 @@ import (
 
 // RedisFailoverCheck defines the interface able to check the correct status of redis failover.
 type RedisFailoverCheck interface {
-	CheckRedisNumber(rFailover *redisfailoverv1.RedisFailover) error
-	CheckSentinelNumber(rFailover *redisfailoverv1.RedisFailover) error
 	CheckAllSlavesFromMaster(master string, rFailover *redisfailoverv1.RedisFailover) error
 	CheckSentinelNumberInMemory(sentinel string, rFailover *redisfailoverv1.RedisFailover) error
 	CheckSentinelSlavesNumberInMemory(sentinel string, rFailover *redisfailoverv1.RedisFailover) error
@@ -46,7 +44,6 @@ type RedisFailoverCheck interface {
 	IsAnyRedisRunning(rFailover *redisfailoverv1.RedisFailover) bool
 	IsSentinelRunning(rFailover *redisfailoverv1.RedisFailover) bool
 	IsSentinelRunningQuorum(rFailover *redisfailoverv1.RedisFailover) bool
-	IsClusterRunning(rFailover *redisfailoverv1.RedisFailover) bool
 	// Operator-managed failover methods
 	CheckMasterHealth(rFailover *redisfailoverv1.RedisFailover) (bool, string, error)
 	GetBestReplicaForPromotion(rFailover *redisfailoverv1.RedisFailover) (*ReplicaInfo, error)
@@ -63,7 +60,6 @@ type RedisFailoverChecker struct {
 	opts          options
 }
 
-// NewRedisFailoverChecker creates an object of the RedisFailoverChecker struct.
 func NewRedisFailoverChecker(k8sService k8s.Services, redisClient redis.Client, logger log.Logger, metricsClient metrics.Recorder, opts ...Option) *RedisFailoverChecker {
 	return &RedisFailoverChecker{
 		k8sService:    k8sService,
@@ -72,32 +68,6 @@ func NewRedisFailoverChecker(k8sService k8s.Services, redisClient redis.Client, 
 		metricsClient: metricsClient,
 		opts:          applyOptions(opts),
 	}
-}
-
-// CheckRedisNumber returns an error when the StatefulSet replicas differ from
-// redis.replicas.
-func (r *RedisFailoverChecker) CheckRedisNumber(rf *redisfailoverv1.RedisFailover) error {
-	ss, err := r.k8sService.GetStatefulSet(rf.Namespace, GetRedisName(rf))
-	if err != nil {
-		return err
-	}
-	if rf.Spec.Redis.Replicas != *ss.Spec.Replicas {
-		return errors.New("number of redis pods differ from specification")
-	}
-	return nil
-}
-
-// CheckSentinelNumber returns an error when the Deployment replicas differ
-// from sentinel.replicas.
-func (r *RedisFailoverChecker) CheckSentinelNumber(rf *redisfailoverv1.RedisFailover) error {
-	d, err := r.k8sService.GetDeployment(rf.Namespace, GetSentinelName(rf))
-	if err != nil {
-		return err
-	}
-	if rf.Spec.Sentinel.Replicas != *d.Spec.Replicas {
-		return errors.New("number of sentinel pods differ from specification")
-	}
-	return nil
 }
 
 // GetRedisesIPs returns the IPs of the Redis nodes.
@@ -246,11 +216,6 @@ func (r *RedisFailoverChecker) IsSentinelRunning(rFailover *redisfailoverv1.Redi
 func (r *RedisFailoverChecker) IsSentinelRunningQuorum(rFailover *redisfailoverv1.RedisFailover) bool {
 	dp, err := r.k8sService.GetDeploymentPods(rFailover.Namespace, GetSentinelName(rFailover))
 	return err == nil && AreQuorumRunning(dp, int(rFailover.Spec.Sentinel.Replicas))
-}
-
-// IsClusterRunning returns true if all the pods in the given redisfailover are Running.
-func (r *RedisFailoverChecker) IsClusterRunning(rFailover *redisfailoverv1.RedisFailover) bool {
-	return r.IsSentinelRunning(rFailover) && r.IsRedisRunning(rFailover)
 }
 
 func getRedisPort(p int32) string {

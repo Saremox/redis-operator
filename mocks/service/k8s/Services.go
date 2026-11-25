@@ -47,24 +47,6 @@ func (_m *Services) CreateConfigMap(namespace string, configMap *v1.ConfigMap) e
 	return r0
 }
 
-// CreateDeployment provides a mock function with given fields: namespace, deployment
-func (_m *Services) CreateDeployment(namespace string, deployment *appsv1.Deployment) error {
-	ret := _m.Called(namespace, deployment)
-
-	if len(ret) == 0 {
-		panic("no return value specified for CreateDeployment")
-	}
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *appsv1.Deployment) error); ok {
-		r0 = rf(namespace, deployment)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
 // CreateOrUpdateConfigMap provides a mock function with given fields: namespace, np
 func (_m *Services) CreateOrUpdateConfigMap(namespace string, np *v1.ConfigMap) error {
 	ret := _m.Called(namespace, np)
@@ -191,24 +173,6 @@ func (_m *Services) CreateOrUpdateStatefulSet(namespace string, statefulSet *app
 	return r0
 }
 
-// CreatePodDisruptionBudget provides a mock function with given fields: namespace, podDisruptionBudget
-func (_m *Services) CreatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
-	ret := _m.Called(namespace, podDisruptionBudget)
-
-	if len(ret) == 0 {
-		panic("no return value specified for CreatePodDisruptionBudget")
-	}
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *policyv1.PodDisruptionBudget) error); ok {
-		r0 = rf(namespace, podDisruptionBudget)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
 // CreateService provides a mock function with given fields: namespace, service
 func (_m *Services) CreateService(namespace string, service *v1.Service) error {
 	ret := _m.Called(namespace, service)
@@ -220,24 +184,6 @@ func (_m *Services) CreateService(namespace string, service *v1.Service) error {
 	var r0 error
 	if rf, ok := ret.Get(0).(func(string, *v1.Service) error); ok {
 		r0 = rf(namespace, service)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// CreateServiceAccount provides a mock function with given fields: namespace, serviceAccount
-func (_m *Services) CreateServiceAccount(namespace string, serviceAccount *v1.ServiceAccount) error {
-	ret := _m.Called(namespace, serviceAccount)
-
-	if len(ret) == 0 {
-		panic("no return value specified for CreateServiceAccount")
-	}
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *v1.ServiceAccount) error); ok {
-		r0 = rf(namespace, serviceAccount)
 	} else {
 		r0 = ret.Error(0)
 	}
@@ -389,24 +335,6 @@ func (_m *Services) DeleteServiceAccount(namespace string, name string) error {
 	return r0
 }
 
-// DeleteStatefulSet provides a mock function with given fields: namespace, name
-func (_m *Services) DeleteStatefulSet(namespace string, name string) error {
-	ret := _m.Called(namespace, name)
-
-	if len(ret) == 0 {
-		panic("no return value specified for DeleteStatefulSet")
-	}
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, string) error); ok {
-		r0 = rf(namespace, name)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
 // GetConfigMap provides a mock function with given fields: namespace, name
 func (_m *Services) GetConfigMap(namespace string, name string) (*v1.ConfigMap, error) {
 	ret := _m.Called(namespace, name)
@@ -527,6 +455,36 @@ func (_m *Services) GetDeploymentPods(namespace string, name string) (*v1.PodLis
 	return r0, r1
 }
 
+// GetEndpointAddresses provides a mock function with given fields: ctx, namespace, serviceName
+func (_m *Services) GetEndpointAddresses(ctx context.Context, namespace string, serviceName string) ([]string, error) {
+	ret := _m.Called(ctx, namespace, serviceName)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetEndpointAddresses")
+	}
+
+	var r0 []string
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, string) ([]string, error)); ok {
+		return rf(ctx, namespace, serviceName)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string, string) []string); ok {
+		r0 = rf(ctx, namespace, serviceName)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]string)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string, string) error); ok {
+		r1 = rf(ctx, namespace, serviceName)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetPod provides a mock function with given fields: namespace, name
 func (_m *Services) GetPod(namespace string, name string) (*v1.Pod, error) {
 	ret := _m.Called(namespace, name)
@@ -550,6 +508,36 @@ func (_m *Services) GetPod(namespace string, name string) (*v1.Pod, error) {
 
 	if rf, ok := ret.Get(1).(func(string, string) error); ok {
 		r1 = rf(namespace, name)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// GetPodContext provides a mock function with given fields: ctx, namespace, name
+func (_m *Services) GetPodContext(ctx context.Context, namespace string, name string) (*v1.Pod, error) {
+	ret := _m.Called(ctx, namespace, name)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetPodContext")
+	}
+
+	var r0 *v1.Pod
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, string) (*v1.Pod, error)); ok {
+		return rf(ctx, namespace, name)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string, string) *v1.Pod); ok {
+		r0 = rf(ctx, namespace, name)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*v1.Pod)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string, string) error); ok {
+		r1 = rf(ctx, namespace, name)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -737,66 +725,6 @@ func (_m *Services) GetStatefulSetPods(namespace string, name string) (*v1.PodLi
 	return r0, r1
 }
 
-// ListConfigMaps provides a mock function with given fields: namespace
-func (_m *Services) ListConfigMaps(namespace string) (*v1.ConfigMapList, error) {
-	ret := _m.Called(namespace)
-
-	if len(ret) == 0 {
-		panic("no return value specified for ListConfigMaps")
-	}
-
-	var r0 *v1.ConfigMapList
-	var r1 error
-	if rf, ok := ret.Get(0).(func(string) (*v1.ConfigMapList, error)); ok {
-		return rf(namespace)
-	}
-	if rf, ok := ret.Get(0).(func(string) *v1.ConfigMapList); ok {
-		r0 = rf(namespace)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*v1.ConfigMapList)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(string) error); ok {
-		r1 = rf(namespace)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// ListDeployments provides a mock function with given fields: namespace
-func (_m *Services) ListDeployments(namespace string) (*appsv1.DeploymentList, error) {
-	ret := _m.Called(namespace)
-
-	if len(ret) == 0 {
-		panic("no return value specified for ListDeployments")
-	}
-
-	var r0 *appsv1.DeploymentList
-	var r1 error
-	if rf, ok := ret.Get(0).(func(string) (*appsv1.DeploymentList, error)); ok {
-		return rf(namespace)
-	}
-	if rf, ok := ret.Get(0).(func(string) *appsv1.DeploymentList); ok {
-		r0 = rf(namespace)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*appsv1.DeploymentList)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(string) error); ok {
-		r1 = rf(namespace)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
 // ListPods provides a mock function with given fields: namespace
 func (_m *Services) ListPods(namespace string) (*v1.PodList, error) {
 	ret := _m.Called(namespace)
@@ -850,96 +778,6 @@ func (_m *Services) ListRedisFailovers(ctx context.Context, namespace string, op
 
 	if rf, ok := ret.Get(1).(func(context.Context, string, metav1.ListOptions) error); ok {
 		r1 = rf(ctx, namespace, opts)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// ListServiceAccounts provides a mock function with given fields: namespace
-func (_m *Services) ListServiceAccounts(namespace string) (*v1.ServiceAccountList, error) {
-	ret := _m.Called(namespace)
-
-	if len(ret) == 0 {
-		panic("no return value specified for ListServiceAccounts")
-	}
-
-	var r0 *v1.ServiceAccountList
-	var r1 error
-	if rf, ok := ret.Get(0).(func(string) (*v1.ServiceAccountList, error)); ok {
-		return rf(namespace)
-	}
-	if rf, ok := ret.Get(0).(func(string) *v1.ServiceAccountList); ok {
-		r0 = rf(namespace)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*v1.ServiceAccountList)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(string) error); ok {
-		r1 = rf(namespace)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// ListServices provides a mock function with given fields: namespace
-func (_m *Services) ListServices(namespace string) (*v1.ServiceList, error) {
-	ret := _m.Called(namespace)
-
-	if len(ret) == 0 {
-		panic("no return value specified for ListServices")
-	}
-
-	var r0 *v1.ServiceList
-	var r1 error
-	if rf, ok := ret.Get(0).(func(string) (*v1.ServiceList, error)); ok {
-		return rf(namespace)
-	}
-	if rf, ok := ret.Get(0).(func(string) *v1.ServiceList); ok {
-		r0 = rf(namespace)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*v1.ServiceList)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(string) error); ok {
-		r1 = rf(namespace)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// ListStatefulSets provides a mock function with given fields: namespace
-func (_m *Services) ListStatefulSets(namespace string) (*appsv1.StatefulSetList, error) {
-	ret := _m.Called(namespace)
-
-	if len(ret) == 0 {
-		panic("no return value specified for ListStatefulSets")
-	}
-
-	var r0 *appsv1.StatefulSetList
-	var r1 error
-	if rf, ok := ret.Get(0).(func(string) (*appsv1.StatefulSetList, error)); ok {
-		return rf(namespace)
-	}
-	if rf, ok := ret.Get(0).(func(string) *appsv1.StatefulSetList); ok {
-		r0 = rf(namespace)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*appsv1.StatefulSetList)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(string) error); ok {
-		r1 = rf(namespace)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -1047,24 +885,6 @@ func (_m *Services) UpdateConfigMap(namespace string, configMap *v1.ConfigMap) e
 	return r0
 }
 
-// UpdateDeployment provides a mock function with given fields: namespace, deployment
-func (_m *Services) UpdateDeployment(namespace string, deployment *appsv1.Deployment) error {
-	ret := _m.Called(namespace, deployment)
-
-	if len(ret) == 0 {
-		panic("no return value specified for UpdateDeployment")
-	}
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *appsv1.Deployment) error); ok {
-		r0 = rf(namespace, deployment)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
 // UpdatePodAnnotations provides a mock function with given fields: namespace, podName, annotations
 func (_m *Services) UpdatePodAnnotations(namespace string, podName string, annotations map[string]string) error {
 	ret := _m.Called(namespace, podName, annotations)
@@ -1076,24 +896,6 @@ func (_m *Services) UpdatePodAnnotations(namespace string, podName string, annot
 	var r0 error
 	if rf, ok := ret.Get(0).(func(string, string, map[string]string) error); ok {
 		r0 = rf(namespace, podName, annotations)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// UpdatePodDisruptionBudget provides a mock function with given fields: namespace, podDisruptionBudget
-func (_m *Services) UpdatePodDisruptionBudget(namespace string, podDisruptionBudget *policyv1.PodDisruptionBudget) error {
-	ret := _m.Called(namespace, podDisruptionBudget)
-
-	if len(ret) == 0 {
-		panic("no return value specified for UpdatePodDisruptionBudget")
-	}
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *policyv1.PodDisruptionBudget) error); ok {
-		r0 = rf(namespace, podDisruptionBudget)
 	} else {
 		r0 = ret.Error(0)
 	}
@@ -1135,24 +937,6 @@ func (_m *Services) UpdateService(namespace string, service *v1.Service) error {
 	var r0 error
 	if rf, ok := ret.Get(0).(func(string, *v1.Service) error); ok {
 		r0 = rf(namespace, service)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// UpdateServiceAccount provides a mock function with given fields: namespace, serviceAccount
-func (_m *Services) UpdateServiceAccount(namespace string, serviceAccount *v1.ServiceAccount) error {
-	ret := _m.Called(namespace, serviceAccount)
-
-	if len(ret) == 0 {
-		panic("no return value specified for UpdateServiceAccount")
-	}
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(string, *v1.ServiceAccount) error); ok {
-		r0 = rf(namespace, serviceAccount)
 	} else {
 		r0 = ret.Error(0)
 	}

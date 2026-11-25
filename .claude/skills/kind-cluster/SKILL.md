@@ -8,6 +8,12 @@ description: Create a kind Kubernetes cluster inside the Claude Code cloud sandb
 A plain `kind create cluster` fails in the sandbox, and a working cluster
 still cannot pull images. The scripts here solve these problems.
 
+Prerequisites: `kind`, `kubectl`, `docker` and `jq`.
+
+`test/soak/e2e/kind-e2e.sh`, `test/soak/Makefile` and the workflow
+`soak-e2e.yml` also call these scripts, and the workflow runs outside the
+sandbox. Keep the script names and arguments stable.
+
 ## Create
 
 ```sh
@@ -69,11 +75,12 @@ helm upgrade --install redis-operator ./charts/redisoperator \
 
 - `docker/app/Dockerfile` fails here, because `apk add` cannot reach the
   package mirrors. `build-image.sh` builds the binaries on the host and uses
-  the runtime stage of the Dockerfile.
+  the runtime stage of the Dockerfile. It reads the second `FROM`, so a new
+  stage in the Dockerfile breaks it.
 - If helm is missing, install it with
   `GOBIN=/usr/local/bin go install helm.sh/helm/v3/cmd/helm@v3.19.0`.
-- `.github/workflows/e2e.yml` has a RedisFailover manifest and checks that
-  you can use again.
+- `.github/workflows/e2e.yml` uses minikube, not these scripts. Its
+  RedisFailover manifest and its checks are a good model for a manual test.
 - Do not run the integration tests while a Helm-installed operator runs:
   both operators would reconcile the RedisFailovers of the tests.
 

@@ -264,7 +264,6 @@ type recorder struct {
 	ControllerRecorder
 }
 
-// NewRecorder returns a new Recorder that registers its metrics on reg.
 func NewRecorder(namespace string, reg prometheus.Registerer) Recorder {
 	r := recorder{
 		clusterOK: newGaugeVec(namespace, "cluster_ok",

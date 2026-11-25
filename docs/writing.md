@@ -10,7 +10,7 @@ These rules apply to the README, the files in `docs/`, Go comments, CRD field de
 - Add new documentation only when a reader needs a reason that is missing.
 - Remove:
   - comments that repeat the code;
-  - history, such as "previously", "now" or "this PR changes";
+  - history, such as `previously`, `now` or `this PR changes`;
   - hedging, filler and marketing words.
 
 ## Sentences
@@ -19,7 +19,7 @@ These rules apply to the README, the files in `docs/`, Go comments, CRD field de
 - Write one topic in each sentence and one topic in each paragraph. Use a maximum of 6 sentences in a paragraph.
 - Use the active voice and simple tenses: present, simple past and simple future.
 - Do not use the -ing form of a verb, except in technical names.
-- Do not use phrasal verbs (for example "set up" or "pick up") or contractions (for example "don't").
+- Do not use phrasal verbs (for example `set up` or `pick up`) or contractions (for example `don't`).
 - Use words with one meaning. Use the same term for the same thing everywhere.
 - Use articles ("a", "the") where possible.
 - Write a procedure as numbered steps, one instruction in each step. Start each step with a verb in the imperative.
@@ -34,7 +34,7 @@ These rules apply to the README, the files in `docs/`, Go comments, CRD field de
 
 ## CRD field descriptions
 
-The CRD descriptions come from the doc comments in `api/redisfailover/v1/types.go`. After you change such a comment:
+The CRD descriptions are the doc comments in `api/redisfailover/v1/types.go`. After you change such a comment:
 
 1. Run `make generate-api`.
 2. Stage the changes: `git add api/ manifests/ charts/redisoperator/crds/`. `make verify-codegen` compares with the staged files.

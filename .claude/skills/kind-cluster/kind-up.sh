@@ -10,6 +10,8 @@
 # Environment:
 #   WORKERS       worker nodes besides the control plane (default 0)
 #   SHARED        a host directory that every node mounts as /shared
+#   EXTRA_IMAGES  space-separated images to copy into the registry, besides the
+#                 images of api/redisfailover/v1/defaults.go
 set -euo pipefail
 
 name=${1:?usage: kind-up.sh NAME [NODE_VERSION] [SUBNET]}

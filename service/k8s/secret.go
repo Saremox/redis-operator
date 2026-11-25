@@ -25,7 +25,6 @@ type SecretService struct {
 	metricsRecorder metrics.Recorder
 }
 
-// NewSecretService returns a new Secret KubeService.
 func NewSecretService(kubeClient kubernetes.Interface, logger log.Logger, metricsRecorder metrics.Recorder) *SecretService {
 
 	logger = logger.With("service", "k8s.secret")
@@ -36,7 +35,6 @@ func NewSecretService(kubeClient kubernetes.Interface, logger log.Logger, metric
 	}
 }
 
-// GetSecret returns the named Secret.
 func (s *SecretService) GetSecret(namespace, name string) (*corev1.Secret, error) {
 
 	secret, err := s.kubeClient.CoreV1().Secrets(namespace).Get(context.TODO(), name, metav1.GetOptions{})

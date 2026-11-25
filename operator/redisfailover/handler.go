@@ -122,7 +122,6 @@ type RedisFailoverHandler struct {
 	requeue func(key string, after time.Duration)
 }
 
-// NewRedisFailoverHandler returns a new RF handler.
 func NewRedisFailoverHandler(config Config, rfService rfservice.RedisFailoverClient, rfChecker rfservice.RedisFailoverCheck, rfHealer rfservice.RedisFailoverHeal, k8sservice k8s.Services, mClient metrics.Recorder, logger log.Logger) *RedisFailoverHandler {
 	return &RedisFailoverHandler{
 		config:     config,
@@ -162,7 +161,7 @@ func (r *RedisFailoverHandler) Forget(key string) {
 func (r *RedisFailoverHandler) Handle(ctx context.Context, obj runtime.Object) error {
 	rf, ok := obj.(*redisfailoverv1.RedisFailover)
 	if !ok {
-		return fmt.Errorf("can't handle the received object: not a redisfailover")
+		return errors.New("cannot handle the received object: not a redisfailover")
 	}
 	defer r.startSentinelMasterRound(failoverKey(rf))()
 	// The controller waits for a running reconcile on shutdown, and the heal

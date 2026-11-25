@@ -41,10 +41,6 @@ func newConfigMapDeleteAction(ns, name string) kubetesting.DeleteActionImpl {
 	return kubetesting.NewDeleteAction(configMapsGroup, ns, name)
 }
 
-func newConfigMapListAction(ns string) kubetesting.ListActionImpl {
-	return kubetesting.NewListAction(configMapsGroup, schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"}, ns, metav1.ListOptions{})
-}
-
 func TestConfigMapServiceGetCreateOrUpdate(t *testing.T) {
 	testConfigMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -312,42 +308,6 @@ func TestConfigMapServiceDelete(t *testing.T) {
 		err := service.DeleteConfigMap(testns, "does-not-exist")
 		require.Error(t, err)
 		assertTest.True(kubeerrors.IsNotFound(err))
-	})
-}
-
-func TestConfigMapServiceList(t *testing.T) {
-	testns := "testns"
-
-	t.Run("lists configmaps in a namespace", func(t *testing.T) {
-		assertTest := assert.New(t)
-
-		cm1 := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cm1", Namespace: testns}}
-		cm2 := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cm2", Namespace: testns}}
-		cm3 := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cm3", Namespace: "otherns"}}
-		mcli := kubernetes.NewClientset(cm1, cm2, cm3)
-		service := k8s.NewConfigMapService(mcli, log.Dummy, metrics.Dummy)
-
-		list, err := service.ListConfigMaps(testns)
-		require.NoError(t, err)
-		assertTest.Len(list.Items, 2)
-		names := []string{list.Items[0].Name, list.Items[1].Name}
-		assertTest.ElementsMatch([]string{"cm1", "cm2"}, names)
-	})
-
-	t.Run("returns an error when the client fails", func(t *testing.T) {
-		assertTest := assert.New(t)
-
-		mcli := &kubernetes.Clientset{}
-		wantErr := errors.New("wanted error")
-		mcli.AddReactor("list", "configmaps", func(_ kubetesting.Action) (bool, runtime.Object, error) {
-			return true, nil, wantErr
-		})
-		service := k8s.NewConfigMapService(mcli, log.Dummy, metrics.Dummy)
-
-		list, err := service.ListConfigMaps(testns)
-		require.Error(t, err)
-		assertTest.Empty(list.Items)
-		assertTest.Equal([]kubetesting.Action{newConfigMapListAction(testns)}, mcli.Actions())
 	})
 }
 
