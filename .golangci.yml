@@ -1,0 +1,97 @@
+# The thresholds target "a human grasps a function at once". They are not
+# score targets. See docs/development.md, section "Quality score".
+version: "2"
+
+run:
+  timeout: 15m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - cyclop
+    - depguard
+    - dupl
+    - errorlint
+    - forbidigo
+    - funlen
+    - gocognit
+    - gocritic
+    - misspell
+    - nakedret
+    - nestif
+    - prealloc
+    - revive
+    - testifylint
+    - thelper
+    - unparam
+    - usestdlibvars
+  settings:
+    gocognit:
+      min-complexity: 20
+    cyclop:
+      max-complexity: 15
+      package-average: 5
+    funlen:
+      lines: 80
+      statements: 50
+    nestif:
+      min-complexity: 5
+    dupl:
+      threshold: 120
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+    revive:
+      # The rule "exported" is off on purpose. It forces comments that only
+      # repeat the signature, and docs/writing.md bans them.
+      rules:
+        - name: unused-parameter
+        - name: indent-error-flow
+        - name: early-return
+        - name: max-control-nesting
+          arguments: [5]
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.Print(f|ln)?$
+          msg: Use logrus. Only cmd/instance writes to the container output on purpose.
+    depguard:
+      rules:
+        k8s-client-in-service-layer:
+          files:
+            - "**/operator/**"
+            - "!$test"
+            - "!**/controller.go"
+            - "!**/factory.go"
+            - "!**/leaderelection.go"
+          deny:
+            - pkg: k8s.io/client-go/kubernetes
+              desc: Kubernetes calls belong in service/k8s. The controller files are the exception.
+  exclusions:
+    generated: lax
+    paths:
+      - mocks
+      - client
+    rules:
+      - path: _test\.go
+        linters:
+          - cyclop
+          - dupl
+          - forbidigo
+          - funlen
+          - gocognit
+          - unparam
+      - path: cmd/instance/
+        linters:
+          - forbidigo
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - mocks
+      - client

@@ -29,6 +29,9 @@ BRANCH=$(shell git rev-parse --abbrev-ref HEAD)
 PROJECT_PACKAGE := github.com/saremox/redis-operator
 CODEGEN_IMAGE := ghcr.io/slok/kube-code-generator:v1.27.0
 CONTROLLER_GEN_VERSION := v0.20.1
+GOLANGCI_LINT_VERSION := v2.13.2
+DEADCODE_VERSION := v0.53.0
+GOVULNCHECK_VERSION := v1.10.0
 CRD_MANIFESTS := manifests/databases.spotahome.com_redisfailovers.yaml \
 	manifests/kustomize/base/databases.spotahome.com_redisfailovers.yaml \
 	charts/redisoperator/crds/databases.spotahome.com_redisfailovers.yaml
@@ -173,6 +176,19 @@ update-codegen:
 .PHONY: install-controller-gen
 install-controller-gen:
 	go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+
+# The tools behind scripts/quality.sh and the lint step of CI. The golangci-lint
+# version must be the same as the version in .github/workflows/ci.yaml.
+.PHONY: install-quality-tools
+install-quality-tools:
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	go install golang.org/x/tools/cmd/deadcode@$(DEADCODE_VERSION)
+	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+
+# Prints the Code Quality score and the Testing score. See scripts/quality.sh.
+.PHONY: quality
+quality:
+	./scripts/quality.sh
 
 # Generate CRD using controller-gen (install it with `make install-controller-gen`)
 .PHONY: generate-crd
