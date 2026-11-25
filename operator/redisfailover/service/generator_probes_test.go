@@ -48,6 +48,7 @@ func probeComponents() []probeComponent {
 				rf.Spec.Redis.CustomLivenessProbe, rf.Spec.Redis.CustomReadinessProbe, rf.Spec.Redis.CustomStartupProbe = p.liveness, p.readiness, p.startup
 			},
 			generate: func(t *testing.T, rf *redisfailoverv1.RedisFailover) corev1.Container {
+				t.Helper()
 				var container corev1.Container
 				ms := &mK8SService.Services{}
 				ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
@@ -69,6 +70,7 @@ func probeComponents() []probeComponent {
 				rf.Spec.Sentinel.CustomLivenessProbe, rf.Spec.Sentinel.CustomReadinessProbe, rf.Spec.Sentinel.CustomStartupProbe = p.liveness, p.readiness, p.startup
 			},
 			generate: func(t *testing.T, rf *redisfailoverv1.RedisFailover) corev1.Container {
+				t.Helper()
 				var container corev1.Container
 				ms := &mK8SService.Services{}
 				ms.On("CreateOrUpdatePodDisruptionBudget", namespace, mock.Anything).Once().Return(nil, nil)
